@@ -4,6 +4,7 @@ import { clamp, damp, move } from '../engine/sim/math.js';
 const PEAK_SLIP = 0.15;   // front slip angle (rad) near peak lateral force
 const YAW_GRIP = 1.25;    // yaw-rate target headroom over the grip estimate
 const YAW_GAIN = 0.6;     // wheel rad per rad/s of yaw-rate error
+const YAW_RAMP = 6;       // yaw target slew, in grip-limit yaw rates per second
 const SLIDE_FREE = 0.12;  // body slip (rad) left alone before counter-steer
 // Unassisted full-input wheel angle as a multiple of the zero-slip geometric angle.
 const PEAK_STEER = { gt: 1.9, touring: 2.6, prototype: 1.3 };
@@ -22,17 +23,20 @@ const PEAK_STEER = { gt: 1.9, touring: 2.6, prototype: 1.3 };
  * No counter-steer; slides are the driver's to catch.
  */
 export class HumanFilter {
-  constructor() { this.steer = 0; this.throttle = 0; this.brake = 0; }
-  reset() { this.steer = this.throttle = this.brake = 0; }
+  constructor() { this.reset(); }
+  reset() { this.steer = this.throttle = this.brake = this.yawTarget = 0; }
   update(car, raw, dt, assisted = true) {
     const spec = car.spec, direction = clamp(raw.dir ?? 0, -1, 1);
     const u = Math.max(5, car.u), L = spec.wheelbase;
     const aeroGrip = car.aero.downforce / (spec.mass + car.fuel) * 0.8;
     let target;
     if (assisted) {
-      const yawTarget = direction * YAW_GRIP * (11.3 * spec.tyreGrip + aeroGrip) / u;
+      const gripYaw = (11.3 * spec.tyreGrip + aeroGrip) / u;
+      // Ramp the requested yaw rate so unwinding or counter-steering mid-corner
+      // doesn't hand the yaw feedback a step and flick the nose.
+      this.yawTarget = move(this.yawTarget, direction * YAW_GRIP * gripYaw, dt * YAW_RAMP * gripYaw);
       const beta = Math.atan2(car.v, u);
-      target = L * yawTarget / u + YAW_GAIN * (yawTarget - car.yawRate) + beta - clamp(beta, -SLIDE_FREE, SLIDE_FREE);
+      target = L * this.yawTarget / u + YAW_GAIN * (this.yawTarget - car.yawRate) + beta - clamp(beta, -SLIDE_FREE, SLIDE_FREE);
       const frontPath = Math.atan2(car.v + car.yawRate * L * (1 - spec.frontWeight), u);
       target = clamp(target, frontPath - PEAK_SLIP, frontPath + PEAK_SLIP);
     } else {
