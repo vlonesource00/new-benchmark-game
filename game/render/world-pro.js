@@ -32,6 +32,8 @@ const smooth01 = (u) => { u = clamp(u, 0, 1); return u * u * (3 - 2 * u); };
 // life under `live`.
 
 const TIME = { value: 0 };
+// Floodlight strength on the tarmac at night (0 by day), shared by the track shaders.
+const FLOOD = { value: 0 };
 const std = (color, roughness = .8, metalness = 0, extra = {}) => new THREE.MeshStandardMaterial({ color, roughness, metalness, ...extra });
 function add(parent, geo, material, x = 0, y = 0, z = 0, cast = true) {
   const m = new THREE.Mesh(geo, material); m.position.set(x, y, z); m.castShadow = cast; m.receiveShadow = true; parent.add(m); return m;
@@ -209,6 +211,8 @@ export class World {
     const dark = this.dark = smooth(.1, -.1, y);
     // Lamps come on in the gloom before the floodlit dark.
     this.lamps = Math.max(smooth(.24, .02, y), Math.min(1, rain * 4) * .8);
+    FLOOD.value = this.lamps * (.35 + .65 * dark);
+    if (this.facades) for (const m of this.facades) m.emissiveIntensity = .55 + 1.5 * dark;
     const swing = (h - this.theme.hour) * .12 * (1 - dark), sx = .7 * Math.cos(swing) - .65 * Math.sin(swing), sz = .7 * Math.sin(swing) + .65 * Math.cos(swing);
     this.sunDirection = new THREE.Vector3(sx, mix('elevation'), sz).normalize();
     const u = this.sky.material.uniforms;
@@ -271,8 +275,15 @@ export class World {
     this.roadMaterial = new THREE.MeshPhysicalMaterial({ ...asphalt, color: '#ffffff', roughness: 1, metalness: 0, clearcoat: 0, clearcoatRoughness: .08, normalScale: new THREE.Vector2(.9, .9) });
     // Macro variation breaks tiling: patch repairs, darker oil line, lighter worn edges.
     this.roadMaterial.onBeforeCompile = (s) => {
+      s.uniforms.uFlood = FLOOD;
       s.vertexShader = 'varying vec2 vRoad;\n' + s.vertexShader.replace('#include <uv_vertex>', '#include <uv_vertex>\nvRoad=uv;');
-      s.fragmentShader = 'varying vec2 vRoad;\n' + s.fragmentShader.replace('#include <color_fragment>', `#include <color_fragment>
+      s.fragmentShader = 'varying vec2 vRoad;uniform float uFlood;\n' + s.fragmentShader.replace('#include <opaque_fragment>', `
+        // Floodlight pools: masts every 135 m from s=40, alternating sides; no real lights.
+        if(uFlood>0.){float fs=vRoad.y*4.-40.,fm=mod(fs,135.),fd=min(fm,135.-fm);
+          float fside=mod(floor((fs+67.5)/135.),2.)>.5?1.:-1.,flt=vRoad.x*4.-${t.halfWidth.toFixed(2)};
+          float pool=(.45+.55*exp(-fd*fd/2450.))*(1.+.3*fside*flt/${t.halfWidth.toFixed(2)});
+          outgoingLight+=diffuseColor.rgb*vec3(1.,.95,.84)*uFlood*pool*.55;}
+        #include <opaque_fragment>`).replace('#include <color_fragment>', `#include <color_fragment>
         float lat=vRoad.x*4.-${t.halfWidth.toFixed(2)};
         float patchA=step(.72,fract(sin(floor(vRoad.y*.09)*91.7)*437.1))*step(abs(lat-sin(floor(vRoad.y*.09)*3.)*4.),2.2);
         float macro=sin(vRoad.y*.21+sin(vRoad.x*1.3))*.5+.5;
@@ -797,7 +808,8 @@ export class World {
     const d = this.dummy, rng = this.rng;
     // Facade shader: world-scale UVs from the instance scale so windows keep size.
     const facade = (style) => {
-      const maps = facadeMaps(40 + style, style), m = new THREE.MeshStandardMaterial({ ...maps, emissive: '#ffffff', emissiveIntensity: .55, roughness: .7, metalness: .15 });
+      const maps = facadeMaps(40 + style, style), m = new THREE.MeshStandardMaterial({ ...maps, emissive: '#ffffff', emissiveIntensity: .55 + 1.5 * this.dark, roughness: .7, metalness: .15 });
+      (this.facades ??= []).push(m);
       m.onBeforeCompile = (s) => {
         s.vertexShader = 'varying vec2 vFac;varying float vRoof;\n' + s.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
           vec3 sc=vec3(length(instanceMatrix[0].xyz),length(instanceMatrix[1].xyz),length(instanceMatrix[2].xyz));vec3 lp=position*sc;
