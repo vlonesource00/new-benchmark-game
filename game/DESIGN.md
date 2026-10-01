@@ -53,7 +53,7 @@ Each area is self-contained, so it can be handed to the co-worker (GPT) or kept.
   - fix the hardcoded "HARBOR RING · LIVE" banner in the `world-pro` render
   - ✅ Harbor Ring pit lane rebuilt: its own asphalt lane outside the main straight (entry s≈2672, exit s≈420, lane at lat −13.8 and boxes at −18.4), with a physical pit wall (`PitLane.wall`, and the collision is in `vehicle.js`), painted limiter lines, 60/END boards and team-coloured boxes (`world-pro` `buildPitLane`/`setPitBoxes`)
   - ✅ Circuit Solenne, Alpenring Nacht and Mirage 1000 are raceable with pit lanes. AI drivers keep the car to a governed pit approach (`race.js` pit governor and a longer, gentler peel in `pit.js`), so there are no approach spins or marshal rescues on entry. Pace profiles recorded for each track.
-- **M4 — LAN multiplayer**:
+- **M4 — LAN multiplayer** (deferred by the user; not being worked on for now):
   - Node host with a hand-written WebSocket server (no `ws` dependency)
   - the host runs `EnduranceRace` plus all AIs, and clients send inputs (`race.setInput`)
   - the host broadcasts `snapshot()` at 20–30 Hz
@@ -64,6 +64,23 @@ Each area is self-contained, so it can be handed to the co-worker (GPT) or kept.
   - ✅ Race rules: kerbs count as track for lap validity, and after the chequered flag every car finishes at its next crossing (lapped cars are classified on laps done).
   - ✅ Master volume slider (settings + pause) and `-`/`+` keys with an on-screen display.
   - ✅ Pit-call panel is non-modal: the race keeps running, and keys 1–5 choose the service and `P` toggles the panel.
+  - ✅ Broadcast graphics (`ui/hud.js`):
+    - The timing tower has a LIVE lap/clock bug. It alternates INTERVAL and GAP TO LEADER every 12 s. ▲/▼ position-change arrows show for 4 s after an overtake. The leader shows `L<lap>`, the fastest-lap holder gets a purple diamond, and a FINAL LAP / CHEQUERED header appears.
+    - Wipe-in lower thirds are queued one at a time: the focus car or a driver swap, a pit stop with its time and compound, and the fastest lap (from lap 3).
+    - A "BATTLE FOR P#" graphic shows when the focus car is within 1 s of a rival.
+    - The chequered-flag result card shows the top 3 with gaps.
+    - Replays get a red "R" bug, and a stinger wipe plays going in and out.
+  - ✅ Sound mix (`render/audio-pro.js`):
+    - Buses: the focus car (engine plus tyre/road layers) goes through an air-absorption filter and its own reverb send. Rivals, ambience and broadcast UI each have their own bus.
+    - The focus car's level, high-frequency rolloff and reverb follow the camera distance. Onboard is close and dry with more wind; TV/heli replay cameras are distant and roomy.
+    - Rivals and ambience duck under the focus engine at full load.
+    - Each circuit has its own ambience (`setTrack`): gulls and ship horns only at Harbor Ring, a bigger grandstand at Solenne, and wind beds at Alpenring and Mirage. A circuit PA chime plays every 70–140 s.
+    - Cues (`cue()`): start-light beeps, a GO tone with a crowd swell, a final-lap bell, the chequered-flag cheer and horn, a fastest-lap chime, lower-third stings, and menu clicks. A pit-limiter beep sounds while the focus car is in the lane.
+    - Car sounds:
+      - Kerbs are a rumble strip: thud, body note and rattle, pulsed at the ridge rate (about one ridge per 0.5 m), with a hit on the way on and off.
+      - Pops are saturated and louder. A lift-off bang has a sub boom, a wall slap and follow-up pops; an overrun crackle is a volley of 2–4 pops; an upshift gives a sharp crack. The overrun crackles and the pop trains in `render/exhaust.js` happen more often and run longer.
+      - Upshifts cut the ignition and then clunk the dog ring, plus a paddle tick when onboard. Downshifts blip the throttle. The straight-cut gear whine is louder and has a second harmonic.
+      - Holding the rev limiter (8100 rpm) makes the engine stutter and occasionally crackle.
 
 ## Known issues
 

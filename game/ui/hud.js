@@ -9,7 +9,13 @@ export class Hud {
   constructor(el) {
     this.el = el;
     el.innerHTML = `
-      <div class="tower"><div class="head"><b>LAP <span data-lap>1/1</span></b><span data-clock>0:00</span></div><ol data-tower></ol></div>
+      <div class="tower">
+        <div class="bug"><i class="live"></i><b>LAP <span data-lap>1/1</span></b><span class="clock" data-clock>0:00</span></div>
+        <div class="head"><span data-tmode>INTERVAL</span><span data-final></span></div>
+        <ol data-tower></ol>
+      </div>
+      <div class="battle" data-battle hidden></div>
+      <div class="lower" data-lower></div>
       <div class="lapbox">
         <div><small>POSITION</small><b data-pos>—</b></div>
         <div><small>LAST</small><span class="mono" data-last>—</span></div>
@@ -48,9 +54,37 @@ export class Hud {
     this.feedItems = [];
     this.lastActive = new Map();
     this.flash = null;
+    this.cue = () => {};
+    this.resetBroadcast();
   }
 
-  reset() { this.rows.clear(); this.q('tower').innerHTML = ''; this.seen.clear(); this.feedItems = []; this.q('feed').innerHTML = ''; this.lastActive.clear(); this.flash = null; }
+  reset() { this.rows.clear(); this.q('tower').innerHTML = ''; this.seen.clear(); this.feedItems = []; this.q('feed').innerHTML = ''; this.lastActive.clear(); this.flash = null; this.resetBroadcast(); }
+
+  resetBroadcast() {
+    this.prevPos = new Map(); this.moved = new Map();
+    this.fastest = null; this.lowerQueue = []; this.lowerUntil = 0; this.lowerKey = '';
+    this.lastFocus = null; this.lastLit = 0; this.finalCalled = false; this.flagShown = false;
+    const lower = this.q('lower'); lower.className = 'lower'; lower.innerHTML = '';
+  }
+
+  /** Queues a broadcast lower-third. `key` dedupes repeats; a new focus card replaces a queued one. */
+  lowerThird(html, kind = '', key = html, seconds = 4.5) {
+    if (this.lowerKey === key || this.lowerQueue.some((i) => i.key === key)) return;
+    if (kind === 'focus') this.lowerQueue = this.lowerQueue.filter((i) => i.kind !== 'focus');
+    this.lowerQueue.push({ html, kind, key, seconds });
+  }
+
+  pumpLower() {
+    const el = this.q('lower'), now = performance.now();
+    if (now < this.lowerUntil) return;
+    if (el.classList.contains('in')) { el.classList.remove('in'); this.lowerUntil = now + 350; this.lowerKey = ''; return; }
+    const next = this.lowerQueue.shift();
+    if (!next) return;
+    el.className = `lower ${next.kind}`; el.innerHTML = next.html;
+    void el.offsetWidth; el.classList.add('in');
+    this.lowerKey = next.key; this.lowerUntil = now + next.seconds * 1000;
+    this.cue(next.kind === 'fastest' ? 'fastest' : 'sting');
+  }
 
   /** Shows a big centre banner for `seconds` (wall time). */
   announce(big, sub = '', seconds = 3, color = '') {
@@ -65,23 +99,48 @@ export class Hud {
     this.q('lap').textContent = `${Math.min(snap.laps, Math.max(1, leader?.lap ?? 1))}/${snap.laps}`;
     this.q('clock').textContent = fmtClock(snap.time);
 
-    // Timing tower.
-    const tower = this.q('tower');
+    // Timing tower: alternates interval-to-car-ahead and gap-to-leader like a TV feed.
+    const tower = this.q('tower'), intervals = Math.floor(snap.time / 12) % 2 === 0;
+    this.q('tmode').textContent = intervals ? 'INTERVAL' : 'GAP TO LEADER';
+    const final = snap.phase === 'racing' && leader && leader.lap >= snap.laps && !leader.finished;
+    const fin = this.q('final');
+    fin.textContent = snap.phase === 'finished' ? 'CHEQUERED' : final ? 'FINAL LAP' : '';
+    fin.className = snap.phase === 'finished' ? 'chq' : final ? 'final' : '';
+    if (final && !this.finalCalled) { this.finalCalled = true; this.announce('FINAL LAP', `${teamsById[leader.team].name} leads`, 2.5, '#fff'); this.cue('final'); }
+    // Fastest lap of the race (announced from lap 3 on, once the field has spread).
+    for (const c of cars) {
+      if (!(c.bestLap > 0) || (this.fastest && c.bestLap >= this.fastest.time - 1e-6)) continue;
+      const first = !this.fastest;
+      this.fastest = { id: c.id, time: c.bestLap };
+      if (!first && c.lap >= 3) {
+        const tm = teamsById[c.team];
+        this.lowerThird(`<i class="bar" style="background:var(--purple)"></i><div class="tag">FASTEST LAP</div><div class="nm"><b>${esc(c.driverName)}</b><span>${esc(tm.name)}</span></div><div class="st"><b class="mono">${fmtLap(c.bestLap)}</b></div>`, 'fastest', `fl${c.id}:${c.bestLap}`);
+      }
+    }
     cars.forEach((c, i) => {
       let li = this.rows.get(c.id);
       if (!li) {
         li = document.createElement('li');
-        li.innerHTML = '<span class="p"></span><span class="c"></span><span class="t"></span><span class="d"></span><span class="g"></span><span class="s"></span>';
+        li.innerHTML = '<span class="p"></span><span class="m"></span><span class="c"></span><span class="t"></span><span class="d"></span><span class="g"></span><span class="s"></span>';
         this.rows.set(c.id, li);
       }
       if (tower.children[i] !== li) tower.insertBefore(li, tower.children[i] ?? null);
-      const team = teamsById[c.team], [p, col, t, d, g, s] = li.children;
+      const team = teamsById[c.team], [p, m, col, t, d, g, s] = li.children;
       p.textContent = c.position;
+      // Position-change arrows hold for a few seconds after an overtake.
+      const was = this.prevPos.get(c.id);
+      if (was !== undefined && was !== c.position && snap.phase === 'racing') this.moved.set(c.id, { up: c.position < was, until: performance.now() + 4000 });
+      this.prevPos.set(c.id, c.position);
+      const mv = this.moved.get(c.id), showMv = mv && performance.now() < mv.until;
+      m.textContent = showMv ? (mv.up ? '▲' : '▼') : ''; m.className = showMv ? `m ${mv.up ? 'up' : 'dn'}` : 'm';
       col.style.background = team.color;
       t.textContent = team.short;
       d.textContent = c.driverName;
       const lapsDown = ctx.trackLength ? Math.max(0, Math.floor((leader.progress - c.progress) / ctx.trackLength)) : 0;
-      g.innerHTML = c.pit ? `<span class="flag pit">${PIT_LABEL[c.pit] ?? 'PIT'}</span>` : c.finished ? '<span class="flag">FIN</span>' : fmtGap(c.gap, c.position, lapsDown);
+      const ahead = cars[i - 1], aheadDown = ahead && ctx.trackLength ? Math.max(0, Math.floor((leader.progress - ahead.progress) / ctx.trackLength)) : 0;
+      const gapText = intervals && ahead && lapsDown === aheadDown ? fmtGap(c.gap - ahead.gap, c.position) : fmtGap(c.gap, c.position, lapsDown);
+      g.innerHTML = c.pit ? `<span class="flag pit">${PIT_LABEL[c.pit] ?? 'PIT'}</span>` : c.finished ? '<span class="flag chq">FIN</span>' : c.position === 1 ? `<span class="lead">L${Math.min(snap.laps, Math.max(1, c.lap))}</span>` : gapText;
+      li.classList.toggle('fl', this.fastest?.id === c.id);
       const cmp = compound(c.compound);
       s.textContent = cmp.short; s.style.background = cmp.color;
       li.classList.toggle('me', c.team === playerTeamId);
@@ -103,6 +162,22 @@ export class Hud {
     const box = focus.boxCalled && !focus.pit && snap.phase === 'racing';
     strat.classList.toggle('box', box);
     strat.textContent = box ? `BOX THIS LAP${focus.plan ? ` · ${planText(focus.plan)}` : ''}` : focus.reason ? `STRATEGY · ${focus.reason}` : 'STAY OUT';
+
+    // Lower third on a new focus car or a driver swap in the focused car.
+    const focusKey = `${focus.id}:${focus.active}`;
+    if (focusKey !== this.lastFocus && snap.phase !== 'grid') {
+      this.lastFocus = focusKey;
+      this.lowerThird(`<i class="bar" style="background:${team.color}"></i><div class="pos">${focus.position}</div><div class="nm"><b>${esc(focus.driverName)}</b><span>${esc(team.name)}${driver?.arch && focus.driverKind !== 'human' ? ` · ${esc(driver.arch)}` : ''}</span></div><div class="st"><small>BEST</small><b class="mono">${fmtLap(focus.bestLap)}</b><small>STOPS</small><b class="mono">${focus.stops}</b></div>`, 'focus', `f${focusKey}`, 5);
+    }
+    // Battle graphic: the focused car within a second of a rival.
+    const battle = this.q('battle'), fi = cars.indexOf(focus);
+    const near = (a, b) => a && b && !a.pit && !b.pit && !a.finished && !b.finished && Number.isFinite(b.gap - a.gap) && b.gap >= a.gap && b.gap - a.gap < 1;
+    const pair = snap.phase === 'racing' ? (near(cars[fi - 1], focus) ? [cars[fi - 1], focus] : near(focus, cars[fi + 1]) ? [focus, cars[fi + 1]] : null) : null;
+    if (pair) {
+      const [a, b] = pair, ta = teamsById[a.team], tb = teamsById[b.team];
+      battle.hidden = false;
+      battle.innerHTML = `<div class="tag">BATTLE FOR P${a.position}</div><div class="duel"><span style="--team:${ta.color}"><b>${esc(ta.short)}</b>${esc(a.driverName)}</span><em class="mono">${(b.gap - a.gap).toFixed(3)}</em><span style="--team:${tb.color}"><b>${esc(tb.short)}</b>${esc(b.driverName)}</span></div>`;
+    } else battle.hidden = true;
 
     this.q('pos').textContent = `P${focus.position}/${snap.cars.length}`;
     this.q('last').textContent = fmtLap(focus.lastLap);
@@ -143,6 +218,11 @@ export class Hud {
       div.innerHTML = `<time>${fmtClock(ev.time)}</time>${esc(ev.text)}`;
       this.q('feed').append(div);
       this.feedItems.push({ div, at: performance.now() });
+      if (ev.type === 'pit' && snap.phase === 'racing') {
+        const [code, ...rest] = String(ev.text).split(' · ');
+        const tm = Object.values(teamsById).find((t) => t.short === code);
+        this.lowerThird(`<i class="bar" style="background:${tm?.color ?? 'var(--accent-2)'}"></i><div class="tag">PIT STOP</div><div class="nm"><b>${esc(tm?.name ?? code)}</b><span>${esc(rest.slice(1).join(' · ') || 'Service')}</span></div><div class="st"><b class="mono">${esc(rest[0] ?? '')}</b></div>`, 'pit', `p${ev.id}`);
+      }
     }
     while (this.feedItems.length > 6) this.feedItems.shift().div.remove();
 
@@ -158,9 +238,16 @@ export class Hud {
     // Centre banner: countdown lights > timed flash > co-driver notice.
     const banner = this.q('banner');
     const mine = snap.cars.find((c) => c.team === playerTeamId);
+    if (snap.phase === 'racing' && this.lastLit === 5) { this.lastLit = 0; this.cue('go'); }
     if (snap.phase === 'countdown' || snap.phase === 'grid') {
       const lit = snap.phase === 'grid' ? 0 : Math.max(0, Math.min(5, Math.floor((4 - snap.countdown) / 0.7) + 1));
+      if (lit > this.lastLit) this.cue('light');
+      this.lastLit = lit;
       banner.innerHTML = `<div class="lights">${Array.from({ length: 5 }, (_, i) => `<i class="${i < lit ? 'on' : ''}"></i>`).join('')}</div><div class="sub">${driving ? 'Hold the throttle for the launch' : 'Formation complete'}</div>`;
+    } else if (snap.phase === 'finished') {
+      if (!this.flagShown) { this.flagShown = true; this.cue('flag'); }
+      const done = cars.filter((c) => c.finished).slice(0, 3), win = done[0];
+      banner.innerHTML = `<div class="flagcard"><div class="chequer"></div><div class="title">CHEQUERED FLAG</div>${done.map((c) => `<div class="row" style="--team:${teamsById[c.team].color}"><b>P${c.position}</b><span>${esc(teamsById[c.team].name)}</span><em class="mono">${c === win ? fmtClock(c.finishTime ?? snap.time) : `+${((c.finishTime ?? 0) - (win.finishTime ?? 0)).toFixed(3)}`}</em></div>`).join('')}</div>`;
     } else if (this.flash && performance.now() < this.flash.until) {
       banner.innerHTML = `<div class="big" ${this.flash.color ? `style="color:${this.flash.color}"` : ''}>${esc(this.flash.big)}</div><div class="sub">${esc(this.flash.sub)}</div>`;
     } else if (mine && mine.driverKind === 'human' && mine.coDriving && snap.phase === 'racing' && !mine.finished && ctx.driving) {
@@ -176,6 +263,7 @@ export class Hud {
 
   /** Per-frame dash from the interpolated proxy car. */
   frame(car) {
+    this.pumpLower();
     if (!car) return;
     this.q('speed').textContent = Math.round(Math.abs(car.speed) * 3.6);
     this.q('gear').textContent = car.gear < 0 ? 'R' : car.gear === 0 ? 'N' : car.gear;

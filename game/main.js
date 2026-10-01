@@ -93,6 +93,8 @@ function buildWorld(trackId) {
 // ---------- state ----------
 const input = new PlayerInput();
 const hud = new Hud($('#screen-race'));
+hud.cue = (name) => audio.cue(name);
+addEventListener('pointerdown', (e) => { if (e.target.closest?.('button, .menu-item, .track-card')) audio.cue('click'); });
 const telemetry = new TelemetryLog();
 const setup = load('pe.setup', { trackId: 'harbor-ring', formatId: 'classic', laps: FORMATS.classic.laps, teamCount: 6, drive: true, playerName: 'YOU', startCompound: 'medium', assist: true, seed: 20260930, difficulty: 'amateur' });
 let screen = 'boot', overlay = null;
@@ -173,7 +175,7 @@ async function startRace() {
   buildWorld(def.id);
   playerTeamId = teams.find((t) => t.drivers.some((d) => d.kind === 'human'))?.id ?? null;
   input.assist = setup.assist;
-  telemetry.reset(); hud.reset();
+  telemetry.reset(); hud.reset(); audio.setTrack(def.id);
   setLoading($('#screen-loading'), 0.25, 'Seating the drivers…');
   try {
     seats = new AsyncSeats(def.id);
@@ -272,16 +274,21 @@ function cycleFocus(step) {
 const replayBar = document.createElement('div'); replayBar.id = 'replay-bar';
 replayBar.innerHTML = '<div class="rp-top"><b>REPLAY</b><span class="rp-cam"></span><span class="rp-rate mono"></span><span class="rp-time mono"></span></div><div class="rp-track"><i></i></div><div class="rp-keys">SPACE play/pause · ←/→ scrub · ↑/↓ speed · C camera · TAB car · I/ESC back to race</div>';
 $('#ui').append(replayBar);
+// Broadcast replay bug and the stinger wipe played going in and out of a replay.
+const replayBug = document.createElement('div'); replayBug.id = 'replay-bug'; replayBug.textContent = 'R';
+const wipe = document.createElement('div'); wipe.id = 'wipe'; wipe.addEventListener('animationend', () => wipe.classList.remove('go'));
+$('#ui').append(replayBug, wipe);
+function sting() { wipe.classList.remove('go'); void wipe.offsetWidth; wipe.classList.add('go'); audio.cue('wipe'); }
 const RATES = [0.25, 0.5, 1, 2];
 function startReplay() {
   if (!recorder || recorder.count < 60 || overlay || !['racing', 'finished'].includes(race?.phase)) { toast('Replay not ready yet', 1200); return; }
   setPitOpen(false);
   replay = { t: Math.max(recorder.start, recorder.end - 15), rate: 1, playing: true, saved: recorder.save(cars), wasPaused: paused, director: new ReplayDirector(camera, track) };
-  paused = true; document.body.classList.add('replaying');
+  paused = true; document.body.classList.add('replaying'); sting();
 }
 function endReplay() {
   recorder.restore(cars, replay.saved); replay.director.end();
-  paused = replay.wasPaused; replay = null; document.body.classList.remove('replaying');
+  paused = replay.wasPaused; replay = null; document.body.classList.remove('replaying'); sting();
   spectator.setTarget(cars[focusId], camModes[camIndex]);
 }
 function replayFrame(delta) {
@@ -443,7 +450,9 @@ function frame(ms) {
       }
       world.update(car, replay ? replay.t : snap?.time ?? 0, snap?.phase === 'countdown' ? snap.countdown : 0, false);
       effects.update(cars, paused ? 0 : delta, track, innerHeight);
-      audio.update(car, racing || Boolean(replay && spin), cars);
+      const cam = Math.hypot(camera.position.x - car.x, camera.position.y - (car.y ?? 0) - 0.6, camera.position.z - car.z);
+      const pit = snap?.cars.find((c) => c.id === car.id)?.pit, pitLane = Boolean(pit) && pit !== 'service';
+      audio.update(car, racing || Boolean(replay && spin), cars, { distance: cam, pitLane });
       finish.setSpeed?.(car.speed);
       if (replay) replay.director.update(car, delta); else spectator.update(delta);
       hud.frame(car);

@@ -27,15 +27,15 @@ export class ExhaustEvents {
       const moving = car.speed > 8;
       if (moving) {
         if (car.gear > s.gear) out.push({ car, kind: 'shift', strength: 0.45 + thr * 0.4 + Math.random() * 0.15 });
-        else if (car.gear < s.gear && rpm > 3500) this.train(s, t, 2 + Math.floor(Math.random() * 2), 0.03);
+        else if (car.gear < s.gear && rpm > 3500) this.train(s, t, 2 + Math.floor(Math.random() * 3), 0.03);
         if (s.thr > 0.65 && thr < 0.2 && rpm > 4800 && t - s.lift > LIFT_COOLDOWN) {
           s.lift = t;
           out.push({ car, kind: 'bang', strength: 0.75 + Math.random() * 0.25 });
-          this.train(s, t, 3 + Math.floor(Math.random() * 4), 0.07);
+          this.train(s, t, 4 + Math.floor(Math.random() * 5), 0.07);
         }
         // Overrun: off throttle at high revs the engine keeps spitting.
-        if (thr < 0.1 && rpm > 4500 && Math.random() < dt * 3.5 * ((rpm - 4500) / 3800)) {
-          out.push({ car, kind: 'crackle', strength: 0.2 + Math.random() * 0.25 });
+        if (thr < 0.1 && rpm > 4500 && Math.random() < dt * 5 * ((rpm - 4500) / 3800)) {
+          out.push({ car, kind: 'crackle', strength: 0.28 + Math.random() * 0.3 });
         }
         if (s.train > 0 && t >= s.next) {
           s.train -= 1; s.next = t + 0.045 + Math.random() * 0.075;
