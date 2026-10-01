@@ -79,7 +79,7 @@ export class AsyncSeats {
         this.inFlight = true; this.seq = ++seats.seq; this.sentAt = performance.now();
         host.worker.postMessage({
           type: 'step', slot, seq: this.seq, dt: Math.min(0.1, this.pendingDt), time: context.time, laps: context.totalLaps,
-          cars: seats.cars(race), wetness: race.track.wetness,
+          cars: seats.cars(race), wetness: race.track.wetness, tempGrip: race.track.tempGrip,
           rubber: this.seq % RUBBER_EVERY === 1 ? race.track.rubber : undefined
         });
         this.pendingDt = 0;

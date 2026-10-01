@@ -7,6 +7,7 @@ import { raceInterval } from '../engine/sim/interval.js';
 import { halfCarInside } from '../engine/sim/racecraft-policy.js';
 import { carSpecFor } from '../engine/sim/car-specs.js';
 import { COMPOUNDS, FORMATS, TANK_LITRES, calibrate, serviceTime } from './rules.js';
+import { Weather } from './weather.js';
 import { PitLane, PitAutopilot } from './pit.js';
 import { TeamStrategist, maxWear } from './strategy.js';
 import { createSeatBridge } from './field.js';
@@ -20,8 +21,9 @@ export const FIXED_DT = 1 / 120;
  * render is in `snapshot()`; nothing outside this class mutates race state.
  */
 export class EnduranceRace {
-  constructor({ track, teams, format = FORMATS.classic, laps = format.laps, classId = 'gt', startCompound = 'medium', makeBridge = createSeatBridge, difficulty = 1 }) {
+  constructor({ track, teams, format = FORMATS.classic, laps = format.laps, classId = 'gt', startCompound = 'medium', makeBridge = createSeatBridge, difficulty = 1, weather = 'clear', seed = 7 }) {
     this.track = track; this.teams = teams;
+    this.weather = new Weather(weather, seed); this.weather.apply(track);
     this.format = { ...format, laps };
     this.cal = calibrate(track, laps); this.laps = this.cal.laps;
     this.classId = carSpecFor(classId).key;
@@ -129,6 +131,7 @@ export class EnduranceRace {
     if (this.phase === 'countdown') { this.countdown -= dt; if (this.countdown <= 0) this.phase = 'racing'; return; }
     if (this.phase !== 'racing') return;
     this.time += dt;
+    this.weather.step(dt); this.weather.apply(this.track);
     const track = this.track, cars = this.cars, lane = this.lane;
     const projections = new Map(cars.map((c) => [c.id, track.nearest(c.x, c.z)]));
     const order = this.order();
@@ -320,6 +323,7 @@ export class EnduranceRace {
           coDriving: Boolean(e.bridges[e.active]?.assisted)
         };
       }),
+      weather: this.weather.snapshot(),
       events: this.events.slice(-12)
     };
   }

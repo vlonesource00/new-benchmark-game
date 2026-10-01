@@ -51,6 +51,7 @@ self.onmessage = ({ data }) => {
     if (data.type !== 'step') return;
     if (data.rubber) track.rubber.set(data.rubber);
     if (data.wetness !== undefined) track.wetness = data.wetness;
+    if (data.tempGrip !== undefined) track.tempGrip = data.tempGrip;
     replica(data.cars);
     const car = cars[index];
     const projections = new Map(cars.map((c) => [c.id, track.nearest(c.x, c.z)]));

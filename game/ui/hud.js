@@ -39,6 +39,7 @@ export class Hud {
           <div class="tyres" data-tyres>${WHEELS.map((w) => `<div class="tyre" data-w="${w}"><span>—</span><small>${w}</small></div>`).join('')}</div>
           <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px"><span class="kicker" style="font-size:11px">TYRE</span><span data-compound></span></div>
           <div class="fuel"><div class="lbl"><span>FUEL</span><b data-fuel>—</b></div><div class="bar"><i data-fuelbar></i></div></div>
+          <div class="wx mono" data-wx style="margin-top:6px;font-size:11px;color:var(--dim);white-space:nowrap"></div>
         </div>
         <div class="speedo">
           <div class="gear" data-gear>N</div>
@@ -198,6 +199,12 @@ export class Hud {
     const fb = this.q('fuelbar');
     fb.style.width = pct(focus.fuel / 60);
     fb.classList.toggle('low', lapsFuel < 1.5);
+    const wx = snap.weather;
+    if (wx) {
+      const sky = wx.rain > .3 ? 'RAIN' : wx.rain > .03 ? 'DRIZZLE' : wx.cloud > .6 ? 'CLOUD' : 'SUN';
+      const track = wx.wet > .4 ? 'WET' : wx.wet > .08 ? 'DAMP' : 'DRY';
+      this.q('wx').textContent = `${sky} · AIR ${Math.round(wx.air)}° · TRACK ${Math.round(wx.track)}° ${track}`;
+    }
 
     // Pit service bar.
     const pitbar = this.q('pitbar');

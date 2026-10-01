@@ -97,7 +97,7 @@ export class Vehicle {
       // Wheel rotation and relaxation solve at 480 Hz, chassis at 120 Hz.
       for (let sub = 0; sub < 4; sub++) {
         const h = dt / 4;
-        tyreForce(w.tyre, { vx: tyreVx, vy: tyreVy, omega: w.omega, radius: SPEC.radius, load: w.load, grip: surface.grip*SPEC.tyreGrip, ambient: 24 }, h);
+        tyreForce(w.tyre, { vx: tyreVx, vy: tyreVy, omega: w.omega, radius: SPEC.radius, load: w.load, grip: surface.grip*SPEC.tyreGrip, ambient: track.ambient ?? 24 }, h);
         const unbraked = w.omega + (wheelDrive - w.tyre.fx * SPEC.radius) / SPEC.wheelInertia * h;
         const brakeStep = brakeTorque / SPEC.wheelInertia * h;
         w.omega = Math.sign(unbraked) * Math.max(0, Math.abs(unbraked) - brakeStep);

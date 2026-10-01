@@ -14,6 +14,7 @@ import { VisualFinish } from './render/finish-pro.js';
 import { AudioEngine } from './render/audio-pro.js';
 import { ExhaustEvents } from './render/exhaust.js';
 import { ReplayRecorder, ReplayDirector } from './render/replay.js';
+import { WeatherEffects } from './engine/render/weather.js';
 import { Track } from './engine/sim/track.js';
 import { Vehicle } from './engine/sim/vehicle.js';
 import { difficultyById } from './core/difficulty.js';
@@ -22,6 +23,7 @@ import { AsyncSeats } from './core/async-seats.js';
 import { TRACKS, trackById } from './core/tracks.js';
 import { drawTeams } from './core/teams.js';
 import { FORMATS } from './core/rules.js';
+import { Weather } from './core/weather.js';
 import { PlayerInput } from './ui/input.js';
 import { renderMenu, renderSetup, renderDrivers, renderSettings, renderLoading, setLoading, renderResults } from './ui/menus.js';
 import { Hud } from './ui/hud.js';
@@ -83,6 +85,7 @@ function buildWorld(trackId) {
   world = new World(scene, renderer, track);
   if (!finish) { finish = new VisualFinish(renderer, scene, camera); finish.setQuality(settings.quality); }
   effects ??= new CarEffects(scene);
+  rain ??= new WeatherEffects(scene, 900);
   worldTrackId = trackId;
   const pts = [];
   for (let i = 0; i < 160; i += 1) { const p = track.at(track.length * i / 160); pts.push([p.x, p.z]); }
@@ -96,7 +99,7 @@ const hud = new Hud($('#screen-race'));
 hud.cue = (name) => audio.cue(name);
 addEventListener('pointerdown', (e) => { if (e.target.closest?.('button, .menu-item, .track-card')) audio.cue('click'); });
 const telemetry = new TelemetryLog();
-const setup = load('pe.setup', { trackId: 'harbor-ring', formatId: 'classic', laps: FORMATS.classic.laps, teamCount: 6, drive: true, playerName: 'YOU', startCompound: 'medium', assist: true, gearbox: 'auto', startTime: 'track', dayCycle: true, seed: 20260930, difficulty: 'amateur' });
+const setup = load('pe.setup', { trackId: 'harbor-ring', formatId: 'classic', laps: FORMATS.classic.laps, teamCount: 6, drive: true, playerName: 'YOU', startCompound: 'medium', assist: true, gearbox: 'auto', startTime: 'track', dayCycle: true, weather: 'clear', seed: 20260930, difficulty: 'amateur' });
 let screen = 'boot', overlay = null;
 let teams = [], teamsById = {}, cars = [], models = [], race = null, seats = null, snap = null, trackLength = 0;
 // Clock: each circuit starts at its own hour unless the setup picks one, and with
@@ -109,7 +112,7 @@ function raceHour() {
   return startHour() + Math.max(1, Math.min(8, snap.laps * .35)) * Math.max(0, Math.min(1, lead.progress / (snap.laps * trackLength)));
 }
 let focusId = 0, playerTeamId = null, simScale = 1, paused = false, raceActive = false, camModes = ['chase', 'bonnet', 'elevated'], camIndex = 0;
-let recorder = null, replay = null;
+let recorder = null, replay = null, rain = null;
 let lastSnapPit = 0, lastResults = null, wheelAsset = null, raceToken = 0, lastSnap = 0, finishedSeen = false;
 
 function show(name) {
@@ -189,7 +192,7 @@ async function startRace() {
   setLoading($('#screen-loading'), 0.25, 'Seating the drivers…');
   try {
     seats = new AsyncSeats(def.id);
-    race = new EnduranceRace({ track: new Track(def.scenario), teams, format: FORMATS[setup.formatId] ?? FORMATS.custom, laps: setup.laps, startCompound: setup.startCompound ?? 'medium', difficulty: difficultyById(setup.difficulty).k, makeBridge: seats.factory() });
+    race = new EnduranceRace({ track: new Track(def.scenario), teams, format: FORMATS[setup.formatId] ?? FORMATS.custom, laps: setup.laps, startCompound: setup.startCompound ?? 'medium', difficulty: difficultyById(setup.difficulty).k, weather: setup.weather ?? 'clear', seed: setup.seed, makeBridge: seats.factory() });
     await seats.start(race);
     world.setPitBoxes?.(race.lane, teams);
   } catch (error) {
@@ -430,7 +433,7 @@ const nextFrame = new URLSearchParams(location.search).has('timerloop') ? (f) =>
 // `?debug` exposes the live race and seat workers for inspection.
 if (new URLSearchParams(location.search).has('debug')) Object.defineProperty(window, '__pe', { value: { get race() { return race; }, get seats() { return seats; }, get focus() { return focusId; }, get world() { return world; } } });
 let previous = performance.now() / 1000, menuAngle = 0;
-let menuProbe = null;
+let menuProbe = null, menuWeather = null;
 function frame(ms) {
   nextFrame(frame);
   const now = ms / 1000, delta = Math.min(0.1, Math.max(0, now - previous)); previous = now;
@@ -458,7 +461,12 @@ function frame(ms) {
           if (d < 160) audio.backfire(e.strength, e.kind, d, Math.max(-1, Math.min(1, (-dx * Math.cos(car.yaw) + dz * Math.sin(car.yaw)) / Math.max(1, d))));
         }
       }
-      world.setTimeOfDay(raceHour()); setHeadlights(world.lamps);
+      const hour = raceHour(), sky = snap?.weather;
+      // The race clock's sun warms the track; the render track mirrors the sim's wetness.
+      race.weather.sun = Math.max(0, Math.sin(Math.PI * (hour - 6.5) / 13));
+      track.wetness = race.track.wetness;
+      world.setTimeOfDay(hour, sky?.cloud ?? 0, sky?.rain ?? 0); setHeadlights(world.lamps);
+      rain.update(camera.position, paused ? 0 : delta, .5 + (sky?.rain ?? 0) / 1.65);
       world.update(car, replay ? replay.t : snap?.time ?? 0, snap?.phase === 'countdown' ? snap.countdown : 0, false);
       effects.update(cars, paused ? 0 : delta, track, innerHeight);
       const cam = Math.hypot(camera.position.x - car.x, camera.position.y - (car.y ?? 0) - 0.6, camera.position.z - car.z);
@@ -475,7 +483,10 @@ function frame(ms) {
         menuProbe = new Vehicle(99, 'menu', '#ffffff'); menuProbe.trackId = worldTrackId;
         menuProbe.place(track, track.length * 0.02);
       }
-      world.setTimeOfDay(startHour());
+      // The menu previews the chosen weather's opening sky.
+      if (menuWeather?.id !== (setup.weather ?? 'clear')) menuWeather = new Weather(setup.weather, setup.seed);
+      world.setTimeOfDay(startHour(), menuWeather.cloud, menuWeather.rain);
+      track.wetness = menuWeather.wet; rain.update(camera.position, delta, .5 + menuWeather.rain / 1.65);
       world.update(menuProbe, now, 0, true);
       camera.position.set(p.x + Math.cos(menuAngle) * 95, 38, p.z + Math.sin(menuAngle) * 95);
       camera.lookAt(p.x, 4, p.z);

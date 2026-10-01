@@ -126,6 +126,7 @@ export const THEMES = {
 // Sun height (the y of the light direction) at each lighting preset; the day
 // cycle blends neighbouring presets. Theme start hours sit on their preset.
 const TWILIGHT = { sun: '#ff9a62', sky: '#6c6f8e', ground: '#4a4440', fog: '#6e6878', intensity: .9, fill: .6, environment: .4, exposure: 1.18, elevation: .06, turbidity: 5, density: .0006 };
+const GREY = new THREE.Color();
 const SKY_STOPS = [[-.12, 'night'], [0, 'twilight'], [.2, 'dusk'], [.42, 'golden'], [.95, 'day']].map(([y, mode]) => {
   const p = mode === 'twilight' ? TWILIGHT : LIGHTING[mode];
   return { y, p, mode, rayleigh: { night: .3, twilight: 2, dusk: 2.4 }[mode] ?? 1.6, cover: { golden: .5, day: .56, dusk: .6, twilight: .66, night: .72 }[mode],
@@ -195,33 +196,37 @@ export class World {
 
   // Blend the lighting presets for a clock hour. The sky and lights follow every
   // call; the reflection environment is re-baked only when the sun has moved enough.
-  setTimeOfDay(hour) {
-    if (hour === this.hour) return;
-    this.hour = hour;
+  // `cloud` 0..1 dims and greys the sun, thickens the cloud deck and the haze;
+  // `rain` 0..~.55 adds murk and switches the lamps on.
+  setTimeOfDay(hour, cloud = 0, rain = 0) {
+    if (hour === this.hour && cloud === this.cloud && rain === this.rain) return;
+    this.hour = hour; this.cloud = cloud; this.rain = rain;
     const h = ((hour % 24) + 24) % 24, y = sunHeight(h);
     let i = 0; while (i < SKY_STOPS.length - 2 && y > SKY_STOPS[i + 1].y) i++;
     const a = SKY_STOPS[i], b = SKY_STOPS[i + 1], t = clamp((y - a.y) / (b.y - a.y), 0, 1);
     const mix = (k) => a.p[k] + (b.p[k] - a.p[k]) * t, col = (k, out) => out.copy(a[k]).lerp(b[k], t);
     const dark = this.dark = smooth(.1, -.1, y);
     // Lamps come on in the gloom before the floodlit dark.
-    this.lamps = smooth(.24, .02, y);
+    this.lamps = Math.max(smooth(.24, .02, y), Math.min(1, rain * 4) * .8);
     const swing = (h - this.theme.hour) * .12 * (1 - dark), sx = .7 * Math.cos(swing) - .65 * Math.sin(swing), sz = .7 * Math.sin(swing) + .65 * Math.cos(swing);
     this.sunDirection = new THREE.Vector3(sx, mix('elevation'), sz).normalize();
     const u = this.sky.material.uniforms;
     u.sunPosition.value.set(sx, clamp(y, -.12, 1), sz).normalize();
-    u.turbidity.value = mix('turbidity'); u.rayleigh.value = a.rayleigh + (b.rayleigh - a.rayleigh) * t;
-    this.sun.intensity = mix('intensity') * 1.18; this.hemi.intensity = mix('fill') * .55;
+    u.turbidity.value = mix('turbidity') + 9 * cloud; u.rayleigh.value = (a.rayleigh + (b.rayleigh - a.rayleigh) * t) * (1 - .5 * cloud);
+    this.sun.intensity = mix('intensity') * 1.18 * (1 - .72 * cloud); this.hemi.intensity = mix('fill') * .55 * (1 + .3 * cloud);
     col('sun', this.sun.color); col('sky', this.hemi.color); col('ground', this.hemi.groundColor);
-    col('fog', this.scene.fog.color); this.scene.fog.density = mix('density') * .8; this.renderer.toneMappingExposure = mix('exposure') * .95;
+    col('fog', this.scene.fog.color); this.scene.fog.density = mix('density') * .8 * (1 + .5 * cloud + 2.5 * rain); this.renderer.toneMappingExposure = mix('exposure') * .95 * (1 - .1 * cloud);
+    // Overcast light is grey: wash the sun, sky and haze towards their own luminance.
+    for (const c of [this.sun.color, this.hemi.color, this.scene.fog.color]) { const l = c.r * .3 + c.g * .59 + c.b * .11; c.lerp(GREY.setScalar(l * 1.05), .65 * cloud); }
     const cu = this.clouds.material.uniforms;
-    cu.uSun.value.copy(this.sunDirection); cu.uCover.value = a.cover + (b.cover - a.cover) * t;
-    cu.uLit.value.copy(this.sun.color).multiplyScalar(1.25); cu.uShade.value.copy(this.scene.fog.color).multiplyScalar(.62);
+    cu.uSun.value.copy(this.sunDirection); cu.uCover.value = THREE.MathUtils.lerp(a.cover + (b.cover - a.cover) * t, .04, cloud);
+    cu.uLit.value.copy(this.sun.color).multiplyScalar(1.25 * (1 - .45 * cloud)); cu.uShade.value.copy(this.scene.fog.color).multiplyScalar(.62);
     if (this.mastHeads) this.mastHeads.material.emissiveIntensity = .6 + 6.4 * dark;
     if (this.stars) { this.stars.material.opacity = .85 * dark; this.stars.visible = dark > .01; }
-    this.scene.environmentIntensity = mix('environment') * 1.15;
+    this.scene.environmentIntensity = mix('environment') * 1.15 * (1 - .3 * cloud);
     const now = performance.now();
-    if (this.envY == null || (Math.abs(y - this.envY) > .04 && now - this.envAt > 1200)) {
-      this.envY = y; this.envAt = now;
+    if (this.envY == null || ((Math.abs(y - this.envY) > .04 || Math.abs(cloud - this.envCloud) > .08) && now - this.envAt > 1200)) {
+      this.envY = y; this.envCloud = cloud; this.envAt = now;
       this.bakeEnvironment(this.hemi.groundColor);
     }
   }

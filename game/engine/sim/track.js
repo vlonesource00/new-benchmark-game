@@ -49,7 +49,7 @@ export class Track {
       p.heading = Math.atan2(p.tx, p.tz);
     });
     this.rubber = new Float32Array(this.nodes.length * 13);
-    this.wetness = 0;
+    this.wetness = 0; this.tempGrip = 1; this.ambient = 24;
     this.temperature = 31;
     this.grid = new Map();
     this.nodes.forEach((n, i) => { const k = this.key(n.x, n.z); if (!this.grid.has(k)) this.grid.set(k, []); this.grid.get(k).push(i); });
@@ -89,7 +89,7 @@ export class Track {
     const pit = this.inPitLane(p.s, p.lateral);
     const zone = pit ? 'asphalt' : this.zoneAt(l);
     const base = { asphalt: 1, kerb: 0.88, gravel: 0.52, grass: 0.42 }[zone];
-    return { ...p, zone, pit, rubber, grip: base * (1 + rubber * 0.10) * (1 - this.wetness * (0.36 + rubber * 0.2)), bump: zone === 'kerb' ? 0.028 + Math.sin(p.s * 4) * 0.012 : 0, resistance: zone === 'gravel' ? 0.09 : zone === 'grass' ? 0.06 : 0.013 };
+    return { ...p, zone, pit, rubber, grip: base * (1 + rubber * 0.10) * (1 - this.wetness * (0.36 + rubber * 0.2)) * this.tempGrip, bump: zone === 'kerb' ? 0.028 + Math.sin(p.s * 4) * 0.012 : 0, resistance: zone === 'gravel' ? 0.09 : zone === 'grass' ? 0.06 : 0.013 };
   }
   deposit(surface, slipEnergy, load, dt) {
     if (surface.zone !== 'asphalt' || surface.pit || load < 10) return;
