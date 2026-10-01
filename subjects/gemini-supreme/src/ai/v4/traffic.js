@@ -37,7 +37,13 @@ export const TRAFFIC_DEFAULTS = Object.freeze({
   defendRange: 16,   // m: attacker distance behind that triggers a cover
   defendMax: 2.6,    // m: largest covering offset toward the inside
   pass: true,        // false: never leave the line, only the following cap
-  squeeze: true      // alongside and pinned at the road edge: drop back
+  squeeze: true,     // alongside and pinned at the road edge: drop back
+  quickFlip: false,  // committed side shut, other side open, nobody alongside: flip now
+  twoCorner: false,  // outside of T1 counts as an attack side when T2 turns the other way
+  edgeHold: false,   // at the edge only drop back when clearly behind (nose short of their middle)
+  cutback: false,    // defender covers the inside: wide entry, attack on the exit
+  tow: false,        // stay in the slipstream on straights, pull out late before braking
+  towPull: 1.0       // s before the braking zone (plus the gap) to pull out of the tow
 });
 
 export class TrafficLayer {
@@ -54,17 +60,34 @@ export class TrafficLayer {
   }
 
   /** Inside sign of the next significant corner within `range` m (0 if none),
-   *  and whether a braking zone (profile drop > 6 m/s) starts within it. */
+   *  whether a braking zone (profile drop > 6 m/s) starts within it and where,
+   *  and the sign of a following corner that turns the other way (0 if none). */
   lookAhead(s, v, range) {
     const plan = this.plan, prof = this.driver.profile.v;
-    let kSum = 0, brake = false, vMin = Infinity;
+    let kSum = 0, brake = false, brakeAt = Infinity, vMin = Infinity;
     for (let d = 10; d <= range; d += 6) {
       const k = plan.sample(plan.k, s + d);
       if (Math.abs(k) > 0.004) kSum += k * (1 - d / (range + 30));
-      vMin = Math.min(vMin, plan.sample(prof, s + d));
+      const vp = plan.sample(prof, s + d);
+      vMin = Math.min(vMin, vp);
+      if (vp < v - 6 && brakeAt === Infinity) brakeAt = d;
     }
     if (vMin < v - 6) brake = true;
-    return { inside: Math.abs(kSum) > 0.01 ? Math.sign(kSum) : 0, brake };
+    const inside = Math.abs(kSum) > 0.01 ? Math.sign(kSum) : 0;
+    // Second corner: walk through the first one, then look for the opposite turn.
+    let next = 0;
+    if (inside && this.o.twoCorner) {
+      let inFirst = false, left = false, gap = 0;
+      for (let d = 6; d <= range + 120; d += 4) {
+        const k = plan.sample(plan.k, s + d), sg = Math.abs(k) > 0.006 ? Math.sign(k) : 0;
+        if (!left) { if (sg === inside) inFirst = true; else if (inFirst && sg !== inside) left = true; }
+        if (left) {
+          if (sg === -inside) { next = sg; break; }
+          if (sg === inside || (gap += 4) > 70) break;
+        }
+      }
+    }
+    return { inside, brake, brakeAt, next };
   }
 
   update(car, cars, proj, context) {
@@ -118,20 +141,30 @@ export class TrafficLayer {
     for (const b of obs) { bLo = Math.max(bLo, -o.passMax - b.qo); bHi = Math.min(bHi, o.passMax - b.qo); }
     const free = (x) => x >= bLo && x <= bHi && obs.every((b) => x <= b.lo || x >= b.hi);
 
-    let target = 0;
+    let target = 0, mode = null;
     if (obs.length && o.pass) {
       const cands = [0, cur];
       for (const b of obs) cands.push(b.lo - 0.05, b.hi + 0.05);
-      const holdSide = time - this.sideAt < o.sideHold;
+      let holdSide = time - this.sideAt < o.sideHold;
+      // The committed side has shut, nobody is alongside: switch now instead of waiting it out.
+      if (holdSide && o.quickFlip && !obs.some((b) => b.over)
+        && !cands.some((x) => Math.abs(x) > 0.3 && Math.sign(x) === this.side && free(x))) holdSide = false;
+      // Cutback: the car we are closing on has dived to the inside before the braking
+      // zone. Do not chase it there: wide entry, square the corner, attack on the exit.
+      const lead = obs.reduce((m, b) => (!b.over && b.gap > 0 && b.gap < 30 && (!m || b.gap < m.gap) ? b : m), null);
+      const cut = o.cutback && ahead.brake && ahead.inside && lead && (lead.lat - lead.qo) * ahead.inside > 1.0 ? -ahead.inside : 0;
+      if (cut) mode = 'cut';
       let best = null, bestCost = Infinity;
       for (const x of cands) {
         if (!free(x)) continue;
-        const sgn = Math.sign(x);
+        const sgn = Math.abs(x) > 0.3 ? Math.sign(x) : 0;
         let cost = Math.abs(x) + 0.6 * Math.abs(x - cur);
         if (this.side && sgn && sgn !== this.side) cost += holdSide ? 1e6 : 4;
         // Inside of the next corner: the move that sticks under braking.
-        const ql = qHere + x;
-        if (ahead.inside && Math.abs(x) > 0.3 && Math.sign(ql - qHere) === ahead.inside) cost -= o.insideBias;
+        if (ahead.inside && sgn === ahead.inside && !cut) cost -= o.insideBias;
+        // Outside of this corner is the inside of the next one when they alternate.
+        if (ahead.next && sgn === ahead.next) cost -= 0.8 * o.insideBias;
+        if (cut && sgn !== ahead.inside) cost -= 0.5 * o.insideBias;
         // Never cross a car that is overlapping us.
         for (const b of obs) if (b.over) {
           const myRel = proj.lateral - b.lat, newRel = qHere + x - b.lat;
@@ -143,6 +176,13 @@ export class TrafficLayer {
         // Nowhere free: hold the current offset (no swerve) and follow.
         target = clamp(cur, bLo, bHi);
       } else target = best;
+      // Slipstream: on a straight, sitting in the tow of the car ahead, stay there
+      // and pull out only shortly before the braking zone (or when we would have to lift).
+      if (o.tow && !early && lead && !cut && cur > lead.lo && cur < lead.hi && Math.abs(target - cur) > 0.3) {
+        const room = lead.gap - margin - o.headway * v, closing = v - lead.v;
+        const noLift = room > 3 && closing * Math.abs(closing) < o.followDecel * room;
+        if (noLift && ahead.brakeAt > v * o.towPull + lead.gap) { target = clamp(cur, bLo, bHi); mode = 'tow'; }
+      }
     }
     // Commit to a side while anyone is being passed; release once clear.
     const sg = Math.abs(target) > 0.3 ? Math.sign(target) : 0;
@@ -179,7 +219,7 @@ export class TrafficLayer {
     }
     // Alongside, behind their front and pinned at the road edge: drop back.
     for (const b of (o.squeeze ? obs : [])) {
-      if (!b.over || b.ds < 1.0) continue;
+      if (!b.over || b.ds < (o.edgeHold ? 0.5 * o.carLen : 1.0)) continue;
       const myLat = proj.lateral, dl = myLat - b.lat;
       const atEdge = Math.abs(myLat) > o.passMax + 0.6 && Math.sign(myLat) === Math.sign(dl);
       if (Math.abs(dl) < o.sideSep + 0.3 && atEdge) {
@@ -188,6 +228,7 @@ export class TrafficLayer {
       }
     }
     this.intent = vCap < Infinity ? `follow ${capId}` : defending ? `cover ${this.cover > 0 ? '+' : '-'}`
+      : mode === 'tow' ? 'tow' : mode === 'cut' ? 'cutback'
       : Math.abs(target) > 0.3 ? `pass ${target > 0 ? '+' : '-'}` : 'line';
     return { vCap: Math.max(0, vCap), offset: target };
   }
