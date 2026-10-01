@@ -2,6 +2,7 @@ import { createAstraBridge } from '../bridges/astra-bridge.js';
 import { createPhantomBridge } from '../bridges/phantom-bridge.js';
 import { createPhantomV2Bridge } from '../bridges/phantom-v2-bridge.js';
 import { createGeminiV4Bridge } from '../bridges/gemini-v4-bridge.js';
+import { createBenchmarkSolinatorBridge } from '../bridges/solinator-bridge.js';
 import { HumanFilter } from './human.js';
 
 /**
@@ -42,6 +43,7 @@ export function createSeatBridge(driver, index, race) {
     case 'phantom': return createPhantomBridge({ hostTrack, index });
     case 'phantom-v2': return createPhantomV2Bridge({ hostTrack, index });
     case 'gemini-supreme-v4': return createGeminiV4Bridge({ hostTrack, index });
+    case 'solinator-6.1': return createBenchmarkSolinatorBridge({ hostTrack, index });
     default: throw new Error(`Unknown driver architecture: ${driver.id}`);
   }
 }

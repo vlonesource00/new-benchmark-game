@@ -123,11 +123,11 @@ export class Hud {
       let li = this.rows.get(c.id);
       if (!li) {
         li = document.createElement('li');
-        li.innerHTML = '<span class="p"></span><span class="m"></span><span class="c"></span><span class="t"></span><span class="d"></span><span class="g"></span><span class="s"></span>';
+        li.innerHTML = '<span class="p"></span><span class="m"></span><span class="c"></span><span class="t"></span><span class="d"></span><span class="g"></span><span class="l"></span><span class="s"></span>';
         this.rows.set(c.id, li);
       }
       if (tower.children[i] !== li) tower.insertBefore(li, tower.children[i] ?? null);
-      const team = teamsById[c.team], [p, m, col, t, d, g, s] = li.children;
+      const team = teamsById[c.team], [p, m, col, t, d, g, l, s] = li.children;
       p.textContent = c.position;
       // Position-change arrows hold for a few seconds after an overtake.
       const was = this.prevPos.get(c.id);
@@ -142,6 +142,7 @@ export class Hud {
       const ahead = cars[i - 1], aheadDown = ahead && ctx.trackLength ? Math.max(0, Math.floor((leader.progress - ahead.progress) / ctx.trackLength)) : 0;
       const gapText = intervals && ahead && lapsDown === aheadDown ? fmtGap(c.gap - ahead.gap, c.position) : fmtGap(c.gap, c.position, lapsDown);
       g.innerHTML = c.pit ? `<span class="flag pit">${PIT_LABEL[c.pit] ?? 'PIT'}</span>` : c.finished ? '<span class="flag chq">FIN</span>' : c.position === 1 ? `<span class="lead">L${Math.min(snap.laps, Math.max(1, c.lap))}</span>` : gapText;
+      l.textContent = c.lastLap ? fmtLap(c.lastLap) : '—'; l.className = `l mono ${c.lastLap ? c.lastLapState ?? '' : ''}`;
       li.classList.toggle('fl', this.fastest?.id === c.id);
       const cmp = compound(c.compound);
       s.textContent = cmp.short; s.style.background = cmp.color;
@@ -183,6 +184,7 @@ export class Hud {
 
     this.q('pos').textContent = `P${focus.position}/${snap.cars.length}`;
     this.q('last').textContent = fmtLap(focus.lastLap);
+    this.q('last').className = `mono ${focus.lastLapState ?? ''}`;
     this.q('best').textContent = fmtLap(focus.bestLap);
     this.q('best').classList.toggle('purple', this.fastest?.id === focus.id);
     // Sector splits: purple overall best, green personal best, yellow slower, red track limits.

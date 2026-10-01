@@ -28,6 +28,7 @@ import { PlayerInput } from './ui/input.js';
 import { renderMenu, renderSetup, renderDrivers, renderSettings, renderLoading, setLoading, renderResults } from './ui/menus.js';
 import { Hud } from './ui/hud.js';
 import { AiDebugPanel } from './ui/ai-debug.js';
+import { AiLens } from './render/ai-lens.js';
 import { TelemetryLog, renderTelemetry } from './ui/telemetry.js';
 import { renderPit, renderPause, pitOptions } from './ui/overlays.js';
 
@@ -99,6 +100,7 @@ const input = new PlayerInput();
 const hud = new Hud($('#screen-race'));
 hud.cue = (name) => audio.cue(name);
 const aiDebug = new AiDebugPanel($('#screen-race'));
+const aiLens = new AiLens(scene);
 addEventListener('pointerdown', (e) => { if (e.target.closest?.('button, .menu-item, .track-card')) audio.cue('click'); });
 const telemetry = new TelemetryLog();
 const setup = load('pe.setup', { trackId: 'harbor-ring', formatId: 'classic', laps: FORMATS.classic.laps, teamCount: 6, drive: true, playerName: 'YOU', startCompound: 'medium', assist: true, gearbox: 'auto', startTime: 'track', dayCycle: true, weather: 'clear', seed: 20260930, difficulty: 'amateur' });
@@ -473,6 +475,8 @@ function frame(ms) {
       rain.update(camera.position, paused ? 0 : delta, .5 + (sky?.rain ?? 0) / 1.65);
       world.update(car, replay ? replay.t : snap?.time ?? 0, snap?.phase === 'countdown' ? snap.countdown : 0, false);
       if (!replay) world.crews?.update(snap, cars, paused ? 0 : delta, camera.position);
+      const lensEntry = race?.entries[focusId];
+      aiLens.update(race, focusId, aiDebug.open && !replay && raceActive, lensEntry?.bridges[lensEntry.active]);
       effects.update(cars, paused ? 0 : delta, track, innerHeight);
       const cam = Math.hypot(camera.position.x - car.x, camera.position.y - (car.y ?? 0) - 0.6, camera.position.z - car.z);
       const pit = snap?.cars.find((c) => c.id === car.id)?.pit, pitLane = Boolean(pit) && pit !== 'service';

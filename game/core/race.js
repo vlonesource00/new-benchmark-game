@@ -272,6 +272,10 @@ export class EnduranceRace {
       if (totalSectors % 3 === 0) {
         r.lastLap = this.time - r.lapStart;
         const clean = r.valid && !r.pitLap && !e.pit && !e.lapHadPit;
+        // Lap colours as for sectors: purple overall best, green personal best, yellow slower, red invalid.
+        this.lapBest ??= null;
+        r.lastState = !clean ? (r.valid ? 'pit' : 'red') : this.lapBest === null || r.lastLap < this.lapBest ? 'purple' : r.bestLap === null || r.lastLap < r.bestLap ? 'green' : 'yellow';
+        if (clean && (this.lapBest === null || r.lastLap < this.lapBest)) this.lapBest = r.lastLap;
         if (clean && (r.bestLap === null || r.lastLap < r.bestLap)) r.bestLap = r.lastLap;
         e.strategist.observeLap(c, clean && r.lap > 1);
         e.lapHadPit = Boolean(e.pit);
@@ -335,7 +339,7 @@ export class EnduranceRace {
           id: c.id, team: e.team.id, x: c.x, z: c.z, y: c.y, yaw: c.yaw, roll: c.roll, pitch: c.pitch, heave: c.heave, speed: c.speed, rpm: c.rpm, gear: c.gear, steering: c.steering,
           throttle: c.controls.throttle, brake: c.controls.brake,
           fuel: c.fuel, wear: c.wheels.map((w) => w.tyre.wear), temps: c.wheels.map((w) => w.tyre.surface), compound: c.wheels[0].tyre.compound, damage: c.damage,
-          lap: Math.min(c.race.lap, this.laps), progress: c.race.progress, lastLap: c.race.lastLap, bestLap: c.race.bestLap, finished: c.race.finishTime !== null,
+          lap: Math.min(c.race.lap, this.laps), progress: c.race.progress, lastLap: c.race.lastLap, lastLapState: c.race.lastState === 'purple' && c.race.lastLap > this.lapBest ? 'green' : c.race.lastState ?? null, bestLap: c.race.bestLap, finished: c.race.finishTime !== null,
           position: order.indexOf(c) + 1, gap: this.interval(c, leader),
           driver: d.id, driverName: d.name, driverKind: d.kind, stops: e.strategist.stops, pit: e.pit?.phase ?? null, boxCalled: Boolean(e.pitPlan || e.strategist.request),
           serviceLeft: e.pit?.phase === 'service' ? e.pit.serviceLeft : 0, serviceTotal: e.pit?.serviceTotal ?? 0,
