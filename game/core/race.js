@@ -11,6 +11,7 @@ import { Weather } from './weather.js';
 import { PitLane, PitAutopilot } from './pit.js';
 import { TeamStrategist, maxWear } from './strategy.js';
 import { createSeatBridge } from './field.js';
+import { AI_DRIVERS } from './teams.js';
 
 export const FIXED_DT = 1 / 120;
 
@@ -182,7 +183,9 @@ export class EnduranceRace {
         bridge.update(c, cars, dt, context);
         if (!bridge.human || bridge.assisted) {
           // No point saving tyres on the last lap or the lap they come off.
-          e.governor.push = this.lapsLeft(c) <= 1 || Boolean(e.pitPlan?.tyres);
+          // Roster entries with `manage: false` run flat out all stint (no tyre-saving cap).
+          const unmanaged = AI_DRIVERS.find((a) => a.id === e.team.drivers[e.active]?.id)?.manage === false;
+          e.governor.push = unmanaged || this.lapsLeft(c) <= 1 || Boolean(e.pitPlan?.tyres);
           e.governor.manageStep(c, dt); e.governor.apply(c, s);
         }
         if (c.race.finishTime !== null) c.controls = { ...c.controls, throttle: Math.min(0.35, c.controls.throttle), brake: Math.max(c.controls.brake, c.speed > 25 ? 0.2 : 0) };

@@ -13,7 +13,7 @@ export class SpeedProfile {
     this.a = new Float64Array(n); // planned longitudinal accel, for feed-forward
   }
 
-  solve(k, seg, env, { util = 1, latUtil = util, scale = null, grip = env.grip } = {}) {
+  solve(k, seg, env, { util = 1, latUtil = util, scale = null, cap = null, grip = env.grip } = {}) {
     const n = this.n, v = this.v, vc = this.vCorner;
     const gLat = grip * latUtil;
     let vmin = Infinity, imin = 0;
@@ -22,6 +22,7 @@ export class SpeedProfile {
       const kk = Math.max(Math.abs(k[i]), (Math.abs(k[(i + n - 1) % n]) + Math.abs(k[(i + 1) % n])) * 0.5 * 0.9);
       let s = env.cornerSpeed(kk, gLat);
       if (scale) s *= scale[i];
+      if (cap) s = Math.min(s, cap[i]); // absolute ceiling (learned slip map)
       vc[i] = s; v[i] = s;
       if (s < vmin) { vmin = s; imin = i; }
     }

@@ -17,25 +17,34 @@ const angle = (a) => Math.atan2(Math.sin(a), Math.cos(a));
 
 export const DEFAULT_OPTIONS = Object.freeze({
   // plan
-  ds: 2, qMax: 6.5, lineBudgetMs: 2500, envelope: null,
+  // qMax null: track half-width minus edgeMargin (6.5 m on the 8.2 m Harbor Ring;
+  // a fixed 6.5 put the outer wheels on the 0.88-grip kerb on narrower roads).
+  ds: 2, qMax: null, edgeMargin: 1.7, lineBudgetMs: 2500, envelope: null,
   // tracker
   tau: 0.085, ffLead: 0.10, kUs: 0.0, kpE: 1.4, kdE: 2.2, kr: 1.0, kb: 0, betaDead: 0.13, latHead: 1.15,
   vLead: 0.08, kv: 6, brakeGain: 1 / 27,
   // throttle governor: slip angle / rear slip ratio above which drive is cut
-  betaCut: 0.12, betaGain: 7, brakeBetaGain: 5, slipCut: 0.09, slipGain: 6,
+  betaCut: 0.06, betaGain: 10, brakeBetaGain: 8, slipCut: 0.09, slipGain: 6,
   // tyre model
   gripTrim: 1.0, replanEvery: 0.5, util: 1.0, hotUtil: 0.94, hotCore: 100, hotSpan: 20,
   // recovery (off the road or pointing the wrong way)
   recLat: 8.8, recEc: 0.9, recSpeed: 14,
+  // adaptive slip map: body slip above learnBeta trims the local speed for later
+  // laps (window learnBack m before .. learnAhead m after); calm passes give it back
+  learn: true, learnBeta: 0.07, learnRate: 0.25, learnFloor: 0.9, learnBack: 60, learnAhead: 12, learnGive: 0.0015,
   // traffic
-  // Off by default: holding the line was cleaner than any speed cap (DESIGN.md).
-  traffic: false, offSlow: 0.012
+  // offset path: lateral utilisation and braking assumed for the tightened reference
+  traffic: true, offSlow: 0.012, offUtil: 0.96, offBrake: 9,
+  wakeSlow: 0.06, settleE: 0.9, settleBeta: 0.08
 });
 
 export class GeminiV4Driver {
   constructor({ track, car, options = {} }) {
     this.options = { ...DEFAULT_OPTIONS, ...options };
     const o = this.options;
+    o.qMax ??= Math.max(4, track.halfWidth - o.edgeMargin);
+    o.recLat = Math.min(o.recLat, track.halfWidth + (track.curbWidth ?? 1) - 0.3);
+    o.passMax ??= o.qMax;
     this.track = track;
     this.spec = car.spec;
     this.plan = RacePlan.get(track, car.spec, { ds: o.ds, qMax: o.qMax, lineBudgetMs: o.lineBudgetMs, envelope: o.envelope });
@@ -44,6 +53,8 @@ export class GeminiV4Driver {
     this.grip = 1; this.util = o.util;
     this.replanAt = -1;
     this.offset = 0; this.offsetRate = 0;
+    this.trim = new Float64Array(this.plan.n).fill(1);
+    this.lastNode = -1;
     this.traffic = o.traffic ? new TrafficLayer(this, o) : null;
     this.dbg = {};
   }
@@ -60,8 +71,59 @@ export class GeminiV4Driver {
     this.util = this.util + clamp(want - this.util, -0.005, 0.005);
     const fuelMass = this.spec.mass + car.fuel * 0.75;
     this.grip *= Math.sqrt(this.env.mass / fuelMass); // lighter car → a bit more accel
-    this.profile.solve(this.plan.k, this.plan.seg, this.env, { grip: this.grip, util: this.util, latUtil: 1 });
+    this.profile.solve(this.plan.k, this.plan.seg, this.env, { grip: this.grip, util: this.util, latUtil: 1, cap: o.learn ? this.learnCap() : null });
     this.replanAt = time + o.replanEvery;
+  }
+
+  /** Adaptive slip map. The offline envelope cannot see transient load transfer
+   *  (fast direction changes, kerb strikes): where the car actually slid, the
+   *  speed ceiling (fraction of the base profile) for the stretch leading into it is cut; it creeps back
+   *  each calm pass so the limit is re-probed. Takes effect at the next replan. */
+  learnSlip(s, absBeta, dt) {
+    const o = this.options, plan = this.plan, n = plan.n, i = Math.floor(plan.index(s)) % n;
+    if (absBeta > o.learnBeta) {
+      const cut = o.learnRate * (absBeta - o.learnBeta) * dt;
+      const back = Math.round(o.learnBack / plan.ds), ahead = Math.round(o.learnAhead / plan.ds);
+      for (let d = -back; d <= ahead; d++) {
+        const j = (i + d + n) % n, w = d <= 0 ? 1 + d / (back + 1) * 0.5 : 1 - d / (ahead + 1);
+        this.trim[j] = Math.max(o.learnFloor, this.trim[j] - cut * w);
+      }
+    } else if (i !== this.lastNode && absBeta < o.learnBeta * 0.5) {
+      this.trim[i] = Math.min(1, this.trim[i] + o.learnGive);
+    }
+    this.lastNode = i;
+  }
+
+  learnCap() {
+    const base = this.plan.baseProfile.v, cap = this.capBuf ??= new Float64Array(this.plan.n);
+    for (let i = 0; i < cap.length; i++) cap[i] = this.trim[i] < 1 ? base[i] * this.trim[i] : Infinity;
+    return cap;
+  }
+
+  /** Highest speed now from which every point of the offset reference within the
+   *  braking horizon can still be taken (Menger curvature of world points, lateral
+   *  limit from the envelope, trimmed for lost downforce in a wake). */
+  offsetPathSpeed(s, speed, qLim, wake) {
+    const o = this.options, plan = this.plan, track = this.track;
+    const pt = (x) => { const q = clamp(plan.sample(plan.q, x) + this.offset, -qLim, qLim); return track.at(x, q); };
+    const range = Math.max(60, speed * speed / (2 * o.offBrake) + 20);
+    let best = Infinity;
+    let a = pt(s - 6), b = pt(s);
+    for (let d = 6; d <= range; d += 6) {
+      const c = pt(s + d);
+      const abx = b.x - a.x, abz = b.z - a.z, bcx = c.x - b.x, bcz = c.z - b.z, acx = c.x - a.x, acz = c.z - a.z;
+      const cross = Math.abs(abx * bcz - abz * bcx);
+      const k = 2 * cross / Math.max(1e-6, Math.hypot(abx, abz) * Math.hypot(bcx, bcz) * Math.hypot(acx, acz));
+      // Line curvature here: only bind where the offset path is the tighter one.
+      const kLine = Math.abs(plan.sample(plan.k, s + d - 6));
+      if (k > 0.002 && k > kLine * 1.02) {
+        let v = speed;
+        for (let it = 0; it < 2; it++) v = Math.sqrt(this.env.lat(v, this.grip) * this.util * o.offUtil * (1 - 0.12 * wake) / k);
+        best = Math.min(best, Math.sqrt(v * v + 2 * o.offBrake * (d - 6)));
+      }
+      a = b; b = c;
+    }
+    return best;
   }
 
   update(car, cars, dt, context = {}) {
@@ -79,6 +141,8 @@ export class GeminiV4Driver {
     // Traffic layer: offset from the racing line and a speed cap.
     let vCap = Infinity, offTarget = 0;
     if (this.traffic) ({ vCap, offset: offTarget } = this.traffic.update(car, cars, proj, context, dt));
+    // Already sliding or running wide: no new lateral move until the car is settled.
+    if (Math.abs(this.dbg.e ?? 0) > o.settleE || Math.abs(this.dbg.beta ?? 0) > o.settleBeta) offTarget = this.offset;
     const prev = this.offset;
     const maxRate = 2.2; // m/s lateral drift of the reference: no swerves
     this.offset += clamp(offTarget - this.offset, -maxRate * dt, maxRate * dt);
@@ -117,6 +181,7 @@ export class GeminiV4Driver {
       delta = speed < 15 ? 1.6 * alpha : Math.atan2(2 * L * Math.sin(alpha), d);
     }
     const steer = clamp(delta / spec.steeringLock, -1, 1);
+    if (o.learn && !recovering && speed > 20) this.learnSlip(proj.s, Math.abs(beta), dt);
 
     // Longitudinal: profile feed-forward + speed feedback.
     const sL = proj.s + speed * o.vLead;
@@ -124,6 +189,17 @@ export class GeminiV4Driver {
     let aff = plan.sample(this.profile.a, sL);
     // Off the planned line the corners are tighter than profiled: give a little away.
     vt *= 1 - o.offSlow * Math.abs(this.offset);
+    // Offset path check: the reference actually driven (line + offset, clamped to
+    // the road) can be far tighter than the line, e.g. pinned to the outside edge
+    // mid-corner while side by side. Brake for its real curvature ahead.
+    // Wake memory (decays over ~1 s): following a car, the downforce loss persists
+    // into the corner even when the instantaneous wake flickers.
+    const wake = this.wakeF = Math.max(car.aero?.wake ?? 0, (this.wakeF ?? 0) - dt);
+    if (wake > 0.05 && Math.abs(kappa) > 0.003) vt *= 1 - o.wakeSlow * wake;
+    if (Math.abs(this.offset) > 0.3 || wake > 0.2) {
+      const vOff = this.offsetPathSpeed(proj.s, speed, qLim, wake);
+      if (vOff < vt) { vt = vOff; aff = Math.min(aff, 0); }
+    }
     if (vCap < vt) { vt = vCap; aff = Math.min(aff, 0); }
     // Off the line (recovery): slow down proportionally to lateral error.
     // Shed speed gently: a panic stop while sliding is what turns a moment off line into a spin.
