@@ -8,7 +8,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { createSafeWebGLRenderer } from './render/safe-renderer.js';
 import { SpectatorCamera } from './render/spectator.js';
 import { World } from './render/world-pro.js';
-import { CarModel } from './render/car-pro.js';
+import { CarModel, setHeadlights } from './render/car-pro.js';
 import { CarEffects } from './render/effects-pro.js';
 import { VisualFinish } from './render/finish-pro.js';
 import { AudioEngine } from './render/audio-pro.js';
@@ -96,9 +96,18 @@ const hud = new Hud($('#screen-race'));
 hud.cue = (name) => audio.cue(name);
 addEventListener('pointerdown', (e) => { if (e.target.closest?.('button, .menu-item, .track-card')) audio.cue('click'); });
 const telemetry = new TelemetryLog();
-const setup = load('pe.setup', { trackId: 'harbor-ring', formatId: 'classic', laps: FORMATS.classic.laps, teamCount: 6, drive: true, playerName: 'YOU', startCompound: 'medium', assist: true, gearbox: 'auto', seed: 20260930, difficulty: 'amateur' });
+const setup = load('pe.setup', { trackId: 'harbor-ring', formatId: 'classic', laps: FORMATS.classic.laps, teamCount: 6, drive: true, playerName: 'YOU', startCompound: 'medium', assist: true, gearbox: 'auto', startTime: 'track', dayCycle: true, seed: 20260930, difficulty: 'amateur' });
 let screen = 'boot', overlay = null;
 let teams = [], teamsById = {}, cars = [], models = [], race = null, seats = null, snap = null, trackLength = 0;
+// Clock: each circuit starts at its own hour unless the setup picks one, and with
+// the day cycle on the race covers about 20 minutes of daylight per lap.
+const START_HOURS = { morning: 8.5, afternoon: 14.5, sunset: 18.4, night: 22 };
+const startHour = () => START_HOURS[setup.startTime] ?? world.theme.hour ?? 15;
+function raceHour() {
+  if (!setup.dayCycle || !snap?.cars.length || !trackLength) return startHour();
+  const lead = snap.cars.reduce((a, c) => (c.progress > a.progress ? c : a));
+  return startHour() + Math.max(1, Math.min(8, snap.laps * .35)) * Math.max(0, Math.min(1, lead.progress / (snap.laps * trackLength)));
+}
 let focusId = 0, playerTeamId = null, simScale = 1, paused = false, raceActive = false, camModes = ['chase', 'bonnet', 'elevated'], camIndex = 0;
 let recorder = null, replay = null;
 let lastSnapPit = 0, lastResults = null, wheelAsset = null, raceToken = 0, lastSnap = 0, finishedSeen = false;
@@ -419,7 +428,7 @@ input.on((action) => {
 // `?timerloop` drives the loop from timers so it keeps running in hidden test panes.
 const nextFrame = new URLSearchParams(location.search).has('timerloop') ? (f) => setTimeout(() => f(performance.now()), 16) : (f) => requestAnimationFrame(f);
 // `?debug` exposes the live race and seat workers for inspection.
-if (new URLSearchParams(location.search).has('debug')) Object.defineProperty(window, '__pe', { value: { get race() { return race; }, get seats() { return seats; }, get focus() { return focusId; } } });
+if (new URLSearchParams(location.search).has('debug')) Object.defineProperty(window, '__pe', { value: { get race() { return race; }, get seats() { return seats; }, get focus() { return focusId; }, get world() { return world; } } });
 let previous = performance.now() / 1000, menuAngle = 0;
 let menuProbe = null;
 function frame(ms) {
@@ -449,6 +458,7 @@ function frame(ms) {
           if (d < 160) audio.backfire(e.strength, e.kind, d, Math.max(-1, Math.min(1, (-dx * Math.cos(car.yaw) + dz * Math.sin(car.yaw)) / Math.max(1, d))));
         }
       }
+      world.setTimeOfDay(raceHour()); setHeadlights(world.lamps);
       world.update(car, replay ? replay.t : snap?.time ?? 0, snap?.phase === 'countdown' ? snap.countdown : 0, false);
       effects.update(cars, paused ? 0 : delta, track, innerHeight);
       const cam = Math.hypot(camera.position.x - car.x, camera.position.y - (car.y ?? 0) - 0.6, camera.position.z - car.z);
@@ -465,6 +475,7 @@ function frame(ms) {
         menuProbe = new Vehicle(99, 'menu', '#ffffff'); menuProbe.trackId = worldTrackId;
         menuProbe.place(track, track.length * 0.02);
       }
+      world.setTimeOfDay(startHour());
       world.update(menuProbe, now, 0, true);
       camera.position.set(p.x + Math.cos(menuAngle) * 95, 38, p.z + Math.sin(menuAngle) * 95);
       camera.lookAt(p.x, 4, p.z);

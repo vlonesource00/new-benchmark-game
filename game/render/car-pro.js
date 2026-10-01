@@ -119,6 +119,13 @@ function mesh(geo, mat, parent, x = 0, y = 0, z = 0, cast = true) {
 }
 
 let serial = 0;
+// Headlight level for every car, 0 (daylight) to 1 (dark): brighter lamps and wider glows.
+let lamps = 0;
+export function setHeadlights(k) {
+  if (k === lamps || !shared.lightF) return;
+  lamps = k; shared.lightF.emissiveIntensity = 5 + k * 10; shared.glow.opacity = .55 + k * .4;
+}
+
 export class CarModel {
   constructor(car) {
     const S = sharedMaterials();
@@ -192,8 +199,9 @@ export class CarModel {
     this.body.position.y = -car.heave; this.body.rotation.set(car.pitch, 0, car.roll);
     this.steeringWheel.rotation.z = -car.steering * 9;
     const braking = car.controls.brake > .05;
-    this.tail.emissiveIntensity = braking ? 7 : 1.3;
-    if (this.rearGlow) this.rearGlow.opacity = braking ? .85 : .22;
+    this.tail.emissiveIntensity = braking ? 7 : 1.3 + lamps * 2.2;
+    if (this.rearGlow) this.rearGlow.opacity = braking ? .85 : .22 + lamps * .3;
+    if (this.lampScale !== lamps) { this.lampScale = lamps; for (const g of this.glowsF) g.scale.setScalar(.55 * (1 + lamps * 1.6)); }
     this.wheels.forEach((v, i) => {
       const w = car.wheels[i];
       v.group.rotation.y = w.steer; v.group.position.y = .35 - (w.compression - .045);

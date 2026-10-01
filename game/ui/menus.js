@@ -69,6 +69,8 @@ export function renderSetup(el, s, teams, outlines, act) {
             <div class="row"><label>Laps<span class="hint">5–20 laps; fuel and tyres scale with distance</span></label>${stepper('laps', s.laps)}</div>
             <div class="row"><label>Teams<span class="hint">Two drivers per car</span></label>${stepper('teamCount', s.teamCount)}</div>
             <div class="row"><label>AI difficulty<span class="hint">${esc(aiHint(s))}</span></label>${seg('difficulty', DIFFICULTIES.map((d) => [d.id, d.label]), difficultyById(s.difficulty).id)}</div>
+            <div class="row"><label>Start time<span class="hint">Circuit picks its usual hour</span></label>${seg('startTime', [['track', 'Circuit'], ['morning', 'Morning'], ['afternoon', 'Afternoon'], ['sunset', 'Sunset'], ['night', 'Night']], s.startTime ?? 'track')}</div>
+            <div class="row"><label>Day cycle<span class="hint">The sun moves as the race runs; lights on after dark</span></label>${seg('dayCycle', [[true, 'On'], [false, 'Off']], s.dayCycle ?? true)}</div>
             <div class="row"><label>Start tyre</label>${seg('startCompound', COMPOUND_IDS.map((c) => [c, COMPOUNDS[c].label]), s.startCompound)}</div>
           </div>
           <div class="block"><h3>You</h3>

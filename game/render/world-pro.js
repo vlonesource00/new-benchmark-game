@@ -113,15 +113,26 @@ function foliageTexture(seed, palm = false) {
 // Per-circuit dressing. Geometry-bound pieces (track, kerbs, pit, paddock,
 // stands) are generic; the landscape around them comes from the theme.
 export const THEMES = {
-  'harbor-ring': { lighting: 'golden', harbor: true, city: 'metro', blimp: 'PORTO AZUL', banner: 'PORTO AZUL SHIPPING  ·  GRAND PRIX',
+  'harbor-ring': { lighting: 'golden', hour: 17.7, harbor: true, city: 'metro', blimp: 'PORTO AZUL', banner: 'PORTO AZUL SHIPPING  ·  GRAND PRIX',
     hills: { colors: ['#5f6f5c', '#7d8a7f', '#98a39c'], height: 1, arc: [.45, 1.1] } },
-  solenne: { lighting: 'day', city: 'village', palms: 0, trees: 2200, blimp: 'SOLENNE', banner: 'CIRCUIT DE SOLENNE  ·  GRAND PRIX',
+  solenne: { lighting: 'day', hour: 13, city: 'village', palms: 0, trees: 2200, blimp: 'SOLENNE', banner: 'CIRCUIT DE SOLENNE  ·  GRAND PRIX',
     hills: { colors: ['#56704e', '#6f8a6a', '#93a69a'], height: 1.1 } },
-  alpine: { lighting: 'night', ground: 'alpine', palms: 0, trees: 0, pines: 2600, stars: true, blimp: 'ALPENRING', banner: 'ALPENRING  ·  NACHTRENNEN',
+  alpine: { lighting: 'night', hour: 21.5, ground: 'alpine', palms: 0, trees: 0, pines: 2600, stars: true, blimp: 'ALPENRING', banner: 'ALPENRING  ·  NACHTRENNEN',
     hills: { colors: ['#2a343c', '#3a4650', '#56626c'], height: 3.6, snow: true, jagged: true } },
-  desert: { lighting: 'dusk', ground: 'sand', palms: 70, trees: 0, blades: false, rocks: true, blimp: 'MIRAGE', banner: 'MIRAGE 1000  ·  DESERT GRAND PRIX',
+  desert: { lighting: 'dusk', hour: 18.6, ground: 'sand', palms: 70, trees: 0, blades: false, rocks: true, blimp: 'MIRAGE', banner: 'MIRAGE 1000  ·  DESERT GRAND PRIX',
     hills: { colors: ['#a8603a', '#b97a52', '#caa07c'], height: 1.3, mesa: true } }
 };
+
+// Sun height (the y of the light direction) at each lighting preset; the day
+// cycle blends neighbouring presets. Theme start hours sit on their preset.
+const TWILIGHT = { sun: '#ff9a62', sky: '#6c6f8e', ground: '#4a4440', fog: '#6e6878', intensity: .9, fill: .6, environment: .4, exposure: 1.18, elevation: .06, turbidity: 5, density: .0006 };
+const SKY_STOPS = [[-.12, 'night'], [0, 'twilight'], [.2, 'dusk'], [.42, 'golden'], [.95, 'day']].map(([y, mode]) => {
+  const p = mode === 'twilight' ? TWILIGHT : LIGHTING[mode];
+  return { y, p, mode, rayleigh: { night: .3, twilight: 2, dusk: 2.4 }[mode] ?? 1.6, cover: { golden: .5, day: .56, dusk: .6, twilight: .66, night: .72 }[mode],
+    sun: new THREE.Color(p.sun), sky: new THREE.Color(p.sky), ground: new THREE.Color(p.ground), fog: new THREE.Color(p.fog) };
+});
+const sunHeight = (hour) => Math.sin(Math.PI * (hour - 6.5) / 13);
+const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
 
 export class World {
   constructor(scene, renderer, track) {
@@ -145,6 +156,9 @@ export class World {
     this.hemi = new THREE.HemisphereLight('#c5dbe5', '#746646', 1); scene.add(this.hemi);
     this.pmrem = new THREE.PMREMGenerator(renderer);
     this.setLighting(this.theme.lighting);
+    // One beam for the focused car, always in the scene so turning it on never recompiles shaders.
+    this.headlight = new THREE.SpotLight('#eef4ff', 0, 160, .34, .7, 1.6); scene.add(this.headlight, this.headlight.target);
+    this.lamps = 0; this.dark = this.theme.lighting === 'night' ? 1 : 0;
 
     this.clearOf = (x, z, r = 0) => Math.abs(track.nearest(x, z).lateral) > track.barrierOffset + 2.5 + r;
     // Pit lane geometry, identical to the one the race builds (core/pit.js).
@@ -156,7 +170,7 @@ export class World {
     if (this.theme.harbor) this.buildHarbor();
     this.buildCity(); this.buildHills(); this.buildNature(); this.buildSkyLife();
     if (this.theme.rocks) this.buildDesert();
-    if (this.theme.stars) this.buildStars();
+    this.buildStars();
     this.root.traverse((o) => { o.updateMatrix(); o.matrixAutoUpdate = false; });
     this.centre = new THREE.Vector3(); this.shadowRight = new THREE.Vector3(); this.shadowUp = new THREE.Vector3();
     this.clock = performance.now() / 1000; this.screenTick = -1;
@@ -176,11 +190,49 @@ export class World {
     cu.uSun.value.copy(this.sunDirection); cu.uCover.value = { golden: .5, day: .56, overcast: .26, dusk: .6, night: .72 }[mode] ?? .5;
     if (this.mastHeads) this.mastHeads.material.emissiveIntensity = mode === 'night' ? 7 : .6;
     cu.uLit.value.set(p.sun).multiplyScalar(mode === 'overcast' ? .9 : 1.25); cu.uShade.value.set(p.fog).multiplyScalar(.62);
+    this.bakeEnvironment(new THREE.Color(p.ground)); this.scene.environmentIntensity = p.environment * 1.15;
+  }
+
+  // Blend the lighting presets for a clock hour. The sky and lights follow every
+  // call; the reflection environment is re-baked only when the sun has moved enough.
+  setTimeOfDay(hour) {
+    if (hour === this.hour) return;
+    this.hour = hour;
+    const h = ((hour % 24) + 24) % 24, y = sunHeight(h);
+    let i = 0; while (i < SKY_STOPS.length - 2 && y > SKY_STOPS[i + 1].y) i++;
+    const a = SKY_STOPS[i], b = SKY_STOPS[i + 1], t = clamp((y - a.y) / (b.y - a.y), 0, 1);
+    const mix = (k) => a.p[k] + (b.p[k] - a.p[k]) * t, col = (k, out) => out.copy(a[k]).lerp(b[k], t);
+    const dark = this.dark = smooth(.1, -.1, y);
+    // Lamps come on in the gloom before the floodlit dark.
+    this.lamps = smooth(.24, .02, y);
+    const swing = (h - this.theme.hour) * .12 * (1 - dark), sx = .7 * Math.cos(swing) - .65 * Math.sin(swing), sz = .7 * Math.sin(swing) + .65 * Math.cos(swing);
+    this.sunDirection = new THREE.Vector3(sx, mix('elevation'), sz).normalize();
+    const u = this.sky.material.uniforms;
+    u.sunPosition.value.set(sx, clamp(y, -.12, 1), sz).normalize();
+    u.turbidity.value = mix('turbidity'); u.rayleigh.value = a.rayleigh + (b.rayleigh - a.rayleigh) * t;
+    this.sun.intensity = mix('intensity') * 1.18; this.hemi.intensity = mix('fill') * .55;
+    col('sun', this.sun.color); col('sky', this.hemi.color); col('ground', this.hemi.groundColor);
+    col('fog', this.scene.fog.color); this.scene.fog.density = mix('density') * .8; this.renderer.toneMappingExposure = mix('exposure') * .95;
+    const cu = this.clouds.material.uniforms;
+    cu.uSun.value.copy(this.sunDirection); cu.uCover.value = a.cover + (b.cover - a.cover) * t;
+    cu.uLit.value.copy(this.sun.color).multiplyScalar(1.25); cu.uShade.value.copy(this.scene.fog.color).multiplyScalar(.62);
+    if (this.mastHeads) this.mastHeads.material.emissiveIntensity = .6 + 6.4 * dark;
+    if (this.stars) { this.stars.material.opacity = .85 * dark; this.stars.visible = dark > .01; }
+    this.scene.environmentIntensity = mix('environment') * 1.15;
+    const now = performance.now();
+    if (this.envY == null || (Math.abs(y - this.envY) > .04 && now - this.envAt > 1200)) {
+      this.envY = y; this.envAt = now;
+      this.bakeEnvironment(this.hemi.groundColor);
+    }
+  }
+
+  bakeEnvironment(groundColor) {
     const env = new THREE.Scene(); env.add(this.sky.clone());
-    const ground = new THREE.Mesh(new THREE.CircleGeometry(95, 32), new THREE.MeshBasicMaterial({ color: new THREE.Color(p.ground).multiplyScalar(.55) }));
+    const ground = new THREE.Mesh(new THREE.CircleGeometry(95, 32), new THREE.MeshBasicMaterial({ color: groundColor.clone().multiplyScalar(.55) }));
     ground.rotation.x = -Math.PI / 2; ground.position.y = -6; env.add(ground);
     const target = this.pmrem.fromScene(env, .02); this.envTarget?.dispose(); this.envTarget = target;
-    this.scene.environment = target.texture; this.scene.environmentIntensity = p.environment * 1.15;
+    this.scene.environment = target.texture;
+    ground.geometry.dispose(); ground.material.dispose();
   }
 
   buildClouds() {
@@ -830,12 +882,12 @@ export class World {
     const rng = random(77), n = 2400, pos = new Float32Array(n * 3);
     for (let i = 0; i < n; i++) { const a = rng() * Math.PI * 2, y = .06 + rng() * .94, r = Math.sqrt(1 - y * y); pos.set([Math.cos(a) * r * 8000, y * 8000, Math.sin(a) * r * 8000], i * 3); }
     const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-    this.stars = new THREE.Points(g, new THREE.PointsMaterial({ color: '#dfe8ff', size: 1.8, sizeAttenuation: false, fog: false, transparent: true, opacity: .85, depthWrite: false }));
-    this.stars.frustumCulled = false; this.live.add(this.stars);
+    this.stars = new THREE.Points(g, new THREE.PointsMaterial({ color: '#dfe8ff', size: 1.8, sizeAttenuation: false, fog: false, transparent: true, opacity: .85 * this.dark, depthWrite: false }));
+    this.stars.visible = this.dark > .01; this.stars.frustumCulled = false; this.live.add(this.stars);
   }
 
   dispose() {
-    for (const o of [this.root, this.live, this.sky, this.sun, this.sun.target, this.hemi, this.clouds]) if (o) o.parent?.remove(o);
+    for (const o of [this.root, this.live, this.sky, this.sun, this.sun.target, this.hemi, this.clouds, this.headlight, this.headlight.target]) if (o) o.parent?.remove(o);
     const seen = new Set();
     for (const g of [this.root, this.live, this.sky, this.clouds]) g?.traverse((o) => {
       o.geometry?.dispose();
@@ -1001,5 +1053,9 @@ export class World {
     const b = now * .018, ox = this.theme.harbor ? 0 : this.bounds.cx, oz = this.theme.harbor ? 0 : this.bounds.cz; this.blimp.position.set(ox + Math.cos(b) * 420, 170 + Math.sin(now * .1) * 4, oz + Math.sin(b) * 320); this.blimp.rotation.y = Math.atan2(-Math.sin(b) * 420, Math.cos(b) * 320) - Math.PI / 2;
     this.clouds.position.copy(this.centre.set(0, 0, 0));
     if (this.stars) this.stars.position.set(car.x, 0, car.z);
+    const lamp = aerial ? 0 : this.lamps, fx = Math.sin(heading), fz = Math.cos(heading);
+    this.headlight.intensity = lamp * 380;
+    this.headlight.position.set(car.x + fx * 2.1, (car.y ?? 0) + .75, car.z + fz * 2.1);
+    this.headlight.target.position.set(car.x + fx * 40, (car.y ?? 0) - 1.5, car.z + fz * 40); this.headlight.target.updateMatrixWorld();
   }
 }
