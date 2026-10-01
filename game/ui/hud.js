@@ -21,6 +21,7 @@ export class Hud {
         <div><small>LAST</small><span class="mono" data-last>—</span></div>
         <div><small>BEST</small><span class="mono" data-best>—</span></div>
       </div>
+      <div class="sectors" data-sectors>${[1, 2, 3].map((n) => `<div><small>S${n}</small><span class="mono">—</span></div>`).join('')}</div>
       <div class="focus-card" data-focus>
         <div class="who"><b data-fname>—</b><span data-fteam>—</span></div>
         <div class="arch" data-farch></div>
@@ -183,6 +184,13 @@ export class Hud {
     this.q('pos').textContent = `P${focus.position}/${snap.cars.length}`;
     this.q('last').textContent = fmtLap(focus.lastLap);
     this.q('best').textContent = fmtLap(focus.bestLap);
+    this.q('best').classList.toggle('purple', this.fastest?.id === focus.id);
+    // Sector splits: purple overall best, green personal best, yellow slower, red track limits.
+    [...this.q('sectors').children].forEach((el, k) => {
+      const t = focus.sectors?.[k], st = focus.sectorState?.[k];
+      el.className = t == null ? '' : st ?? '';
+      el.lastElementChild.textContent = t == null ? '—' : t.toFixed(3);
+    });
 
     // Tyres + fuel.
     const tyreEls = this.q('tyres').children;

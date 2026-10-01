@@ -69,7 +69,7 @@ export class EnduranceRace {
       c.place(track, track.gridS - Math.floor(i / 2) * rowSpacing, i % 2 ? -laneOff : laneOff);
       c.fuelScale = this.cal.fuelScale; c.fuel = TANK_LITRES;
       this.fitTyres(c, this.startCompound);
-      c.race = { progress: -gridToFinish - Math.floor(i / 2) * rowSpacing, previousS: c.s, lap: 1, lastLap: null, bestLap: null, lapStart: 0, sector: 0, valid: true, sectors: [], finishTime: null, offtrack: 0, pitLap: false };
+      c.race = { progress: -gridToFinish - Math.floor(i / 2) * rowSpacing, previousS: c.s, lap: 1, lastLap: null, bestLap: null, lapStart: 0, sector: 0, valid: true, sectors: [], secMark: 0, secValid: true, secCur: [null, null, null], secState: [null, null, null], secBest: [null, null, null], finishTime: null, offtrack: 0, pitLap: false };
       e.pit = null; e.pitPlan = null; e.stints = [{ driver: e.active, fromLap: 1, toLap: null }];
       for (const b of e.bridges) b.reset?.({ cars: this.cars, track, line: this.lineFor(c) });
     });
@@ -257,12 +257,13 @@ export class EnduranceRace {
     const delta = wrap(c.s - r.previousS + track.length / 2, track.length) - track.length / 2;
     r.previousS = c.s;
     if (Math.abs(delta) < 20) r.progress += delta;
-    if (previousProgress < 0 && r.progress >= 0) { r.lapStart = this.time; r.valid = true; }
+    if (previousProgress < 0 && r.progress >= 0) { r.lapStart = r.secMark = this.time; r.valid = r.secValid = true; }
     // Kerbs count as track: a lap is lost only with the car centre beyond the kerb.
-    if (!e.pit && !halfCarInside(c.lateral, track.halfWidth + (track.curbWidth ?? 0))) { r.valid = false; r.offtrack += 1 / 120; }
+    if (!e.pit && !halfCarInside(c.lateral, track.halfWidth + (track.curbWidth ?? 0))) { r.valid = r.secValid = false; r.offtrack += 1 / 120; }
     const totalSectors = Math.floor(Math.max(0, r.progress) / (track.length / 3));
     if (totalSectors > r.sector) {
       r.sectors.push(this.time); r.sector = totalSectors;
+      this.sectorTime(e, (totalSectors - 1) % 3);
       if (totalSectors % 3 === 0) {
         r.lastLap = this.time - r.lapStart;
         const clean = r.valid && !r.pitLap && !e.pit && !e.lapHadPit;
@@ -274,6 +275,21 @@ export class EnduranceRace {
         if ((r.lap > this.laps || this.finishedAt != null) && r.finishTime === null) { r.finishTime = this.time; r.finishLaps = r.lap - 1; e.stints.at(-1).toLap = r.lap - 1; }
       }
     }
+  }
+  /** Sector split colours: purple = overall best, green = personal best, yellow = slower, red = track limits. */
+  sectorTime(e, k) {
+    const r = e.car.race, t = this.time - r.secMark;
+    r.secMark = this.time;
+    if (k === 0) { r.secCur[1] = r.secCur[2] = null; r.secState[1] = r.secState[2] = null; }
+    r.secCur[k] = t;
+    const counts = r.secValid && !e.pit && !r.pitLap && !e.lapHadPit;
+    r.secValid = true;
+    if (!counts) { r.secState[k] = e.pit || e.lapHadPit ? 'pit' : 'red'; return; }
+    this.secBest ??= [null, null, null];
+    const overall = this.secBest[k] === null || t < this.secBest[k], personal = r.secBest[k] === null || t < r.secBest[k];
+    if (personal) r.secBest[k] = t;
+    if (overall) this.secBest[k] = t;
+    r.secState[k] = overall ? 'purple' : personal ? 'green' : 'yellow';
   }
   order() {
     return [...this.cars].sort((a, b) => {
@@ -319,7 +335,7 @@ export class EnduranceRace {
           driver: d.id, driverName: d.name, driverKind: d.kind, stops: e.strategist.stops, pit: e.pit?.phase ?? null, boxCalled: Boolean(e.pitPlan || e.strategist.request),
           serviceLeft: e.pit?.phase === 'service' ? e.pit.serviceLeft : 0, serviceTotal: e.pit?.serviceTotal ?? 0,
           active: e.active, fuelPerLap: e.strategist.fuelPerLap, reason: e.strategist.reason, request: e.strategist.request,
-          plan: e.pitPlan, stints: e.stints, pitStopTime: e.pitStopTime, finishTime: c.race.finishTime, valid: c.race.valid,
+          plan: e.pitPlan, stints: e.stints, pitStopTime: e.pitStopTime, finishTime: c.race.finishTime, valid: c.race.valid, sectors: c.race.secCur.slice(), sectorState: c.race.secState.map((st, k) => (st === 'purple' && c.race.secCur[k] > this.secBest?.[k] ? 'green' : st)), sectorBest: c.race.secBest.slice(),
           coDriving: Boolean(e.bridges[e.active]?.assisted)
         };
       }),
