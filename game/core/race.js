@@ -39,7 +39,7 @@ export class EnduranceRace {
     });
     this.entries = teams.map((team, i) => ({
       team, car: this.cars[i], active: team.starter ?? 0,
-      bridges: [], strategist: new TeamStrategist(team, this.cal, this.format),
+      bridges: [], strategist: new TeamStrategist(team, this.cal, this.format, seed, i),
       pit: null, pitPlan: null, pitStopTime: 0, decidedLap: 0,
       stints: [], stintStart: 0, box: this.lane.boxes[i]
     }));
@@ -59,7 +59,7 @@ export class EnduranceRace {
   }
   fitTyres(car, compoundId, warm = false) {
     const c = COMPOUNDS[compoundId];
-    for (const w of car.wheels) w.tyre = createTyre(car.setup.pressure, { compound: c.id, gripScale: c.grip, wearScale: c.wear * this.cal.wearScale, warm });
+    for (const w of car.wheels) w.tyre = createTyre(car.setup.pressure, { compound: c.id, gripScale: c.grip, wearScale: c.wear * this.cal.wearScale, optimum: c.optimum, heat: c.heat, warm });
   }
   reset() {
     const track = this.track, start = track.scenario?.start;
@@ -70,7 +70,9 @@ export class EnduranceRace {
       const c = e.car;
       c.place(track, track.gridS - Math.floor(i / 2) * rowSpacing, i % 2 ? -laneOff : laneOff);
       c.fuelScale = this.cal.fuelScale; c.fuel = TANK_LITRES;
-      this.fitTyres(c, this.startCompound);
+      // All-AI teams pick their own start tyre; a human team starts on the chosen one.
+      const allAi = e.team.drivers.every((d) => d.kind === 'ai');
+      this.fitTyres(c, allAi ? e.strategist.startCompound(this.cal.fuelLaps) : this.startCompound);
       c.race = { progress: -gridToFinish - Math.floor(i / 2) * rowSpacing, previousS: c.s, lap: 1, lastLap: null, bestLap: null, lapStart: 0, sector: 0, valid: true, sectors: [], secMark: 0, secValid: true, secCur: [null, null, null], secState: [null, null, null], secBest: [null, null, null], finishTime: null, offtrack: 0, pitLap: false };
       e.pit = null; e.pitPlan = null; e.stints = [{ driver: e.active, fromLap: 1, toLap: null }];
       for (const b of e.bridges) b.reset?.({ cars: this.cars, track, line: this.lineFor(c) });
@@ -129,8 +131,21 @@ export class EnduranceRace {
   }
   lapsLeft(c) { return this.laps - c.race.lap + 1; }
 
+  primeSeats() {
+    const projections = new Map(this.cars.map((c) => [c.id, this.track.nearest(c.x, c.z)]));
+    const context = { projections, order: this.order(), totalLaps: this.laps, mode: 'race', time: this.time, paceObjective: 'race' };
+    for (const e of this.entries) e.bridges[e.active].prime?.(e.car, this.cars, context);
+  }
+
   step(dt) {
-    if (this.phase === 'countdown') { this.countdown -= dt; if (this.countdown <= 0) this.phase = 'racing'; return; }
+    if (this.phase === 'countdown') {
+      this.countdown -= dt;
+      // Async seats query their controller during the lights so every car
+      // already holds launch controls at green instead of waiting a round trip.
+      if (this.countdown < 1.5) this.primeSeats();
+      if (this.countdown <= 0) this.phase = 'racing';
+      return;
+    }
     if (this.phase !== 'racing') return;
     this.time += dt;
     this.weather.step(dt); this.weather.apply(this.track);

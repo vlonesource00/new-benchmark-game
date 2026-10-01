@@ -7,13 +7,13 @@
 import { PACE_PROFILES } from './pace-profiles.js';
 
 export const DIFFICULTIES = Object.freeze([
-  { id: 'rookie',  label: 'ROOKIE',  k: 0.78, blurb: 'Rivals brake early and carry little speed.' },
-  { id: 'amateur', label: 'AMATEUR', k: 0.85, blurb: 'Club pace. Clean laps win races.' },
-  { id: 'pro',     label: 'PRO',     k: 0.91, blurb: 'Quick rivals. Small mistakes cost places.' },
-  { id: 'expert',  label: 'EXPERT',  k: 0.96, blurb: 'Near the limit, most of the lap.' },
+  { id: 'rookie',  label: 'ROOKIE',  k: 0.87, blurb: 'Rivals brake early and carry little speed.' },
+  { id: 'amateur', label: 'AMATEUR', k: 0.92, blurb: 'Club pace. Clean laps win races.' },
+  { id: 'pro',     label: 'PRO',     k: 0.955, blurb: 'Quick rivals. Small mistakes cost places.' },
+  { id: 'expert',  label: 'EXPERT',  k: 0.98, blurb: 'Near the limit, most of the lap.' },
   { id: 'alien',   label: 'ALIEN',   k: 1,    blurb: 'Unrestricted AI. Good luck.' }
 ]);
-export const difficultyById = (id) => DIFFICULTIES.find((d) => d.id === id) ?? DIFFICULTIES[1];
+export const difficultyById = (id) => DIFFICULTIES.find((d) => d.id === id) ?? DIFFICULTIES[2];
 
 export class PaceGovernor {
   /** `profile` = { bin, v: [m/s per bin] } or null (governor idle). */
@@ -40,15 +40,15 @@ export class PaceGovernor {
   /**
    * Tyre and weather management. Core temperature is the slow variable
    * (minutes) that decides the grip of the whole stint, so the pace target
-   * comes off it: flat out up to MANAGE_CORE, then 0.4% per °C over.
+   * comes off it: flat out up to MANAGE_OVER past the compound's window, then 0.4% per °C over.
    * Corner speed scales slip power roughly with k³, so a few percent is
    * enough to hold the tyres at their window instead of cooking them.
    */
   manageStep(car, dt) {
-    let core = 0, surface = 0;
-    for (const w of car.wheels) { core = Math.max(core, w.tyre.core); surface = Math.max(surface, w.tyre.surface); }
+    let core = 0, over = -Infinity, surface = 0;
+    for (const w of car.wheels) { core = Math.max(core, w.tyre.core); over = Math.max(over, w.tyre.core - (w.tyre.optimum ?? 85)); surface = Math.max(surface, w.tyre.surface); }
     this.hot = core;
-    const target = this.push ? 1 : Math.max(MANAGE_FLOOR, Math.min(1, 1 - MANAGE_GAIN * (core - MANAGE_CORE) - 0.0015 * Math.max(0, surface - 125)));
+    const target = this.push ? 1 : Math.max(MANAGE_FLOOR, Math.min(1, 1 - MANAGE_GAIN * (over - MANAGE_OVER) - 0.0015 * Math.max(0, surface - 125)));
     this.manage += (target - this.manage) * Math.min(1, dt / 3);
     const wet = this.track.wetness ?? 0;
     this.grip = Math.sqrt(Math.max(0.5, 1 - wet * 0.36));
@@ -69,9 +69,9 @@ export class PaceGovernor {
   }
 }
 
-// Tyre core temperature (°C) the AIs run flat out up to, and the slowest they back off to.
-export const MANAGE_CORE = Number(globalThis.process?.env?.MANAGE_CORE ?? 100);
+// Degrees over the compound's optimum the AIs run flat out up to, and the slowest they back off to.
 const env = globalThis.process?.env ?? {};
+export const MANAGE_OVER = Number(env.MANAGE_OVER ?? 14);
 export const MANAGE_FLOOR = Number(env.MANAGE_FLOOR ?? 0.92);
 const MANAGE_GAIN = Number(env.MANAGE_GAIN ?? 0.004);
 const SPIN_LIMIT = Number(env.SPIN_LIMIT ?? 0.09);

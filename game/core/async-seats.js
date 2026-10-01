@@ -77,6 +77,15 @@ export class AsyncSeats {
         }
         if (this.controls) car.controls = this.controls;
         this.pendingDt += dt;
+        this.post(context);
+      },
+      /** Countdown: ask the controller for launch controls without driving. */
+      prime(car, cars, context) {
+        if (host.failed) return;
+        this.pendingDt = 1 / 120;
+        this.post(context);
+      },
+      post(context) {
         if (this.inFlight) return;
         this.inFlight = true; this.seq = ++seats.seq; this.sentAt = performance.now();
         host.worker.postMessage({

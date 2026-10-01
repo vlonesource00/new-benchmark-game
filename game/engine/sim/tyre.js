@@ -1,10 +1,12 @@
 import { clamp, damp } from './math.js';
 
-// Game fork: compounds scale peak grip and wear rate; `wearScale` also carries
-// the per-race wear multiplier so short races still force a tyre decision.
-export function createTyre(pressure = 1.65, { compound = 'medium', gripScale = 1, wearScale = 1, warm = false } = {}) {
+// Game fork: compounds scale peak grip and wear rate, and each has its own
+// working window (`optimum` core temperature) and heat build-up (`heat`, on
+// slip power); `wearScale` also carries the per-race wear multiplier so short
+// races still force a tyre decision.
+export function createTyre(pressure = 1.65, { compound = 'medium', gripScale = 1, wearScale = 1, optimum = 85, heat = 1, warm = false } = {}) {
   const t = warm ? 88 : 72;
-  return { compound, gripScale, wearScale, surface: t + 4, core: t, inner: t + 5, outer: t + 3, coldPressure: pressure, pressure: pressure, wear: 0, alpha: 0, kappa: 0, fx: 0, fy: 0, utilisation: 0, slipPower: 0 };
+  return { compound, gripScale, wearScale, optimum, heat, surface: t + 4, core: t, inner: t + 5, outer: t + 3, coldPressure: pressure, pressure: pressure, wear: 0, alpha: 0, kappa: 0, fx: 0, fy: 0, utilisation: 0, slipPower: 0 };
 }
 
 // Gentle linear fade, then a cliff past ~72% wear.
@@ -12,7 +14,7 @@ export function wearGrip(w) { return 1 - 0.10 * w - 1.2 * Math.max(0, w - 0.72) 
 
 // Shared by the force solver and the driver's performance estimator.
 export function tyreGrip(t, load) {
-  return 1.48 * clamp(1 - ((t.core - 85) / 105) ** 2, .65, 1)
+  return 1.48 * clamp(1 - ((t.core - (t.optimum ?? 85)) / 105) ** 2, .65, 1)
     * clamp(1 - Math.abs(t.pressure - 2.15) * .13, .8, 1)
     * clamp(1 - .13 * Math.log(Math.max(.1, load / 3300)), .68, 1.18)
     * wearGrip(t.wear) * (t.gripScale ?? 1);
@@ -37,8 +39,10 @@ export function tyreForce(t, { vx, vy, omega, radius, load, grip, camber = -0.03
   const sliding = Math.abs(t.fx * (omega * radius - vx)) + Math.abs(t.fy * vy);
   t.slipPower = clamp(sliding, 0, 180000);
   const rolling = load * Math.abs(vx) * 0.012;
-  const cooling = (t.surface - ambient) * (23 + Math.abs(vx) * 1.1);
-  t.surface = clamp(t.surface + (t.slipPower * 0.55 + rolling - cooling - (t.surface - t.core) * 75) / 6000 * dt, ambient, 210);
+  // Convective cooling sized so a stint at racing pace settles the core near
+  // its window (~95 °C on mediums) instead of climbing all stint.
+  const cooling = (t.surface - ambient) * (46 + Math.abs(vx) * 2.2);
+  t.surface = clamp(t.surface + (t.slipPower * 0.55 * (t.heat ?? 1) + rolling - cooling - (t.surface - t.core) * 75) / 6000 * dt, ambient, 210);
   t.core = clamp(t.core + ((t.surface - t.core) * 75 + rolling * 0.3 - (t.core - ambient) * 4) / 18000 * dt, ambient, 170);
   t.inner = t.surface + Math.abs(camber) * 75;
   t.outer = t.surface - Math.abs(camber) * 45;

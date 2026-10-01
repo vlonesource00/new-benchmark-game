@@ -7,8 +7,9 @@ import { COMPOUNDS, TANK_LITRES, WEAR_CLIFF } from './rules.js';
  * (box request, compound, swap, fuel).
  */
 export class TeamStrategist {
-  constructor(team, cal, format) {
+  constructor(team, cal, format, seed = 7, index = 0) {
     this.team = team; this.cal = cal; this.format = format;
+    this.style = strategyStyle(seed, index);
     this.fuelPerLap = cal.lapFuel;
     this.wearPerLap = { ...Object.fromEntries(Object.values(COMPOUNDS).map((c) => [c.id, WEAR_CLIFF * c.wear / cal.tyreLaps])) };
     this.stops = 0; this.swaps = 0; this.boxThisLap = false; this.reason = '';
@@ -17,7 +18,7 @@ export class TeamStrategist {
     this.stintLaps = 0;
     this.stintBest = null; this.lastLap = null;
     // Time a tyre stop costs over staying out: lane transit plus the change itself.
-    this.stopLoss = PIT_LANE_LOSS_S + cal.tyreChangeS;
+    this.stopLoss = (PIT_LANE_LOSS_S + cal.tyreChangeS) * this.style.patience;
   }
   compoundLife(id) { return (WEAR_CLIFF + 0.06) / this.wearPerLap[id]; }
   /** Called when the car completes a lap (not an in/out lap). */
@@ -50,6 +51,9 @@ export class TeamStrategist {
     if (lapsLeft <= 1 && !this.request) { this.boxThisLap = false; this.reason = 'FINAL LAP'; return this.plan = null; }
     // Box now when the car cannot complete the next full lap with margin.
     if (fuelLaps < 1.15 && fuelLaps < lapsLeft - 0.9) reasons.push('FUEL');
+    // Undercut: box a lap or two early when one tank still reaches the flag.
+    else if (aiDriving && this.style.undercut > 0 && this.stops < this.format.mandatoryStops && fuelLaps < 1.15 + this.style.undercut
+      && fuelLaps < lapsLeft - 0.9 && (lapsLeft - 1 + 0.35) * this.fuelPerLap <= TANK_LITRES) reasons.push('UNDERCUT');
     if (wear + this.wearPerLap[id] * 1.05 > WEAR_CLIFF + 0.05 && lapsLeft > 1) reasons.push('TYRES');
     // An AI stint boxes for fresh tyres once the time already being lost, held
     // over the laps still to run, outweighs the stop (the loss only grows).
@@ -72,7 +76,7 @@ export class TeamStrategist {
     let tyres = wear + this.wearPerLap[id] * stintLaps > WEAR_CLIFF + 0.04 || wear > 0.4 || this.paceLoss() * after > this.cal.tyreChangeS + 2;
     let compound = id;
     if (tyres) {
-      compound = ['soft', 'medium', 'hard'].find((c) => this.compoundLife(c) >= stintLaps) ?? 'hard';
+      compound = this.pickCompound(stintLaps);
     }
     const drivers = this.team.drivers.length;
     let swap = drivers > 1 && (this.format.mandatorySwap && this.swaps === 0 || this.team.drivers.every((d) => d.kind === 'ai') || this.stintBalanced());
@@ -84,9 +88,40 @@ export class TeamStrategist {
     }
     return { litres, tyres, compound, swap };
   }
+  /**
+   * Softest compound that lasts the stint with this team's margin: aggressive
+   * teams stretch a soft, conservative ones take a step harder than needed.
+   */
+  pickCompound(stintLaps) {
+    const ids = ['soft', 'medium', 'hard'], a = this.style.aggression;
+    let i = ids.findIndex((c) => this.compoundLife(c) >= stintLaps * (1.05 - 0.15 * a));
+    if (i < 0) return 'hard';
+    if (a < -0.4 && i < 2) i += 1;
+    return ids[i];
+  }
+  /** Compound an all-AI team starts on, for a first stint of `laps`. */
+  startCompound(laps) { return this.pickCompound(laps); }
   // Human-led teams hand the car to the AI for the middle stint of long races.
   stintBalanced() { return this.stintLaps >= Math.ceil(this.cal.laps / 2); }
   stopDone(plan) { this.stops += 1; if (plan.swap) this.swaps += 1; this.request = null; this.boxThisLap = false; this.resetMark(); }
+}
+
+/**
+ * Per-team strategy personality, fixed by the race seed: how much margin the
+ * team wants on a tyre (`aggression`, -1..1), how long it tolerates a fading
+ * stint before boxing (`patience`, scales the PACE trigger) and how many laps
+ * early it will come in for its stop (`undercut`). Rotating through three base
+ * styles keeps any six-team grid split across strategies.
+ */
+export function strategyStyle(seed, index) {
+  let h = (Math.imul((seed | 0) ^ 0x9e3779b9, 0x85ebca6b) + Math.imul(index + 1, 0xc2b2ae35)) >>> 0;
+  const rnd = () => { h = Math.imul(h ^ (h >>> 15), 0x2c1b3c6d) >>> 0; h = (h ^ (h + Math.imul(h ^ (h >>> 7), 0x297a2d39))) >>> 0; return ((h ^ (h >>> 14)) >>> 0) / 4294967296; };
+  const base = [{ aggression: 0.8, patience: 0.75, undercut: 2.6 }, { aggression: 0, patience: 1, undercut: 1.1 }, { aggression: -0.8, patience: 1.35, undercut: 0 }][(Math.floor(rnd() * 3) + index) % 3];
+  return {
+    aggression: Math.max(-1, Math.min(1, base.aggression + (rnd() - 0.5) * 0.4)),
+    patience: base.patience * (0.9 + rnd() * 0.2),
+    undercut: Math.max(0, base.undercut + (rnd() - 0.5) * 0.8)
+  };
 }
 
 // Lane transit over a racing lap at the same spot, measured on Harbor Ring.

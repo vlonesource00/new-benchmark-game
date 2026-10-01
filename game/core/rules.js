@@ -2,16 +2,17 @@
 // that turns a 5–20 lap race into a genuine fuel / tyre / stint problem.
 
 export const COMPOUNDS = Object.freeze({
-  soft:   Object.freeze({ id: 'soft',   label: 'SOFT',   short: 'S', color: '#ff3b3b', grip: 1.045, wear: 1.65 }),
-  medium: Object.freeze({ id: 'medium', label: 'MEDIUM', short: 'M', color: '#ffd23b', grip: 1.0,   wear: 1.0 }),
-  hard:   Object.freeze({ id: 'hard',   label: 'HARD',   short: 'H', color: '#f2f2f2', grip: 0.968, wear: 0.58 })
+  // optimum = core °C of peak grip; heat = how fast slip warms the tread.
+  soft:   Object.freeze({ id: 'soft',   label: 'SOFT',   short: 'S', color: '#ff3b3b', grip: 1.07, wear: 1.65, optimum: 82, heat: 1.06 }),
+  medium: Object.freeze({ id: 'medium', label: 'MEDIUM', short: 'M', color: '#ffd23b', grip: 1.0,  wear: 1.0,  optimum: 90, heat: 1.0 }),
+  hard:   Object.freeze({ id: 'hard',   label: 'HARD',   short: 'H', color: '#f2f2f2', grip: 0.96, wear: 0.58, optimum: 99, heat: 0.9 })
 });
 export const COMPOUND_IDS = Object.freeze(Object.keys(COMPOUNDS));
 
 // Measured on the unscaled engine (Astra at race pace, Harbor Ring, 120 Hz):
 // fuel burnt and mean medium-tyre wear per metre of racing. See
 // scripts/sim-endurance.mjs --calibrate.
-export const BASELINE = Object.freeze({ fuelPerM: 8.2e-5, wearPerM: 1.01e-7 });
+export const BASELINE = Object.freeze({ fuelPerM: 8.2e-5, wearPerM: 6.3e-8 });
 
 export const TANK_LITRES = 60;
 export const FUEL_KG_PER_L = 0.75;
@@ -31,7 +32,9 @@ export const FORMATS = Object.freeze({
  */
 export function calibrate(track, laps) {
   laps = Math.max(3, Math.min(30, Math.round(laps)));
-  const fuelLaps = clampInt(Math.round(laps * 0.55), 3, 9);
+  // A tank covers about two thirds of the race, so the one-stop window spans
+  // several laps and teams can undercut or run long.
+  const fuelLaps = clampInt(Math.round(laps * 0.68), 3, 9);
   const tyreLaps = Math.max(3, fuelLaps * 1.25);
   const lapFuelBase = BASELINE.fuelPerM * track.length;
   const lapWearBase = BASELINE.wearPerM * track.length;
