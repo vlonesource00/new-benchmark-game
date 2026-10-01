@@ -325,3 +325,23 @@ body.replaying #replay-bug { display: flex; animation: fade-in .3s ease both; }
 .rp-track { height: 3px; background: var(--line); margin: 10px 0 8px; } .rp-track i { display: block; height: 100%; background: var(--ink); }
 .rp-keys { font-size: 11px; letter-spacing: .14em; color: var(--faint); text-transform: uppercase; }
 @keyframes rp-blink { 50% { opacity: .2; } }
+
+/* AI debugger (B) */
+.aidebug { position: absolute; right: 18px; top: 200px; width: 290px; max-height: calc(100vh - 420px); overflow: hidden; background: var(--glass-hi); border-left: 3px solid var(--team, var(--accent)); padding: 10px 12px; font-size: 12px; pointer-events: none; }
+.aidebug .dh { display: flex; justify-content: space-between; align-items: baseline; letter-spacing: .16em; }
+.aidebug .dh b { font-size: 14px; color: var(--accent-2, #ffd166); }
+.aidebug .dh span { color: var(--dim); }
+.aidebug .darch { font-size: 15px; font-weight: 800; font-style: italic; margin: 2px 0 6px; }
+.aidebug .roster { display: flex; flex-direction: column; gap: 1px; margin-bottom: 6px; color: var(--faint); letter-spacing: .08em; }
+.aidebug .roster .on { color: var(--ink); }
+.aidebug .dbar { display: grid; grid-template-columns: 32px 1fr 46px; align-items: center; gap: 6px; margin: 2px 0; }
+.aidebug .dbar i { position: relative; height: 6px; background: var(--line); overflow: hidden; }
+.aidebug .dbar i b { position: absolute; left: 0; top: 0; bottom: 0; }
+.aidebug .dbar i.mid b { width: 3px; background: #fff; transform: translateX(-50%); }
+.aidebug .dbar em { text-align: right; font-style: normal; color: var(--dim); }
+.aidebug dl { display: grid; grid-template-columns: auto 1fr; gap: 1px 10px; margin: 6px 0 0; }
+.aidebug dt { color: var(--faint); }
+.aidebug dd { margin: 0; text-align: right; font-family: 'JetBrains Mono', monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.aidebug .dsub { margin-top: 8px; letter-spacing: .2em; color: var(--dim); border-top: 1px solid var(--line); padding-top: 6px; }
+.aidebug .stats { font-size: 11px; }
+.aidebug .dfoot { margin-top: 8px; color: var(--faint); letter-spacing: .1em; }

@@ -264,8 +264,8 @@ export class Hud {
     this.q('keys').innerHTML = ctx.pitOpen
       ? '<kbd>1</kbd>tyres<kbd>2</kbd>fuel<kbd>3</kbd>driver<kbd>4</kbd>box<kbd>5</kbd>cancel<kbd>P</kbd>close'
       : ctx.driving
-      ? '<kbd>W A S D</kbd>drive<kbd>P</kbd>pit wall<kbd>C</kbd>camera<kbd>T</kbd>telemetry<kbd>− +</kbd>volume<kbd>Esc</kbd>pause'
-      : '<kbd>Tab</kbd>next car<kbd>F</kbd>my team<kbd>P</kbd>pit wall<kbd>C</kbd>camera<kbd>T</kbd>telemetry<kbd>− +</kbd>volume<kbd>Esc</kbd>pause · speed';
+      ? '<kbd>W A S D</kbd>drive<kbd>P</kbd>pit wall<kbd>C</kbd>camera<kbd>T</kbd>telemetry<kbd>B</kbd>AI debug<kbd>− +</kbd>volume<kbd>Esc</kbd>pause'
+      : '<kbd>Tab</kbd>next car<kbd>F</kbd>my team<kbd>P</kbd>pit wall<kbd>C</kbd>camera<kbd>T</kbd>telemetry<kbd>B</kbd>AI debug<kbd>− +</kbd>volume<kbd>Esc</kbd>pause · speed';
   }
 
   /** Per-frame dash from the interpolated proxy car. */

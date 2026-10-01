@@ -27,6 +27,7 @@ import { Weather } from './core/weather.js';
 import { PlayerInput } from './ui/input.js';
 import { renderMenu, renderSetup, renderDrivers, renderSettings, renderLoading, setLoading, renderResults } from './ui/menus.js';
 import { Hud } from './ui/hud.js';
+import { AiDebugPanel } from './ui/ai-debug.js';
 import { TelemetryLog, renderTelemetry } from './ui/telemetry.js';
 import { renderPit, renderPause, pitOptions } from './ui/overlays.js';
 
@@ -97,6 +98,7 @@ function buildWorld(trackId) {
 const input = new PlayerInput();
 const hud = new Hud($('#screen-race'));
 hud.cue = (name) => audio.cue(name);
+const aiDebug = new AiDebugPanel($('#screen-race'));
 addEventListener('pointerdown', (e) => { if (e.target.closest?.('button, .menu-item, .track-card')) audio.cue('click'); });
 const telemetry = new TelemetryLog();
 const setup = load('pe.setup', { trackId: 'harbor-ring', formatId: 'classic', laps: FORMATS.classic.laps, teamCount: 6, drive: true, playerName: 'YOU', startCompound: 'medium', assist: true, gearbox: 'auto', startTime: 'track', dayCycle: true, weather: 'clear', seed: 20260930, difficulty: 'amateur' });
@@ -131,7 +133,7 @@ function setOverlay(name) {
 
 const humans = () => (setup.drive ? [{ id: PLAYER_ID, name: setup.playerName || 'YOU' }] : []);
 function redraw() {
-  teams = drawTeams({ teamCount: setup.teamCount, humans: humans(), seed: setup.seed });
+  teams = drawTeams({ teamCount: setup.teamCount, humans: humans(), seed: setup.seed, coDriver: setup.coDriver });
   teamsById = Object.fromEntries(teams.map((t) => [t.id, t]));
 }
 
@@ -191,7 +193,7 @@ async function startRace() {
   telemetry.reset(); hud.reset(); audio.setTrack(def.id);
   setLoading($('#screen-loading'), 0.25, 'Seating the drivers…');
   try {
-    seats = new AsyncSeats(def.id);
+    seats = new AsyncSeats(def.id); seats.wantDebug = aiDebug.open;
     race = new EnduranceRace({ track: new Track(def.scenario), teams, format: FORMATS[setup.formatId] ?? FORMATS.custom, laps: setup.laps, startCompound: setup.startCompound ?? 'medium', difficulty: difficultyById(setup.difficulty).k, weather: setup.weather ?? 'clear', seed: setup.seed, makeBridge: seats.factory() });
     await seats.start(race);
     world.setPitBoxes?.(race.lane, teams);
@@ -227,6 +229,7 @@ function publishSnapshot() {
   onSnapshot();
   if (pitOpen && !(lastSnapPit = (lastSnapPit + 1) % 5)) drawPit();
   if (overlay === 'telemetry') drawTelemetry();
+  aiDebug.update(race, focusId, teamsById);
 }
 
 function onFinished() {
@@ -411,6 +414,7 @@ input.on((action) => {
   }
   if (action === 'telemetry') { if (overlay === 'telemetry') closeTelemetry(); else if (!overlay || overlay === 'pause') openTelemetry(); return; }
   if (action === 'volDown' || action === 'volUp') { setVolume(settings.volume + (action === 'volUp' ? 0.05 : -0.05)); return; }
+  if (action === 'aiDebug') { const on = aiDebug.toggle(); if (seats) seats.wantDebug = on; aiDebug.update(race, focusId, teamsById); return; }
   if (action === 'mute') { toast(audio.toggle() ? 'Sound on' : 'Sound muted', 1200); return; }
   if (overlay) return;
   if (action === 'pit') { if (pitOpen) setPitOpen(false); else openPit(); return; }

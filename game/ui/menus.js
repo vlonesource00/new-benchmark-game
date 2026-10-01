@@ -27,7 +27,7 @@ export function renderMenu(el, act) {
     <div class="menu-brand">
       <div class="kicker">Multi-architecture endurance racing</div>
       <h1>PHANTOM<em>ENDURANCE</em></h1>
-      <p>Seven racing AIs. Random teammates. Fuel, tyres, pit stops and driver swaps — share a car with a machine and bring it home.</p>
+      <p>Four racing AIs. Pick your co-driver or draw one. Fuel, tyres, pit stops and driver swaps — share a car with a machine and bring it home.</p>
     </div>
     <nav class="menu-list">
       <button class="menu-item" data-go="setup">Quick Race <small>Endurance</small></button>
@@ -78,6 +78,7 @@ export function renderSetup(el, s, teams, outlines, act) {
             <div class="row"><label>Role<span class="hint">Drive a stint with an AI teammate, or run the pit wall and watch</span></label>
               ${seg('drive', [[true, 'Driver'], [false, 'Team principal']], s.drive)}</div>
             <div class="row"><label>Name</label><input type="text" maxlength="12" value="${esc(s.playerName)}" data-name ${s.drive ? '' : 'disabled'}></div>
+            <div class="row"><label>Co-driver<span class="hint">The AI that drives your car while you rest</span></label>${seg('coDriver', [['random', 'Random'], ...AI_DRIVERS.map((d) => [d.id, d.name])], s.coDriver ?? 'random')}</div>
             <div class="row"><label>Steering assist<span class="hint">Speed-sensitive lock and counter-steer</span></label>${seg('assist', [[true, 'On'], [false, 'Off']], s.assist)}</div>
             <div class="row"><label>Gearbox<span class="hint">Manual: E / Q or the bumpers to shift</span></label>${seg('gearbox', [['auto', 'Auto'], ['manual', 'Manual']], s.gearbox ?? 'auto')}</div>
           </div>

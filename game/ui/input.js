@@ -5,7 +5,7 @@
 import { gamepadState } from '../engine/sim/gamepad.js';
 
 const ACTION_KEYS = {
-  Escape: 'pause', KeyP: 'pit', KeyT: 'telemetry', KeyC: 'camera', Tab: 'focusNext',
+  Escape: 'pause', KeyP: 'pit', KeyT: 'telemetry', KeyC: 'camera', KeyB: 'aiDebug', Tab: 'focusNext',
   BracketRight: 'focusNext', BracketLeft: 'focusPrev', KeyM: 'mute', KeyF: 'focusMine', Enter: 'confirm',
   Digit1: 'pitTyre', Digit2: 'pitFuel', Digit3: 'pitSwap', Digit4: 'pitBox', Digit5: 'pitCancel',
   Numpad1: 'pitTyre', Numpad2: 'pitFuel', Numpad3: 'pitSwap', Numpad4: 'pitBox', Numpad5: 'pitCancel',

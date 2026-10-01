@@ -22,6 +22,7 @@ export class AsyncSeats {
     this.trackId = trackId;
     this.hosts = [];
     this.snapTime = -1; this.snap = null; this.seq = 0;
+    this.wantDebug = false;   // set while the debugger panel is open
   }
 
   /** `makeBridge` for EnduranceRace. */
@@ -63,10 +64,11 @@ export class AsyncSeats {
     let local = null;
     const seat = {
       driverId: driver.id, errors: 0, remote: true,
-      seq: -1, inFlight: false, controls: null, pendingDt: 0, lastLatency: 0, sentAt: 0,
+      seq: -1, inFlight: false, controls: null, pendingDt: 0, lastLatency: 0, sentAt: 0, lastDebug: null,
       receive(data) {
         this.inFlight = false; this.controls = data.controls; this.errors = data.errors;
         this.lastLatency = performance.now() - this.sentAt;
+        if (data.debug) this.lastDebug = data.debug;
       },
       update(car, cars, dt, context) {
         if (host.failed) {
@@ -80,7 +82,8 @@ export class AsyncSeats {
         host.worker.postMessage({
           type: 'step', slot, seq: this.seq, dt: Math.min(0.1, this.pendingDt), time: context.time, laps: context.totalLaps,
           cars: seats.cars(race), wetness: race.track.wetness, tempGrip: race.track.tempGrip,
-          rubber: this.seq % RUBBER_EVERY === 1 ? race.track.rubber : undefined
+          rubber: this.seq % RUBBER_EVERY === 1 ? race.track.rubber : undefined,
+          debug: seats.wantDebug || undefined
         });
         this.pendingDt = 0;
       },
@@ -89,7 +92,7 @@ export class AsyncSeats {
         local?.reset?.({ cars: race.cars, track: race.track, line: race.lineFor(race.cars[index]) });
         if (!host.failed && host.initialised) host.worker.postMessage({ type: 'reset', slot, cars: race.cars.map(snapshotCar) });
       },
-      debug() { return local?.debug?.() ?? { architecture: driver.arch ?? driver.id }; },
+      debug() { return local?.debug?.() ?? this.lastDebug ?? { architecture: driver.arch ?? driver.id }; },
       visualDebug() { return null; }
     };
     host.seats.push(seat);

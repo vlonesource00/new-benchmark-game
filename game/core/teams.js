@@ -2,9 +2,6 @@
 
 export const AI_DRIVERS = Object.freeze([
   { id: 'astra',             name: 'ASTRA',        short: 'AST', arch: 'Tactical planner · chassis rollouts',   anyTrack: true },
-  { id: 'vortex',            name: 'VORTEX',       short: 'VTX', arch: 'Oracle atlas · predictive racecraft',  anyTrack: false },
-  { id: 'nova',              name: 'NOVA',         short: 'NOV', arch: 'Spatial oracle · free-air controller', anyTrack: false },
-  { id: 'gemini-supreme',    name: 'GEMINI v3',    short: 'GM3', arch: 'Coupled MPCC',                         anyTrack: false },
   { id: 'gemini-supreme-v4', name: 'GEMINI v4',    short: 'GM4', arch: 'MPCC v4 · generic line solver',        anyTrack: true },
   { id: 'phantom',           name: 'PHANTOM',      short: 'PHM', arch: 'Ghost imitation · plant model',        anyTrack: true },
   { id: 'phantom-v2',        name: 'PHANTOM v2',   short: 'PH2', arch: 'Ghost v2 · adaptive plant',            anyTrack: true }
@@ -49,7 +46,7 @@ export function shuffle(list, rand) {
  *
  * humans: [{ id: 'p1', name: 'MARTIM', clientId }]
  */
-export function drawTeams({ teamCount = 6, humans = [], seed = Date.now(), trackReady = null, driversPerTeam = 2, humansTogether = false } = {}) {
+export function drawTeams({ teamCount = 6, humans = [], seed = Date.now(), trackReady = null, driversPerTeam = 2, humansTogether = false, coDriver = null } = {}) {
   const rand = mulberry32(seed);
   const pool = AI_DRIVERS.filter((d) => !trackReady || trackReady(d));
   const liveries = shuffle(TEAM_LIVERIES, rand).slice(0, teamCount);
@@ -60,6 +57,12 @@ export function drawTeams({ teamCount = 6, humans = [], seed = Date.now(), track
     const team = humansTogether ? teams[Math.floor(i / driversPerTeam)] : teams[i % teams.length];
     team.drivers.push({ kind: 'human', id: human.id, name: human.name, short: human.name.slice(0, 3).toUpperCase(), clientId: human.clientId ?? null });
   });
+  // The player's chosen co-driver takes the other seat in their car.
+  const pick = pool.find((d) => d.id === coDriver);
+  if (pick && humans.length === 1 && driversPerTeam === 2) {
+    const team = teams.find((t) => t.drivers.length === 1);
+    team?.drivers.push({ kind: 'ai', id: pick.id, name: pick.name, short: pick.short, arch: pick.arch });
+  }
   let bag = [];
   for (const team of teams) {
     while (team.drivers.length < driversPerTeam) {

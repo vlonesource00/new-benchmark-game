@@ -58,7 +58,9 @@ self.onmessage = ({ data }) => {
     const order = [...cars].sort((a, b) => (a.race.finishTime ?? Infinity) - (b.race.finishTime ?? Infinity) || b.race.progress - a.race.progress);
     const context = { projections, order, totalLaps: data.laps, mode: 'race', time: data.time, paceObjective: 'race' };
     bridge.update(car, cars, data.dt, context);
-    self.postMessage({ type: 'controls', seq: data.seq, controls: plain(car.controls), errors: bridge.errors ?? 0 });
+    let debug;
+    if (data.debug) { try { debug = plain(bridge.debug?.()); } catch { debug = undefined; } }
+    self.postMessage({ type: 'controls', seq: data.seq, controls: plain(car.controls), errors: bridge.errors ?? 0, debug });
   } catch (error) {
     self.postMessage({ type: 'fatal', message: String(error?.stack ?? error) });
   }
