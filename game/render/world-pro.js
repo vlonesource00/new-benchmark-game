@@ -3,6 +3,7 @@ import { Sky } from 'three/addons/objects/Sky.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { random, clamp, wrap } from '../engine/sim/math.js';
 import { PitLane } from '../core/pit.js';
+import { PitCrews } from './pit-crew.js';
 import { LIGHTING, wetSurface } from '../engine/render/surfaces.js';
 import { ribbon } from '../engine/render/world.js';
 import {
@@ -476,7 +477,9 @@ export class World {
   /** Team box markings in front of the garages, one per team, in the order of `lane.boxes`. */
   setPitBoxes(lane, teams) {
     if (this.pitBoxes) { this.pitBoxes.traverse((o) => { o.geometry?.dispose(); if (o.material && !o.material.userData.shared) o.material.dispose(); }); this.root.remove(this.pitBoxes); this.pitBoxes = null; }
+    this.crews?.dispose(); this.crews = null;
     if (!lane || !this.lane) return;
+    this.crews = new PitCrews(this.live, this.track, lane, teams);
     const t = this.track, group = this.pitBoxes = new THREE.Group(); group.name = 'Pit boxes'; this.root.add(group);
     const white = std('#f2f1ea', .5, 0, { polygonOffset: true, polygonOffsetFactor: -5, polygonOffsetUnits: -10 }); white.userData.shared = true;
     const len = Math.min(8, lane.d(lane.boxStart, lane.boxEnd) / Math.max(1, teams.length) - 1.2);

@@ -472,6 +472,7 @@ function frame(ms) {
       world.setTimeOfDay(hour, sky?.cloud ?? 0, sky?.rain ?? 0); setHeadlights(world.lamps);
       rain.update(camera.position, paused ? 0 : delta, .5 + (sky?.rain ?? 0) / 1.65);
       world.update(car, replay ? replay.t : snap?.time ?? 0, snap?.phase === 'countdown' ? snap.countdown : 0, false);
+      if (!replay) world.crews?.update(snap, cars, paused ? 0 : delta, camera.position);
       effects.update(cars, paused ? 0 : delta, track, innerHeight);
       const cam = Math.hypot(camera.position.x - car.x, camera.position.y - (car.y ?? 0) - 0.6, camera.position.z - car.z);
       const pit = snap?.cars.find((c) => c.id === car.id)?.pit, pitLane = Boolean(pit) && pit !== 'service';
