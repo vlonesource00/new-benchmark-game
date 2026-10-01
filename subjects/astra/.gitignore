@@ -1,0 +1,12 @@
+node_modules/
+.npm-cache/
+dist/
+artifacts/
+*.log
+.pnpm-store/
+.codex-remote-attachments/
+.env
+.env.*
+!.env.example
+*.pem
+*.key

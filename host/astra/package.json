@@ -1,0 +1,23 @@
+{
+  "name": "astra-motorsport",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 5173",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1 --port 4173",
+    "showcase": "node scripts/showcase.mjs",
+    "test": "node --test tests/*.test.js",
+    "benchmark": "node tests/benchmark.js",
+    "benchmark:quality": "node tests/field-quality.mjs",
+    "test:racecraft": "node tests/field-quality.mjs --check",
+    "test:racecraft:fierce": "node tests/field-quality.mjs --fierce --check",
+    "test:pack": "node tests/pack-benchmark.mjs --check",
+    "test:showcase": "node tests/showcase-quality.mjs --check",
+    "benchmark:long": "node tests/field-quality.mjs --long",
+    "diagnose:ai": "node tests/diagnose-ai.mjs"
+  },
+  "dependencies": { "three": "0.166.1" },
+  "devDependencies": { "vite": "5.4.8" }
+}

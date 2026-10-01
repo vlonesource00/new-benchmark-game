@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Phantom Endurance</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:ital,wght@0,400;0,600;0,700;0,800;1,700;1,800;1,900&family=JetBrains+Mono:wght@500;700&display=swap">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <canvas id="scene"></canvas>
+  <div id="vignette"></div>
+  <div id="ui">
+    <section id="screen-boot" class="screen active">
+      <div class="boot-mark">PHANTOM<span>ENDURANCE</span></div>
+      <div class="boot-bar"><i id="boot-progress"></i></div>
+      <div class="boot-note" id="boot-note">Building circuit…</div>
+    </section>
+    <section id="screen-menu" class="screen"></section>
+    <section id="screen-setup" class="screen"></section>
+    <section id="screen-drivers" class="screen"></section>
+    <section id="screen-settings" class="screen"></section>
+    <section id="screen-loading" class="screen"></section>
+    <section id="screen-results" class="screen"></section>
+    <section id="screen-race" class="screen hud"></section>
+  </div>
+  <div id="overlay-pit" class="pit-panel"></div>
+  <div id="volume-osd"><span>VOL</span><i><b></b></i><output></output></div>
+  <div id="overlay-pause" class="overlay"></div>
+  <div id="overlay-telemetry" class="overlay"></div>
+  <div id="toast"></div>
+  <script type="module" src="./main.js"></script>
+</body>
+</html>

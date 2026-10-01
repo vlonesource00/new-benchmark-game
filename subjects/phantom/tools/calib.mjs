@@ -1,0 +1,11 @@
+import { Track } from '../../../host/astra/src/sim/track.js';
+import { Vehicle } from '../../../host/astra/src/sim/vehicle.js';
+import { seedGhost } from '../src/ghost.js';
+const track = new Track('harbor-ring');
+const g = seedGhost(track);
+const car = new Vehicle(0, 'x', '#000', 'gt');
+const d = g.calibrate(track, car);
+console.log('decel', [10,20,30,40,50,60,70,80].map(v=>v+':'+d[v].toFixed(1)).join(' '));
+g.buildEnvelope();
+console.log('len', track.length, 'halfW', track.halfWidth, 'finishS', track.finishS, 'gridS', track.gridS, 'seed lap', g.lapTime.toFixed(2));
+console.log('apexes', g.apexes.map(i=>i+':'+g.v[i].toFixed(1)).join(' '));

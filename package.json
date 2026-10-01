@@ -1,0 +1,17 @@
+{
+  "name": "phantom-benchmark",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Harbor Ring benchmark: PHANTOM vs Astra, DeepSeek NOVA, Gemini Supreme 3.2 and VORTEX on the shared Astra host.",
+  "scripts": {
+    "sandbox": "vite --config sandbox/vite.config.mjs",
+    "sandbox:build": "vite build --config sandbox/vite.config.mjs",
+    "game": "vite --config game/vite.config.mjs",
+    "game:build": "vite build --config game/vite.config.mjs",
+    "serve": "node scripts/mobile-server.mjs",
+    "benchmark": "node scripts/run-triad.mjs --field penta"
+  },
+  "dependencies": { "three": "0.166.1" },
+  "devDependencies": { "vite": "5.4.8" }
+}

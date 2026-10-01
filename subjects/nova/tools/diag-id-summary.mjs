@@ -1,0 +1,13 @@
+﻿import fs from "node:fs";
+const r = JSON.parse(fs.readFileSync("artifacts/plant-identification-v2.json", "utf8"));
+console.log("circle:", JSON.stringify(r.tests.circle.map(c => c.ok ? `${c.R}:${c.v}(${c.ratio})` : `${c.R}:FAIL`)));
+console.log("capability:", JSON.stringify(r.tests.capability.map(c => `${c.v}:${c.latMax}`)));
+console.log("steerTransient:");
+for (const s of r.tests.steerTransient) console.log(`  v=${s.v} ay=${s.aySteady.toFixed(2)} t63=${s.riseT63Ay} dist=${s.distanceToSteady} K=${s.understeerGrad} util=${s.utilisation.toFixed(2)} aF=${(s.alphaFront*180/Math.PI).toFixed(1)}`);
+console.log("relaxation:", JSON.stringify(r.tests.tyre.relaxation));
+console.log("loadTransfer:", JSON.stringify(r.tests.loadTransfer));
+console.log("driveBins:", JSON.stringify(r.tests.drive.bins));
+console.log("brakeBins:", JSON.stringify(r.tests.brake.bins));
+console.log("coastBins:", JSON.stringify(r.tests.coast.bins));
+console.log("topSpeed:", r.tests.drive.topSpeed);
+console.log("thermal:", JSON.stringify(r.tests.tyre.thermal));

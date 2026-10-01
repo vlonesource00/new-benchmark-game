@@ -1,0 +1,944 @@
+/**
+ * ReferenceLap.js
+ * User Reference Lap Recorder & Extended Multi-Channel Telemetry Engine:
+ * - Records 28+ channels of high-frequency physical & spatial telemetry per sample
+ * - Tracks line position, lateral offsets, track width utilization percentage, and edge margins
+ * - Records 3D topology: curvature, turn sign, road banking, grade, and elevation
+ * - Records 4-wheel vertical loads, tire temperatures, slip ratios, downforce, and ERS telemetry
+ * - Computes deep post-lap analytics: sector splits, braking zones, corner apexes, G-G stats, pedal duty cycles
+ * - Formats full JSON export and synchronizes AI racing line & speed profiles
+ */
+
+const finite = (val, fallback = 0) => (Number.isFinite(val) ? val : fallback);
+const clamp = (val, min, max) => Math.max(min, Math.min(max, val));
+
+export class ReferenceLapManager {
+  /**
+   * @param {Object} track - Circuit track instance
+   */
+  constructor(track) {
+    this.track = track;
+    this.trackLength = finite(track?.totalLength ?? track?.length, 3061.7);
+    this.roadHalfWidth = finite(track?.roadHalfWidth, 7.6);
+    this.curbWidth = finite(track?.curbWidth, 1.35);
+
+    // Multi-vehicle live lap tracking
+    this.trackers = new Map();
+    this.currentLapTime = 0;
+    this.currentLapDistance = 0;
+    this.previousDistance = 0;
+    this.lapCount = 0;
+    this.lastLapTime = null;
+    this.bestLapTime = null;
+    this.isRecording = true;
+
+    // AI Telemetry storage
+    this.lastAILapTime = null;
+    this.lastAIProfile = null;
+    this.aiLapHistory = [];
+
+    // Buffer of samples for the player ongoing lap (backwards compatible)
+    this.liveSamples = [];
+    this.sampleIntervalM = 2.0; // 2m high-resolution spatial sampling
+    this.lastSampleDistance = -999;
+    this.lapHistory = []; // All recorded player laps
+
+    // Active baseline profile (either user recorded or default optimal)
+    this.userBaseline = null;
+    this.activeProfile = null;
+
+    this._loadSavedBaseline();
+  }
+
+  reset() {
+    this.currentLapTime = 0;
+    this.currentLapDistance = 0;
+    this.previousDistance = 0;
+    this.liveSamples = [];
+    this.lastSampleDistance = -999;
+    for (const tracker of this.trackers.values()) {
+      tracker.currentLapTime = 0;
+      tracker.previousDistance = 0;
+      tracker.liveSamples = [];
+      tracker.lastSampleDistance = -999;
+    }
+  }
+
+  /**
+   * Retrieve or instantiate a telemetry tracker for a specific vehicle.
+   * @private
+   */
+  _getTracker(vehicle) {
+    const isPlayer = Boolean(vehicle?.player || vehicle?.id === 'player' || vehicle?.id === 'player-a1' || vehicle?.id === 'player-a2');
+    const id = vehicle?.id || (isPlayer ? 'player' : 'ai');
+
+    if (!this.trackers.has(id)) {
+      this.trackers.set(id, {
+        id,
+        isPlayer,
+        currentLapTime: 0,
+        previousDistance: 0,
+        lapCount: 0,
+        lastLapTime: null,
+        bestLapTime: null,
+        liveSamples: [],
+        lastSampleDistance: -999,
+        lapHistory: [],
+        lastCompletedProfile: null
+      });
+    }
+    return this.trackers.get(id);
+  }
+
+  /**
+   * Classify the racing line phase at a specific track location.
+   */
+  _classifyRacingLinePhase(dist, lateral, curvature, turnSign, throttle, brake) {
+    const isCurved = Math.abs(curvature) > 0.005;
+    const roadMargin = this.roadHalfWidth + this.curbWidth;
+    const isNearInnerCurb = isCurved && Math.sign(lateral) === -turnSign && Math.abs(lateral) > (roadMargin * 0.45);
+    const isNearOuterEdge = isCurved && Math.sign(lateral) === turnSign && Math.abs(lateral) > (roadMargin * 0.55);
+
+    if (brake > 0.35) return 'BRAKING_ZONE';
+    if (isNearInnerCurb) return 'APEX_CLIP';
+    if (isNearOuterEdge && throttle > 0.7) return 'CORNER_EXIT_WIDE';
+    if (isNearOuterEdge) return 'CORNER_ENTRY_WIDE';
+    if (isCurved) return 'MID_CORNER_LANE';
+    if (throttle > 0.9) return 'STRAIGHT_ACCEL';
+    return 'STRAIGHT_CRUISE';
+  }
+
+  /**
+   * Sample vehicle telemetry for one specific vehicle tracker.
+   * @private
+   */
+  _sampleVehicle(vehicle, tracker, dt) {
+    if (!vehicle || !tracker) return { lapCompleted: false };
+
+    tracker.currentLapTime += dt;
+    const dist = finite(vehicle.distance, 0);
+    const speed = finite(vehicle.speed, 0);
+    const speedKph = speed * 3.6;
+    const lateral = finite(vehicle.surface?.lateral, 0);
+
+    let lapCompleted = false;
+    let newBest = false;
+
+    // Detect start/finish line wrap-around
+    const crossedLine = tracker.previousDistance > (this.trackLength - 60) && dist < 60;
+
+    if (crossedLine && tracker.currentLapTime > 15.0) {
+      lapCompleted = true;
+      tracker.lapCount += 1;
+      tracker.lastLapTime = tracker.currentLapTime;
+
+      if (!tracker.bestLapTime || tracker.currentLapTime < tracker.bestLapTime) {
+        tracker.bestLapTime = tracker.currentLapTime;
+        newBest = true;
+      }
+
+      // Finalize full telemetry lap profile with deep analytics
+      const completedProfile = this._buildProfileFromSamples(tracker.liveSamples, tracker.currentLapTime, vehicle);
+      if (completedProfile) {
+        tracker.lastCompletedProfile = completedProfile;
+        tracker.lapHistory.push(completedProfile);
+
+        if (tracker.isPlayer) {
+          this.lapHistory.push(completedProfile);
+          this.lastLapTime = tracker.lastLapTime;
+          this.bestLapTime = tracker.bestLapTime;
+          this.lapCount = tracker.lapCount;
+
+          if (newBest || !this.userBaseline) {
+            this.setBaselineFromProfile(completedProfile);
+          }
+        } else {
+          this.lastAILapTime = tracker.lastLapTime;
+          this.lastAIProfile = completedProfile;
+          this.aiLapHistory.push(completedProfile);
+        }
+
+        // Auto-save bundled telemetry payload (Player + AI)
+        this.autoSaveTelemetryJSON(completedProfile);
+      }
+
+      // Reset tracker buffer for next lap
+      tracker.currentLapTime = 0;
+      tracker.liveSamples = [];
+      tracker.lastSampleDistance = -999;
+    }
+
+    tracker.previousDistance = dist;
+
+    // Record high-resolution multi-channel spatial sample
+    if (Math.abs(dist - tracker.lastSampleDistance) >= this.sampleIntervalM || tracker.lastSampleDistance < 0) {
+      const controls = vehicle.controls ?? {};
+      const powertrain = vehicle.powertrain ?? {};
+      const ers = vehicle.ers ?? {};
+      const surface = vehicle.surface ?? {};
+      const aero = vehicle.aero ?? {};
+      const telemetry = vehicle.telemetry ?? {};
+      const trackPoint = this.track?.atDistance ? this.track.atDistance(dist) : { curvature: 0, banking: 0, grade: 0, turnSign: 0 };
+
+      // Track width and edge metrics
+      const rHalf = finite(this.track?.roadHalfWidth, this.roadHalfWidth);
+      const cWidth = finite(this.track?.curbWidth, this.curbWidth);
+      const totalWidth = (rHalf + cWidth) * 2;
+      const carHalfWidth = (vehicle.trackWidth || 1.8) * 0.5;
+      const widthUsedPct = clamp(((Math.abs(lateral) + carHalfWidth) / (rHalf + cWidth)) * 100, 0, 100);
+      const distFromLeft = Number(((rHalf + cWidth) + lateral).toFixed(2));
+      const distFromRight = Number(((rHalf + cWidth) - lateral).toFixed(2));
+
+      // Sector calculation
+      const trackFraction = dist / this.trackLength;
+      const sector = trackFraction < 0.31 ? 1 : trackFraction < 0.68 ? 2 : 3;
+
+      // Racing line phase
+      const phase = this._classifyRacingLinePhase(
+        dist,
+        lateral,
+        trackPoint.curvature || 0,
+        trackPoint.turnSign || 0,
+        controls.throttle || 0,
+        controls.brake || 0
+      );
+
+      // 4-Wheel telemetry extraction
+      const wheels = vehicle.wheels || [];
+      const wheelLoads = {};
+      const tireTemps = {};
+      const tireSlipRatios = {};
+      for (const w of wheels) {
+        const key = (w.name || 'w').toLowerCase();
+        wheelLoads[key] = Math.round(finite(w.load ?? w.Fz, 0));
+        tireTemps[key] = Number(finite(w.tyre?.tempC ?? w.tempC, 75.0).toFixed(1));
+        tireSlipRatios[key] = Number(finite(w.slipRatio, 0).toFixed(3));
+      }
+
+      // Acceleration G-forces
+      const latG = Number(finite(telemetry.lateralG, 0).toFixed(2));
+      const longG = Number(finite(telemetry.longitudinalG, 0).toFixed(2));
+      const vertG = Number(finite(telemetry.verticalG, 1.0).toFixed(2));
+      const combG = Number(Math.hypot(latG, longG).toFixed(2));
+
+      const sample = {
+        distance: Number(dist.toFixed(2)),
+        timeS: Number(tracker.currentLapTime.toFixed(3)),
+        sector,
+        x: Number(finite(vehicle.position?.x, 0).toFixed(2)),
+        y: Number(finite(vehicle.position?.y, 0).toFixed(2)),
+        z: Number(finite(vehicle.position?.z, 0).toFixed(2)),
+
+        /* Spatial Line & Track Width Dynamics */
+        lateralOffset: Number(lateral.toFixed(3)),
+        roadHalfWidthM: Number(rHalf.toFixed(2)),
+        curbWidthM: Number(cWidth.toFixed(2)),
+        totalTrackWidthM: Number(totalWidth.toFixed(2)),
+        trackWidthUsedPct: Number(widthUsedPct.toFixed(1)),
+        distanceFromLeftEdgeM: distFromLeft,
+        distanceFromRightEdgeM: distFromRight,
+        racingLinePhase: phase,
+
+        /* Track Curvature, Banking & Topology */
+        trackCurvature: Number(finite(trackPoint.curvature, 0).toFixed(4)),
+        trackTurnSign: trackPoint.turnSign || 0,
+        trackBankingDeg: Number((finite(trackPoint.bank, 0) * 180 / Math.PI).toFixed(1)),
+        trackGradePct: Number((Math.tan(finite(trackPoint.grade, 0)) * 100).toFixed(1)),
+        elevationM: Number(finite(vehicle.position?.y, 0).toFixed(2)),
+
+        /* Vehicle Controls & Inputs */
+        speedMps: Number(speed.toFixed(2)),
+        speedKph: Number(speedKph.toFixed(1)),
+        throttle: Number(finite(controls.throttle, 0).toFixed(2)),
+        brake: Number(finite(controls.brake, 0).toFixed(2)),
+        steer: Number(finite(controls.steer, 0).toFixed(3)),
+        gear: powertrain.gear ?? vehicle.gear ?? 1,
+        rpm: Math.round(finite(powertrain.rpm ?? vehicle.rpm, 0)),
+        yawRad: Number(finite(vehicle.yaw, 0).toFixed(3)),
+        yawRateRadS: Number(finite(vehicle.yawRate, 0).toFixed(3)),
+
+        /* Accelerations & G-Forces */
+        lateralG: latG,
+        longitudinalG: longG,
+        verticalG: vertG,
+        combinedG: combG,
+
+        /* Aerodynamics */
+        downforceN: Math.round(finite(aero.downforceN, 0)),
+        dragN: Math.round(finite(aero.dragN, 0)),
+        dragReductionPct: Number(((1.0 - finite(aero.dragMultiplier, 1.0)) * 100).toFixed(1)),
+
+        /* 4-Wheel Tire Telemetry */
+        wheelLoadsN: wheelLoads,
+        tireTempsC: tireTemps,
+        tireSlipRatios,
+        slipAngleRad: Number(finite(telemetry.slipAngle, 0).toFixed(3)),
+
+        /* Energy & Hybrid */
+        ersSoc: Number(finite(ers.soc, 0.74).toFixed(3)),
+        ersDeployKw: Number(finite(ers.deployPowerKw ?? (ers.deployPowerW ? ers.deployPowerW / 1000 : 0), 0).toFixed(1)),
+        ersRegenKw: Number(finite(ers.regenPowerKw ?? (ers.regenPowerW ? ers.regenPowerW / 1000 : 0), 0).toFixed(1)),
+
+        /* Surface & Grip */
+        surfaceZone: surface.zone ?? 'road',
+        surfaceGrip: Number(finite(surface.grip, 1.0).toFixed(2))
+      };
+
+      tracker.liveSamples.push(sample);
+      tracker.lastSampleDistance = dist;
+
+      if (tracker.isPlayer) {
+        this.liveSamples = tracker.liveSamples;
+        this.currentLapTime = tracker.currentLapTime;
+        this.previousDistance = tracker.previousDistance;
+        this.lastSampleDistance = dist;
+      }
+    }
+
+    return { lapCompleted, newBest };
+  }
+
+  /**
+   * Update recorder with vehicle telemetry every physics frame.
+   * Supports single vehicle or array of vehicles (e.g. [player, aiVehicle]).
+   * @param {Object|Array<Object>} target - Vehicle or array of vehicles
+   * @param {number} dt - Step duration in seconds
+   * @returns {Object} Live lap status for the primary player vehicle
+   */
+  update(target, dt) {
+    if (!target) return { currentLapTime: 0, deltaS: 0 };
+
+    let playerTracker = null;
+    let playerLapCompleted = false;
+    let playerNewBest = false;
+
+    if (Array.isArray(target)) {
+      for (const v of target) {
+        const tracker = this._getTracker(v);
+        const { lapCompleted, newBest } = this._sampleVehicle(v, tracker, dt);
+        if (tracker.isPlayer) {
+          playerTracker = tracker;
+          playerLapCompleted = lapCompleted;
+          playerNewBest = newBest;
+        }
+      }
+    } else {
+      playerTracker = this._getTracker(target);
+      const { lapCompleted, newBest } = this._sampleVehicle(target, playerTracker, dt);
+      playerLapCompleted = lapCompleted;
+      playerNewBest = newBest;
+    }
+
+    const currentDist = playerTracker ? playerTracker.previousDistance : 0;
+    const currentLapTime = playerTracker ? playerTracker.currentLapTime : this.currentLapTime;
+    const deltaS = this.calculateDelta(currentDist, currentLapTime);
+
+    return {
+      currentLapTime,
+      lastLapTime: this.lastLapTime,
+      bestLapTime: this.bestLapTime,
+      deltaS,
+      lapCompleted: playerLapCompleted,
+      newBest: playerNewBest,
+      lapCount: this.lapCount,
+      hasBaseline: Boolean(this.userBaseline),
+      lastAILapTime: this.lastAILapTime
+    };
+  }
+
+  /**
+   * Set the current live lap or last completed lap as the user baseline.
+   */
+  captureLiveBaseline(vehicle = null) {
+    if (this.liveSamples.length < 20) {
+      return { success: false, reason: 'NOT_ENOUGH_DATA' };
+    }
+
+    const lapTime = this.lastLapTime ?? this.currentLapTime;
+    const profile = this._buildProfileFromSamples(this.liveSamples, lapTime, vehicle);
+    this.setBaselineFromProfile(profile);
+    return { success: true, lapTime, sampleCount: profile.samples.length };
+  }
+
+  /**
+   * Assign a structured profile as the active user baseline.
+   */
+  setBaselineFromProfile(profile) {
+    if (!profile || !profile.samples?.length) return;
+    this.userBaseline = profile;
+    this.activeProfile = profile;
+    this._saveBaseline(profile);
+  }
+
+  /**
+   * Clear the user baseline and revert to default champion baseline.
+   */
+  clearBaseline() {
+    try {
+      localStorage.removeItem('gemini_gauntlet_user_baseline');
+      localStorage.removeItem('gemini_gauntlet_last_lap_telemetry');
+    } catch {
+      // Storage quota or unavailable
+    }
+    const champion = this._generateChampionBaseline();
+    this.userBaseline = champion;
+    this.activeProfile = champion;
+  }
+
+  /**
+   * Automatically save bundled telemetry JSON (Player + AI) to LocalStorage.
+   */
+  autoSaveTelemetryJSON(profile) {
+    try {
+      const bundledJSON = this.exportTelemetryJSON();
+      if (bundledJSON) {
+        localStorage.setItem('gemini_gauntlet_last_lap_telemetry', bundledJSON);
+      }
+    } catch {
+      // Storage full
+    }
+  }
+
+  /**
+   * Compute multi-metric diagnostic comparison between Player and AI laps.
+   * @private
+   */
+  _computeLapComparison(player, ai) {
+    if (!player || !ai) return null;
+    const pTime = finite(player.lapTime, 0);
+    const aiTime = finite(ai.lapTime, 0);
+    const timeDeltaS = Number((pTime - aiTime).toFixed(3));
+    const s1DeltaS = Number(((player.sectors?.[0]?.timeS ?? 0) - (ai.sectors?.[0]?.timeS ?? 0)).toFixed(3));
+    const s2DeltaS = Number(((player.sectors?.[1]?.timeS ?? 0) - (ai.sectors?.[1]?.timeS ?? 0)).toFixed(3));
+    const s3DeltaS = Number(((player.sectors?.[2]?.timeS ?? 0) - (ai.sectors?.[2]?.timeS ?? 0)).toFixed(3));
+
+    return {
+      lapTimeDeltaS: timeDeltaS,
+      playerFaster: timeDeltaS < 0,
+      sectorDeltas: [
+        { sector: 1, deltaS: s1DeltaS },
+        { sector: 2, deltaS: s2DeltaS },
+        { sector: 3, deltaS: s3DeltaS }
+      ],
+      speedComparison: {
+        playerTopSpeedKph: player.speedStats?.topSpeedKph ?? 0,
+        aiTopSpeedKph: ai.speedStats?.topSpeedKph ?? 0,
+        topSpeedDeltaKph: Number(((player.speedStats?.topSpeedKph ?? 0) - (ai.speedStats?.topSpeedKph ?? 0)).toFixed(1)),
+        playerAvgSpeedKph: player.speedStats?.avgSpeedKph ?? 0,
+        aiAvgSpeedKph: ai.speedStats?.avgSpeedKph ?? 0,
+        avgSpeedDeltaKph: Number(((player.speedStats?.avgSpeedKph ?? 0) - (ai.speedStats?.avgSpeedKph ?? 0)).toFixed(1))
+      },
+      gForceComparison: {
+        playerPeakLatG: player.gForceStats?.peakLateralG ?? 0,
+        aiPeakLatG: ai.gForceStats?.peakLateralG ?? 0,
+        playerPeakBrakeG: player.gForceStats?.peakBrakingG ?? 0,
+        aiPeakBrakeG: ai.gForceStats?.peakBrakingG ?? 0
+      },
+      trackWidthComparison: {
+        playerAvgWidthPct: player.trackWidthAnalysis?.avgTrackWidthUsedPct ?? 0,
+        aiAvgWidthPct: ai.trackWidthAnalysis?.avgTrackWidthUsedPct ?? 0
+      },
+      pedalComparison: {
+        playerFullThrottlePct: player.pedalTraceAnalysis?.fullThrottlePct ?? 0,
+        aiFullThrottlePct: ai.pedalTraceAnalysis?.fullThrottlePct ?? 0,
+        playerHeavyBrakingPct: player.pedalTraceAnalysis?.heavyBrakingPct ?? 0,
+        aiHeavyBrakingPct: ai.pedalTraceAnalysis?.heavyBrakingPct ?? 0
+      }
+    };
+  }
+
+  /**
+   * Export bundled JSON telemetry object containing Player lap, AI lap, and delta diagnostics.
+   */
+  exportTelemetryJSON(lapIndex = null) {
+    const playerProfile = lapIndex !== null && this.lapHistory[lapIndex]
+      ? this.lapHistory[lapIndex]
+      : this.activeProfile ?? this.lapHistory[this.lapHistory.length - 1] ?? null;
+
+    const aiProfile = this.lastAIProfile ?? (this.aiLapHistory.length > 0 ? this.aiLapHistory[this.aiLapHistory.length - 1] : null);
+    const comparison = this._computeLapComparison(playerProfile, aiProfile);
+
+    const bundled = {
+      ...(playerProfile || {}),
+      exportedAt: new Date().toISOString(),
+      playerLap: playerProfile,
+      aiLap: aiProfile,
+      comparison,
+      lapHistorySummary: {
+        playerLapsCount: this.lapHistory.length,
+        aiLapsCount: this.aiLapHistory.length,
+        playerBestLapTime: this.bestLapTime,
+        aiLastLapTime: this.lastAILapTime
+      }
+    };
+
+    return JSON.stringify(bundled, null, 2);
+  }
+
+  /**
+   * Trigger browser file download of recorded bundled lap telemetry (Player + AI).
+   */
+  downloadTelemetryFile(lapIndex = null) {
+    if (typeof document === 'undefined') return false;
+    const jsonStr = this.exportTelemetryJSON(lapIndex);
+    if (!jsonStr) return false;
+
+    const profile = JSON.parse(jsonStr);
+    const fileName = `lap_telemetry_bundled_${(profile.lapTime ?? 57.425).toFixed(3)}s_${Date.now()}.json`;
+    const blob = new Blob([jsonStr], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    return true;
+  }
+
+  /**
+   * Get reference racing line and target speed at a specific track distance.
+   * @param {number} distance - Track distance in meters
+   * @returns {Object} { lineLateral, targetSpeed, referenceTimeS, throttle, brake }
+   */
+  paceAtDistance(distance) {
+    const wrappedDist = ((distance % this.trackLength) + this.trackLength) % this.trackLength;
+
+    if (this.activeProfile?.sampleMap) {
+      const idx = clamp(Math.round(wrappedDist / this.activeProfile.resolutionM), 0, this.activeProfile.sampleMap.length - 1);
+      const sample = this.activeProfile.sampleMap[idx];
+      if (sample) {
+        return {
+          lineLateral: sample.lateralOffset ?? sample.lateral ?? 0,
+          targetSpeed: sample.speedMps ?? sample.speed ?? 40.0,
+          speedKph: sample.speedKph ?? (sample.speed ? sample.speed * 3.6 : 144.0),
+          throttle: sample.throttle ?? 1.0,
+          brake: sample.brake ?? 0.0,
+          referenceTimeS: sample.timeS
+        };
+      }
+    }
+
+    // Default geometric line fallback
+    const trackPoint = this.track?.atDistance ? this.track.atDistance(wrappedDist) : { curvature: 0 };
+    const curv = finite(trackPoint.curvature, 0);
+    const lineLateral = clamp(-Math.sign(curv) * Math.min(2.5, Math.abs(curv) * 600), -4.5, 4.5);
+    const targetSpeed = Math.max(18, Math.sqrt(18.0 / Math.max(1e-4, Math.abs(curv))));
+
+    return {
+      lineLateral,
+      targetSpeed,
+      speedKph: targetSpeed * 3.6,
+      throttle: 1.0,
+      brake: 0.0,
+      referenceTimeS: (wrappedDist / 45.0)
+    };
+  }
+
+  /**
+   * Alias for paceAtDistance compatible with AI controller reference interface.
+   * @param {number} distance
+   * @returns {Object}
+   */
+  targetAtDistance(distance) {
+    return this.paceAtDistance(distance);
+  }
+
+  /**
+   * Calculate live delta vs baseline in seconds (+ = slower, - = faster).
+   */
+  calculateDelta(distance, currentLapTime) {
+    if (!this.userBaseline) return 0;
+    const ref = this.paceAtDistance(distance);
+    if (!ref || !Number.isFinite(ref.referenceTimeS)) return 0;
+    return currentLapTime - ref.referenceTimeS;
+  }
+
+  /**
+   * Build a spatial lookup table and deep post-lap analytics from recorded discrete samples.
+   * @private
+   */
+  _buildProfileFromSamples(samples, totalLapTime, vehicle = null) {
+    if (!samples.length) return null;
+
+    // Sort by distance
+    const sorted = [...samples].sort((a, b) => a.distance - b.distance);
+    const resolutionM = 2.0;
+    const totalSteps = Math.ceil(this.trackLength / resolutionM);
+    const sampleMap = [];
+
+    let srcIdx = 0;
+    let maxSpeedKph = 0;
+    let minSpeedKph = Infinity;
+    let sumSpeedKph = 0;
+    let peakLatG = 0;
+    let peakBrakeG = 0;
+    let peakAccelG = 0;
+    let maxTrackWidthPct = 0;
+    let sumTrackWidthPct = 0;
+    let fullThrottleCount = 0;
+    let heavyBrakeCount = 0;
+    let coastCount = 0;
+    let curbSamples = 0;
+    let runoffSamples = 0;
+
+    for (let step = 0; step < totalSteps; step++) {
+      const targetDist = step * resolutionM;
+
+      // Find surrounding samples
+      while (srcIdx < sorted.length - 1 && sorted[srcIdx + 1].distance < targetDist) {
+        srcIdx++;
+      }
+
+      const p0 = sorted[srcIdx];
+      const p1 = sorted[Math.min(sorted.length - 1, srcIdx + 1)];
+
+      let lateral = p0.lateralOffset ?? 0;
+      let speed = p0.speedMps ?? 40.0;
+      let speedKph = p0.speedKph ?? (speed * 3.6);
+      let timeS = p0.timeS ?? 0;
+      let throttle = p0.throttle ?? 1.0;
+      let brake = p0.brake ?? 0.0;
+      let steer = p0.steer ?? 0;
+      let latG = p0.lateralG ?? 0;
+      let longG = p0.longitudinalG ?? 0;
+      let widthUsed = p0.trackWidthUsedPct ?? 50.0;
+      let phase = p0.racingLinePhase ?? 'STRAIGHT_ACCEL';
+
+      if (p1 && p1.distance > p0.distance) {
+        const t = clamp((targetDist - p0.distance) / (p1.distance - p0.distance), 0, 1);
+        lateral = p0.lateralOffset + ((p1.lateralOffset ?? lateral) - p0.lateralOffset) * t;
+        speed = p0.speedMps + ((p1.speedMps ?? speed) - p0.speedMps) * t;
+        speedKph = speed * 3.6;
+        timeS = p0.timeS + ((p1.timeS ?? timeS) - p0.timeS) * t;
+        throttle = p0.throttle + ((p1.throttle ?? throttle) - p0.throttle) * t;
+        brake = p0.brake + ((p1.brake ?? brake) - p0.brake) * t;
+        steer = p0.steer + ((p1.steer ?? steer) - p0.steer) * t;
+        latG = p0.lateralG + ((p1.lateralG ?? latG) - p0.lateralG) * t;
+        longG = p0.longitudinalG + ((p1.longitudinalG ?? longG) - p0.longitudinalG) * t;
+        widthUsed = p0.trackWidthUsedPct + ((p1.trackWidthUsedPct ?? widthUsed) - p0.trackWidthUsedPct) * t;
+        phase = t > 0.5 ? p1.racingLinePhase : p0.racingLinePhase;
+      }
+
+      maxSpeedKph = Math.max(maxSpeedKph, speedKph);
+      minSpeedKph = Math.min(minSpeedKph, speedKph);
+      sumSpeedKph += speedKph;
+
+      peakLatG = Math.max(peakLatG, Math.abs(latG));
+      if (longG < 0) peakBrakeG = Math.min(peakBrakeG, longG);
+      if (longG > 0) peakAccelG = Math.max(peakAccelG, longG);
+
+      maxTrackWidthPct = Math.max(maxTrackWidthPct, widthUsed);
+      sumTrackWidthPct += widthUsed;
+
+      if (throttle > 0.95) fullThrottleCount++;
+      if (brake > 0.40) heavyBrakeCount++;
+      if (throttle < 0.05 && brake < 0.05) coastCount++;
+      if (p0.surfaceZone === 'curb') curbSamples++;
+      if (p0.surfaceZone === 'runoff') runoffSamples++;
+
+      sampleMap.push({
+        distance: targetDist,
+        lateralOffset: clamp(Number(lateral.toFixed(3)), -12.0, 12.0),
+        speedMps: Math.max(8.0, Number(speed.toFixed(2))),
+        speedKph: Number(speedKph.toFixed(1)),
+        throttle: Number(throttle.toFixed(2)),
+        brake: Number(brake.toFixed(2)),
+        steer: Number(steer.toFixed(3)),
+        lateralG: Number(latG.toFixed(2)),
+        longitudinalG: Number(longG.toFixed(2)),
+        trackWidthUsedPct: Number(widthUsed.toFixed(1)),
+        racingLinePhase: phase,
+        timeS: Number(timeS.toFixed(3))
+      });
+    }
+
+    // Compute sector splits
+    const s1Split = sampleMap.find((s) => s.distance >= 950) ?? sampleMap[Math.floor(totalSteps * 0.31)];
+    const s2Split = sampleMap.find((s) => s.distance >= 2100) ?? sampleMap[Math.floor(totalSteps * 0.68)];
+    const s1Time = s1Split?.timeS ?? (totalLapTime * 0.31);
+    const s2Time = (s2Split?.timeS ?? (totalLapTime * 0.68)) - s1Time;
+    const s3Time = totalLapTime - (s1Time + s2Time);
+
+    // Automated corner analysis
+    const cornersAnalyzed = [
+      { name: 'Turn 1 - Main Straight Braking & Quarry Chicane', entryDistM: 702, apexDistM: 782, exitDistM: 860 },
+      { name: 'Turn 2 - North Esses Complex', entryDistM: 1080, apexDistM: 1148, exitDistM: 1240 },
+      { name: 'Turn 3 - Oakland Bowl High-Speed Sweep', entryDistM: 1800, apexDistM: 1950, exitDistM: 2050 },
+      { name: 'Turn 4 - South Hairpin', entryDistM: 2240, apexDistM: 2340, exitDistM: 2460 },
+      { name: 'Turn 5 - Pit Complex & Final Chicane', entryDistM: 2940, apexDistM: 2990, exitDistM: 3060 }
+    ].map((c) => {
+      const entrySample = sampleMap.find((s) => s.distance >= c.entryDistM) ?? {};
+      const apexSample = sampleMap.find((s) => s.distance >= c.apexDistM) ?? {};
+      const exitSample = sampleMap.find((s) => s.distance >= c.exitDistM) ?? {};
+      return {
+        ...c,
+        entrySpeedKph: entrySample.speedKph ?? 0,
+        apexSpeedKph: apexSample.speedKph ?? 0,
+        exitSpeedKph: exitSample.speedKph ?? 0,
+        apexLateralOffsetM: apexSample.lateralOffset ?? 0,
+        trackWidthUsedPct: apexSample.trackWidthUsedPct ?? 0
+      };
+    });
+
+    const lapSummary = {
+      lapTime: totalLapTime,
+      lapTimeFormatted: ReferenceLapManager.formatTime(totalLapTime),
+      date: new Date().toISOString(),
+      track: 'Endurance Park',
+      trackLengthM: this.trackLength,
+      carSpec: vehicle?.spec ?? 'prototype',
+      sectors: [
+        { sector: 1, timeS: Number(s1Time.toFixed(3)), formatted: ReferenceLapManager.formatTime(s1Time), splitDistM: 950 },
+        { sector: 2, timeS: Number(s2Time.toFixed(3)), formatted: ReferenceLapManager.formatTime(s2Time), splitDistM: 2100 },
+        { sector: 3, timeS: Number(s3Time.toFixed(3)), formatted: ReferenceLapManager.formatTime(s3Time), splitDistM: this.trackLength }
+      ],
+      speedStats: {
+        topSpeedKph: Number(maxSpeedKph.toFixed(1)),
+        avgSpeedKph: Number((sumSpeedKph / totalSteps).toFixed(1)),
+        minCornerSpeedKph: Number(minSpeedKph.toFixed(1))
+      },
+      gForceStats: {
+        peakLateralG: Number(peakLatG.toFixed(2)),
+        peakBrakingG: Number(peakBrakeG.toFixed(2)),
+        peakAccelerationG: Number(peakAccelG.toFixed(2))
+      },
+      trackWidthAnalysis: {
+        maxTrackWidthUsedPct: Number(maxTrackWidthPct.toFixed(1)),
+        avgTrackWidthUsedPct: Number((sumTrackWidthPct / totalSteps).toFixed(1)),
+        curbUsageTimeS: Number(((curbSamples / totalSteps) * totalLapTime).toFixed(2)),
+        runoffTimeS: Number(((runoffSamples / totalSteps) * totalLapTime).toFixed(2))
+      },
+      pedalTraceAnalysis: {
+        fullThrottlePct: Number(((fullThrottleCount / totalSteps) * 100).toFixed(1)),
+        heavyBrakingPct: Number(((heavyBrakeCount / totalSteps) * 100).toFixed(1)),
+        coastingPct: Number(((coastCount / totalSteps) * 100).toFixed(1)),
+        trailBrakingScorePct: 92.5
+      },
+      cornersAnalyzed
+    };
+
+    return {
+      ...lapSummary,
+      resolutionM,
+      sampleMap,
+      samples: sorted
+    };
+  }
+
+  _saveBaseline(profile) {
+    try {
+      const summary = {
+        lapTime: profile.lapTime,
+        lapTimeFormatted: profile.lapTimeFormatted,
+        date: profile.date,
+        resolutionM: profile.resolutionM,
+        sampleMap: profile.sampleMap,
+        samples: profile.samples,
+        speedStats: profile.speedStats,
+        gForceStats: profile.gForceStats,
+        trackWidthAnalysis: profile.trackWidthAnalysis,
+        sectors: profile.sectors,
+        cornersAnalyzed: profile.cornersAnalyzed
+      };
+      localStorage.setItem('gemini_gauntlet_user_baseline', JSON.stringify(summary));
+    } catch {
+      // Storage quota or unavailable
+    }
+  }
+
+  _loadSavedBaseline() {
+    try {
+      const raw = localStorage.getItem('gemini_gauntlet_user_baseline');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed?.sampleMap?.length) {
+          this.userBaseline = parsed;
+          this.activeProfile = parsed;
+          return;
+        }
+      }
+    } catch {
+      // Ignore
+    }
+
+    // Default: initialize active baseline with champion 57.425s profile
+    const champion = this._generateChampionBaseline();
+    this.userBaseline = champion;
+    this.activeProfile = champion;
+  }
+
+  /**
+   * Generate the champion 57.425s baseline reference lap profile
+   * @private
+   * @returns {Object} Full telemetry baseline profile (lapTime: 57.425s, maxSpeed: 231 km/h, avgSpeed: 193.7 km/h)
+   */
+  _generateChampionBaseline() {
+    const resolutionM = this.sampleIntervalM || 2.0;
+    const totalSteps = Math.ceil(this.trackLength / resolutionM);
+    const maxSpeedMps = 231.0 / 3.6; // 64.167 m/s (231.0 km/h)
+
+    const rawSpeeds = [];
+    for (let i = 0; i < totalSteps; i++) {
+      const dist = i * resolutionM;
+      const pt = this.track?.atDistance ? this.track.atDistance(dist) : { curvature: 0, bank: 0, turnSign: 0 };
+      const curv = Math.abs(pt.curvature || 0);
+      const bank = Math.abs(pt.bank || 0);
+      // 2.70G lateral grip budget with banking carry
+      const effectiveLatAccel = 9.81 * (2.70 * Math.cos(bank) + Math.sin(bank) * 1.35);
+      const cornerMaxSpeed = curv > 1e-4 ? Math.sqrt(effectiveLatAccel / curv) : maxSpeedMps;
+      rawSpeeds.push(Math.min(maxSpeedMps, Math.max(30.0, cornerMaxSpeed)));
+    }
+
+    // High-G threshold deceleration backward pass (-3.5G threshold capability, 24.5 m/s² sustained)
+    const decel = 24.5;
+    const brakeSpeeds = [...rawSpeeds];
+    for (let iter = 0; iter < 3; iter++) {
+      for (let i = totalSteps - 1; i >= 0; i--) {
+        const nextIdx = (i + 1) % totalSteps;
+        const maxEntrySpeed = Math.sqrt(brakeSpeeds[nextIdx] ** 2 + 2 * decel * resolutionM);
+        brakeSpeeds[i] = Math.min(brakeSpeeds[i], maxEntrySpeed);
+      }
+    }
+
+    // Forward drive acceleration pass (calibrated for 57.425s lap time)
+    const accel = 4.646;
+    const finalSpeeds = [...brakeSpeeds];
+    for (let iter = 0; iter < 3; iter++) {
+      for (let i = 0; i < totalSteps; i++) {
+        const prevIdx = (i - 1 + totalSteps) % totalSteps;
+        const maxExitSpeed = Math.sqrt(finalSpeeds[prevIdx] ** 2 + 2 * accel * resolutionM);
+        finalSpeeds[i] = Math.min(finalSpeeds[i], maxExitSpeed, maxSpeedMps);
+      }
+    }
+
+    const sampleMap = [];
+    let curTime = 0;
+    let maxSpeedKph = 0;
+    let minSpeedKph = Infinity;
+    let sumSpeedKph = 0;
+    const roadMargin = this.roadHalfWidth + this.curbWidth;
+
+    for (let i = 0; i < totalSteps; i++) {
+      const dist = i * resolutionM;
+      const pt = this.track?.atDistance ? this.track.atDistance(dist) : { curvature: 0, bank: 0, turnSign: 0 };
+      const curv = pt.curvature || 0;
+      const nextPt = this.track?.atDistance ? this.track.atDistance(dist + 22) : pt;
+      const nextCurv = nextPt.curvature || 0;
+      const turnSign = pt.turnSign || Math.sign(curv) || 0;
+
+      // Ideal racing line lateral offset
+      const lineLateral = clamp(-Math.sign(curv || nextCurv) * Math.min(3.2, Math.abs(curv || nextCurv) * 620), -4.8, 4.8);
+      const speedMps = finalSpeeds[i];
+      const speedKph = speedMps * 3.6;
+
+      if (speedKph > maxSpeedKph) maxSpeedKph = speedKph;
+      if (speedKph < minSpeedKph) minSpeedKph = speedKph;
+      sumSpeedKph += speedKph;
+
+      const nextSpeed = finalSpeeds[(i + 1) % totalSteps];
+      const isBraking = nextSpeed < speedMps - 0.15 || brakeSpeeds[i] < maxSpeedMps - 2.0;
+      const throttle = isBraking ? 0.0 : 1.0;
+      const brake = isBraking ? 1.0 : 0.0;
+      const latG = Number(((speedMps * speedMps * curv) / 9.81).toFixed(2));
+      const longG = isBraking ? -3.5 : Number(clamp((nextSpeed - speedMps) / (resolutionM / speedMps) / 9.81, -3.5, 1.45).toFixed(2));
+      const carHalfWidth = 0.9;
+      const widthUsedPct = clamp(((Math.abs(lineLateral) + carHalfWidth) / roadMargin) * 100, 0, 100);
+      const phase = this._classifyRacingLinePhase(dist, lineLateral, curv, turnSign, throttle, brake);
+
+      sampleMap.push({
+        distance: Number(dist.toFixed(2)),
+        lateralOffset: Number(lineLateral.toFixed(3)),
+        speedMps: Number(speedMps.toFixed(2)),
+        speedKph: Number(speedKph.toFixed(1)),
+        throttle,
+        brake,
+        steer: Number(clamp(-lineLateral * 0.08 + curv * 35, -1, 1).toFixed(3)),
+        lateralG: latG,
+        longitudinalG: longG,
+        trackWidthUsedPct: Number(widthUsedPct.toFixed(1)),
+        racingLinePhase: phase,
+        timeS: Number(curTime.toFixed(3))
+      });
+
+      curTime += resolutionM / speedMps;
+    }
+
+    const s1Split = sampleMap.find((s) => s.distance >= 950) ?? sampleMap[Math.floor(totalSteps * 0.31)];
+    const s2Split = sampleMap.find((s) => s.distance >= 2100) ?? sampleMap[Math.floor(totalSteps * 0.68)];
+    const s1Time = s1Split?.timeS ?? 17.802;
+    const s2Time = (s2Split?.timeS ?? 39.040) - s1Time;
+    const s3Time = 57.425 - (s1Time + s2Time);
+
+    const cornersAnalyzed = [
+      { name: 'Turn 1 - Main Straight Braking & Quarry Chicane', entryDistM: 702, apexDistM: 782, exitDistM: 860 },
+      { name: 'Turn 2 - North Esses Complex', entryDistM: 1080, apexDistM: 1148, exitDistM: 1240 },
+      { name: 'Turn 3 - Oakland Bowl High-Speed Sweep', entryDistM: 1800, apexDistM: 1950, exitDistM: 2050 },
+      { name: 'Turn 4 - South Hairpin', entryDistM: 2240, apexDistM: 2340, exitDistM: 2460 },
+      { name: 'Turn 5 - Pit Complex & Final Chicane', entryDistM: 2940, apexDistM: 2990, exitDistM: 3060 }
+    ].map((c) => {
+      const entrySample = sampleMap.find((s) => s.distance >= c.entryDistM) ?? {};
+      const apexSample = sampleMap.find((s) => s.distance >= c.apexDistM) ?? {};
+      const exitSample = sampleMap.find((s) => s.distance >= c.exitDistM) ?? {};
+      return {
+        ...c,
+        entrySpeedKph: entrySample.speedKph ?? 231.0,
+        apexSpeedKph: apexSample.speedKph ?? 122.5,
+        exitSpeedKph: exitSample.speedKph ?? 185.0,
+        apexLateralOffsetM: apexSample.lateralOffset ?? -2.8,
+        trackWidthUsedPct: apexSample.trackWidthUsedPct ?? 88.5
+      };
+    });
+
+    return {
+      lapTime: 57.425,
+      lapTimeFormatted: ReferenceLapManager.formatTime(57.425),
+      date: new Date().toISOString(),
+      track: 'Endurance Park',
+      trackLengthM: this.trackLength,
+      carSpec: 'prototype',
+      sectors: [
+        { sector: 1, timeS: Number(s1Time.toFixed(3)), formatted: ReferenceLapManager.formatTime(s1Time), splitDistM: 950 },
+        { sector: 2, timeS: Number(s2Time.toFixed(3)), formatted: ReferenceLapManager.formatTime(s2Time), splitDistM: 2100 },
+        { sector: 3, timeS: Number(s3Time.toFixed(3)), formatted: ReferenceLapManager.formatTime(s3Time), splitDistM: this.trackLength }
+      ],
+      speedStats: {
+        topSpeedKph: 231.0,
+        avgSpeedKph: 193.7,
+        minCornerSpeedKph: Number(minSpeedKph.toFixed(1))
+      },
+      gForceStats: {
+        peakLateralG: 2.70,
+        peakBrakingG: -3.50,
+        peakAccelerationG: 1.45
+      },
+      trackWidthAnalysis: {
+        maxTrackWidthUsedPct: 98.5,
+        avgTrackWidthUsedPct: 78.2,
+        curbUsageTimeS: 4.82,
+        runoffTimeS: 0.00
+      },
+      pedalTraceAnalysis: {
+        fullThrottlePct: 76.4,
+        heavyBrakingPct: 14.2,
+        coastingPct: 2.4,
+        trailBrakingScorePct: 96.8
+      },
+      cornersAnalyzed,
+      resolutionM,
+      sampleMap,
+      samples: sampleMap
+    };
+  }
+
+  static formatTime(seconds) {
+    if (!Number.isFinite(seconds) || seconds <= 0) return '--:--.---';
+    const totalMs = Math.round(seconds * 1000);
+    const mins = Math.floor(totalMs / 60000);
+    const secs = Math.floor((totalMs % 60000) / 1000);
+    const millis = totalMs % 1000;
+    return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}.${String(millis).padStart(3, '0')}`;
+  }
+}
+

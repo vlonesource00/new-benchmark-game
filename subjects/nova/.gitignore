@@ -1,0 +1,12 @@
+node_modules/
+dist/
+*.log
+.vite/
+.DS_Store
+__pycache__/
+*.pyc
+*.pyo
+artifacts/triad-v2-*/
+artifacts/triad-v2-solo.json
+artifacts/test-diag/
+scratch/

@@ -1,0 +1,13 @@
+﻿import { Track } from "../src/sim/track.js";
+import { buildTrackModel } from "../src/tracks/track-model.js";
+import { buildPath } from "../src/ai/global/path-geometry.js";
+const track = new Track("harbor-ring");
+const model = buildTrackModel(track, { spacing: 0.5 });
+const path = buildPath(model, new Float64Array(model.n));
+const errs = [];
+for (let i = 0; i < model.n; i++) errs.push({ e: Math.abs(path.kappa[i] - model.kappa[i]), s: i * model.ds, mk: model.kappa[i], pk: path.kappa[i] });
+errs.sort((a, b) => b.e - a.e);
+console.log("worst 5:");
+for (const x of errs.slice(0, 5)) console.log(`  s=${x.s.toFixed(0)} model=${x.mk.toFixed(4)} path=${x.pk.toFixed(4)} err=${x.e.toFixed(4)}`);
+const sorted = errs.map(x => x.e).sort((a,b)=>a-b);
+console.log("median", sorted[sorted.length>>1].toFixed(5), "p99", sorted[Math.floor(sorted.length*0.99)].toFixed(5));
