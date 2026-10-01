@@ -35,6 +35,9 @@ const std = (color, roughness = .8, metalness = 0, extra = {}) => new THREE.Mesh
 function add(parent, geo, material, x = 0, y = 0, z = 0, cast = true) {
   const m = new THREE.Mesh(geo, material); m.position.set(x, y, z); m.castShadow = cast; m.receiveShadow = true; parent.add(m); return m;
 }
+// Flat paint and decals lying on the road: pull them towards the camera by depth slope,
+// which is what keeps grazing-angle surfaces from fighting far down the straight.
+const decal = (layer) => ({ polygonOffset: true, polygonOffsetFactor: -layer, polygonOffsetUnits: -2 * layer });
 const box = (p, m, x, y, z, w, h, d, cast = true) => add(p, new THREE.BoxGeometry(w, h, d), m, x, y, z, cast);
 function repeatMaps(maps, rx, ry = rx) {
   const out = {};
@@ -220,7 +223,7 @@ export class World {
         diffuseColor.rgb*=1.+.08*smoothstep(${(t.halfWidth - 1.4).toFixed(2)},${t.halfWidth.toFixed(2)},abs(lat));`);
     };
     this.road = add(this.root, ribbon(t, -t.halfWidth, t.halfWidth, .018, 1400), this.roadMaterial, 0, 0, 0, false);
-    const gravel = repeatMaps(gravelMaps(), .6, .6), lineMat = std('#ecebe2', .55);
+    const gravel = repeatMaps(gravelMaps(), .6, .6), lineMat = std('#ecebe2', .55, 0, decal(2));
     for (const side of [-1, 1]) {
       add(this.root, ribbon(t, side * (t.halfWidth + t.curbWidth), side * (t.halfWidth + t.curbWidth + t.runoffWidth - 1), .005, 900),
         new THREE.MeshStandardMaterial({ ...gravel, roughness: 1, normalScale: new THREE.Vector2(1.4, 1.4), side: THREE.DoubleSide }), 0, 0, 0, false);
@@ -243,20 +246,20 @@ export class World {
       for (const p of [a, b, c, b, d, c]) { positions.push(p.x, .036, p.z); colors.push(1, 1, 1); }
     }
     const rg = new THREE.BufferGeometry(); rg.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3)); rg.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-    this.rubberMesh = add(this.root, rg, new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, opacity: .3, blending: THREE.MultiplyBlending, depthWrite: false, side: THREE.DoubleSide }), 0, 0, 0, false);
+    this.rubberMesh = add(this.root, rg, new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, opacity: .3, blending: THREE.MultiplyBlending, depthWrite: false, side: THREE.DoubleSide, ...decal(3) }), 0, 0, 0, false);
 
     // Start/finish chequer and grid boxes.
     const p = t.at(t.finishS), start = new THREE.Group(); start.position.set(p.x, .03, p.z); start.rotation.y = p.heading; this.root.add(start);
     const chequer = canvasTexture(256, 32, (c) => { for (let x = 0; x < 16; x++) for (let z = 0; z < 2; z++) { c.fillStyle = (x + z) % 2 ? '#1d201f' : '#efeee6'; c.fillRect(x * 16, z * 16, 16, 16); } });
     chequer.magFilter = THREE.NearestFilter;
-    const line = add(start, new THREE.PlaneGeometry(t.width, 1.2), std('#ffffff', .6, 0, { map: chequer }), 0, 0, .3, false); line.rotation.x = -Math.PI / 2;
-    const gridMat = std('#e6e5dc', .6);
+    const line = add(start, new THREE.PlaneGeometry(t.width, 1.2), std('#ffffff', .6, 0, { map: chequer, ...decal(2) }), 0, 0, .3, false); line.rotation.x = -Math.PI / 2;
+    const gridMat = std('#e6e5dc', .6, 0, decal(2));
     for (let i = 0; i < 8; i++) {
       const q = t.at(t.gridS - Math.floor(i / 2) * (t.scenario?.start.rowSpacingM ?? 9.5), (i % 2 ? -1 : 1) * (t.scenario?.start.laneOffsetM ?? 2.3));
       const g = new THREE.Group(); g.position.set(q.x, .04, q.z); g.rotation.y = q.heading; this.root.add(g);
       for (const x of [-1.1, 1.1]) box(g, gridMat, x, 0, -.5, .1, .01, 4.8, false);
       box(g, gridMat, 0, 0, 1.9, 2.3, .01, .12, false);
-      const num = add(g, new THREE.PlaneGeometry(1.1, .55), new THREE.MeshStandardMaterial({ map: signTexture(String(i + 1), '', { bg: '#1a1d1c', fg: '#f0efe6', w: 256, h: 128, italic: false }), roughness: .7 }), 0, .005, 1.35, false);
+      const num = add(g, new THREE.PlaneGeometry(1.1, .55), new THREE.MeshStandardMaterial({ map: signTexture(String(i + 1), '', { bg: '#1a1d1c', fg: '#f0efe6', w: 256, h: 128, italic: false }), roughness: .7, ...decal(3) }), 0, .012, 1.35, false);
       num.rotation.x = -Math.PI / 2; num.rotation.z = Math.PI;
     }
   }

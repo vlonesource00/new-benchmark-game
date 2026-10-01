@@ -96,7 +96,7 @@ const hud = new Hud($('#screen-race'));
 hud.cue = (name) => audio.cue(name);
 addEventListener('pointerdown', (e) => { if (e.target.closest?.('button, .menu-item, .track-card')) audio.cue('click'); });
 const telemetry = new TelemetryLog();
-const setup = load('pe.setup', { trackId: 'harbor-ring', formatId: 'classic', laps: FORMATS.classic.laps, teamCount: 6, drive: true, playerName: 'YOU', startCompound: 'medium', assist: true, seed: 20260930, difficulty: 'amateur' });
+const setup = load('pe.setup', { trackId: 'harbor-ring', formatId: 'classic', laps: FORMATS.classic.laps, teamCount: 6, drive: true, playerName: 'YOU', startCompound: 'medium', assist: true, gearbox: 'auto', seed: 20260930, difficulty: 'amateur' });
 let screen = 'boot', overlay = null;
 let teams = [], teamsById = {}, cars = [], models = [], race = null, seats = null, snap = null, trackLength = 0;
 let focusId = 0, playerTeamId = null, simScale = 1, paused = false, raceActive = false, camModes = ['chase', 'bonnet', 'elevated'], camIndex = 0;
@@ -175,6 +175,7 @@ async function startRace() {
   buildWorld(def.id);
   playerTeamId = teams.find((t) => t.drivers.some((d) => d.kind === 'human'))?.id ?? null;
   input.assist = setup.assist;
+  input.manual = setup.drive && setup.gearbox === 'manual';
   telemetry.reset(); hud.reset(); audio.setTrack(def.id);
   setLoading($('#screen-loading'), 0.25, 'Seating the drivers…');
   try {
@@ -469,6 +470,10 @@ function frame(ms) {
       camera.lookAt(p.x, 4, p.z);
       audio.update(menuProbe, false, []);
     }
+    // Tight near plane only where the camera sits inside the car; elsewhere it costs
+    // depth precision and the flat track layers start fighting in the distance.
+    const near = (replay ? replay.director.mode === 'onboard' : spectator.mode === 'bonnet') ? 0.1 : 0.35;
+    if (camera.near !== near) { camera.near = near; camera.updateProjectionMatrix(); }
     if (canvas.width > 0 && canvas.height > 0) finish.render();
   }
 }

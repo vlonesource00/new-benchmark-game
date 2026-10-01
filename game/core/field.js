@@ -24,16 +24,24 @@ export function createSeatBridge(driver, index, race) {
     case 'human': {
       const assist = createAstraBridge({ line, index, aggression: 0.7 });
       const filter = new HumanFilter();
+      let consumed = null, pending = 0;
       return {
         human: true, driverId: driver.id, errors: 0, assisted: false,
         update(c, all, dt, ctx) {
           // Raw axes from the player's client; stale input hands the car to Astra.
           const input = race.inputFor(driver.id);
           this.assisted = !input;
-          if (input) c.controls = filter.update(c, input, dt, input.assist !== false);
-          else { filter.reset(); assist.update(c, all, dt, ctx); }
+          if (input) {
+            c.controls = filter.update(c, input, dt, input.assist !== false);
+            c.automatic = !input.manual;
+            // Presses made mid-shift wait for the gearbox rather than vanishing.
+            const shifts = input.shifts ?? 0;
+            pending = Math.max(-2, Math.min(2, pending + shifts - (consumed ?? shifts)));
+            consumed = shifts;
+            if (!c.automatic && pending && !(c.shiftTimer > 0)) { c.shift(Math.sign(pending)); pending -= Math.sign(pending); }
+          } else { filter.reset(); c.automatic = true; pending = 0; assist.update(c, all, dt, ctx); }
         },
-        reset(state) { filter.reset(); assist.reset?.(state); },
+        reset(state) { filter.reset(); pending = 0; assist.reset?.(state); },
         debug() { return { architecture: this.assisted ? 'Astra co-driver (input lost)' : 'Human' }; },
         visualDebug() { return null; }
       };

@@ -162,6 +162,7 @@ export class EnduranceRace {
           const blend = p.phase !== 'service' && (p.age ?? 0) < 1;
           let driver = null;
           if (blend) { e.bridges[e.active].update(c, cars, dt, context); driver = { ...c.controls }; }
+          c.automatic = true;
           this.pitStep(e, c, dt);
           if (blend && e.pit === p && p.phase !== 'service') {
             p.age = (p.age ?? 0) + dt;
@@ -172,6 +173,8 @@ export class EnduranceRace {
       }
       else {
         const bridge = e.bridges[e.active];
+        // AI drivers never shift by hand; a car handed over from a manual stint gets its auto box back.
+        if (!bridge.human) c.automatic = true;
         bridge.update(c, cars, dt, context);
         e.governor?.apply(c, s);
         if (c.race.finishTime !== null) c.controls = { ...c.controls, throttle: Math.min(0.35, c.controls.throttle), brake: Math.max(c.controls.brake, c.speed > 25 ? 0.2 : 0) };
