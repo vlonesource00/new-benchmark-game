@@ -42,9 +42,10 @@ export class EnduranceRace {
       pit: null, pitPlan: null, pitStopTime: 0, decidedLap: 0,
       stints: [], stintStart: 0, box: this.lane.boxes[i]
     }));
-    // Difficulty governor on all-AI teams only: a human's own AI co-driver runs flat out.
+    // Difficulty applies to all-AI teams only: a human's own AI co-driver runs at
+    // full pace. Tyre and wet-weather management applies to every AI stint.
     this.difficulty = difficulty;
-    this.entries.forEach((e) => { e.governor = e.team.drivers.some((d) => d.kind === 'human') ? null : new PaceGovernor(track, difficulty); });
+    this.entries.forEach((e) => { e.governor = new PaceGovernor(track, e.team.drivers.some((d) => d.kind === 'human') ? 1 : difficulty); });
     this.entries.forEach((e, i) => { e.bridges = e.team.drivers.map((d) => makeBridge(d, i, this)); });
     this.startCompound = startCompound;
     this.phase = 'grid'; this.time = 0; this.countdown = 0; this.contacts = 0;
@@ -141,7 +142,7 @@ export class EnduranceRace {
       // Strategy call once per lap, just before the approach point.
       if (!e.pit && c.race.finishTime === null && c.race.progress > 0 && e.decidedLap !== c.race.lap && lane.inWindow(s, wrap(lane.approach - 120, lane.L), lane.approach)) {
         e.decidedLap = c.race.lap;
-        e.pitPlan = e.strategist.decide(c, this.lapsLeft(c));
+        e.pitPlan = e.strategist.decide(c, this.lapsLeft(c), e.team.drivers[e.active]?.kind !== 'human');
         if (e.pitPlan) this.log('strategy', e, `${e.team.short} · BOX THIS LAP · ${e.strategist.reason}`);
       }
       if (!e.pit && e.pitPlan && c.race.finishTime === null && lane.inWindow(s, lane.approach, lane.entry)) {
@@ -179,7 +180,11 @@ export class EnduranceRace {
         // AI drivers never shift by hand; a car handed over from a manual stint gets its auto box back.
         if (!bridge.human) c.automatic = true;
         bridge.update(c, cars, dt, context);
-        e.governor?.apply(c, s);
+        if (!bridge.human || bridge.assisted) {
+          // No point saving tyres on the last lap or the lap they come off.
+          e.governor.push = this.lapsLeft(c) <= 1 || Boolean(e.pitPlan?.tyres);
+          e.governor.manageStep(c, dt); e.governor.apply(c, s);
+        }
         if (c.race.finishTime !== null) c.controls = { ...c.controls, throttle: Math.min(0.35, c.controls.throttle), brake: Math.max(c.controls.brake, c.speed > 25 ? 0.2 : 0) };
       }
     }

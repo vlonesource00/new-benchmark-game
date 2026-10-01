@@ -55,7 +55,9 @@ export class AiDebugPanel {
       ['speed', `${Math.round(car.speed * 3.6)} km/h Â· G${car.gear}`],
       ['latency', bridge?.remote ? `${bridge.lastLatency.toFixed(1)} ms (worker)` : 'main thread'],
       ['errors', bridge?.errors ?? 0],
-      ['governor', e.governor?.active ? `k ${e.governor.k.toFixed(2)}` : 'off']
+      ['governor', e.governor?.active ? `k ${e.governor.k.toFixed(2)}` : 'off'],
+      ['tyre mgmt', e.governor ? `${e.governor.push ? 'PUSH' : `${Math.round(e.governor.manage * 100)}%`} · core ${e.governor.hot.toFixed(0)}°` : '—'],
+      ['pace loss', e.strategist?.paceLoss ? `${e.strategist.paceLoss().toFixed(2)} s/lap` : '—']
     ].filter(([, v]) => v !== undefined && v !== null && v !== '');
     const rows = flatten({ ...rest, ...(stats && typeof stats === 'object' ? stats : {}) });
     this.el.style.setProperty('--team', teamsById[team.id]?.color ?? '#fff');

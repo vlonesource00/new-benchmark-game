@@ -15,11 +15,16 @@ export class TeamStrategist {
     this.request = null;           // human override: { compound, swap, fuel }
     this.lapMark = null;
     this.stintLaps = 0;
+    this.stintBest = null; this.lastLap = null;
+    // Time a tyre stop costs over staying out: lane transit plus the change itself.
+    this.stopLoss = PIT_LANE_LOSS_S + cal.tyreChangeS;
   }
   compoundLife(id) { return (WEAR_CLIFF + 0.06) / this.wearPerLap[id]; }
   /** Called when the car completes a lap (not an in/out lap). */
   observeLap(car, clean) {
     const now = { fuel: car.fuel, wear: maxWear(car) };
+    this.lastLap = clean ? car.race.lastLap : null;
+    if (clean && (this.stintBest === null || car.race.lastLap < this.stintBest)) this.stintBest = car.race.lastLap;
     if (this.lapMark && clean) {
       const fuel = this.lapMark.fuel - now.fuel, wear = now.wear - this.lapMark.wear;
       if (fuel > 0) this.fuelPerLap = this.fuelPerLap * 0.5 + fuel * 0.5;
@@ -28,12 +33,17 @@ export class TeamStrategist {
     }
     this.lapMark = now; this.stintLaps += 1;
   }
-  resetMark() { this.lapMark = null; this.stintLaps = 0; }
+  resetMark() { this.lapMark = null; this.stintLaps = 0; this.stintBest = null; this.lastLap = null; }
+  /**
+   * Seconds per lap the current tyres are down on this stint's best: heat and
+   * wear both show up here, and neither recovers without new rubber.
+   */
+  paceLoss() { return this.lastLap !== null && this.stintBest !== null && this.stintLaps >= 3 ? this.lastLap - this.stintBest : 0; }
   /**
    * Decision for the lap about to reach the pit approach. `lapsLeft` counts
    * laps still to complete including the current one.
    */
-  decide(car, lapsLeft) {
+  decide(car, lapsLeft, aiDriving = true) {
     const fuelLaps = car.fuel / this.fuelPerLap, wear = maxWear(car);
     const id = car.wheels[0].tyre.compound;
     const reasons = [];
@@ -41,6 +51,9 @@ export class TeamStrategist {
     // Box now when the car cannot complete the next full lap with margin.
     if (fuelLaps < 1.15 && fuelLaps < lapsLeft - 0.9) reasons.push('FUEL');
     if (wear + this.wearPerLap[id] * 1.05 > WEAR_CLIFF + 0.05 && lapsLeft > 1) reasons.push('TYRES');
+    // An AI stint boxes for fresh tyres once the time already being lost, held
+    // over the laps still to run, outweighs the stop (the loss only grows).
+    else if (aiDriving && lapsLeft - 1 >= 3 && this.paceLoss() * (lapsLeft - 1) > this.stopLoss) reasons.push('PACE');
     const owed = Math.max(0, this.format.mandatoryStops - this.stops);
     if (owed > 0 && lapsLeft - 1 <= owed * 1) reasons.push('MANDATORY');
     if (this.format.mandatorySwap && this.swaps === 0 && lapsLeft - 1 <= 1 && this.team.drivers.length > 1) reasons.push('SWAP RULE');
@@ -56,7 +69,7 @@ export class TeamStrategist {
     let litres = Math.max(0, need - car.fuel);
     const wear = maxWear(car), id = car.wheels[0].tyre.compound;
     const stintLaps = Math.min(after, Math.max(1, Math.floor(TANK_LITRES / this.fuelPerLap)));
-    let tyres = wear + this.wearPerLap[id] * stintLaps > WEAR_CLIFF + 0.04 || wear > 0.4;
+    let tyres = wear + this.wearPerLap[id] * stintLaps > WEAR_CLIFF + 0.04 || wear > 0.4 || this.paceLoss() * after > this.cal.tyreChangeS + 2;
     let compound = id;
     if (tyres) {
       compound = ['soft', 'medium', 'hard'].find((c) => this.compoundLife(c) >= stintLaps) ?? 'hard';
@@ -75,5 +88,8 @@ export class TeamStrategist {
   stintBalanced() { return this.stintLaps >= Math.ceil(this.cal.laps / 2); }
   stopDone(plan) { this.stops += 1; if (plan.swap) this.swaps += 1; this.request = null; this.boxThisLap = false; this.resetMark(); }
 }
+
+// Lane transit over a racing lap at the same spot, measured on Harbor Ring.
+export const PIT_LANE_LOSS_S = 18;
 
 export function maxWear(car) { return Math.max(...car.wheels.map((w) => w.tyre.wear)); }
