@@ -359,3 +359,45 @@ body.replaying #replay-bug { display: flex; animation: fade-in .3s ease both; }
 .sectors .red { border-color: var(--bad); background: color-mix(in srgb, var(--bad) 34%, var(--glass)); }
 .sectors .pit { border-color: var(--faint); }
 .lapbox .purple { color: var(--purple); }
+
+/* ---- race control: flag panel, relative, incidents, spotter ---- */
+.rc-flag { position: absolute; right: 18px; top: 196px; width: 314px; padding: 6px 12px; font-size: 14px; font-weight: 900; letter-spacing: .18em; text-align: center; box-shadow: 0 2px 12px rgba(0,0,0,.4); animation: fade-in .2s ease both; }
+.rc-rel { position: absolute; right: 18px; top: 232px; width: 314px; background: var(--glass); font-size: 13px; }
+.rc-head, .rc-foot { display: flex; justify-content: space-between; padding: 3px 10px; font-size: 10px; letter-spacing: .24em; color: var(--faint); font-weight: 700; background: var(--glass-hi); }
+.rc-foot { font-size: 11px; letter-spacing: .12em; padding: 5px 10px; }
+.rc-foot b { color: var(--ink); font-size: 13px; } .rc-foot .warn b { color: var(--bad); }
+.rc-rel ol { list-style: none; margin: 0; padding: 2px 0; }
+.rc-rel li { display: grid; grid-template-columns: 22px 38px 1fr 46px 34px 44px; gap: 4px; align-items: center; padding: 2px 8px; white-space: nowrap; }
+.rc-rel li .p { color: var(--faint); font-weight: 700; text-align: right; }
+.rc-rel li .n { border-left: 3px solid var(--team); padding-left: 5px; font-weight: 800; font-style: italic; }
+.rc-rel li .d { overflow: hidden; text-overflow: ellipsis; color: var(--dim); }
+.rc-rel li .lic { font-size: 10px; font-weight: 800; color: #111; text-align: center; padding: 0 3px; }
+.rc-rel li .ir { font-size: 11px; color: var(--faint); text-align: right; }
+.rc-rel li .g { text-align: right; }
+.rc-rel li.me { background: rgba(255,255,255,.12); } .rc-rel li.me .d { color: var(--ink); font-weight: 700; }
+.rc-rel li.up .d, .rc-rel li.up .g { color: #ff7a66; } .rc-rel li.down .d, .rc-rel li.down .g { color: #6fb0ff; }
+.rc-rel li.pit { opacity: .55; }
+.rc-spot { position: absolute; top: 38%; width: 46px; height: 120px; opacity: 0; transition: opacity .12s; background: linear-gradient(90deg, rgba(255,176,32,.0), rgba(255,176,32,.85)); }
+.rc-spot.left { left: 0; transform: scaleX(-1); } .rc-spot.right { right: 0; }
+.rc-spot.on { opacity: 1; }
+.rc-spottxt { position: absolute; top: calc(38% - 30px); left: 50%; transform: translateX(-50%); font-size: 18px; font-weight: 900; letter-spacing: .3em; color: var(--accent-2); text-shadow: 0 2px 10px rgba(0,0,0,.6); opacity: 0; transition: opacity .2s; }
+.rc-spottxt.on { opacity: 1; }
+
+/* ---- licence / career ---- */
+.license-card { position: absolute; right: 3vw; top: 6vh; display: flex; align-items: stretch; background: var(--glass); border: 1px solid var(--line); border-left: 4px solid var(--lic); min-width: 300px; backdrop-filter: blur(8px); }
+.license-card .lc-badge { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 8px 16px; background: var(--lic); color: #111; }
+.license-card .lc-badge b { font-size: 40px; font-weight: 900; font-style: italic; line-height: 1; }
+.license-card .lc-badge span { font-family: var(--mono); font-weight: 700; font-size: 15px; }
+.license-card .lc-body { display: flex; flex-direction: column; padding: 8px 14px; gap: 2px; }
+.license-card small { font-size: 11px; letter-spacing: .24em; color: var(--faint); }
+.license-card .lc-body > b { font-size: 30px; font-weight: 900; font-style: italic; } .license-card em { font-size: 14px; color: var(--dim); font-style: normal; }
+.license-card span { font-size: 13px; color: var(--dim); } .license-card .lc-last { color: var(--faint); }
+.lic-chip { display: inline-block; background: var(--lic); color: #111; font-weight: 800; padding: 2px 10px; font-family: var(--mono); font-size: 14px; }
+.cta[disabled] { filter: grayscale(1) brightness(.6); cursor: not-allowed; }
+.career-change { border-left: 4px solid var(--lic); }
+.cc-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.cc-grid > div { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.cc-grid small { width: 100%; font-size: 11px; letter-spacing: .24em; color: var(--faint); }
+.cc-grid b { font-size: 34px; font-weight: 900; font-style: italic; }
+.cc-grid em { font-style: normal; font-weight: 800; font-size: 20px; } .cc-grid em.up, .cc-note.up { color: var(--good); } .cc-grid em.dn, .cc-note.dn { color: var(--bad); }
+.cc-note { margin-top: 10px; font-weight: 900; letter-spacing: .2em; }

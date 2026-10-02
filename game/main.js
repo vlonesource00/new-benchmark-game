@@ -18,6 +18,7 @@ import { WeatherEffects } from './engine/render/weather.js';
 import { Track } from './engine/sim/track.js';
 import { Vehicle } from './engine/sim/vehicle.js';
 import { difficultyById } from './core/difficulty.js';
+import { loadCareer, recordRace, aiRating, aiLicense, strengthOfField, difficultyForRating, meetsLicense, FORMAT_LICENSE } from './core/career.js';
 import { EnduranceRace, FIXED_DT } from './core/race.js';
 import { AsyncSeats } from './core/async-seats.js';
 import { TRACKS, trackById } from './core/tracks.js';
@@ -108,6 +109,12 @@ addEventListener('pointerdown', (e) => { if (e.target.closest?.('button, .menu-i
 const telemetry = new TelemetryLog();
 const setup = load('pe.setup', { trackId: 'harbor-ring', formatId: 'classic', laps: FORMATS.classic.laps, teamCount: 6, drive: true, playerName: 'YOU', startCompound: 'medium', assist: true, gearbox: 'auto', startTime: 'track', dayCycle: true, weather: 'clear', seed: 20260930, difficulty: 'pro' });
 let screen = 'boot', overlay = null;
+// Driver career (licence, Safety Rating, iRating). Official races are rated and
+// matched to your iRating; hosted races use the chosen difficulty and are unrated.
+const career = loadCareer();
+const official = () => (setup.session ?? 'official') === 'official' && setup.drive;
+const raceDifficulty = () => (official() ? difficultyForRating(career.iRating) : setup.difficulty);
+let raceInfo = null;
 let teams = [], teamsById = {}, cars = [], models = [], race = null, seats = null, snap = null, trackLength = 0;
 // Clock: each circuit starts at its own hour unless the setup picks one, and with
 // the day cycle on the race covers about 20 minutes of daylight per lap.
@@ -145,11 +152,11 @@ function redraw() {
 }
 
 const nav = {
-  version: VERSION,
+  version: VERSION, career,
   go(name) {
     save('pe.setup', setup);
     if (name === 'menu') { stopRace(); renderMenu($('#screen-menu'), nav); }
-    if (name === 'setup') { stopRace(); redraw(); renderSetup($('#screen-setup'), setup, teams, outlines, nav); }
+    if (name === 'setup') { stopRace(); redraw(); renderSetup($('#screen-setup'), setup, teams, outlines, nav, career); }
     if (name === 'drivers') renderDrivers($('#screen-drivers'), nav);
     if (name === 'settings') renderSettings($('#screen-settings'), settings, nav);
     show(name);
@@ -160,7 +167,7 @@ const nav = {
     save('pe.setup', setup);
     if (silent) { if ('playerName' in patch) redraw(); return; }
     redraw();
-    renderSetup($('#screen-setup'), setup, teams, outlines, nav);
+    renderSetup($('#screen-setup'), setup, teams, outlines, nav, career);
   },
   settings(patch) {
     Object.assign(settings, patch); save('pe.settings', settings);
@@ -191,6 +198,7 @@ async function startRace() {
   const token = raceToken;
   redraw();
   const def = trackById(setup.trackId);
+  if (official() && !meetsLicense(career, setup.formatId)) { toast(`Official ${FORMATS[setup.formatId]?.label ?? ''} races need a ${FORMAT_LICENSE[setup.formatId]} licence · race Hosted, or earn it in Sprint races`, 5000); return; }
   renderLoading($('#screen-loading'), def, setup);
   show('loading');
   buildWorld(def.id);
@@ -201,7 +209,7 @@ async function startRace() {
   setLoading($('#screen-loading'), 0.25, 'Seating the drivers…');
   try {
     seats = new AsyncSeats(def.id); seats.wantDebug = aiDebug.open;
-    race = new EnduranceRace({ track: new Track(def.scenario), teams, format: FORMATS[setup.formatId] ?? FORMATS.custom, laps: setup.laps, startCompound: setup.startCompound ?? 'medium', difficulty: difficultyById(setup.difficulty).k, weather: setup.weather ?? 'clear', seed: setup.seed, weatherSeed: setup.weather === 'changeable' ? (Math.random() * 2 ** 31) | 0 : setup.seed, makeBridge: seats.factory() });
+    race = new EnduranceRace({ track: new Track(def.scenario), teams, format: FORMATS[setup.formatId] ?? FORMATS.custom, laps: setup.laps, startCompound: setup.startCompound ?? 'medium', difficulty: difficultyById(raceDifficulty()).k, weather: setup.weather ?? 'clear', seed: setup.seed, weatherSeed: setup.weather === 'changeable' ? (Math.random() * 2 ** 31) | 0 : setup.seed, makeBridge: seats.factory() });
     await seats.start(race);
     world.setPitBoxes?.(race.lane, teams);
   } catch (error) {
@@ -211,6 +219,15 @@ async function startRace() {
   setLoading($('#screen-loading'), 0.7, 'Rolling the cars out…');
   trackLength = track.length;
   cars = race.cars;
+  // Ratings for every seat: the player's own, and stable per-driver AI numbers for the field.
+  const diffId = raceDifficulty(), seat = (team, d) => {
+    if (d.kind === 'human') return { rating: career.iRating, license: career.license, sr: career.sr };
+    const rating = aiRating(`${team.id}:${d.id}`, diffId); return { rating, ...aiLicense(`${team.id}:${d.id}`, rating) };
+  };
+  const seatsInfo = Object.fromEntries(teams.map((t) => [t.id, t.drivers.map((d) => seat(t, d))]));
+  const teamRating = (t) => Math.round(seatsInfo[t.id].reduce((a, x) => a + x.rating, 0) / seatsInfo[t.id].length);
+  raceInfo = { official: official(), difficulty: diffId, seats: seatsInfo, teamRating: Object.fromEntries(teams.map((t) => [t.id, teamRating(t)])), turns: def.turns ?? 10, track: def.name, format: FORMATS[setup.formatId]?.label ?? 'CUSTOM' };
+  raceInfo.sof = strengthOfField(Object.values(raceInfo.teamRating));
   models = cars.map((car, i) => {
     const model = new CarModel(car);
     model.setColor(teams[i].color);
@@ -243,11 +260,19 @@ function onFinished() {
   const token = raceToken;
   lastResults = race.classification();
   const contacts = race.contacts;
+  // Career: rate the player's result against the field (official races only change ratings).
+  let careerChange = null;
+  const mine = lastResults.find((r) => teamsById[r.team]?.drivers.some((d) => d.kind === 'human'));
+  if (mine && raceInfo) {
+    const field = lastResults.map((r) => ({ rating: r === mine ? career.iRating : raceInfo.teamRating[r.team], position: r.position, human: r === mine }));
+    careerChange = recordRace(career, { official: raceInfo.official, position: mine.position, field, incidents: mine.incidents ?? 0, laps: mine.lapsDone, corners: mine.lapsDone * raceInfo.turns, dq: mine.dq, track: raceInfo.track, format: raceInfo.format, sof: raceInfo.sof });
+    careerChange.official = raceInfo.official; careerChange.incidents = mine.incidents ?? 0; careerChange.sof = raceInfo.sof;
+  }
   setTimeout(() => {
     if (token !== raceToken) return;
     if (replay) endReplay();
     raceActive = false; setOverlay(null);
-    renderResults($('#screen-results'), lastResults, teamsById, contacts, nav);
+    renderResults($('#screen-results'), lastResults, teamsById, contacts, nav, careerChange);
     show('results');
   }, 3500);
   hud.announce('CHEQUERED FLAG', `${teamsById[lastResults[0].team].name} win`, 3.5);
@@ -261,6 +286,7 @@ function stepRace(delta) {
   for (let k = 0; k < n; k += 1) race.step(dt);
 }
 
+const ratingOf = (row) => raceInfo?.seats[row.team]?.[row.active] ?? null;
 const mineRow = () => snap?.cars.find((c) => c.team === playerTeamId) ?? null;
 const playerDriving = () => { const c = mineRow(); return Boolean(c && c.driverKind === 'human' && !c.finished); };
 let wasDriving = false;
@@ -272,7 +298,7 @@ function onSnapshot() {
     const mine = mineRow(); if (mine) focus(mine.id, true);
   }
   wasDriving = driving;
-  hud.update(snap, { teamsById, focusId, playerTeamId, driving, trackLength, pitOpen });
+  hud.update(snap, { teamsById, focusId, playerTeamId, driving, trackLength, pitOpen, ratingOf, sof: raceInfo?.sof });
 }
 
 function setSpeed(n) {
@@ -284,7 +310,7 @@ function focus(id, snapCam = false) {
   focusId = id;
   spectator.setTarget(cars[id], camModes[camIndex]);
   if (!snapCam) spectator.snapToTarget();
-  if (snap) hud.update(snap, { teamsById, focusId, playerTeamId, driving: playerDriving(), trackLength, pitOpen });
+  if (snap) hud.update(snap, { teamsById, focusId, playerTeamId, driving: playerDriving(), trackLength, pitOpen, ratingOf, sof: raceInfo?.sof });
 }
 function cycleFocus(step) {
   if (!snap) return;
@@ -490,6 +516,7 @@ function frame(ms, pumped = false) {
       finish.setSpeed?.(car.speed);
       if (replay) replay.director.update(car, delta); else spectator.update(delta);
       hud.frame(car);
+      hud.rc.spotter(car, cars, !replay && playerDriving());
     } else {
       // Attract mode: slow orbit over the start/finish straight.
       menuAngle += delta * 0.05;

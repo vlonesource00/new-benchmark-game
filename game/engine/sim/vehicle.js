@@ -189,6 +189,8 @@ export function collisions(cars, diagnostics = null) {
       if(diagnostics){
         diagnostics.peakClosing=Math.max(diagnostics.peakClosing||0,closing);
         diagnostics.severeContacts=(diagnostics.severeContacts||0)+Number(closing>6);
+        // Stewards read who touched whom and how hard; physics is unchanged.
+        diagnostics.pairs?.push([a.id,b.id,closing]);
       }
       const impulse = closing * 1.1/(1/ma+1/mb);
       const deltaA=ma===mb?closing*.55:impulse/ma,deltaB=ma===mb?closing*.55:impulse/mb;

@@ -2,6 +2,7 @@
 // and results. Each render function rebuilds its screen from plain state and
 // wires clicks to the `act` callbacks; nothing here touches the sim.
 import { TRACKS, trackById } from '../core/tracks.js';
+import { licenseById, meetsLicense, FORMAT_LICENSE, difficultyForRating, licenseText } from '../core/career.js';
 import { FORMATS, COMPOUNDS, COMPOUND_IDS } from '../core/rules.js';
 import { AI_DRIVERS } from '../core/teams.js';
 import { DIFFICULTIES, difficultyById } from '../core/difficulty.js';
@@ -35,8 +36,19 @@ export function renderMenu(el, act) {
       <button class="menu-item" data-go="drivers">Drivers <small>AI roster</small></button>
       <button class="menu-item" data-go="settings">Settings</button>
     </nav>
+    ${act.career ? licenseCard(act.career) : ''}
     <div class="menu-foot">Four circuits · Endurance<br>Build ${esc(act.version)}</div>`;
   $$(el, '[data-go]').forEach((b) => b.addEventListener('click', () => act.go(b.dataset.go)));
+}
+
+/** Licence, Safety Rating and iRating, iRacing-style. */
+function licenseCard(c) {
+  const lic = licenseById(c.license), last = c.history?.[0];
+  return `<div class="license-card" style="--lic:${lic.color}">
+    <div class="lc-badge"><b>${lic.id}</b><span>${c.sr.toFixed(2)}</span></div>
+    <div class="lc-body"><small>${esc(lic.name)} LICENCE</small><b>${c.iRating} <em>iR</em></b>
+      <span>${c.starts} starts · ${c.wins} wins · ${c.top5} top 5${c.starts ? ` · ${(c.incidents / Math.max(1, c.starts)).toFixed(1)} inc/race` : ''}</span>
+      ${last ? `<span class="lc-last">Last: P${last.position}/${last.field} · ${esc(last.track)} · ${last.official ? `${last.dIr >= 0 ? '+' : ''}${last.dIr} iR · ${last.dSr >= 0 ? '+' : ''}${last.dSr.toFixed(2)} SR` : 'hosted'}</span>` : '<span class="lc-last">Race an official Sprint to start your rating</span>'}</div></div>`;
 }
 
 /** Difficulty blurb plus the pace rivals will aim for on the selected track. */
@@ -51,8 +63,11 @@ function stepper(name, value, suffix = '') {
   return `<div class="stepper" data-step="${name}"><button data-d="-1">−</button><output>${value}${suffix}</output><button data-d="1">+</button></div>`;
 }
 
-export function renderSetup(el, s, teams, outlines, act) {
+export function renderSetup(el, s, teams, outlines, act, career = null) {
   const fmt = FORMATS[s.formatId];
+  const session = s.session ?? 'official', official = session === 'official' && s.drive && career;
+  const gated = official && !meetsLicense(career, s.formatId);
+  const matched = official ? difficultyForRating(career.iRating) : null;
   const player = teams.find((t) => t.drivers.some((d) => d.kind === 'human'));
   el.innerHTML = `
     <div class="panel-wrap">
@@ -64,11 +79,13 @@ export function renderSetup(el, s, teams, outlines, act) {
               ${t.ready ? '' : '<span class="tag">SOON</span>'}<b>${esc(t.name)}</b><span>${esc(t.place)}</span><p>${esc(t.blurb)}</p>${trackOutline(outlines[t.id])}</button>`).join('')}
           </div></div>
           <div class="block"><h3>Race</h3>
+            <div class="row"><label>Session<span class="hint">${official ? `Rated: iRating and Safety Rating change · rivals matched to your ${career.iRating} iR` : s.drive ? 'Unrated: any format, any difficulty' : 'Team principal races are always unrated'}</span></label>${seg('session', [['official', 'Official'], ['hosted', 'Hosted']], session)}</div>
+            ${career ? `<div class="row"><label>Your licence<span class="hint">Sprint: R · Classic 12: D · Marathon 20: C licence for official races</span></label><span class="lic-chip" style="--lic:${licenseById(career.license).color}">${licenseText(career.license, career.sr)} · ${career.iRating} iR</span></div>` : ''}
             <div class="row"><label>Format<span class="hint">${fmt.mandatoryStops} mandatory stop${fmt.mandatoryStops > 1 ? 's' : ''}${fmt.mandatorySwap ? ' · driver swap required' : ''}</span></label>
               ${seg('formatId', Object.values(FORMATS).map((f) => [f.id, f.label]), s.formatId)}</div>
             <div class="row"><label>Laps<span class="hint">5–20 laps; fuel and tyres scale with distance</span></label>${stepper('laps', s.laps)}</div>
             <div class="row"><label>Teams<span class="hint">Two drivers per car</span></label>${stepper('teamCount', s.teamCount)}</div>
-            <div class="row"><label>AI difficulty<span class="hint">${esc(aiHint(s))}</span></label>${seg('difficulty', DIFFICULTIES.map((d) => [d.id, d.label]), difficultyById(s.difficulty).id)}</div>
+            <div class="row"><label>AI difficulty<span class="hint">${official ? `Official field matched to your iRating: ${esc(difficultyById(matched).label)}` : esc(aiHint(s))}</span></label>${seg('difficulty', DIFFICULTIES.map((d) => [d.id, d.label]), official ? matched : difficultyById(s.difficulty).id)}</div>
             <div class="row"><label>Start time<span class="hint">Circuit picks its usual hour</span></label>${seg('startTime', [['track', 'Circuit'], ['morning', 'Morning'], ['afternoon', 'Afternoon'], ['sunset', 'Sunset'], ['night', 'Night']], s.startTime ?? 'track')}</div>
             <div class="row"><label>Weather<span class="hint">Rain wets the track; sun heats it. Changeable can turn mid-race</span></label>${seg('weather', [['clear', 'Clear'], ['hot', 'Hot'], ['overcast', 'Overcast'], ['rain', 'Rain'], ['changeable', 'Changeable']], s.weather ?? 'clear')}</div>
             <div class="row"><label>Day cycle<span class="hint">The sun moves as the race runs; lights on after dark</span></label>${seg('dayCycle', [[true, 'On'], [false, 'Off']], s.dayCycle ?? true)}</div>
@@ -94,7 +111,7 @@ export function renderSetup(el, s, teams, outlines, act) {
         </div>
       </div>
     </div>
-    <div class="setup-foot"><span class="summary">${esc(trackById(s.trackId).name)} · ${s.laps} laps · ${s.teamCount} cars</span><button class="cta" data-start>Go racing</button></div>`;
+    <div class="setup-foot"><span class="summary">${esc(trackById(s.trackId).name)} · ${s.laps} laps · ${s.teamCount} cars</span>${gated ? `<span class="summary" style="color:var(--bad)">Needs a ${FORMAT_LICENSE[s.formatId]} licence for official · switch to Hosted</span>` : ''}<button class="cta" data-start ${gated ? 'disabled' : ''}>${official ? 'Join official race' : 'Go racing'}</button></div>`;
 
   $(el, '[data-back]').addEventListener('click', () => act.go('menu'));
   $(el, '[data-start]').addEventListener('click', () => act.start());
@@ -102,6 +119,7 @@ export function renderSetup(el, s, teams, outlines, act) {
   $$(el, '[data-track]').forEach((b) => b.addEventListener('click', () => act.set({ trackId: b.dataset.track })));
   $$(el, '[data-seg]').forEach((g) => $$(g, 'button').forEach((b) => b.addEventListener('click', () => {
     const key = g.dataset.seg, raw = b.dataset.v, v = raw === 'true' ? true : raw === 'false' ? false : raw;
+    if (key === 'difficulty' && official) return;
     const patch = { [key]: v };
     if (key === 'formatId' && v !== 'custom') patch.laps = FORMATS[v].laps;
     act.set(patch);
@@ -176,7 +194,19 @@ export function setLoading(el, fraction, note) {
   const n = $(el, '[data-note]'); if (n && note) n.textContent = note;
 }
 
-export function renderResults(el, results, teamsById, contacts, act) {
+function careerBlock(ch) {
+  if (!ch) return '';
+  const lic = licenseById(ch.after.license), sign = (v, d = 0) => `${v >= 0 ? '+' : ''}${v.toFixed(d)}`;
+  return `<div class="block career-change" style="--lic:${lic.color}"><h3>${ch.official ? 'Official result' : 'Hosted race · unrated'} · SOF ${ch.sof}</h3>
+    <div class="cc-grid">
+      <div><small>iRATING</small><b>${ch.after.iRating}</b>${ch.official ? `<em class="${ch.dIr >= 0 ? 'up' : 'dn'}">${sign(ch.dIr)}</em>` : ''}</div>
+      <div><small>SAFETY RATING</small><b><span class="lic-chip" style="--lic:${lic.color}">${licenseText(ch.after.license, ch.after.sr)}</span></b>${ch.official ? `<em class="${ch.dSr >= 0 ? 'up' : 'dn'}">${sign(ch.dSr, 2)}</em>` : ''}</div>
+      <div><small>INCIDENTS</small><b>${ch.incidents}x</b></div>
+    </div>
+    ${ch.promoted ? `<div class="cc-note up">PROMOTED · ${esc(lic.name)} licence</div>` : ch.demoted ? `<div class="cc-note dn">DEMOTED · ${esc(lic.name)} licence</div>` : ''}</div>`;
+}
+
+export function renderResults(el, results, teamsById, contacts, act, careerChange = null) {
   const podium = results.slice(0, 3);
   const order = [podium[1], podium[0], podium[2]];
   const cls = ['p2', 'p1', 'p3'];
@@ -188,13 +218,14 @@ export function renderResults(el, results, teamsById, contacts, act) {
         <div style="display:flex;gap:12px"><button class="cta ghost" data-menu>Main menu</button><button class="cta" data-again>Race again</button></div></div>
       <div class="podium">${order.map((r, i) => r ? `<div class="step ${cls[i]}" style="--team:${teamsById[r.team].color}"><div class="pos">${r.position}</div>
         <b>${esc(teamsById[r.team].name)}</b><span>${teamsById[r.team].drivers.map((d) => esc(d.name)).join(' / ')}</span></div>` : '<div></div>').join('')}</div>
+      ${careerBlock(careerChange)}
       <div class="block"><table class="results-table">
-        <thead><tr><th>Pos</th><th>Team</th><th>Drivers</th><th>Laps</th><th>Time / gap</th><th>Best lap</th><th>Stops</th><th>Pit time</th></tr></thead>
+        <thead><tr><th>Pos</th><th>Team</th><th>Drivers</th><th>Laps</th><th>Time / gap</th><th>Best lap</th><th>Stops</th><th>Pit time</th><th>Inc</th></tr></thead>
         <tbody>${results.map((r) => {
           const t = teamsById[r.team];
-          const time = r.position === 1 ? fmtClock(r.finishTime ?? 0) : r.finishTime === null ? `${r.lapsDone} laps` : `+${r.gap.toFixed(3)}`;
+          const time = r.dq ? 'DQ' : r.position === 1 ? fmtClock(r.finishTime ?? 0) : r.finishTime === null ? `${r.lapsDone} laps` : `+${r.gap.toFixed(3)}`;
           return `<tr class="${isMine(r) ? 'me' : ''}"><td>${r.position}</td><td class="t"><span style="display:inline-block;width:5px;height:18px;background:${t.color};margin-right:8px;vertical-align:middle"></span>${esc(t.name)}</td>
-            <td>${t.drivers.map((d) => esc(d.short)).join(' / ')}</td><td>${r.lapsDone}</td><td>${time}</td><td>${fmtLap(r.bestLap)}</td><td>${r.stops}</td><td>${r.pitStopTime.toFixed(1)}s</td></tr>`;
+            <td>${t.drivers.map((d) => esc(d.short)).join(' / ')}</td><td>${r.lapsDone}</td><td>${time}</td><td>${fmtLap(r.bestLap)}</td><td>${r.stops}</td><td>${r.pitStopTime.toFixed(1)}s</td><td>${r.incidents ?? 0}x</td></tr>`;
         }).join('')}</tbody></table>
         <div style="margin-top:10px;color:var(--faint);font-size:14px">${contacts} contact${contacts === 1 ? '' : 's'} recorded</div></div>
       <div class="block"><h3>Driver stints</h3>${results.map((r) => {

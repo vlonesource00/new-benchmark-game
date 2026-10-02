@@ -87,6 +87,6 @@ console.log(`\nsim ${fmt(race.time)} in ${((Date.now() - wall) / 1000).toFixed(1
 const order = race.standings();
 order.forEach((c, i) => {
   const e = race.entryOf(c);
-  console.log(`P${i + 1} ${e.team.short} ${fmt(c.race.finishTime).padStart(9)} best ${fmt(c.race.bestLap)} stops ${e.strategist.stops} swaps ${e.strategist.swaps} fuel ${c.fuel.toFixed(1)}L wear ${(maxWear(c) * 100).toFixed(0)}% ${COMPOUNDS[c.wheels[0].tyre.compound].short} lap ${c.race.lap - 1} · stints ${e.stints.map((s) => `${e.team.drivers[s.driver].short}${s.fromLap}-${s.toLap ?? '?'}`).join(' ')}`);
+  console.log(`P${i + 1} ${e.team.short} ${fmt(c.race.finishTime).padStart(9)} best ${fmt(c.race.bestLap)} stops ${e.strategist.stops} swaps ${e.strategist.swaps} fuel ${c.fuel.toFixed(1)}L wear ${(maxWear(c) * 100).toFixed(0)}% ${COMPOUNDS[c.wheels[0].tyre.compound].short} lap ${c.race.lap - 1} · inc ${race.stewards.of(e).inc}x${c.race.dq ? ' DQ' : ''} dmg ${((c.damage ?? 0) * 100).toFixed(0)}% · stints ${e.stints.map((s) => `${e.team.drivers[s.driver].short}${s.fromLap}-${s.toLap ?? '?'}`).join(' ')}`);
 });
 void AI_DRIVERS;

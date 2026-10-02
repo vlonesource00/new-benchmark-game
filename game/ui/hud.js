@@ -1,6 +1,7 @@
 // In-race HUD. The DOM is built once; `update` patches text and styles from
 // the 10 Hz snapshot, `frame` animates the per-frame dash from the proxy car.
 import { esc, fmtLap, fmtClock, fmtGap, compound, wearColor, tempColor, pct } from './format.js';
+import { RaceControlHud } from './racecontrol.js';
 
 const WHEELS = ['FL', 'FR', 'RL', 'RR'];
 const PIT_LABEL = { entry: 'PIT IN', lane: 'PIT', service: 'BOX', exit: 'PIT OUT', release: 'PIT OUT' };
@@ -57,10 +58,11 @@ export class Hud {
     this.lastActive = new Map();
     this.flash = null;
     this.cue = () => {};
+    this.rc = new RaceControlHud(el);
     this.resetBroadcast();
   }
 
-  reset() { this.rows.clear(); this.q('tower').innerHTML = ''; this.seen.clear(); this.feedItems = []; this.q('feed').innerHTML = ''; this.lastActive.clear(); this.flash = null; this.resetBroadcast(); }
+  reset() { this.rows.clear(); this.q('tower').innerHTML = ''; this.seen.clear(); this.feedItems = []; this.q('feed').innerHTML = ''; this.lastActive.clear(); this.flash = null; this.rc.reset(); this.resetBroadcast(); }
 
   resetBroadcast() {
     this.prevPos = new Map(); this.moved = new Map();
@@ -271,6 +273,7 @@ export class Hud {
       banner.innerHTML = '<div class="sub" style="color:var(--accent-2)">Astra co-driver holding your car · touch a pedal to take over</div>';
     } else banner.innerHTML = '';
 
+    this.rc.update(snap, ctx, focus);
     this.q('keys').innerHTML = ctx.pitOpen
       ? '<kbd>1</kbd>tyres<kbd>2</kbd>fuel<kbd>3</kbd>driver<kbd>4</kbd>box<kbd>5</kbd>cancel<kbd>P</kbd>close'
       : ctx.driving

@@ -12,6 +12,7 @@ import { PitLane, PitAutopilot } from './pit.js';
 import { TeamStrategist, maxWear } from './strategy.js';
 import { createSeatBridge } from './field.js';
 import { AI_DRIVERS } from './teams.js';
+import { Stewards, MEATBALL_DAMAGE } from './stewards.js';
 
 export const FIXED_DT = 1 / 120;
 
@@ -52,6 +53,8 @@ export class EnduranceRace {
     this.phase = 'grid'; this.time = 0; this.countdown = 0; this.contacts = 0;
     this.collisionStats = { peakClosing: 0, severeContacts: 0 };
     this.reset();
+    // Race control: incident points, penalties and flags (see core/stewards.js).
+    this.stewards = new Stewards(this); this.collisionStats.pairs = this.stewards.pairs;
   }
   lineFor(car) {
     if (!this.lines.has(car.classId)) this.lines.set(car.classId, new RacingLine(this.track, carSpecFor(car.classId)));
@@ -66,6 +69,7 @@ export class EnduranceRace {
     const rowSpacing = start?.rowSpacingM ?? 9.5, laneOff = start?.laneOffsetM ?? 2.3;
     const gridToFinish = wrap(track.finishS - track.gridS, track.length);
     this.time = 0; this.contacts = 0; this.results = null; this.finishedAt = null;
+    this.stewards?.reset();
     this.entries.forEach((e, i) => {
       const c = e.car;
       c.place(track, track.gridS - Math.floor(i / 2) * rowSpacing, i % 2 ? -laneOff : laneOff);
@@ -74,7 +78,7 @@ export class EnduranceRace {
       const allAi = e.team.drivers.every((d) => d.kind === 'ai');
       this.fitTyres(c, allAi ? e.strategist.startCompound(this.cal.fuelLaps) : this.startCompound);
       c.race = { progress: -gridToFinish - Math.floor(i / 2) * rowSpacing, previousS: c.s, lap: 1, lastLap: null, bestLap: null, lapStart: 0, sector: 0, valid: true, sectors: [], secMark: 0, secValid: true, secCur: [null, null, null], secState: [null, null, null], secBest: [null, null, null], finishTime: null, offtrack: 0, pitLap: false };
-      e.pit = null; e.pitPlan = null; e.stints = [{ driver: e.active, fromLap: 1, toLap: null }];
+      e.pit = null; e.pitPlan = null; e.retired = null; e.stints = [{ driver: e.active, fromLap: 1, toLap: null }];
       for (const b of e.bridges) b.reset?.({ cars: this.cars, track, line: this.lineFor(c) });
     });
     this.timingHistory = this.cars.map((c) => [{ progress: c.race.progress, time: 0 }]); this.nextTimingAt = 0;
@@ -104,6 +108,7 @@ export class EnduranceRace {
     c.wheels.forEach((w) => { w.omega = 0; w.steer = 0; });
     e.stuckTime = 0; e.rescueGhost = 2;
     this.log('incident', e, `${e.team.short} · RECOVERED BY MARSHALS${pit ? ` · PIT ${pit.phase.toUpperCase()}` : ''}`);
+    if (!pit) this.stewards?.recovered(e);
   }
 
   log(type, entry, text) {
@@ -155,11 +160,18 @@ export class EnduranceRace {
     const context = { projections, order, totalLaps: this.laps, mode: 'race', time: this.time, paceObjective: 'race' };
     for (const e of this.entries) {
       const c = e.car, s = projections.get(c.id).s;
+      // A disqualified car sits in its box, out of everyone's way.
+      if (e.retired) { c.controls = { throttle: 0, brake: 1, steer: 0 }; continue; }
       // Strategy call once per lap, just before the approach point.
       if (!e.pit && c.race.finishTime === null && c.race.progress > 0 && e.decidedLap !== c.race.lap && lane.inWindow(s, wrap(lane.approach - 120, lane.L), lane.approach)) {
         e.decidedLap = c.race.lap;
         e.pitPlan = e.strategist.decide(c, this.lapsLeft(c), e.team.drivers[e.active]?.kind !== 'human');
         if (e.pitPlan) this.log('strategy', e, `${e.team.short} · BOX THIS LAP · ${e.strategist.reason}`);
+        // Race control overrides strategy: a drive-through comes first, and the
+        // meatball (heavy damage) calls the car in for repairs.
+        const penalty = this.stewards.pendingPenalty(e);
+        if (penalty) { e.pitPlan = { litres: 0, tyres: false, swap: false, compound: c.wheels[0].tyre.compound, penalty: penalty.type }; this.log('strategy', e, `${e.team.short} · BOX THIS LAP · SERVE ${penalty.type.toUpperCase()}`); }
+        else if (!e.pitPlan && (c.damage ?? 0) >= MEATBALL_DAMAGE) { e.pitPlan = e.strategist.servicePlan(c, this.lapsLeft(c)); this.log('strategy', e, `${e.team.short} · BOX THIS LAP · DAMAGE REPAIR`); }
       }
       if (!e.pit && e.pitPlan && c.race.finishTime === null && lane.inWindow(s, lane.approach, lane.entry)) {
         e.pit = new PitAutopilot(lane, e.box, this.lineFor(c)); e.pit.calledOnLap = c.race.lap; c.race.pitLap = true;
@@ -213,15 +225,16 @@ export class EnduranceRace {
     // Pit-lane ghosting: two cars inside the lane under the autopilot never collide,
     // so box entries and releases cannot jam the lane.
     this.entries.forEach((e) => this.rescue(e, dt));
-    for (const e of this.entries) { const c = e.car; c.ghost = e.rescueGhost > 0 || Boolean(e.pit && e.pit.phase !== 'approach' && this.lane.inLane(this.track.nearest(c.x, c.z).s)); }
+    for (const e of this.entries) { const c = e.car; c.ghost = e.rescueGhost > 0 || Boolean(e.retired) || Boolean(e.pit && e.pit.phase !== 'approach' && this.lane.inLane(this.track.nearest(c.x, c.z).s)); }
     this.contacts += collisions(cars, this.collisionStats);
+    this.stewards.step(dt);
     this.entries.forEach((e) => this.timing(e));
     if (this.time >= this.nextTimingAt) {
       this.nextTimingAt = this.time + 0.25;
       for (const c of cars) { const h = this.timingHistory[c.id]; if (c.race.progress > h.at(-1).progress) { h.push({ progress: c.race.progress, time: this.time }); if (h.length > 4000) h.shift(); } }
     }
-    const done = cars.filter((c) => c.race.finishTime !== null);
-    if (done.length && this.finishedAt === null) { this.finishedAt = this.time; this.log('flag', null, `CHEQUERED FLAG · ${done[0].team.name} WINS`); }
+    const done = cars.filter((c) => c.race.finishTime !== null), home = done.filter((c) => !c.race.dq);
+    if (home.length && this.finishedAt === null) { this.finishedAt = this.time; this.log('flag', null, `CHEQUERED FLAG · ${home[0].team.name} WINS`); }
     if (done.length === cars.length || (this.finishedAt !== null && this.time - this.finishedAt > 120)) { this.phase = 'finished'; this.results = this.standings(); }
   }
 
@@ -239,17 +252,24 @@ export class EnduranceRace {
     c.controls = { throttle: 0, brake: 1, steer: 0 };
     p.serviceLeft -= dt;
     const plan = e.pitPlan;
+    if (plan.penalty) {
+      // Drive-through: no service, the car is released as soon as the lane is clear.
+      if (!p.serviced) { p.serviced = true; this.stewards.serve(e); }
+      if (this.releaseClear(e, c)) p.release();
+      return;
+    }
     c.fuel = Math.min(TANK_LITRES, c.fuel + plan.litres * dt / Math.max(0.1, p.serviceTotal));
     if (p.serviceLeft <= 0 && !p.serviced) {
       p.serviced = true;
       if (plan.tyres) this.fitTyres(c, plan.compound, true);
+      if (plan.repair) c.damage = 0;
       if (plan.swap) {
         const prev = e.active; e.active = (e.active + 1) % e.team.drivers.length;
         e.stints.at(-1).toLap = c.race.lap; e.stints.push({ driver: e.active, fromLap: c.race.lap, toLap: null });
         this.log('swap', e, `${e.team.short} · ${e.team.drivers[prev].name} → ${this.activeDriver(e).name}`);
       }
       e.strategist.stopDone(plan);
-      this.log('pit', e, `${e.team.short} · ${p.serviceTotal.toFixed(1)}s${plan.litres > 0.5 ? ` · +${plan.litres.toFixed(0)}L` : ''}${plan.tyres ? ` · ${COMPOUNDS[plan.compound].label}` : ''}`);
+      this.log('pit', e, `${e.team.short} · ${p.serviceTotal.toFixed(1)}s${plan.litres > 0.5 ? ` · +${plan.litres.toFixed(0)}L` : ''}${plan.tyres ? ` · ${COMPOUNDS[plan.compound].label}` : ''}${plan.repair ? ' · REPAIR' : ''}`);
       e.pitStopTime += p.serviceTotal;
     }
     // Unsafe-release guard: wait while another car is about to pass the box.
@@ -270,8 +290,11 @@ export class EnduranceRace {
     // line can sit inside the pit lane (Harbor Ring), so the lap counter may
     // already have ticked over by the time the car reaches its box.
     const calledOn = e.pit.calledOnLap ?? c.race.lap;
+    if (e.pitPlan?.penalty) { e.pit.serviceTotal = e.pit.serviceLeft = 0; c.vx = 0; c.vz = 0; return; }
     e.pitPlan = e.strategist.servicePlan(c, Math.max(0, this.laps - calledOn));
-    e.pit.serviceTotal = serviceTime(this.cal, e.pitPlan);
+    // Damage is repaired at every stop: 3 s per 10% of damage (fast-repair style).
+    const damage = c.damage ?? 0; if (damage >= 0.05) e.pitPlan = { ...e.pitPlan, repair: damage };
+    e.pit.serviceTotal = serviceTime(this.cal, e.pitPlan) + (e.pitPlan.repair ?? 0) * 30;
     e.pit.serviceLeft = e.pit.serviceTotal;
     c.vx = 0; c.vz = 0;
   }
@@ -322,6 +345,7 @@ export class EnduranceRace {
   }
   order() {
     return [...this.cars].sort((a, b) => {
+      if (Boolean(a.race.dq) !== Boolean(b.race.dq)) return a.race.dq ? 1 : -1;
       const fa = a.race.finishTime !== null, fb = b.race.finishTime !== null;
       if (fa && fb) return b.race.finishLaps - a.race.finishLaps || a.race.finishTime - b.race.finishTime;
       return fa !== fb ? (fa ? -1 : 1) : b.race.progress - a.race.progress;
@@ -335,6 +359,15 @@ export class EnduranceRace {
   }
   entryOf(car) { return this.entries[car.id]; }
 
+  /** Takes a car out of the race (disqualification): parked in its box, ghosted, classified last. */
+  retire(e, reason) {
+    const c = e.car; e.retired = reason; e.pit = null; e.pitPlan = null;
+    c.race.dq = reason === 'DQ'; c.race.finishTime = this.time; c.race.finishLaps = Math.max(0, c.race.lap - 1);
+    e.stints.at(-1).toLap = c.race.finishLaps;
+    const box = this.track.at(e.box, this.lane.boxLat ?? 0);
+    c.x = box.x; c.z = box.z; c.yaw = box.heading; c.vx = c.vz = c.u = c.v = c.speed = c.yawRate = 0;
+  }
+
   /** Finishing classification for the results screen. */
   classification() {
     const order = this.standings(), leader = order[0];
@@ -343,15 +376,17 @@ export class EnduranceRace {
       return {
         position: i + 1, id: c.id, team: e.team.id, finishTime: c.race.finishTime, lapsDone: c.race.finishLaps ?? Math.min(this.laps, c.race.lap - 1),
         gap: this.interval(c, leader), bestLap: c.race.bestLap, stops: e.strategist.stops, swaps: e.strategist.swaps,
-        pitStopTime: e.pitStopTime, stints: e.stints, fuel: c.fuel, damage: c.damage
+        pitStopTime: e.pitStopTime, stints: e.stints, fuel: c.fuel, damage: c.damage,
+        incidents: this.stewards.of(e).inc, dq: Boolean(c.race.dq), penaltiesServed: this.stewards.of(e).served
       };
     });
   }
 
   /** Compact, serialisable state for HUD / network clients. */
   snapshot() {
-    const order = this.order(), leader = order[0];
+    const order = this.order(), leader = order[0], hazards = this.stewards.hazards();
     return {
+      flag: this.stewards.raceFlag(), incidentLimits: this.stewards.limits,
       phase: this.phase, time: this.time, countdown: this.countdown, laps: this.laps, cal: { fuelLaps: this.cal.fuelLaps, tyreLaps: this.cal.tyreLaps },
       cars: this.cars.map((c) => {
         const e = this.entryOf(c), d = this.activeDriver(e);
@@ -365,7 +400,8 @@ export class EnduranceRace {
           serviceLeft: e.pit?.phase === 'service' ? e.pit.serviceLeft : 0, serviceTotal: e.pit?.serviceTotal ?? 0,
           active: e.active, fuelPerLap: e.strategist.fuelPerLap, reason: e.strategist.reason, request: e.strategist.request,
           plan: e.pitPlan, stints: e.stints, pitStopTime: e.pitStopTime, finishTime: c.race.finishTime, valid: c.race.valid, sectors: c.race.secCur.slice(), sectorState: c.race.secState.map((st, k) => (st === 'purple' && c.race.secCur[k] > this.secBest?.[k] ? 'green' : st)), sectorBest: c.race.secBest.slice(),
-          coDriving: Boolean(e.bridges[e.active]?.assisted)
+          coDriving: Boolean(e.bridges[e.active]?.assisted),
+          s: c.s, lateral: c.lateral, incidents: this.stewards.of(e).inc, flag: this.stewards.flagFor(e, hazards), penalty: this.stewards.pendingPenalty(e)?.type ?? null, dq: Boolean(c.race.dq)
         };
       }),
       weather: this.weather.snapshot(),
