@@ -14,15 +14,20 @@ export function runWeatherProbe(options = {}) {
     track: 'harbor-ring', laps: 12, seconds: 1800, seed: 7, sun: .6, ...options };
   const weatherAudit = { toolSha256, weatherSeed: settings.seed,
     note: 'Read-only onStep observer of native Changeable races; no forced tyre calls, weather or controls. Rain means rain > 0.02; wet means track wetness >= 0.08. Contact counts are field-wide.',
-    phaseTransitions: [], phaseSeconds: {}, pitEvents: [], lapWeather: [], samples: [],
+    phaseTransitions: [], phaseSeconds: {}, pitEvents: [], lapWeather: [], nativeEvents: [], samples: [],
     contacts: { raining: 0, wet: 0, dry: 0 },
     range: { minWet: Infinity, maxWet: 0, maxRain: 0 },
     wettingSeconds: 0, dryingSeconds: 0, rainingSeconds: 0, wetSeconds: 0, drySeconds: 0 };
-  const cursors = new Map(); let previousPhase = null, previousWet = null, previousContacts = 0, nextSample = 0;
+  const cursors = new Map(); let previousPhase = null, previousWet = null, previousContacts = 0, previousEvent = 0, nextSample = 0;
   const report = runBenchmark({ ...settings, weather: 'changeable', onStep(race, dt) {
     if (dt <= 0) return;
     const w = race.weather.snapshot(), raining = w.rain > .02, wet = w.wet >= .08;
     const weather = { phase: w.phase, rain: w.rain, wet: w.wet, cloud: w.cloud };
+    if (race.eventSeq > previousEvent) {
+      for (const event of race.events) if (event.id > previousEvent)
+        weatherAudit.nativeEvents.push({ ...event, ...weather });
+      previousEvent = race.eventSeq;
+    }
     if (w.phase !== previousPhase) {
       weatherAudit.phaseTransitions.push({ time: race.time, ...weather }); previousPhase = w.phase;
     }

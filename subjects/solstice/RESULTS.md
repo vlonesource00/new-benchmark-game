@@ -1,12 +1,13 @@
 # Measured results
 
-The combat revision retains a **62.033-second clean lap** in a normal
-GT/soft/20-lap Harbor race. Its eight clean hard-tyre laps fade by **2.950
+The graphics-base verification retains a **62.033-second clean lap** in a normal
+GT/soft/20-lap Harbor race. Its eight clean hard-tyre laps fade by **2.833
 seconds**, within the requested 2-4-second allowance. The complete isolated
 race records zero off-track time, contacts, rescues, or controller errors.
 The new combat evidence is separated below from the released `c01544c`
-baseline. Neither set establishes universal wins or 62.5-second laps on every
-compound.
+baseline. The earlier combat run measured 2.950 seconds of fade. Changeable
+weather coverage exposes contacts and pit-lane recoveries below. Neither set
+establishes universal wins or 62.5-second laps on every compound.
 
 All public measurements, inputs, and source hashes are in
 [compact-summary.json](results/compact-summary.json). Large local frame traces
@@ -211,6 +212,71 @@ The final controller suite passes **29 checks**, including held-control
 straight passes, close rear pressure, side commitment, defense rearming,
 turn-in lane closure, and the reproduced native corner encounter. The normal
 production game build passes with the existing bundle-size warning.
+
+## Graphics-base verification (`bf90515`)
+
+`solstice-combat` was rebased onto `origin/graphics-aaa`. The incoming native
+changes add Changeable weather fronts and an optional weather seed defaulting
+to the race seed. The driving configuration, line asset, force policy and
+combat implementation were not retuned. The controller suite again passes
+all 29 checks, and the production build passes with 159 modules and the
+existing bundle-size warning.
+
+`graphics-dry-harbor20.json` repeats the seed-7 GT/soft/20-lap isolated race:
+best clean lap **62.033 s**, finish **1433.750 s**, three stops/swaps, zero
+contacts, off-track time, damage, rescues or controller errors. The lap 13-20
+hard stint ranges from 65.583 to 68.417 s, giving **2.833 s of fade**, within
+the requested 2-4-second allowance. This differs slightly from the earlier
+2.950-second run; the measured opening pace is identical.
+
+`graphics-combat-30.json` repeats all nine 30 Hz controlled encounters.
+Every passing time, progress ratio and free-run progress matches the earlier
+accepted 30 Hz report exactly, including straight passes in 3.175/3.925 s and
+94.414 km/h minimum under close rear pressure. All nine have zero contacts,
+off-track time, damage, stops below 5 m/s and bridge errors.
+
+### Changeable weather findings
+
+Two normal 12-lap SOLSTICE/Gemini v4 races use native fronts, default seeded
+weather, ALIEN difficulty, soft starts, sun 0.6 and unchanged pit strategy.
+Both encounter dry, building, shower and clearing phases, substantial wetting
+and drying, and a fully dry track between showers. All four cars finish with
+finite state and zero controller errors. They do **not** meet a clean-race
+weather acceptance criterion.
+
+| Race | SOLSTICE finish s | Field car-pair contact steps | SOLSTICE off-track s | SOLSTICE damage | SOLSTICE rescues |
+|---|---:|---:|---:|---:|---:|
+| Harbor, seed 7 | 965.667 | 0 | 5.492 | 3.36% | 1 |
+| Solenne, seed 31 | 977.358 | 19 | 0 | 37.52% | 1 |
+
+Track wetness ranges from 0 to 0.931 at Harbor and 0 to 0.907 at Solenne.
+All 19 Solenne contact steps occur with rain above 0.02 and wetness at least
+0.08. These are repeated field-wide overlap steps, not 19 independent crashes;
+the engine records zero severe car-pair contacts and a peak closing speed of
+2.715 m/s. Damage also includes barriers and is not attributed solely to combat.
+The field counter includes the host's continued motion after a car finishes.
+
+Solenne's native event log identifies Gemini's recovery at **494.900 s** and
+SOLSTICE's at **629.592 s**, both in **PIT LANE** during the shower. SOLSTICE
+recovers at wetness 0.838 before service completes at 656.642 s. Gemini also
+records 33.700 s off track, 82.87% damage and one rescue. Wet pit-lane handling
+and traffic merit further investigation; no control or strategy tuning was
+applied in response to these findings.
+
+SOLSTICE's Harbor calls are TYRES on laps 3/6 and PLAN on lap 10, choosing
+soft/medium/soft. Solenne calls TYRES on laps 4/11 and PLAN on lap 8, choosing
+medium/soft/soft. Calls follow the existing fuel, degradation and race planner;
+the game exposes only soft/medium/hard compounds, and the strategist does not
+consult weather. For example, Harbor's lap-10 call requests softs at wetness
+0.886 during the shower. This is recorded behavior, not proof that a different
+available compound would be faster.
+
+`weather-probe.mjs` adds a read-only observer through the benchmark's `onStep`
+hook. Public summaries preserve fronts, pit calls/services, lap weather and
+available native event logs; periodic frame samples remain local. The first
+lap's weather accumulation includes the grid approach, while its lap time uses
+the native full-lap clock. Source hashes identify the observer revision used
+for each run; the Solenne run includes the subsequently added native event log.
 
 ## Reproduce
 

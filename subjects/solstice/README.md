@@ -10,14 +10,21 @@ seconds of measured stint fade. `RESULTS.md` distinguishes achieved AI laps,
 complete races, and analytical paired schedules using a human's assumed
 65-second average. Universal mixed-field dominance is not established.
 
-The combat revision retains a 62.033-second best lap in a complete isolated
-20-lap Harbor race, with 2.950 seconds of hard-stint fade and zero off-track
+The graphics-base verification retains a 62.033-second best lap in a complete
+isolated 20-lap Harbor race, with 2.833 seconds of hard-stint fade and zero off-track
 time, contacts, rescues, or controller errors. Controlled straight passes take
 3.175 and 3.925 seconds instead of about eight. Defense can retain a physically
 clear leading trajectory, avoiding the unnecessary corner slowdown reproduced
 under close rear pressure. The existing line, tyre, and pace settings are unchanged.
+The two Changeable races expose wet-weather contacts and pit-lane recoveries;
+their findings are recorded in `RESULTS.md` without retuning the driver.
 
 ## Run
+
+Development work currently starts from `origin/graphics-aaa`. Fetch and rebase
+onto that branch before starting and before pushing, and target PRs at
+`graphics-aaa` until its merge into `main` is confirmed. Keep public commits
+authored as `vlonesource00 <vlonesource00@users.noreply.github.com>`.
 
 From the repository root, with Node 24 and the repository dependencies installed:
 
@@ -61,6 +68,12 @@ placements and warm tyre state are fixtures, and its rival uses a fixed lane
 and speed cap; these are targeted regressions, not complete races. The
 `--case native-corners` option reproduces an encounter in the first 80 seconds
 of the normal SOLSTICE/Gemini race.
+`weather-probe.mjs` observes native Changeable races, recording wet/dry fronts,
+box calls, services and lap weather without changing controls or strategy.
+
+```sh
+node --no-warnings --loader ./subjects/solstice/tools/json-loader.mjs subjects/solstice/tools/weather-probe.mjs --track harbor-ring --laps 12 --seed 7 --seconds 1800 --output subjects/solstice/results/example-changeable.json
+```
 
 PowerShell can pass probe configuration without native JSON quoting problems:
 

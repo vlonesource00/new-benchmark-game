@@ -21,6 +21,8 @@ for (const file of readdirSync(directory).sort()) {
         governor: data.sourceProvenance?.governor },
       ...(data.cadence ? { cadence: Object.fromEntries(Object.entries(data.cadence)
         .filter(([key]) => !['seats', 'probe', 'postFinish'].includes(key))) } : {}),
+      ...(data.weatherAudit ? { weatherAudit: Object.fromEntries(Object.entries(data.weatherAudit)
+        .filter(([key]) => key !== 'samples')) } : {}),
       phase: data.phase, truncated: data.truncated, simulatedSeconds: data.simulatedSeconds,
       totalContacts: data.totalContacts, collisionStats: data.collisionStats,
       wallSeconds: data.wallSeconds, cpuMeasurement: data.cpuMeasurement,
