@@ -28,6 +28,7 @@ export function copyVehicle(dst, src) {
   for (const key of MOTION) dst[key] = src[key];
   dst.spec = src.spec;
   Object.assign(dst.setup, src.setup);
+  Object.assign(dst.aero, src.aero);
   dst.controls = { ...src.controls };
   for (let i = 0; i < dst.wheels.length; i++) {
     const a = dst.wheels[i], b = src.wheels[i];
@@ -36,4 +37,3 @@ export function copyVehicle(dst, src) {
   }
   return dst;
 }
-

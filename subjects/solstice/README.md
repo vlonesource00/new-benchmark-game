@@ -4,18 +4,23 @@ A game-specific driver for Phantom Endurance. It optimizes a periodic line for
 each circuit, computes braking and acceleration envelopes from live tyres,
 and evaluates traffic trajectories with the game's own Vehicle physics.
 
-The current implementation is an experimental candidate. Harbor has measured
-62.642 and 64.600-second clean laps before its first pit in GT / soft / 20-lap
-conditions, with zero off-tracks, rescues and bridge errors over a 500-second
-probe. Later stints and mixed-field dominance still need validation. See
-RESULTS.md for measured outcomes and remaining gaps.
+Developed against upgraded-game commit `2935523`. The pace target is normal
+GT / soft / 20-lap Harbor running near 62.5 seconds, with no more than four
+seconds of measured stint fade. `RESULTS.md` distinguishes achieved AI laps,
+complete races, and analytical paired schedules using a human's assumed
+65-second average. Universal mixed-field dominance is not established.
+
+The final isolated Harbor run completes 20 laps with a 62.033-second best lap
+and 2.708 seconds of hard-stint fade, with zero off-track time, contacts,
+rescues, or controller errors. Full held-control runs at 20 and 30 Hz also
+complete without those failures and achieve clean laps below 64 seconds.
 
 ## Run
 
 From the repository root, with Node 24 and the repository dependencies installed:
 
 ```sh
-node subjects/solstice/tools/build.mjs
+npm run game:build
 node subjects/solstice/tools/serve.mjs
 ```
 
@@ -38,7 +43,8 @@ Node 24. It does not change another driver's source or the game simulation.
 that file. Node experiments can set `SOLSTICE_OPTIONS` to a JSON object; nested
 `path` and `policy` overrides merge independently. Each layer can also include
 `tracks[trackId]` overrides. Harbor uses its own curvature sampling; all four
-GT lines are saved in the small runtime asset `data/lines.json`.
+GT lines are saved in the small runtime asset `data/lines.json`. Per-circuit
+policy settings balance corner speed, tyre energy and lateral transfers.
 
 `bench.mjs` runs the normal EnduranceRace with the normal resources, strategist,
 governor, mandatory pit stop, and driver swap. It records source hashes and the
@@ -64,8 +70,24 @@ teams.js, ai-worker.js, and remote.js. The user additionally approved one line
 in async-seats.js to forward the worker's existing debug trackingPoint to the
 3D lens. That local patch and large raw diagnostics are excluded from Git;
 `results/compact-summary.json` carries the public measurements.
-The user subsequently authorized governor changes. This pre-port build lets
-every AI manage its own tyre pace on ALIEN; `MANAGE_ALIEN=true` restores the
-original thermal cap in headless comparisons. Wheelspin and weather protection
-remain active. The driver writes only controls; game physics, resources,
-timing, strategy, and other AI implementations remain unchanged.
+The roster gives SOLSTICE `manage: false` and `governor: false`. race.js skips
+its governor only when the native base difficulty is ALIEN; AI-only teams at
+lower levels retain the normal difficulty cap. Human-containing teams keep
+the upstream game's base-difficulty semantics. Other drivers retain their
+upstream governor behavior. SOLSTICE manages wheelspin through its controls,
+and the car's built-in traction control still acts. Upstream difficulty.js is
+unchanged. The driver writes only controls; game physics, resources, timing,
+strategy, and other AI implementations remain unchanged.
+
+## Paired race estimate
+
+```sh
+node subjects/solstice/tools/pair-model.mjs subjects/solstice/results/example-stations.json --output subjects/solstice/results/example-pair.json
+```
+
+This tool alternates human and AI stints at every stop, charging the measured
+in/out-lap loss once; that loss already includes fuel, tyres and the driver
+swap. It compares two through five stops and human stint-length assumptions.
+Extra stops are allowed when they reduce combined time. Human fuel reach and
+tyre performance are unmeasured assumptions. The tool neither simulates human
+controls nor changes the game's strategist or race results.

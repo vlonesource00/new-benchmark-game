@@ -107,7 +107,7 @@ export class Traffic {
     const disagreement = Math.hypot(world.x - road.x, world.z - road.z);
     const crossing = o.irregular || (t < .55 && Math.abs(wp.lateral - q) > 2.5);
     const prediction = { road, world, crossing, disagreement,
-      margin: .15 + .30 * t + Math.min(.6, Math.abs(o.latRate) * .08) * t,
+      margin: .30 + .40 * t + Math.min(.6, Math.abs(o.latRate) * .08) * t,
       s: o.s + travel / metric, lateral: q, speed: Math.max(0, o.speed + o.acc * movingTime) };
     this.predictions.set(key, prediction);
     return prediction;
@@ -172,7 +172,7 @@ export class Traffic {
     const targetS = me.s + Math.max(15, speed * .8), base = clamp(this.baseline(path, targetS), -edge, edge);
     const closingOn = o => Math.max(speed - o.speed, speed - this.predict(o, .8).speed);
     const separationFor = o => projectedWidth
-      + o.w * Math.abs(Math.cos(o.headingOffset)) + o.l * Math.abs(Math.sin(o.headingOffset)) + .35;
+      + o.w * Math.abs(Math.cos(o.headingOffset)) + o.l * Math.abs(Math.sin(o.headingOffset)) + .65;
     const sideBounds = (o, side) => {
       const q = this.predict(o, .6).lateral, separation = separationFor(o) + .12;
       return side > 0 ? { min: Math.max(-edge, Math.max(o.lateral, q) + separation), max: edge }

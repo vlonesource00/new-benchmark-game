@@ -90,7 +90,7 @@ function tyreState(car, index) {
   return car.wheels?.[index]?.tyre ?? { core: 85, pressure: 2.15, wear: 0, gripScale: 1 };
 }
 
-function modelFor(track, car, driveSlip = .09) {
+function modelFor(track, car, driveSlip = .18) {
   const spec = car.spec ?? carSpecFor(car.classId);
   const setup = car.setup ?? {};
   return {
@@ -179,7 +179,7 @@ function driveForce(capacity, lateral, curve) {
   return capacity * combinedShape(curve.sx, (lo + hi) * .5) * curve.sx;
 }
 
-function dynamicsTable(track, car, driveSlip = .09) {
+function dynamicsTable(track, car, driveSlip = .18) {
   const model = modelFor(track, car, driveSlip), s = model.spec, m = model.mass;
   const driveCurve = driveCurveFor(driveSlip);
   const maxSpeed = Math.min(100, 8080 * s.radius / (s.gears[6] * s.finalDrive * 9.5493));
@@ -347,10 +347,11 @@ export class RacingPath {
     this.step = this.length / this.n;
     const spec = options.spec ?? options.car?.spec ?? carSpecFor(options.classId);
     const settings = {
+      modelVersion: 2,
       margin: Math.max(1.15, options.margin ?? 1.2), wing: options.wing ?? options.car?.setup?.wing ?? 6,
       // false reproduces the former peak-ellipse model for bounded ablations.
-      // .09 matches the game's always-on driven-wheel slip governor stage.
-      driveSlip: options.driveSlip === false ? null : clamp(options.driveSlip ?? .09, .02, .25),
+      // .18 lies near peak drive force in the upgraded game tyre model.
+      driveSlip: options.driveSlip === false ? null : clamp(options.driveSlip ?? .18, .02, .25),
       smoothingIterations: clamp(Math.floor(options.smoothingIterations ?? 600), 0, 2400),
       projectDuringSmoothing: Boolean(options.projectDuringSmoothing),
       curvatureSpan: clamp(Math.round(options.curvatureSpan ?? 1), 1, 8),

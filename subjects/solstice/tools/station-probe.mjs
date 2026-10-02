@@ -7,7 +7,7 @@ import { EnduranceRace, FIXED_DT, maxWear } from '../../../game/core/race.js';
 import { COMPOUNDS, FORMATS } from '../../../game/core/rules.js';
 import { AI_DRIVERS, TEAM_LIVERIES } from '../../../game/core/teams.js';
 import { RacingPath } from '../src/path.js';
-import { MANAGE_ALIEN, MANAGE_CORE } from '../../../game/core/difficulty.js';
+import { MANAGE_OVER } from '../../../game/core/difficulty.js';
 
 const round = (x, digits = 3) => Number(x.toFixed(digits));
 const wrap = (x, n) => ((x % n) + n) % n;
@@ -59,6 +59,7 @@ export function stationProbe({ driver = 'solstice', track = 'harbor-ring', secon
     return result;
   };
   race.start();
+  const actualStartCompound = car.wheels[0].tyre.compound;
   const start = performance.now(), maxSteps = Math.ceil((seconds + 10) / FIXED_DT);
   while (steps++ < maxSteps && race.time + FIXED_DT * .5 < seconds && race.phase !== 'finished') {
     const oldTime = race.time, oldLap = car.race.lap, oldLapStart = car.race.lapStart;
@@ -114,7 +115,7 @@ export function stationProbe({ driver = 'solstice', track = 'harbor-ring', secon
       b.rotationSeconds += rotation > .0001 ? dt : 0;
       const rear = tyres.slice(2, 4);
       b.rotationViolationSeconds += rotation > .0001
-        && (Math.max(...rear.map(t => t.core)) <= 86 || Math.max(...rear.map(t => t.wear)) <= .12) ? dt : 0;
+        && !rear.some(t => t.core > (t.optimum ?? 85) + 4 && t.wear > .12) ? dt : 0;
       tyres.forEach((t, j) => { b.wheelSlipWork[j] += t.slipPower * dt; b.wheelAlpha2[j] += t.alpha * t.alpha * dt; });
       b.core += core * dt; b.surface += surface * dt; b.wear += maxWear(car) * dt;
       maxCore = Math.max(maxCore, ...tyres.map(t => t.core)); maxSurface = Math.max(maxSurface, ...tyres.map(t => t.surface));
@@ -141,18 +142,19 @@ export function stationProbe({ driver = 'solstice', track = 'harbor-ring', secon
       });
       completed.push({ lap: oldLap, time: car.race.lastLap, state: car.race.lastState,
         clean: ['purple', 'green', 'yellow'].includes(car.race.lastState), steady: oldLap > 1,
-        tyresAtLine: car.wheels.map(w => ({ compound: w.tyre.compound, core: w.tyre.core,
+        tyresAtLine: car.wheels.map(w => ({ compound: w.tyre.compound, optimum: w.tyre.optimum, heat: w.tyre.heat, core: w.tyre.core,
           surface: w.tyre.surface, wear: w.tyre.wear, pressure: w.tyre.pressure })),
         liveEnvelopeEstimate: path?.estimatedLapTime ?? null, fuel: car.fuel, maxWear: maxWear(car), rows });
     }
   }
   const codeHashes = hashes();
   return { conditions: { driver, track, seconds, laps, seed, weather, sun, teams: 1, difficulty: 1,
-      classId: car.classId, compound, format: race.format.id, fuelLaps: race.cal.fuelLaps,
+      classId: car.classId, compound: actualStartCompound, requestedCompound: compound,
+      format: race.format.id, fuelLaps: race.cal.fuelLaps,
       tyreLaps: race.cal.tyreLaps, fixedDt: FIXED_DT, binMetres, options,
       codeHashes, startCodeHashes, lineDataHash, codeChangedDuringRun: JSON.stringify(codeHashes) !== JSON.stringify(startCodeHashes),
       config: JSON.parse(readFileSync(new URL('../config.json', import.meta.url))),
-      governor: { manageAlien: MANAGE_ALIEN, manageCore: MANAGE_CORE,
+      governor: { manageOver: MANAGE_OVER, solsticeBypass: driver === 'solstice',
         manageFloor: Number(process.env.MANAGE_FLOOR ?? .92), manageGain: Number(process.env.MANAGE_GAIN ?? .004) },
       governorHash: createHash('sha256').update(readFileSync(new URL('../../../game/core/difficulty.js', import.meta.url))).digest('hex'),
       bridgeHash: createHash('sha256').update(readFileSync(new URL('../../../game/bridges/solstice-bridge.js', import.meta.url))).digest('hex'),

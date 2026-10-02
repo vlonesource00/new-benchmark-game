@@ -1,15 +1,19 @@
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
 import { Vehicle } from '../../../game/engine/sim/vehicle.js';
+import { tyreGrip } from '../../../game/engine/sim/tyre.js';
 import { Track } from '../../../game/engine/sim/track.js';
 import { createSolsticeBridge } from '../../../game/bridges/solstice-bridge.js';
 import { PredictionTrack, shadowOf, copyVehicle } from '../src/plant.js';
 import { RacingPath } from '../src/path.js';
 import { ForcePolicy } from '../src/policy.js';
 import { Traffic } from '../src/traffic.js';
-import { PaceGovernor, MANAGE_ALIEN } from '../../../game/core/difficulty.js';
+import { PaceGovernor } from '../../../game/core/difficulty.js';
+import { EnduranceRace } from '../../../game/core/race.js';
+import { AI_DRIVERS, TEAM_LIVERIES } from '../../../game/core/teams.js';
 import { runBenchmark } from './bench.mjs';
 import { cadenceBridgeFactory } from './cadence-bench.mjs';
+import { pairedSchedule } from './pair-model.mjs';
 
 // Run with the JSON compatibility loader; these are short public-contract checks,
 // not endurance benchmarks or assertions of a particular tuning choice.
@@ -60,24 +64,28 @@ function controlsOnly(car) {
   } });
 }
 
-check('ALIEN thermal policy is universal and traction and lower difficulties remain active', () => {
-  const track = new Track('harbor-ring'), car = carAt(track, { speed: 30 });
-  car.wheels.forEach(w => Object.assign(w.tyre, { core: 135, surface: 185, kappa: 0 }));
-  const profile = { bin: track.length / 2, v: [20, 20] };
-  const alien = new PaceGovernor(track, 1, profile), expert = new PaceGovernor(track, .96, profile);
-  alien.manageStep(car, 10); expert.manageStep(car, 10);
-  assert.equal(alien.hot, 135, 'heat remains observable');
-  assert.equal(alien.active, MANAGE_ALIEN, 'the ALIEN setting is shared by every driver');
-  assert.ok(expert.active && expert.k < .96, 'lower difficulty keeps the original heat policy');
+check('SOLSTICE governor bypass applies only at ALIEN and other drivers keep upstream policy', () => {
+  for (const id of ['solstice', 'gemini-supreme-v4', 'phantom']) for (const difficulty of [1, .98, .87]) {
+    const known = AI_DRIVERS.find(d => d.id === id);
+    const team = { ...TEAM_LIVERIES[0], id: 'check-0', index: 0, grid: 0,
+      drivers: [0, 1].map(() => ({ ...known, kind: 'ai' })) };
+    const race = new EnduranceRace({ track: new Track('harbor-ring'), teams: [team], difficulty,
+      makeBridge: () => ({ update(c) { c.controls = { throttle: 1, brake: 0, steer: 0 }; } }) });
+    race.start(); race.phase = 'racing';
+    let manage = 0, apply = 0;
+    race.entries[0].governor.manageStep = () => manage++;
+    race.entries[0].governor.apply = () => apply++;
+    race.step(DT);
+    const expected = id === 'solstice' && difficulty === 1 ? 0 : 1;
+    assert.equal(manage, expected, `${id}/${difficulty} management`);
+    assert.equal(apply, expected, `${id}/${difficulty} application`);
+  }
+  const track = new Track('harbor-ring'), car = carAt(track);
+  const governor = new PaceGovernor(track, 1);
   car.controls = { throttle: 1, brake: 0, steer: 0 };
-  alien.apply(car, car.s);
-  if (!MANAGE_ALIEN) assert.equal(car.controls.throttle, 1, 'hot ALIEN tyres alone cannot activate an older pace profile');
-  car.controls = { throttle: 1, brake: 0, steer: 0 };
-  car.wheels[2].tyre.kappa = .14;
-  alien.apply(car, car.s);
-  assert.ok(car.controls.throttle < 1, 'driven wheelspin protection remains active');
-  track.wetness = .6; alien.manageStep(car, 10);
-  assert.ok(alien.k < 1, 'the weather policy remains active');
+  car.wheels[2].tyre.kappa = .25;
+  governor.apply(car, car.s);
+  assert.ok(car.controls.throttle < 1, 'upstream traction protection remains active');
 });
 
 check('canonical game prediction parity and independent live wheel state', () => {
@@ -87,14 +95,17 @@ check('canonical game prediction parity and independent live wheel state', () =>
   const car = carAt(track, { speed: 28 }), compounds = ['soft', 'medium', 'hard', 'wet'];
   car.gear = 3; car.rpm = 4100; car.damage = .08; car.fuelScale = 8.7;
   car.controls = { throttle: .48, brake: .07, steer: .018 };
+  Object.assign(car.aero, { downforce: 1800, drag: 800, wake: .13 });
   car.wheels.forEach((w, i) => Object.assign(w.tyre, { compound: compounds[i], gripScale: .82 + i * .07,
     wearScale: 1.2 + i * .4, wear: .11 + i * .09, core: 66 + i * 9,
-    surface: 74 + i * 11, coldPressure: 1.55 + i * .08, pressure: 1.94 + i * .11 }));
+    surface: 74 + i * 11, optimum: [82, 90, 99, 85][i], heat: [1.06, 1, .9, 1][i],
+    coldPressure: 1.55 + i * .08, pressure: 1.94 + i * .11 }));
   const shadow = shadowOf(car), reused = carAt(track, { id: 9 });
   copyVehicle(reused, car);
   for (const prediction of [shadow, reused]) {
     assert.equal(prediction.classId, car.classId); assert.equal(prediction.fuelScale, car.fuelScale);
     assert.notEqual(prediction.setup, car.setup); assert.notEqual(prediction.controls, car.controls);
+    assert.notEqual(prediction.aero, car.aero); assert.deepEqual(prediction.aero, car.aero);
     for (let i = 0; i < 4; i++) {
       assert.notEqual(prediction.wheels[i], car.wheels[i]);
       assert.notEqual(prediction.wheels[i].tyre, car.wheels[i].tyre);
@@ -192,6 +203,18 @@ check('bridge writes only controls against frozen nested physical state', () => 
   finiteControls(bridge, guarded, 'frozen source');
   assert.equal(physicalSnapshot(car), physical, 'Motion, setup or wheel state changed during control update');
   assert.deepEqual(track.rubber, rubber, 'Control update changed shared rubber');
+});
+
+check('countdown priming on a stationary grid never arms stall recovery', () => {
+  const track = new Track('harbor-ring'), car = carAt(track, { speed: 0 });
+  const guarded = controlsOnly(car);
+  const bridge = createSolsticeBridge({ hostTrack: track });
+  for (let frame = 0; frame < 180; frame++) {
+    bridge.update(guarded, [guarded], 1 / 60, { time: 0, totalLaps: 12 });
+    finiteControls(bridge, guarded, 'priming');
+    assert.notEqual(bridge.debug().intent, 'RECOVER');
+    assert.ok(!guarded.controls.reverse, 'the grid cannot request reverse');
+  }
 });
 
 check('pit approach and release preserve physical state and do not rearm on an outlap', () => {
@@ -408,6 +431,72 @@ check('benchmark freezes metrics on the individual finishing step and separates 
     'grid, completed timed laps and partial segment conserve wear');
 });
 
+check('a lower warm corner target preserves physical braking authority', () => {
+  const track = new Track('harbor-ring'), car = carAt(track, { speed: 45 });
+  car.wheels.forEach(w => Object.assign(w.tyre, { core: 110, wear: .55 }));
+  const path = new RacingPath(track, { car }); path.rebuildEnvelope(car, .88);
+  const normal = new ForcePolicy(track, path, { cornerGripUse: .91, axleBrake: false });
+  const saving = new ForcePolicy(track, path, { cornerGripUse: .91,
+    warmCornerGripUse: .80, axleBrake: false });
+  let compared = 0;
+  for (let s = 0; s < track.length; s += 12) {
+    car.place(track, s, path.at(s).offset + 2, 45);
+    car.wheels.forEach(w => Object.assign(w.tyre, { core: 110, wear: .55 }));
+    const projection = track.nearest(car.x, car.z);
+    const a = normal.control(car, projection), b = saving.control(car, projection);
+    if (normal.targetSpeed > saving.targetSpeed + .2 && a.brake > .01) {
+      assert.ok(b.brake >= a.brake - 1e-9, 'saving must not weaken an overspeed braking command');
+      compared++;
+    }
+  }
+  assert.ok(compared > 0, 'fixture exercises a lower target while braking');
+});
+
+check('cold thermal blending cannot remove overspeed braking authority', () => {
+  const track = new Track('harbor-ring'), car = carAt(track, { speed: 40 });
+  const path = new RacingPath(track, { car }); path.rebuildEnvelope(car, .72);
+  const policy = new ForcePolicy(track, path, { warmForceTransition: true,
+    warmGuardOver: 20, actualBrakeReserve: true, axleBrake: true,
+    saturationBrakeShare: .2, rearSlipLimit: .14, cornerGripUse: .76 });
+  let exercised = false;
+  for (let s = 0; s < track.length; s += 12) {
+    car.place(track, s, path.at(s).offset + 2, 40);
+    for (const w of car.wheels) {
+      w.load = (car.spec.mass + car.fuel * .75) * 9.81 / 4;
+      Object.assign(w.tyre, { core: 82, optimum: 82, wear: .3 });
+      // A tyre already carrying nearly full lateral force needs a deliberate
+      // combined-slip exchange before it can produce longitudinal braking.
+      w.tyre.fy = w.load * tyreGrip(w.tyre, w.load) * car.spec.tyreGrip * .97;
+    }
+    const before = physicalSnapshot(car);
+    const controls = policy.control(car, track.nearest(car.x, car.z));
+    if (policy.targetSpeed < car.speed - 5) {
+      assert.ok(controls.brake > .01, 'an overspeed cold car can brake under lateral saturation');
+      assert.equal(controls.throttle, 0);
+      assert.equal(physicalSnapshot(car), before, 'braking changes no physical state');
+      exercised = true; break;
+    }
+  }
+  assert.ok(exercised, 'fixture requires braking before the thermal guard warms up');
+});
+
+check('paired schedules charge every alternating driver swap and bound stint fade', () => {
+  const profiles = [{ id: 'soft', times: [60, 61, 70, 62] }];
+  const assumptions = { laps: 6, humanLap: 65, humanMaxStint: 2,
+    minimumStops: 2, stopPenalty: 40, maximumFade: 4 };
+  const result = pairedSchedule(profiles, assumptions);
+  assert.deepEqual(result.stints.map(s => [s.driver, s.laps]),
+    [['human', 2], ['solstice', 2], ['human', 2]]);
+  near(result.seconds, 461, 'six laps plus two pit/swap penalties');
+  assert.equal(result.stops, 2); assert.equal(result.swaps, 2);
+  assert.equal(pairedSchedule(profiles, { ...assumptions, laps: 7,
+    maximumStops: 2 }), null, 'an intermediate seven-second fade cannot be hidden by a faster final lap');
+  const extra = pairedSchedule([{ id: 'short', times: [50] }, { id: 'long', times: [66, 67] }],
+    { laps: 4, humanLap: 65, humanMaxStint: 2, minimumStops: 0, stopPenalty: 1 });
+  assert.equal(extra.stops, 3, 'an extra stop is allowed when it reduces paired time');
+  near(extra.seconds, 233, 'two fast AI laps, two human laps and three swaps');
+});
+
 check('deliberate rear rotation requires both warm and degraded tyres', () => {
   const track = new Track('harbor-ring');
   const car = carAt(track, { speed: 35 });
@@ -433,6 +522,10 @@ check('deliberate rear rotation requires both warm and degraded tyres', () => {
   assert.equal(request(72, .7), 0, 'cold tyres cannot request a slide');
   assert.equal(request(105, 0), 0, 'a fresh hot set cannot request a slide');
   assert.equal(request(85, .7), 0, 'normal tyre temperature retains grip driving');
+  car.wheels[2].tyre.core = 120; car.wheels[2].tyre.wear = 0;
+  car.wheels[3].tyre.core = 72; car.wheels[3].tyre.wear = .7;
+  policy.control(car, track.nearest(car.x, car.z), { rotation: 1 });
+  assert.equal(policy.lastRotation, 0, 'heat and wear must coexist on a rear tyre');
   const used = request(95, .3), worn = request(105, .6);
   assert.ok(used > 0 && worn > used, 'rotation authority grows with heat and wear');
 });

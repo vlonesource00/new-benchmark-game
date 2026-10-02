@@ -38,12 +38,17 @@ export class SolsticeDriver {
     const start = clock();
     this.path = new RacingPath(this.track, { brakeReserve: .8, ...this.o.path, car });
     this.policy = new ForcePolicy(this.track, this.path, this.o.policy);
-    this.path.rebuildEnvelope(car, this.policy.o.gripUse);
+    this.path.rebuildEnvelope(car, this.envelopeGrip());
     // Match the public line used by the host's pit autopilot at handoff.
     // This private, read-only geometry does not replace the racing line.
     this.pitLine = new RacingLine(this.track, car.spec);
     this.stats.initMs = clock() - start;
     this.stats.geometrySource = this.path.geometrySource;
+  }
+  envelopeGrip() {
+    const grip = this.policy.o.gripUse;
+    const wet = clamp(((this.track.wetness ?? 0) - .08) / .14, 0, 1);
+    return grip + (Math.min(grip, .86) - grip) * wet;
   }
   resourcePlan(car, context, dt, projection) {
     if (this.fuelMark != null && car.fuel <= this.fuelMark) {
@@ -61,7 +66,7 @@ export class SolsticeDriver {
     const team = this.teamState?.(car);
     const lapsLeft = Math.max(1, (context.totalLaps ?? 6) - (car.race?.lap ?? 1) + 1);
     const remainingFraction = 1 - ((car.race?.progress ?? 0) % this.track.length + this.track.length) % this.track.length / this.track.length;
-    const fuelLaps = team?.fuelLaps ?? clamp(Math.round((context.totalLaps ?? 6) * .55), 3, 9);
+    const fuelLaps = team?.fuelLaps ?? clamp(Math.round((context.totalLaps ?? 6) * .68), 3, 9);
     const stintLaps = team?.stintLaps ?? Math.floor(fuelLaps * Math.max(0, 1 - car.fuel / 60));
     const targetLaps = Math.min(lapsLeft - 1 + remainingFraction,
       Math.max(remainingFraction, fuelLaps - stintLaps - (1 - remainingFraction)));
@@ -73,9 +78,10 @@ export class SolsticeDriver {
     const push = lapsLeft <= 1 || Boolean(team?.pitPlan?.tyres);
     const save = !push && lapFuel > 0 && car.fuel / lapFuel < Math.max(.7, targetLaps - .12)
       && car.fuel / lapFuel > 1.05;
-    const core = Math.max(...car.wheels.map(w => w.tyre.core));
-    const hot = !push && core > 99;
-    return { save, push, factor: hot ? clamp(1 - (core - 99) * .0025, .94, 1) : 1 };
+    const over = Math.max(...car.wheels.map(w => w.tyre.core - (w.tyre.optimum ?? 85)));
+    const hot = !push && over > 14;
+    return { save, push, factor: hot ? clamp(1 - (over - 14) * .0025, .94, 1) : 1,
+      forceGuard: clamp((this.controlPeriod - .025) / .015, 0, 1) };
   }
   recover(car, p, now, dt) {
     const heading = Math.abs(p.lateral) < this.track.halfWidth + this.track.curbWidth
@@ -113,10 +119,9 @@ export class SolsticeDriver {
       this.pitGuide ??= new PitAutopilot(lane, lane.boxes[index], this.pitLine);
       this.pitGuide.phase = 'release';
       this.pitControl(car, p, dt);
-      const s = p.s + clamp(4 + car.speed * .6, 8, 24);
-      const target = this.track.at(s, this.pitGuide.targetLat(s));
+      const target = this.pitPolicy.lastTarget;
       this.trackingPoint = { x: target.x, z: target.z };
-      this.targetSpeed = this.pitGuide.targetSpeed(p.s, car);
+      this.targetSpeed = this.pitPolicy.targetSpeed;
       this.mode = 'PIT_RELEASE'; this.nextPlan = -Infinity;
       this.pitArmed = false; this.lastPitFlag = flag;
       return true;
@@ -140,10 +145,9 @@ export class SolsticeDriver {
       this.pitGuide = new PitAutopilot(lane, lane.boxes[index], this.pitLine);
     }
     this.pitControl(car, p, dt);
-    const look = clamp(4 + car.speed * .6, 8, 24), s = p.s + look;
-    const target = this.track.at(s, this.pitGuide.targetLat(s));
+    const target = this.pitPolicy.lastTarget;
     this.trackingPoint = { x: target.x, z: target.z };
-    this.targetSpeed = this.pitGuide.targetSpeed(p.s, car);
+    this.targetSpeed = this.pitPolicy.targetSpeed;
     this.mode = 'PIT_APPROACH'; this.nextPlan = -Infinity;
     return true;
   }
@@ -227,6 +231,8 @@ export class SolsticeDriver {
     }
     const terminalPlan = { ...proposal, hold, extra, bounds };
     const p = this.track.nearest(shadow.x, shadow.z), target = this.policy.point(p.s, terminalPlan);
+    // Beyond this short rollout, retain the normal envelope as the braking
+    // reference. A temporary faster policy must leave a feasible continuation.
     const terminalCap = this.path.sample(hold == null ? this.path.variantEnvelope(extra, bounds) : this.path.laneEnvelope(hold), p.s + shadow.speed * .18);
     const overspeed = Math.max(0, shadow.speed - terminalCap - .7);
     score += .16 * overspeed * overspeed + .025 * (p.lateral - target.offset) ** 2;
@@ -243,16 +249,17 @@ export class SolsticeDriver {
       bounds: mandatory ? (proposals[0]?.bounds ?? null) : null,
       speedCap: mandatory ? this.traffic.speedCap : this.traffic.followCap,
       lookahead: this.selected.lookahead ?? this.policy.o.lookahead,
-      factor: resource.factor, coast: resource.save };
+      factor: resource.factor, coast: resource.save, push: resource.push, forceGuard: resource.forceGuard };
     let candidates = [base];
     for (const p of proposals) candidates.push({ ...p, speedCap: this.traffic.speedCap,
-      factor: (p.factor ?? 1) * resource.factor, coast: resource.save });
+      factor: (p.factor ?? 1) * resource.factor, coast: resource.save, push: resource.push,
+      forceGuard: resource.forceGuard });
+    const rearTyres = car.wheels.slice(2, 4).map(w => w.tyre);
+    if (rearTyres.some(t => t.core > (t.optimum ?? 85) + 4 && t.wear > .12))
+      candidates.push({ ...base, rotation: .35 });
     candidates.push({ ...base, factor: .96 * resource.factor },
       { ...base, lookahead: .45 }, { ...base, lookahead: .9 },
       { ...base, factor: 1.035 * resource.factor });
-    const rearTyres = car.wheels.slice(2, 4).map(w => w.tyre);
-    if (Math.max(...rearTyres.map(t => t.core)) > 86 && Math.max(...rearTyres.map(t => t.wear)) > .12)
-      candidates.push({ ...base, rotation: .35 });
     const distinct = new Set();
     candidates = candidates.filter(p => {
       const key = JSON.stringify([p.extra, p.hold, p.bounds, p.factor, p.coast,
@@ -312,7 +319,7 @@ export class SolsticeDriver {
     }
     const proposals = this.traffic.proposals(car, this.path, now);
     if (now >= this.nextEnvelope) {
-      this.path.rebuildEnvelope(car, this.policy.o.gripUse);
+      this.path.rebuildEnvelope(car, this.envelopeGrip());
       this.nextEnvelope = now + 1 / this.o.envelopeHz;
     }
     if (now >= this.nextPlan) this.plan(car, now, resource, proposals);
@@ -331,7 +338,8 @@ export class SolsticeDriver {
     }
     this.extra += clamp((this.selected.extra ?? 0) - this.extra, -this.o.laneRate * step, this.o.laneRate * step);
     const plan = { ...this.selected, extra: this.extra, hold: this.hold,
-      bounds: this.bounds, brakingBounds: requestedBounds, brakingHold: this.selected.hold };
+      bounds: this.bounds, brakingBounds: requestedBounds, brakingHold: this.selected.hold,
+      forceGuard: resource.forceGuard };
     if (Math.abs(p.lateral) > this.track.halfWidth + this.track.curbWidth) {
       plan.extra = 0; plan.hold = 0; plan.factor = .45; this.mode = 'REJOIN';
     } else this.mode = resource.save ? 'SAVE' : ({ attack: 'ATTACK', defend: 'DEFEND',

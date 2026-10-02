@@ -8,7 +8,7 @@ import { EnduranceRace, FIXED_DT, maxWear } from '../../../game/core/race.js';
 import { COMPOUNDS, FORMATS } from '../../../game/core/rules.js';
 import { AI_DRIVERS, TEAM_LIVERIES } from '../../../game/core/teams.js';
 import { TRACKS } from '../../../game/core/tracks.js';
-import { MANAGE_ALIEN, MANAGE_CORE } from '../../../game/core/difficulty.js';
+import { MANAGE_OVER, difficultyById } from '../../../game/core/difficulty.js';
 
 const repositoryRoot = fileURLToPath(new URL('../../../', import.meta.url));
 const envOptions = () => {
@@ -33,9 +33,10 @@ const sourceFiles = [
 const sourceProvenance = Object.freeze({ capturedAt: new Date().toISOString(),
   nodeVersion: process.version, platform: process.platform, architecture: process.arch,
   solsticeOptionsAtStartup: envOptions(),
-  governor: { manageAlien: MANAGE_ALIEN, manageCore: MANAGE_CORE,
+  governor: { manageOver: MANAGE_OVER,
     manageFloor: Number(process.env.MANAGE_FLOOR ?? .92),
-    manageGain: Number(process.env.MANAGE_GAIN ?? .004), spinLimit: Number(process.env.SPIN_LIMIT ?? .09) },
+    manageGain: Number(process.env.MANAGE_GAIN ?? .004), spinLimit: Number(process.env.SPIN_LIMIT ?? .18),
+    roster: AI_DRIVERS.map(({ id, manage, governor }) => ({ id, manage, governor })) },
   configValues: JSON.parse(readFileSync(resolve(repositoryRoot, 'subjects/solstice/config.json'), 'utf8')),
   sha256: Object.freeze(Object.fromEntries(sourceFiles.map(path => {
     const absolute = resolve(repositoryRoot, path);
@@ -81,7 +82,7 @@ const resourceSegment = (s, cursor, end, trackLength) => {
 
 export function runBenchmark({ driver = 'phantom', field = null, track = 'harbor-ring',
   seconds = 150, laps = 6, teams = null, seed = 7, weather = 'clear', sun = .6,
-  compound = 'medium', format = null,
+  compound = 'soft', format = null, difficulty = 1,
   makeBridge = undefined, onStep = null } = {}) {
   const solsticeOptions = envOptions();
   const ids = field ?? [driver], count = teams ?? (field ? ids.length : 4);
@@ -96,6 +97,8 @@ export function runBenchmark({ driver = 'phantom', field = null, track = 'harbor
   const raceFormat = format == null ? (laps === 6 ? FORMATS.sprint : laps === 20 ? FORMATS.marathon : FORMATS.classic)
     : FORMATS[format];
   if (!raceFormat) throw new Error(`Unknown race format ${format}`);
+  const level = Number.isFinite(Number(difficulty)) ? Number(difficulty) : difficultyById(difficulty).k;
+  if (level < .5 || level > 1) throw new Error('Invalid difficulty');
   const roster = Array.from({ length: count }, (_, i) => {
     const id = ids[i % ids.length], known = AI_DRIVERS.find((d) => d.id === id);
     if (!known) throw new Error(`Unknown AI driver ${id}`);
@@ -105,7 +108,7 @@ export function runBenchmark({ driver = 'phantom', field = null, track = 'harbor
   });
   const wallStart = performance.now();
   const race = new EnduranceRace({ track: new Track(track), teams: roster,
-    format: raceFormat, laps, classId: 'gt', startCompound: compound, difficulty: 1, weather, seed, makeBridge });
+    format: raceFormat, laps, classId: 'gt', startCompound: compound, difficulty: level, weather, seed, makeBridge });
   race.weather.sun = sun;
   race.weather.apply(race.track);
   const stats = race.entries.map((e) => ({ ...freshMetrics(), driver: e.team.drivers[0].id,
@@ -166,6 +169,8 @@ export function runBenchmark({ driver = 'phantom', field = null, track = 'harbor
   };
   const raceStartAt = performance.now();
   race.start();
+  const actualStartCompounds = race.entries.map(e => ({ car: e.car.id,
+    driver: e.team.drivers[e.active].id, compounds: e.car.wheels.map(w => w.tyre.compound) }));
   race.entries.forEach((e, i) => {
     stats[i].startProgress = e.car.race.progress;
     stats[i].cursor = resourceCursor(stats[i], e.car, race.time,
@@ -278,8 +283,8 @@ export function runBenchmark({ driver = 'phantom', field = null, track = 'harbor
         finalState: s.finishedMetrics ? carMetricSnapshot(e, race.time) : null } };
   });
   return { schemaVersion: 2, config: { driver: field ? null : driver, field: ids, track, requestedSeconds: seconds,
-    laps: race.laps, teams: count, seed, weather: race.weather.id, sun, difficulty: 'alien',
-    classId: race.classId, startCompound: compound,
+    laps: race.laps, teams: count, seed, weather: race.weather.id, sun, difficulty: level,
+    classId: race.classId, requestedStartCompound: compound, actualStartCompounds,
     format: race.format.id, mandatoryStops: race.format.mandatoryStops, mandatorySwap: race.format.mandatorySwap,
     fuelLaps: race.cal.fuelLaps, tyreLaps: race.cal.tyreLaps, trackLengthM: race.track.length, fixedDt: FIXED_DT,
     solsticeOptions: solsticeOptions.parsed, solsticeOptionsRaw: solsticeOptions.raw },
@@ -312,7 +317,7 @@ function parseArgs(args) {
     if (value === undefined) throw new Error(`Missing value for ${key}`);
     if (key === '--field') out.field = value.split(',');
     else if (['--seconds', '--laps', '--teams', '--seed', '--sun'].includes(key)) out[key.slice(2)] = Number(value);
-    else if (['--driver', '--track', '--weather', '--compound', '--format', '--output'].includes(key)) out[key.slice(2)] = value;
+    else if (['--driver', '--track', '--weather', '--compound', '--format', '--output', '--difficulty'].includes(key)) out[key.slice(2)] = value;
     else throw new Error(`Unknown option ${key}`);
   }
   return out;

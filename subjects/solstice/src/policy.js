@@ -3,14 +3,16 @@ import { clamp, angle } from './math.js';
 
 export const POLICY_DEFAULTS = Object.freeze({
   lookahead: .55, poseLead: .02, betaGain: 1.7, yawGain: .15,
-  speedGain: 3.5, tractionSlip: .095, gripUse: .93, brakeAccel: 21,
+  speedGain: 3.5, tractionSlip: .18, gripUse: .93, brakeAccel: 21,
   minLook: 9, maxLook: 34, slipLimit: .16, execution: 'force', understeer: .004,
   geometricBeta: .65, geometricYaw: .16, previewBrake: 12, brakeLead: .18,
   combinedDrive: false, brakeFloor: 5.5, axleBrake: false, rotation: 0,
-  hotDriveSlip: .085, thermalCore: 88, rearSlipLimit: null,
+  driveSlip: .18, hotDriveSlip: .14, thermalOver: 6, rearSlipLimit: null,
+  pushDriveSlip: .18, pushTractionSlip: .18,
   actualBrakeReserve: false, courseForceLimit: 0, saturationBrakeShare: 0,
   yawResponse: 8, slipResponse: 7.7, warmForceTransition: false,
-  cornerGripUse: .91, warmCornerGripUse: null, warmGuardCore: 90, warmGuardRange: 6
+  cornerGripUse: .91, warmCornerGripUse: null, longitudinalGripUse: .91,
+  warmGuardOver: 8, warmGuardRange: 6
 });
 
 export class ForcePolicy {
@@ -31,6 +33,8 @@ export class ForcePolicy {
     const share = start === 0 ? spec.frontWeight : 1 - spec.frontWeight;
     const downforce = car.aero?.downforce ?? 0;
     let lo = 0, hi = start === 2 ? (this.o.rearSlipLimit ?? this.o.slipLimit) : this.o.slipLimit;
+    const wet = clamp(((this.track.wetness ?? 0) - .08) / .14, 0, 1);
+    if (start === 2) hi += (Math.min(hi, .16) - hi) * wet;
     const tyres = [car.wheels[start], car.wheels[start + 1]];
     const peaks = tyres.map(w => {
       const load = w.load > 100 ? w.load : (mass * 9.81 * share + downforce * share) / 2;
@@ -67,14 +71,18 @@ export class ForcePolicy {
     }
     const mass = spec.mass + car.fuel * .75;
     const rearTyres = car.wheels.slice(2, 4).map(w => w.tyre);
-    const warmRear = clamp((Math.max(...rearTyres.map(t => t.core)) - 86) / 18, 0, 1);
-    const usedRear = clamp((Math.max(...rearTyres.map(t => t.wear)) - .12) / .38, 0, 1);
+    const rearHeat = Math.max(...rearTyres.map(t => t.core - (t.optimum ?? 85)));
+    const warmUse = Math.max(...rearTyres.map(t => clamp((t.core - (t.optimum ?? 85) - 4) / 18, 0, 1)
+      * clamp((t.wear - .12) / .38, 0, 1)));
     // Force feasibility protects replacement tyres as soon as they heat up.
     // Its gate is independent of the stricter temperature AND wear gate for
     // deliberately sliding the rear: a fresh warm set still needs braking.
-    const warmForce = o.warmForceTransition ? clamp((Math.max(...rearTyres.map(t => t.core))
-      - o.warmGuardCore) / Math.max(1, o.warmGuardRange), 0, 1) : 1;
-    const actualBrakeReserve = o.actualBrakeReserve && warmForce > .1;
+    const wet = clamp(((this.track.wetness ?? 0) - .08) / .14, 0, 1);
+    // Sparse controls and wet grip need the force reserve before a fresh set
+    // reaches its thermal threshold. Extra rear rotation retains its own gate.
+    const warmForce = Math.max(wet, clamp(plan.forceGuard ?? 0, 0, 1),
+      o.warmForceTransition ? clamp((rearHeat - o.warmGuardOver)
+        / Math.max(1, o.warmGuardRange), 0, 1) : 1);
     const requestedCurvature = curvature;
     if (o.courseForceLimit > 0 && speed > 8) {
       const surface = this.track.surface(car.x, car.z).grip;
@@ -91,7 +99,7 @@ export class ForcePolicy {
     // must not provoke a slide on fresh tyres after a pit stop.
     const hereCurvature = Math.abs(this.point(projection.s, plan).curvature);
     const aheadCurvature = Math.abs(this.point(projection.s + Math.min(look, 18), plan).curvature);
-    const rotation = clamp(plan.rotation ?? o.rotation, 0, 1) * warmRear * usedRear
+    const rotation = clamp(plan.rotation ?? o.rotation, 0, 1) * warmUse
       * clamp((aheadCurvature - hereCurvature) * 150 + .25, 0, 1)
       * clamp(Math.abs(curvature) * speed * 1.5, 0, 1);
     this.lastRotation = rotation;
@@ -142,17 +150,26 @@ export class ForcePolicy {
     // demand rather than for the mere presence of traffic.
     const grip = Math.min(...car.wheels.map(w => tyreGrip(w.tyre, Math.max(1000, w.load)))) * spec.tyreGrip
       * this.track.surface(car.x, car.z).grip;
-    const cornerUse = o.cornerGripUse + ((o.warmCornerGripUse ?? o.cornerGripUse) - o.cornerGripUse)
-      * clamp(warmRear * usedRear * 4, 0, 1);
-    const available = grip * (9.81 + (car.aero?.downforce ?? 0) / mass) * clamp(cornerUse, .55, .99);
+    let cornerUse = o.cornerGripUse + ((plan.push ? o.cornerGripUse : o.warmCornerGripUse ?? o.cornerGripUse) - o.cornerGripUse)
+      * clamp(warmUse * 4, 0, 1);
+    cornerUse += (Math.min(cornerUse, .84) - cornerUse) * wet;
+    // A lower corner target saves tyre energy; it does not reduce the real
+    // force available to brake an overspeed car down to that target.
+    const physical = grip * (9.81 + (car.aero?.downforce ?? 0) / mass);
+    const available = physical * clamp(o.longitudinalGripUse, .55, .99);
+    const cornerAvailable = physical * clamp(cornerUse, .55, .99);
     const lateral = speed * speed * Math.abs(curvature);
-    if (Math.abs(requestedCurvature) > .0015) targetSpeed = Math.min(targetSpeed, Math.sqrt(available / Math.abs(requestedCurvature)));
+    if (Math.abs(requestedCurvature) > .0015) targetSpeed = Math.min(targetSpeed, Math.sqrt(cornerAvailable / Math.abs(requestedCurvature)));
+    // Thermal blending may relax the corner guard on a cold set, but it must
+    // never suppress braking when held controls have left the car overspeed.
+    const brakeUse = Math.max(warmForce, clamp((speed - targetSpeed - 1) / 4, 0, 1));
+    const actualBrakeReserve = o.actualBrakeReserve && brakeUse > .1;
     const next = reference(projection.s + 8), here = reference(projection.s + 2);
     const feed = clamp((next * next - here * here) / 12, -o.brakeAccel, 10);
     let demand = feed + o.speedGain * (targetSpeed - speed);
     const brakingLateral = actualBrakeReserve ? Math.abs(car.ay) : lateral;
     const longitudinal = Math.sqrt(Math.max(1, available * available - Math.min(available, brakingLateral) ** 2));
-    const brakingFloor = o.saturationBrakeShare > 0 && warmForce > .1
+    const brakingFloor = o.saturationBrakeShare > 0 && brakeUse > .1
       ? Math.max(o.brakeFloor, clamp((speed - targetSpeed) * 1.5, 0, 6)) : o.brakeFloor;
     demand = clamp(demand, -Math.max(brakingFloor, longitudinal), Math.max(1.5, longitudinal));
     const ratio = spec.gears[car.gear] * spec.finalDrive;
@@ -166,9 +183,9 @@ export class ForcePolicy {
     const driven = spec.drive === 'front' ? 0 : 2;
     if (o.combinedDrive && speed > 5) {
       let force = 0;
-      const rearCore = Math.max(...car.wheels.slice(driven, driven + 2).map(w => w.tyre.core));
-      const warmth = clamp((rearCore - o.thermalCore) / 12, 0, 1);
-      const driveSlip = .085 + (o.hotDriveSlip - .085) * warmth;
+      const driveHeat = Math.max(...car.wheels.slice(driven, driven + 2).map(w => w.tyre.core - (w.tyre.optimum ?? 85)));
+      const warmth = clamp((driveHeat - o.thermalOver) / 12, 0, 1);
+      const driveSlip = plan.push ? o.pushDriveSlip : o.driveSlip + (o.hotDriveSlip - o.driveSlip) * warmth;
       for (const w of car.wheels.slice(driven, driven + 2)) {
         const load = Math.max(100, w.load), peak = load * tyreGrip(w.tyre, load) * spec.tyreGrip * this.track.surface(car.x, car.z).grip;
         const sx = driveSlip * 10.5, sy = Math.tan(clamp(w.tyre.alpha, -1.2, 1.2)) * 8.6;
@@ -188,7 +205,7 @@ export class ForcePolicy {
       // demand that the *previous* full lateral force survive unchanged when
       // an overspeed car now needs to brake. The private rollout evaluates
       // the resulting rotation and rejects an unstable pressure request.
-      const trade = targetSpeed < speed - .7 ? clamp(o.saturationBrakeShare, 0, .5) * warmForce : 0;
+      const trade = targetSpeed < speed - .7 ? clamp(o.saturationBrakeShare, 0, .5) * brakeUse : 0;
       const front = Math.max(caps[0] * trade,
         Math.sqrt(Math.max(0, (caps[0] * .94) ** 2 - frontLateral ** 2)));
       const rear = Math.max(caps[1] * trade,
@@ -197,7 +214,10 @@ export class ForcePolicy {
       brake = Math.min(brake, Math.min(front / bias, rear / (1 - bias)) / mass / brakeTorqueAcceleration);
     }
     const spin = Math.max(car.wheels[driven].tyre.kappa, car.wheels[driven + 1].tyre.kappa);
-    throttle *= clamp(1 - Math.max(0, spin - o.tractionSlip) * 12, .12, 1);
+    // Let the car's built-in traction control handle launch. Applying both
+    // slip controllers at very low speed starved drive force during the merge.
+    if (speed >= 8) throttle *= clamp(1 - Math.max(0,
+      spin - (plan.push ? o.pushTractionSlip : o.tractionSlip)) * 12, .12, 1);
     // Keep tyre feedback on the ascending force branch. This is control,
     // never a write to setup, gearbox, wheel or engine state.
     const betaLimit = .20 + .06 * rotation;

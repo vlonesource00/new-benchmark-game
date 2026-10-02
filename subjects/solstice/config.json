@@ -14,12 +14,26 @@
   },
   "policy": { "combinedDrive": true, "brakeFloor": 0.5, "axleBrake": true,
     "lookahead": 0.7, "previewBrake": 24, "brakeLead": 0,
-    "betaGain": 1.7, "yawGain": 0.22, "slipLimit": 0.2, "gripUse": 0.97,
+    "betaGain": 1.7, "yawGain": 0.22, "slipLimit": 0.2, "gripUse": 0.92,
+    "tractionSlip": 0.18, "driveSlip": 0.18, "hotDriveSlip": 0.12,
+    "warmCornerGripUse": 0.86,
     "actualBrakeReserve": true, "courseForceLimit": 0.92,
     "saturationBrakeShare": 0.2, "warmForceTransition": true },
   "tracks": {
     "harbor-ring": { "path": {
       "curvatureSpan": 4, "brakeReserve": 0.92, "brakeWearReserve": 0.35
+    } },
+    "solenne": { "laneRate": 3.4, "policy": {
+      "gripUse": 0.84, "warmCornerGripUse": 0.84, "rearSlipLimit": 0.16,
+      "hotDriveSlip": 0.10, "warmGuardOver": 14
+    } },
+    "alpine": { "laneRate": 3.4, "policy": {
+      "gripUse": 0.72, "cornerGripUse": 0.76, "warmCornerGripUse": 0.76,
+      "rearSlipLimit": 0.14, "hotDriveSlip": 0.09, "warmGuardOver": 20
+    } },
+    "desert": { "laneRate": 3.4, "policy": {
+      "gripUse": 0.72, "cornerGripUse": 0.76, "warmCornerGripUse": 0.76,
+      "rearSlipLimit": 0.14, "hotDriveSlip": 0.09, "warmGuardOver": 20
     } }
   }
 }

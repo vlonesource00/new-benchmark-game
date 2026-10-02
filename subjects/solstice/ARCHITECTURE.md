@@ -1,8 +1,11 @@
 # SOLSTICE: whole-lap geometry, live tyre forces, bounded feedback planning
 
-Base: `aae03fc9cd5d587ebb02521647ffc4ddc9a257d4` of `new-benchmark-game`.
-The engine, timing, compounds, strategist, governor, pit autopilot, and other
-drivers are read-only. SOLSTICE writes only its own `car.controls`.
+Base: upgraded `2935523` of `new-benchmark-game`, on `solstice-port`.
+SOLSTICE writes only its own `car.controls`. Engine physics, timing, compounds,
+strategy, pit autopilot and other driver implementations remain upstream.
+The authorized integration exceptions forward the worker's aim point and skip
+the governor for SOLSTICE at ALIEN. Below ALIEN the normal difficulty governor
+still runs; other drivers keep their upstream management policy.
 
 ## Findings and performance hypotheses
 
@@ -21,7 +24,7 @@ range and a conservative speed envelope. These are concrete opportunities,
 not proof that SOLSTICE beats them. Baselines and race results are recorded in
 `RESULTS.md`; the supplied prompt's numbers are not substituted for measurements.
 
-## Frozen first implementation
+## Control pipeline
 
 1. Sample each circuit uniformly in track distance. Optimize a periodic,
    bounded lateral line with a whole-lap travel-time objective. Compute actual
@@ -30,7 +33,9 @@ not proof that SOLSTICE beats them. Baselines and race results are recorded in
    to the asphalt envelope with a footprint/tracking margin.
 2. Build a speed envelope from tyre force capacity plus downforce, with forward
    power-limited acceleration and backward combined-slip braking. Rebuild for
-   live compound, wear, pressure, core temperature, wetness and aero wake.
+   live compound, wear, pressure, core temperature, wetness and aero wake. Each
+   tyre carries its own optimum and heat coefficient; no universal 85-degree
+   temperature window is assumed. Prediction copies aero and every tyre field.
 3. Steer with velocity-course pursuit, inverse front/rear combined-slip force
    feedforward, sideslip and yaw feedback. At low speed use geometric pursuit.
    Longitudinal feedforward and traction feedback avoid heating tyres beyond
@@ -65,12 +70,13 @@ These claims require the same game-fork benchmark as every comparison driver.
 
 ## Validation and limits
 
-### Momentum and warm-tyre revisions (2 October)
+### Momentum and warm-tyre revisions
 
 Deep whole-lap optimization and a longer geometric curvature chord produced
-clean sub-64-second Harbor laps in normal GT/soft/20-lap races. The best recorded
-development lap is 62.625 seconds; subsequent laps still slow as the outer rear
-tyre heats up. This demonstrates raw pace, not stint acceptance. The Harbor
+clean sub-64-second Harbor laps in normal GT/soft/20-lap races. Upgraded-game
+measurements are separated from the older physics in `RESULTS.md`. Fast opening
+laps demonstrate raw pace; total race time and tyre life determine acceptance.
+The Harbor
 geometry setting cannot be copied to the other circuits: their tighter line
 variants require a shorter chord and separate full-race validation.
 
@@ -86,9 +92,10 @@ requires clearance. Execution uses the selected corridor, rather than applying
 the first traffic proposal regardless of the private comparison. Occupied-lane
 following limits remain available when the passing trajectory is rejected.
 
-Additional rear rotation requires both maximum rear core temperature above
-86 degrees C and maximum rear wear above 12%. Authority ramps with both
-quantities and with corner-entry demand. A fresh set after a pit stop does not
+Additional rear rotation requires a rear tyre whose core is above its own
+optimum plus 4 degrees C and whose wear exceeds 12%. Both conditions must hold
+on the same tyre. Authority ramps with both quantities and corner-entry demand.
+A fresh set after a pit stop does not
 inherit the previous set's slide request. The normal inverse tyre-force steering
 remains active throughout; the extra rotation is a candidate, not a mandatory
 drift. Its effects on warm pace and tyre energy must be measured together.
@@ -96,7 +103,35 @@ drift. Its effects on warm pace and tyre energy must be measured together.
 Pit preparation uses a private copy of the host autopilot's public reference
 line. Earlier preparation used SOLSTICE's different race line and delivered a
 large lateral/heading mismatch at takeover. No host pit geometry or autopilot
-implementation is changed.
+implementation is changed. Countdown updates at race time zero cannot arm
+stall recovery, and discontinuities clear stale control plans.
+
+Tyre-saving corner targets and physical braking reserve are independent. A
+request to take a corner more gently must not weaken the brakes needed to reach
+that lower target. Both commands still pass through the actual combined-slip
+force limits and private vehicle prediction.
+
+Held updates strengthen the force reserve as the observed interval grows from
+25 to 40 milliseconds. That reserve is applied to the actual command between
+planning ticks as well as to predicted candidates. Wetness above 0.08 gradually
+adds the same protection, reaching full strength at 0.22. A fully wet envelope
+uses at most 0.86 grip utilization, 0.84 corner utilization and 0.16 rear slip
+authority. Existing lower per-circuit limits remain lower. These are calibrated
+control reserves; the native wet-grip and tyre physics still determine forces.
+Deliberate rotation always retains the temperature-and-wear gate.
+
+The car's built-in traction control handles launch below 8 metres per second.
+SOLSTICE's additional wheelspin feedback then takes over as speed builds.
+Applying both controllers at launch previously starved drive force and left
+cars converging side by side. Body corridors also reserve extra space for
+orientation and predicted lateral motion, rather than reducing pace simply
+because another car is nearby.
+
+The four GT lines are baked as finite offsets in a small runtime asset keyed
+by public circuit geometry, class and optimizer settings. Loading is checked
+against a fresh optimization, including every point's body footprint. Other
+classes and unmatched geometry are computed locally rather than using an
+incompatible baked line.
 
 Use the normal `EnduranceRace` at 120 Hz and ALIEN difficulty, preserving scaled
 fuel, tyre wear, mandatory stops and driver swaps. Measure isolated/homogeneous
@@ -110,3 +145,12 @@ The 64-second Harbor target is an acceptance target, not an assumed physical
 bound. Failure to reach it does not establish that physics prevents it. Browser
 worker latency and real human race performance require direct evidence beyond
 synchronous headless laps.
+
+`tools/pair-model.mjs` minimizes an analytical human/AI schedule using measured
+post-pit AI stint prefixes and an assumed 65-second human average. Every stop
+changes drivers and adds the native measured in/out-lap loss, which already
+includes the swap. A dynamic program compares stop counts and stint lengths
+while bounding the maximum measured fade within an AI stint. Human resource
+reach, repeated profile reuse, and future pit loss remain assumptions. The
+model does not drive a synthetic human, request boxes, choose a game compound,
+or alter the strategist, lap clock or race state.

@@ -17,6 +17,7 @@ const stopAfter = Number(option('after', 10)), seed = Number(option('seed', 7));
 const output = option('output', null), driverId = option('driver', 'solstice');
 const lapCount = Number(option('laps', 6)), teamCount = Number(option('teams', 4));
 const compound = option('compound', 'medium'), weather = option('weather', 'clear');
+const sun = Number(option('sun', .6));
 if (!Object.hasOwn(COMPOUNDS, compound) || !Number.isInteger(teamCount) || teamCount < 1 || teamCount > TEAM_LIVERIES.length
   || !Number.isInteger(lapCount) || lapCount < 1) throw new Error('Invalid race probe format');
 const trigger = option('event', 'offtrack');
@@ -29,7 +30,7 @@ const teams = Array.from({ length: teamCount }, (_, index) => ({ ...TEAM_LIVERIE
 const race = new EnduranceRace({ track: new Track(trackName), teams,
   format: lapCount === 6 ? FORMATS.sprint : lapCount === 20 ? FORMATS.marathon : FORMATS.classic,
   laps: lapCount, startCompound: compound, difficulty: 1, weather, seed });
-race.weather.sun = .6; race.weather.apply(race.track);
+race.weather.sun = sun; race.weather.apply(race.track);
 const wrapDelta = (a, b) => ((a - b + race.track.length / 2) % race.track.length + race.track.length) % race.track.length - race.track.length / 2;
 const round = value => Number.isFinite(value) ? Number(value.toFixed(5)) : value;
 function snapshot(entry) {
@@ -84,8 +85,8 @@ while (race.time < limit && race.phase !== 'finished' && (firstTargetAt === null
   }
   for (const event of race.events) if (event.id > lastEvent) { events.push(event); lastEvent = event.id; }
 }
-const report = { config: { track: trackName, seed, teams: 4, laps: 6, driver: driverId,
-  weather: 'clear', sun: .6, difficulty: 'alien', targetCar, stopAfter, limit, trigger,
+const report = { config: { track: trackName, seed, teams: teamCount, laps: lapCount, driver: driverId,
+  weather, requestedStartCompound: compound, sun, difficulty: 1, targetCar, stopAfter, limit, trigger,
   solsticeOptions: process.env.SOLSTICE_OPTIONS ?? null }, hashes, simulatedSeconds: race.time,
   wallSeconds: (performance.now() - wall) / 1000, firstOfftrack, contacts: race.contacts,
   transitions, events, frames, final: race.entries.map(snapshot) };
