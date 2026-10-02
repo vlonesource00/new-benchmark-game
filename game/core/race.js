@@ -223,15 +223,19 @@ export class EnduranceRace {
         if (c.race.finishTime !== null) c.controls = { ...c.controls, throttle: Math.min(0.35, c.controls.throttle), brake: Math.max(c.controls.brake, c.speed > 25 ? 0.2 : 0) };
       }
     }
-    // GTP hybrids: AI drivers pick their deploy mode from the gap to the car ahead.
+    // GTP hybrids: AI cars get their deploy mode from the gaps to same-class rivals.
     for (const e of this.entries) {
       const c = e.car; if (!c.hybrid) continue;
       const bridge = e.bridges[e.active];
       c.hybrid.auto = !bridge.human || bridge.assisted;
       if (c.hybrid.auto) {
-        let gap = Infinity;
-        for (const o of cars) if (o !== c) { const d = wrap(o.s - c.s, track.length); if (d > 0 && d < gap) gap = d; }
-        aiDeployMode(c, gap, this.lapsLeft(c), this.session === 'qualifying');
+        // Only same-class rivals are worth the energy; other-class traffic is passed on pace.
+        let ahead = Infinity, behind = Infinity;
+        for (const o of cars) if (o !== c && o.classId === c.classId) {
+          const d = wrap(o.s - c.s, track.length);
+          if (d > 0) { ahead = Math.min(ahead, d); behind = Math.min(behind, track.length - d); }
+        }
+        aiDeployMode(c, ahead, this.lapsLeft(c), this.session === 'qualifying', behind);
       } else c.hybrid.mode = c.hybrid.playerMode ?? 'balanced';
       hybridStep(c, dt);
     }
