@@ -35,6 +35,8 @@ const smooth01 = (u) => { u = clamp(u, 0, 1); return u * u * (3 - 2 * u); };
 const TIME = { value: 0 };
 // Floodlight strength on the tarmac at night (0 by day), shared by the track shaders.
 const FLOOD = { value: 0 };
+// Headlight pools of the other cars on the tarmac: xz position and heading (sin, cos) per car.
+const CAR_LIGHTS = 12, CARS = { value: Array.from({ length: CAR_LIGHTS }, () => new THREE.Vector4(0, 0, 0, 0)) }, HEADLAMP = { value: 0 };
 const std = (color, roughness = .8, metalness = 0, extra = {}) => new THREE.MeshStandardMaterial({ color, roughness, metalness, ...extra });
 function add(parent, geo, material, x = 0, y = 0, z = 0, cast = true) {
   const m = new THREE.Mesh(geo, material); m.position.set(x, y, z); m.castShadow = cast; m.receiveShadow = true; parent.add(m); return m;
@@ -252,7 +254,8 @@ export class World {
     FLOOD.value = this.lamps * (.35 + .65 * dark);
     if (this.facades) for (const m of this.facades) m.emissiveIntensity = .55 + 1.5 * dark;
     const glow = this.lamps * (.4 + .6 * dark);
-    for (const g of this.glows) { if (g.opacity) g.material.opacity = g.night * glow; else g.material.emissiveIntensity = g.day + (g.night - g.day) * glow; }
+    for (const g of this.glows) { if (g.opacity) g.material.opacity = (g.night + (g.rain ?? 0) * Math.min(1, rain * 3)) * glow; else g.material.emissiveIntensity = g.day + (g.night - g.day) * glow; }
+    HEADLAMP.value = this.lamps;
     // The sun crosses the sky over the 13 daylight hours, so shadows swing round and
     // stretch towards sunset; the theme's start hour keeps its art-directed angle.
     const swing = (h - this.theme.hour) * Math.PI / 13, sx = .7 * Math.cos(swing) - .65 * Math.sin(swing), sz = .7 * Math.sin(swing) + .65 * Math.cos(swing);
@@ -321,9 +324,15 @@ export class World {
     this.roadMaterial = new THREE.MeshPhysicalMaterial({ ...asphalt, color: '#ffffff', roughness: 1, metalness: 0, clearcoat: 0, clearcoatRoughness: .08, normalScale: new THREE.Vector2(.9, .9) });
     // Macro variation breaks tiling: patch repairs, darker oil line, lighter worn edges.
     this.roadMaterial.onBeforeCompile = (s) => {
-      s.uniforms.uFlood = FLOOD;
-      s.vertexShader = 'varying vec2 vRoad;\n' + s.vertexShader.replace('#include <uv_vertex>', '#include <uv_vertex>\nvRoad=uv;');
-      s.fragmentShader = 'varying vec2 vRoad;uniform float uFlood;\n' + s.fragmentShader.replace('#include <opaque_fragment>', `
+      s.uniforms.uFlood = FLOOD; s.uniforms.uCars = CARS; s.uniforms.uLamp = HEADLAMP;
+      s.vertexShader = 'varying vec2 vRoad;varying vec2 vWxz;\n' + s.vertexShader.replace('#include <uv_vertex>', '#include <uv_vertex>\nvRoad=uv;')
+        .replace('#include <project_vertex>', '#include <project_vertex>\nvWxz=(modelMatrix*vec4(transformed,1.)).xz;');
+      s.fragmentShader = `varying vec2 vRoad;varying vec2 vWxz;uniform float uFlood;uniform float uLamp;uniform vec4 uCars[${CAR_LIGHTS}];\n` + s.fragmentShader.replace('#include <opaque_fragment>', `
+        // Headlight pools of the cars around the focused one (which has a real spot light).
+        if(uLamp>0.){float hl=0.;for(int i=0;i<${CAR_LIGHTS};i++){vec4 c=uCars[i];if(c.z==0.&&c.w==0.)continue;
+          vec2 d=vWxz-c.xy;float f=dot(d,c.zw),l=dot(d,vec2(c.w,-c.z)),w=1.3+f*.2;
+          hl+=smoothstep(1.5,5.,f)*(1.-smoothstep(8.,42.,f))*exp(-l*l/(w*w));}
+          outgoingLight+=diffuseColor.rgb*vec3(.92,.96,1.)*uLamp*min(hl,1.5)*8.;}
         // Floodlight pools: masts every 135 m from s=40, alternating sides; no real lights.
         if(uFlood>0.){float fs=vRoad.y*4.-40.,fm=mod(fs,135.),fd=min(fm,135.-fm);
           float fside=mod(floor((fs+67.5)/135.),2.)>.5?1.:-1.,flt=vRoad.x*4.-${t.halfWidth.toFixed(2)};
@@ -459,6 +468,27 @@ export class World {
       const aim = t.at(s + 12, -side * 2); this.masts.push({ x: p.x, y: 26, z: p.z, ax: aim.x, az: aim.z });
     }
     masts.castShadow = heads.castShadow = true; this.root.add(masts, heads);
+    // Faint additive cones from each mast head to its aim point: the haze the floodlights cut through.
+    // Soft volume: brightest along the axis near the lamp, fading to the ground and towards grazing edges.
+    const beamGeo = new THREE.ConeGeometry(1, 1, 24, 1, true); beamGeo.translate(0, -.5, 0);
+    const beamMat = new THREE.ShaderMaterial({
+      uniforms: { opacity: { value: 0 }, color: { value: new THREE.Color('#ffe9c8') } },
+      vertexShader: `varying float vV;varying vec3 vN;varying vec3 vView;
+        void main(){vV=-position.y;vec4 w=modelMatrix*instanceMatrix*vec4(position,1.);
+          vN=normalize(mat3(modelMatrix*instanceMatrix)*normal);vView=normalize(cameraPosition-w.xyz);gl_Position=projectionMatrix*viewMatrix*w;}`,
+      fragmentShader: `uniform float opacity;uniform vec3 color;varying float vV;varying vec3 vN;varying vec3 vView;
+        void main(){float edge=pow(abs(dot(normalize(vN),normalize(vView))),2.);float along=(1.-vV)*(1.-vV)*smoothstep(0.,.08,vV);
+          gl_FragColor=vec4(color*opacity*edge*along,1.);}`,
+      transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide
+    });
+    const beams = new THREE.InstancedMesh(beamGeo, beamMat, this.masts.length || 1);
+    const down = new THREE.Vector3(0, -1, 0), ray = new THREE.Vector3();
+    this.masts.forEach((m, i) => {
+      ray.set(m.ax - m.x, -m.y, m.az - m.z); const len = ray.length();
+      d.position.set(m.x, m.y + .4, m.z); d.quaternion.setFromUnitVectors(down, ray.normalize()); d.scale.set(len * .3, len, len * .3); d.updateMatrix(); beams.setMatrixAt(i, d.matrix);
+    });
+    beams.count = this.masts.length; beams.renderOrder = 2; beams.castShadow = false; this.root.add(beams);
+    this.glows.push({ material: { set opacity(v) { beamMat.uniforms.opacity.value = v; } }, opacity: true, night: .35, rain: .5 });
     const huts = std('#e37a1f', .7), flagMats = ['#1f9e3a', '#f3d21c', '#1e5bd6'].map((c) => sway(new THREE.MeshStandardMaterial({ color: c, roughness: .8, side: THREE.DoubleSide }), .07, 'flag', 'flag'));
     for (let s = 120, i = 0; s < t.length; s += 290, i++) {
       const side = i % 2 ? -1 : 1, p = t.at(s, side * (t.barrierOffset + 3)); if (!this.clearOf(p.x, p.z, 0)) continue;
@@ -1104,6 +1134,12 @@ export class World {
     this.sun.color.copy(ds.color).lerp(this.tmpColor.copy(MOON.color).lerp(FLOOD_COLOR, key), dark);
     this.sun.shadow.intensity = ds.shadow * (1 - dark) + dark * (MOON.shadow + (.6 - MOON.shadow) * key);
     return dir;
+  }
+
+  // Nearest cars to the focus (excluding it) light the road ahead of them.
+  setCarLights(cars, focus) {
+    const near = cars.filter((c) => c !== focus && c.x !== undefined).map((c) => [c, Math.hypot(c.x - focus.x, c.z - focus.z)]).sort((a, b) => a[1] - b[1]);
+    CARS.value.forEach((v, i) => { const c = near[i]?.[0]; if (c && near[i][1] < 400) v.set(c.x, c.z, Math.sin(c.yaw ?? 0), Math.cos(c.yaw ?? 0)); else v.set(0, 0, 0, 0); });
   }
 
   update(car, time, countdown, aerial = false) {

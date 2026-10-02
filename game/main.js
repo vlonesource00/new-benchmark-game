@@ -477,6 +477,7 @@ function frame(ms, pumped = false) {
       world.setTimeOfDay(hour, sky?.cloud ?? 0, sky?.rain ?? 0); setHeadlights(world.lamps);
       rain.update(camera.position, paused ? 0 : delta, .5 + (sky?.rain ?? 0) / 1.65);
       world.update(car, replay ? replay.t : snap?.time ?? 0, snap?.phase === 'countdown' ? snap.countdown : 0, false);
+      world.setCarLights?.(cars, car);
       if (!replay) world.crews?.update(snap, cars, paused ? 0 : delta, camera.position);
       const lensEntry = race?.entries[focusId];
       aiLens.update(race, focusId, aiDebug.open && !replay && raceActive, lensEntry?.bridges[lensEntry.active]);
