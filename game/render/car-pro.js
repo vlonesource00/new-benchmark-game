@@ -5,6 +5,7 @@ import { CarModel as LegacyCarModel } from '../engine/render/car.js';
 import { clamp } from '../engine/sim/math.js';
 import { numberTexture, radialTexture } from './textures.js';
 import bodyUrl from './assets/gt-body.glb?url';
+import { buildLmdhBody } from './lmdh-body.js';
 
 // Presentation car: the Blender GT body (gt-body.glb) merged into one draw per
 // material, a per-car clear-coated livery, a seated driver, light glows and
@@ -136,10 +137,14 @@ export class CarModel {
     this.paint = paintMaterial(car.color || '#c43b25', this.number);
     this.tail = new THREE.MeshStandardMaterial({ color: '#5a0804', emissive: '#ff1a06', emissiveIntensity: 1.2, roughness: .2 });
     this.brakeMaterials = [this.tail];
-    const shadow = new THREE.Mesh(new THREE.PlaneGeometry(2.35, 5.0), S.contact); shadow.rotation.x = -Math.PI / 2; shadow.position.y = .012; shadow.renderOrder = 1; this.root.add(shadow);
+    const proto = car.classId === 'lmdh', R = car.spec?.radius ?? .345;
+    this.radius = R;
+    const shadow = new THREE.Mesh(new THREE.PlaneGeometry(proto ? 2.3 : 2.35, proto ? 5.4 : 5.0), S.contact); shadow.rotation.x = -Math.PI / 2; shadow.position.y = .012; shadow.renderOrder = 1; this.root.add(shadow);
 
     // Interior and driver sit inside the glasshouse.
     this.interior = new THREE.Group(); this.body.add(this.interior);
+    // A prototype driver lies lower and nearer the centreline under the canopy.
+    if (proto) this.interior.position.set(.07, -.2, -.12);
     mesh(new THREE.BoxGeometry(1.3, .15, .25), S.carbon, this.interior, 0, .8, .5);
     mesh(new THREE.BoxGeometry(.46, .22, .55), S.carbon, this.interior, -.32, .55, -.22);
     mesh(new THREE.BoxGeometry(.48, .66, .12), S.carbon, this.interior, -.32, .86, -.5).rotation.x = -.16;
@@ -159,16 +164,16 @@ export class CarModel {
     this.wheels = [];
     car.wheels.forEach((w) => {
       const discMaterial = new THREE.MeshStandardMaterial({ color: '#3a3b3c', metalness: .8, roughness: .45, emissive: '#ff4a12', emissiveIntensity: 0 });
-      const group = new THREE.Group(); group.position.set(w.x, .345, w.z); this.root.add(group);
+      const group = new THREE.Group(); group.position.set(w.x, R, w.z); this.root.add(group);
       const spin = new THREE.Group(); group.add(spin);
-      const tire = mesh(new THREE.CylinderGeometry(.338, .338, .29, 36, 1), S.rubber, spin); tire.rotation.z = Math.PI / 2;
+      const tire = mesh(new THREE.CylinderGeometry(R - .007, R - .007, proto ? .31 : .29, 36, 1), S.rubber, spin); tire.rotation.z = Math.PI / 2;
       const rim = mesh(new THREE.CylinderGeometry(.24, .24, .3, 24, 1), S.alloy, spin); rim.rotation.z = Math.PI / 2;
       const caliper = mesh(new THREE.BoxGeometry(.05, .16, .09), new THREE.MeshStandardMaterial({ color: '#d4a020', metalness: .5, roughness: .35 }), group, Math.sign(w.x) * .13, .07, -.14);
       caliper.rotation.x = .5;
       this.wheels.push({ group, spin, discMaterial, placeholder: [tire, rim] });
     });
 
-    this.ready = loadBody().then((body) => {
+    this.ready = (proto ? Promise.resolve(buildLmdhBody()) : loadBody()).then((body) => {
       if (!body) { this.useLegacyBody(); return; }
       this.addShadowProxy(body.shadowGeo, car);
       const mats = { Paint: this.paint, Glass: S.glass, Carbon: S.carbon, Grille: S.grille, Chrome: S.chrome, Well: S.well, Hook: S.hook, LightF: S.lightF, LightR: this.tail };
@@ -179,8 +184,10 @@ export class CarModel {
       for (const p of body.lamps.LightF || []) { const g = new THREE.Sprite(S.glow); g.position.copy(p).add(new THREE.Vector3(0, 0, .06)); g.scale.setScalar(.55); this.body.add(g); this.glowsF.push(g); }
       const rearGlow = S.glow.clone(); rearGlow.color.set('#ff2a10'); this.rearGlow = rearGlow;
       for (const p of body.lamps.LightR || []) { const g = new THREE.Sprite(rearGlow); g.position.copy(p).add(new THREE.Vector3(0, 0, -.05)); g.scale.setScalar(.5); this.body.add(g); this.glowsR.push(g); }
-      for (const side of [-1, 1]) {
+      for (const [i, side] of [-1, 1].entries()) {
         const f = new THREE.Mesh(new THREE.PlaneGeometry(.55, .22), S.flame.clone()); f.position.set(side * 1.25, .28, -.72); f.rotation.x = -Math.PI / 2;
+        // Prototype exhausts exit the tail: flames point straight back.
+        if (body.exhaust) { f.position.copy(body.exhaust[i]).add(new THREE.Vector3(0, 0, -.2)); f.rotation.set(-Math.PI / 2, 0, Math.PI / 2); f.scale.set(.8, .8, 1); }
         const f2 = f.clone(); f2.rotation.set(0, 0, 0); f2.position.copy(f.position); f2.material = f.material;
         f.visible = f2.visible = false; this.body.add(f, f2); this.flames.push(f, f2);
       }
@@ -220,7 +227,7 @@ export class CarModel {
     if (this.lampScale !== lamps) { this.lampScale = lamps; for (const g of this.glowsF) g.scale.setScalar(.55 * (1 + lamps * 1.6)); }
     this.wheels.forEach((v, i) => {
       const w = car.wheels[i];
-      v.group.rotation.y = w.steer; v.group.position.y = .35 - (w.compression - .045);
+      v.group.rotation.y = w.steer; v.group.position.y = this.radius + .005 - (w.compression - .045);
       v.spin.rotation.x += w.omega * dt;
       v.discMaterial.emissiveIntensity = clamp((w.brakeTemp - 450) / 200, 0, 2.2);
     });
@@ -244,7 +251,7 @@ export class CarModel {
   setWheelAsset(template) {
     for (const wheel of this.wheels) {
       for (const p of wheel.placeholder) p.visible = false;
-      const detail = template.clone(true);
+      const detail = template.clone(true); detail.scale.multiplyScalar(this.radius / .345);
       detail.traverse((o) => {
         if (!o.isMesh) return; o.castShadow = !this.shadowProxy; o.receiveShadow = true;
         if (o.material?.isMeshStandardMaterial) { o.material = o.material.clone(); o.material.envMapIntensity = 1.3; }

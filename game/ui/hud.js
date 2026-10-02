@@ -138,6 +138,7 @@ export class Hud {
       const mv = this.moved.get(c.id), showMv = mv && performance.now() < mv.until;
       m.textContent = showMv ? (mv.up ? '▲' : '▼') : ''; m.className = showMv ? `m ${mv.up ? 'up' : 'dn'}` : 'm';
       col.style.background = team.color;
+      p.style.boxShadow = `inset 3px 0 0 ${c.raceClass === 'gtp' ? '#f2c230' : '#e0443a'}`;
       t.textContent = team.short;
       d.textContent = c.driverName;
       const lapsDown = ctx.trackLength ? Math.max(0, Math.floor((leader.progress - c.progress) / ctx.trackLength)) : 0;

@@ -69,8 +69,21 @@ Status: ✅ shipped · 🟡 prototype in this branch · ⬜ planned
 | Day/night cycle with lighting | ✅ |
 | Fuel weight and burn | ✅ |
 | Damage (aero, power) | ✅ basic |
-| Multi-class (GT + prototype on track together) | ⬜ phase 3: `classId` and car specs already exist |
+| Multi-class (GTP + GT3 on track together) | 🟡 `core/classes.js`: class groups on the grid, class positions, class-only iRating, GTP-behind warnings |
+| GTP hybrid prototype (LMDh) | 🟡 `lmdh` spec, `core/hybrid.js` deploy modes, procedural body in `render/lmdh-body.js` |
 | Force feedback / gamepad rumble | ⬜ |
+
+## 5b. GTP / LMDh class
+
+The GTP car is our own reading of the LMDh rules, not a licensed model:
+
+- **Chassis** (`engine/sim/car-specs.js`, `lmdh`): 1030 kg, 3.10 m wheelbase, 2.0 m wide, 7-speed gearbox, carbon brakes, ~4.3 lift / 0.82 drag coefficients on 1.6 m², 8% more tyre grip than GT3.
+- **Hybrid** (`core/hybrid.js`): rear-axle motor-generator with a 3 MJ store. It harvests up to 200 kW under braking and a little on a lift, and deploys at full throttle on the straights. Deploy modes are QUAL, ATTACK, BALANCED and BUILD, cycled with **H**. AI drivers pick modes from their charge level, the gap to the car ahead and the laps left.
+- **Keyboard first**: ABS and traction control stay available (real GTP cars have no ABS), the steering assist works as in GT3, and deploy is automatic within the chosen mode, so no extra buttons are needed in a corner.
+- **Body** (`render/lmdh-body.js`): lofted superellipse surfaces. Low nose between flat-topped fenders with louvres, closed canopy with roof scoop, shark fin, swan-neck wing, light bars, splitter, dive planes and a finned diffuser.
+- **AI**: only drivers that can actually use the car take GTP seats (Solstice, Gemini v4). The governor scales the GT3 reference by the class pace (1.14).
+
+Measured solo, best lap over 3 laps: harbor-ring Solstice GTP 54.4 s vs GT3 62.0 s; solenne Solstice GTP 51.1 s, Gemini v4 GTP 57.3 s.
 
 ## 6. Online
 
@@ -84,5 +97,5 @@ Status: ✅ shipped · 🟡 prototype in this branch · ⬜ planned
 
 1. **Phase 1 (this branch):** stewards (incidents, penalties, flags, repairs), licence/SR/iRating career, official vs hosted, relative, incident and flag HUD, spotter, fuel calculator, results with rating deltas.
 2. **Phase 2:** practice and lone qualifying sessions with grid-by-time, formation lap and rolling start, garage setups, in-car adjustments, local season with schedule.
-3. **Phase 3:** full-course yellow and safety car, multi-class fields, slow-down penalties for cutting.
+3. **Phase 3:** full-course yellow and safety car, ~~multi-class fields~~ (prototype done), slow-down penalties for cutting.
 4. **Phase 4:** online host (M4), splits by iRating, protests.

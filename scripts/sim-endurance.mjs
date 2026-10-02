@@ -5,7 +5,8 @@
 import { Track } from '../game/engine/sim/track.js';
 import { EnduranceRace, FIXED_DT, maxWear } from '../game/core/race.js';
 import { FORMATS, COMPOUNDS } from '../game/core/rules.js';
-import { drawTeams, AI_DRIVERS } from '../game/core/teams.js';
+import { drawTeams, AI_DRIVERS, mulberry32 } from '../game/core/teams.js';
+import { assignClasses } from '../game/core/classes.js';
 
 const args = process.argv.slice(2);
 const opt = (name, fallback) => { const i = args.indexOf(`--${name}`); return i >= 0 ? args[i + 1] : fallback; };
@@ -70,7 +71,7 @@ ${body}
 const laps = Number(opt('laps', 6)), teamCount = Number(opt('teams', 6)), seed = Number(opt('seed', 7));
 const track = new Track(trackName);
 const ready = (d) => d.anyTrack || trackName === 'harbor-ring';
-const teams = drawTeams({ teamCount, seed, trackReady: ready });
+const teams = assignClasses(drawTeams({ teamCount, seed, trackReady: ready }), opt('field', 'gt3'), 'gt3', mulberry32(seed));
 const format = Object.values(FORMATS).find((f) => f.laps === laps) ?? FORMATS.custom;
 const difficulty = Number(opt('difficulty', 1));
 const race = new EnduranceRace({ track, teams, format, laps, difficulty });
@@ -87,6 +88,6 @@ console.log(`\nsim ${fmt(race.time)} in ${((Date.now() - wall) / 1000).toFixed(1
 const order = race.standings();
 order.forEach((c, i) => {
   const e = race.entryOf(c);
-  console.log(`P${i + 1} ${e.team.short} ${fmt(c.race.finishTime).padStart(9)} best ${fmt(c.race.bestLap)} stops ${e.strategist.stops} swaps ${e.strategist.swaps} fuel ${c.fuel.toFixed(1)}L wear ${(maxWear(c) * 100).toFixed(0)}% ${COMPOUNDS[c.wheels[0].tyre.compound].short} lap ${c.race.lap - 1} · inc ${race.stewards.of(e).inc}x${c.race.dq ? ' DQ' : ''} dmg ${((c.damage ?? 0) * 100).toFixed(0)}% · stints ${e.stints.map((s) => `${e.team.drivers[s.driver].short}${s.fromLap}-${s.toLap ?? '?'}`).join(' ')}`);
+  console.log(`P${i + 1} ${(e.team.raceClass ?? 'gt3').toUpperCase()} ${e.team.short} ${fmt(c.race.finishTime).padStart(9)} best ${fmt(c.race.bestLap)} stops ${e.strategist.stops} swaps ${e.strategist.swaps} fuel ${c.fuel.toFixed(1)}L wear ${(maxWear(c) * 100).toFixed(0)}% ${COMPOUNDS[c.wheels[0].tyre.compound].short} lap ${c.race.lap - 1} · inc ${race.stewards.of(e).inc}x${c.race.dq ? ' DQ' : ''} dmg ${((c.damage ?? 0) * 100).toFixed(0)}% · stints ${e.stints.map((s) => `${e.team.drivers[s.driver].short}${s.fromLap}-${s.toLap ?? '?'}`).join(' ')}`);
 });
 void AI_DRIVERS;

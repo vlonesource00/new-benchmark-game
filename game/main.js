@@ -22,7 +22,9 @@ import { loadCareer, recordRace, aiRating, aiLicense, strengthOfField, difficult
 import { EnduranceRace, FIXED_DT } from './core/race.js';
 import { AsyncSeats } from './core/async-seats.js';
 import { TRACKS, trackById } from './core/tracks.js';
-import { drawTeams } from './core/teams.js';
+import { drawTeams, mulberry32 } from './core/teams.js';
+import { assignClasses } from './core/classes.js';
+import { DEPLOY_MODES, MODE_ORDER } from './core/hybrid.js';
 import { FORMATS } from './core/rules.js';
 import { Weather } from './core/weather.js';
 import { PlayerInput } from './ui/input.js';
@@ -147,7 +149,7 @@ function setOverlay(name) {
 
 const humans = () => (setup.drive ? [{ id: PLAYER_ID, name: setup.playerName || 'YOU' }] : []);
 function redraw() {
-  teams = drawTeams({ teamCount: setup.teamCount, humans: humans(), seed: setup.seed, coDriver: setup.coDriver });
+  teams = assignClasses(drawTeams({ teamCount: setup.teamCount, humans: humans(), seed: setup.seed, coDriver: setup.coDriver }), setup.field ?? 'multi', setup.playerClass ?? 'gtp', mulberry32(setup.seed ^ 0x5eed));
   teamsById = Object.fromEntries(teams.map((t) => [t.id, t]));
 }
 
@@ -264,8 +266,9 @@ function onFinished() {
   let careerChange = null;
   const mine = lastResults.find((r) => teamsById[r.team]?.drivers.some((d) => d.kind === 'human'));
   if (mine && raceInfo) {
-    const field = lastResults.map((r) => ({ rating: r === mine ? career.iRating : raceInfo.teamRating[r.team], position: r.position, human: r === mine }));
-    careerChange = recordRace(career, { official: raceInfo.official, position: mine.position, field, incidents: mine.incidents ?? 0, laps: mine.lapsDone, corners: mine.lapsDone * raceInfo.turns, dq: mine.dq, track: raceInfo.track, format: raceInfo.format, sof: raceInfo.sof });
+    // iRating moves against your own class only, as in iRacing multiclass.
+    const field = lastResults.filter((r) => r.raceClass === mine.raceClass).map((r) => ({ rating: r === mine ? career.iRating : raceInfo.teamRating[r.team], position: r.classPosition, human: r === mine }));
+    careerChange = recordRace(career, { official: raceInfo.official, position: mine.classPosition, field, incidents: mine.incidents ?? 0, laps: mine.lapsDone, corners: mine.lapsDone * raceInfo.turns, dq: mine.dq, track: raceInfo.track, format: raceInfo.format, sof: raceInfo.sof });
     careerChange.official = raceInfo.official; careerChange.incidents = mine.incidents ?? 0; careerChange.sof = raceInfo.sof;
   }
   setTimeout(() => {
@@ -447,6 +450,12 @@ input.on((action) => {
   }
   if (action === 'telemetry') { if (overlay === 'telemetry') closeTelemetry(); else if (!overlay || overlay === 'pause') openTelemetry(); return; }
   if (action === 'volDown' || action === 'volUp') { setVolume(settings.volume + (action === 'volUp' ? 0.05 : -0.05)); return; }
+  if (action === 'hybridMode') {
+    const car = race && playerTeamId ? cars[teams.findIndex((t) => t.id === playerTeamId)] : null;
+    if (!car?.hybrid) { toast('No hybrid on this car', 1200); return; }
+    const next = MODE_ORDER[(MODE_ORDER.indexOf(car.hybrid.playerMode ?? 'balanced') + 1) % MODE_ORDER.length];
+    car.hybrid.playerMode = next; toast(`Hybrid deploy · ${DEPLOY_MODES[next].label}`, 1400); return;
+  }
   if (action === 'aiDebug') { const on = aiDebug.toggle(); if (seats) seats.wantDebug = on; aiDebug.update(race, focusId, teamsById); return; }
   if (action === 'mute') { toast(audio.toggle() ? 'Sound on' : 'Sound muted', 1200); return; }
   if (overlay) return;

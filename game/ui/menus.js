@@ -8,6 +8,7 @@ import { AI_DRIVERS } from '../core/teams.js';
 import { DIFFICULTIES, difficultyById } from '../core/difficulty.js';
 import { PACE_PROFILES } from '../core/pace-profiles.js';
 import { esc, fmtLap, fmtClock } from './format.js';
+import { RACE_CLASSES, FIELDS } from '../core/classes.js';
 
 const $ = (root, sel) => root.querySelector(sel);
 const $$ = (root, sel) => [...root.querySelectorAll(sel)];
@@ -81,6 +82,8 @@ export function renderSetup(el, s, teams, outlines, act, career = null) {
           <div class="block"><h3>Race</h3>
             <div class="row"><label>Session<span class="hint">${official ? `Rated: iRating and Safety Rating change · rivals matched to your ${career.iRating} iR` : s.drive ? 'Unrated: any format, any difficulty' : 'Team principal races are always unrated'}</span></label>${seg('session', [['official', 'Official'], ['hosted', 'Hosted']], session)}</div>
             ${career ? `<div class="row"><label>Your licence<span class="hint">Sprint: R · Classic 12: D · Marathon 20: C licence for official races</span></label><span class="lic-chip" style="--lic:${licenseById(career.license).color}">${licenseText(career.license, career.sr)} · ${career.iRating} iR</span></div>` : ''}
+            <div class="row"><label>Field<span class="hint">${s.field === 'gt3' ? 'GT3 only' : s.field === 'gtp' ? 'GTP hybrid prototypes only' : 'IMSA-style multiclass: GTP hybrids start ahead, GT3 behind · classified per class'}</span></label>${seg('field', Object.values(FIELDS).map((f) => [f.id, f.label]), s.field ?? 'multi')}</div>
+            ${(s.field ?? 'multi') === 'multi' && s.drive ? `<div class="row"><label>Your class<span class="hint">${s.playerClass === 'gt3' ? 'GT3: ABS, traction control, watch your mirrors' : 'GTP: 1030 kg, hybrid deploy (H cycles mode), carbon brakes'}</span></label>${seg('playerClass', [['gtp', 'GTP'], ['gt3', 'GT3']], s.playerClass ?? 'gtp')}</div>` : ''}
             <div class="row"><label>Format<span class="hint">${fmt.mandatoryStops} mandatory stop${fmt.mandatoryStops > 1 ? 's' : ''}${fmt.mandatorySwap ? ' · driver swap required' : ''}</span></label>
               ${seg('formatId', Object.values(FORMATS).map((f) => [f.id, f.label]), s.formatId)}</div>
             <div class="row"><label>Laps<span class="hint">5–20 laps; fuel and tyres scale with distance</span></label>${stepper('laps', s.laps)}</div>
@@ -103,7 +106,7 @@ export function renderSetup(el, s, teams, outlines, act, career = null) {
         <div>
           <div class="block"><h3>Grid draw · seed ${s.seed}</h3>
             <div class="team-list">${teams.map((t) => `
-              <div class="team-row"><span class="grid-pos">P${t.grid + 1}</span><span class="bar" style="background:${t.color}"></span>
+              <div class="team-row"><span class="grid-pos">P${t.grid + 1}</span><span class="cls-tag" style="background:${RACE_CLASSES[t.raceClass ?? 'gt3'].color};color:${RACE_CLASSES[t.raceClass ?? 'gt3'].fg}">${RACE_CLASSES[t.raceClass ?? 'gt3'].label}</span><span class="bar" style="background:${t.color}"></span>
                 <div><b>${esc(t.name)}</b><div class="drivers">${t.drivers.map((d, i) => `<span class="chip ${d.kind === 'human' ? 'human' : ''} ${i === t.starter ? 'start' : ''}" title="${esc(d.arch ?? 'Human')}">${esc(d.name)}</span>`).join('')}</div></div>
               </div>`).join('')}</div>
             <div class="row" style="margin-top:12px"><label>Teammates<span class="hint">${player ? `You race for ${esc(player.name)}` : 'Every car is AI-driven'}</span></label><button class="back" data-reroll>⟳ Redraw</button></div>
@@ -220,11 +223,11 @@ export function renderResults(el, results, teamsById, contacts, act, careerChang
         <b>${esc(teamsById[r.team].name)}</b><span>${teamsById[r.team].drivers.map((d) => esc(d.name)).join(' / ')}</span></div>` : '<div></div>').join('')}</div>
       ${careerBlock(careerChange)}
       <div class="block"><table class="results-table">
-        <thead><tr><th>Pos</th><th>Team</th><th>Drivers</th><th>Laps</th><th>Time / gap</th><th>Best lap</th><th>Stops</th><th>Pit time</th><th>Inc</th></tr></thead>
+        <thead><tr><th>Pos</th><th>Class</th><th>Team</th><th>Drivers</th><th>Laps</th><th>Time / gap</th><th>Best lap</th><th>Stops</th><th>Pit time</th><th>Inc</th></tr></thead>
         <tbody>${results.map((r) => {
           const t = teamsById[r.team];
           const time = r.dq ? 'DQ' : r.position === 1 ? fmtClock(r.finishTime ?? 0) : r.finishTime === null ? `${r.lapsDone} laps` : `+${r.gap.toFixed(3)}`;
-          return `<tr class="${isMine(r) ? 'me' : ''}"><td>${r.position}</td><td class="t"><span style="display:inline-block;width:5px;height:18px;background:${t.color};margin-right:8px;vertical-align:middle"></span>${esc(t.name)}</td>
+          return `<tr class="${isMine(r) ? 'me' : ''}"><td>${r.position}</td><td><span class="cls-tag" style="background:${RACE_CLASSES[r.raceClass ?? 'gt3'].color};color:${RACE_CLASSES[r.raceClass ?? 'gt3'].fg}">${RACE_CLASSES[r.raceClass ?? 'gt3'].label} P${r.classPosition ?? r.position}</span></td><td class="t"><span style="display:inline-block;width:5px;height:18px;background:${t.color};margin-right:8px;vertical-align:middle"></span>${esc(t.name)}</td>
             <td>${t.drivers.map((d) => esc(d.short)).join(' / ')}</td><td>${r.lapsDone}</td><td>${time}</td><td>${fmtLap(r.bestLap)}</td><td>${r.stops}</td><td>${r.pitStopTime.toFixed(1)}s</td><td>${r.incidents ?? 0}x</td></tr>`;
         }).join('')}</tbody></table>
         <div style="margin-top:10px;color:var(--faint);font-size:14px">${contacts} contact${contacts === 1 ? '' : 's'} recorded</div></div>

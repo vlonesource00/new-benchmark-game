@@ -34,7 +34,7 @@ export class Vehicle {
   shift(direction) {
     const SPEC=this.spec;
     if (this.shiftTimer > 0) return;
-    const next = clamp(this.gear + direction, 1, 6);
+    const next = clamp(this.gear + direction, 1, SPEC.gears.length - 1);
     const rpm = Math.abs(this.u) / SPEC.radius * SPEC.gears[next] * SPEC.finalDrive * 60 / (2 * Math.PI);
     if (rpm > 8100 || next === this.gear) return;
     this.gear = next; this.shiftTimer = 0.11;
@@ -92,7 +92,7 @@ export class Vehicle {
       const brakeTorque = brake * SPEC.brakeTorque * (front ? this.setup.brakeBias : 1 - this.setup.brakeBias) * abs;
       const driven=front===(SPEC.drive==='front');
       const diff = driven ? clamp((this.wheels[i^1].omega - w.omega) * 12, -130, 130) : 0;
-      const wheelDrive = driven ? drive * tc * 0.5 + diff - (throttle < 0.02 ? Math.sign(this.u) * 22 * ratio : 0) : 0;
+      const wheelDrive = driven ? (drive + (reversing ? 0 : this.hybridForce ?? 0) * SPEC.radius) * tc * 0.5 + diff - (throttle < 0.02 ? Math.sign(this.u) * 22 * ratio : 0) : 0;
       let avgFx = 0, avgFy = 0;
       // Wheel rotation and relaxation solve at 480 Hz, chassis at 120 Hz.
       for (let sub = 0; sub < 4; sub++) {

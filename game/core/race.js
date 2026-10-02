@@ -13,6 +13,8 @@ import { TeamStrategist, maxWear } from './strategy.js';
 import { createSeatBridge } from './field.js';
 import { AI_DRIVERS } from './teams.js';
 import { Stewards, MEATBALL_DAMAGE } from './stewards.js';
+import { fitHybrid, hybridStep, aiDeployMode, HYBRID } from './hybrid.js';
+import { classProfile, classForCar } from './classes.js';
 
 export const FIXED_DT = 1 / 120;
 
@@ -34,7 +36,7 @@ export class EnduranceRace {
     this.inputs = new Map();
     this.events = []; this.eventSeq = 0;
     this.cars = teams.map((team, i) => {
-      const car = new Vehicle(i, team.short, team.color, this.classId);
+      const car = new Vehicle(i, team.short, team.color, team.classId ?? this.classId);
       car.team = team; car.fuelScale = this.cal.fuelScale;
       return car;
     });
@@ -47,7 +49,7 @@ export class EnduranceRace {
     // Difficulty applies to all-AI teams only: a human's own AI co-driver runs at
     // full pace. Tyre and wet-weather management applies to every AI stint.
     this.difficulty = difficulty;
-    this.entries.forEach((e) => { e.governor = new PaceGovernor(track, e.team.drivers.some((d) => d.kind === 'human') ? 1 : difficulty); });
+    this.entries.forEach((e) => { e.governor = new PaceGovernor(track, e.team.drivers.some((d) => d.kind === 'human') ? 1 : difficulty, classProfile(track, e.car.classId)); });
     this.entries.forEach((e, i) => { e.bridges = e.team.drivers.map((d) => makeBridge(d, i, this)); });
     this.startCompound = startCompound;
     this.phase = 'grid'; this.time = 0; this.countdown = 0; this.contacts = 0;
@@ -62,7 +64,7 @@ export class EnduranceRace {
   }
   fitTyres(car, compoundId, warm = false) {
     const c = COMPOUNDS[compoundId];
-    for (const w of car.wheels) w.tyre = createTyre(car.setup.pressure, { compound: c.id, gripScale: c.grip, wearScale: c.wear * this.cal.wearScale, optimum: c.optimum, heat: c.heat, warm });
+    for (const w of car.wheels) w.tyre = createTyre(car.setup.pressure, { compound: c.id, gripScale: c.grip, wearScale: c.wear * this.cal.wearScale * (car.spec.tyreWear ?? 1), optimum: c.optimum, heat: c.heat, warm });
   }
   reset() {
     const track = this.track, start = track.scenario?.start;
@@ -77,6 +79,7 @@ export class EnduranceRace {
       // All-AI teams pick their own start tyre; a human team starts on the chosen one.
       const allAi = e.team.drivers.every((d) => d.kind === 'ai');
       this.fitTyres(c, allAi ? e.strategist.startCompound(this.cal.fuelLaps) : this.startCompound);
+      fitHybrid(c);
       c.race = { progress: -gridToFinish - Math.floor(i / 2) * rowSpacing, previousS: c.s, lap: 1, lastLap: null, bestLap: null, lapStart: 0, sector: 0, valid: true, sectors: [], secMark: 0, secValid: true, secCur: [null, null, null], secState: [null, null, null], secBest: [null, null, null], finishTime: null, offtrack: 0, pitLap: false };
       e.pit = null; e.pitPlan = null; e.retired = null; e.stints = [{ driver: e.active, fromLap: 1, toLap: null }];
       for (const b of e.bridges) b.reset?.({ cars: this.cars, track, line: this.lineFor(c) });
@@ -219,6 +222,18 @@ export class EnduranceRace {
         }
         if (c.race.finishTime !== null) c.controls = { ...c.controls, throttle: Math.min(0.35, c.controls.throttle), brake: Math.max(c.controls.brake, c.speed > 25 ? 0.2 : 0) };
       }
+    }
+    // GTP hybrids: AI drivers pick their deploy mode from the gap to the car ahead.
+    for (const e of this.entries) {
+      const c = e.car; if (!c.hybrid) continue;
+      const bridge = e.bridges[e.active];
+      c.hybrid.auto = !bridge.human || bridge.assisted;
+      if (c.hybrid.auto) {
+        let gap = Infinity;
+        for (const o of cars) if (o !== c) { const d = wrap(o.s - c.s, track.length); if (d > 0 && d < gap) gap = d; }
+        aiDeployMode(c, gap, this.lapsLeft(c), this.session === 'qualifying');
+      } else c.hybrid.mode = c.hybrid.playerMode ?? 'balanced';
+      hybridStep(c, dt);
     }
     const airflow = wakes(cars);
     cars.forEach((c, i) => c.step(dt, track, airflow[i]));
@@ -369,12 +384,18 @@ export class EnduranceRace {
   }
 
   /** Finishing classification for the results screen. */
+  /** Position of each car inside its own class (multiclass fields). */
+  classPositions(order) {
+    const seen = {}, out = new Map();
+    for (const c of order) { const k = classForCar(c).id; seen[k] = (seen[k] ?? 0) + 1; out.set(c, seen[k]); }
+    return out;
+  }
   classification() {
-    const order = this.standings(), leader = order[0];
+    const order = this.standings(), leader = order[0], inClass = this.classPositions(order);
     return order.map((c, i) => {
       const e = this.entryOf(c);
       return {
-        position: i + 1, id: c.id, team: e.team.id, finishTime: c.race.finishTime, lapsDone: c.race.finishLaps ?? Math.min(this.laps, c.race.lap - 1),
+        position: i + 1, id: c.id, raceClass: classForCar(c).id, classPosition: inClass.get(c), team: e.team.id, finishTime: c.race.finishTime, lapsDone: c.race.finishLaps ?? Math.min(this.laps, c.race.lap - 1),
         gap: this.interval(c, leader), bestLap: c.race.bestLap, stops: e.strategist.stops, swaps: e.strategist.swaps,
         pitStopTime: e.pitStopTime, stints: e.stints, fuel: c.fuel, damage: c.damage,
         incidents: this.stewards.of(e).inc, dq: Boolean(c.race.dq), penaltiesServed: this.stewards.of(e).served
@@ -384,7 +405,7 @@ export class EnduranceRace {
 
   /** Compact, serialisable state for HUD / network clients. */
   snapshot() {
-    const order = this.order(), leader = order[0], hazards = this.stewards.hazards();
+    const order = this.order(), leader = order[0], hazards = this.stewards.hazards(), inClass = this.classPositions(order);
     return {
       flag: this.stewards.raceFlag(), incidentLimits: this.stewards.limits,
       phase: this.phase, time: this.time, countdown: this.countdown, laps: this.laps, cal: { fuelLaps: this.cal.fuelLaps, tyreLaps: this.cal.tyreLaps },
@@ -395,7 +416,8 @@ export class EnduranceRace {
           throttle: c.controls.throttle, brake: c.controls.brake,
           fuel: c.fuel, wear: c.wheels.map((w) => w.tyre.wear), temps: c.wheels.map((w) => w.tyre.surface), compound: c.wheels[0].tyre.compound, damage: c.damage,
           lap: Math.min(c.race.lap, this.laps), progress: c.race.progress, lastLap: c.race.lastLap, lastLapState: c.race.lastState === 'purple' && c.race.lastLap > this.lapBest ? 'green' : c.race.lastState ?? null, bestLap: c.race.bestLap, finished: c.race.finishTime !== null,
-          position: order.indexOf(c) + 1, gap: this.interval(c, leader),
+          position: order.indexOf(c) + 1, gap: this.interval(c, leader), raceClass: classForCar(c).id, classPosition: inClass.get(c),
+          hybrid: c.hybrid ? { soc: c.hybrid.energy / HYBRID.capacity, mode: c.hybrid.mode, kw: c.hybrid.kw } : null,
           driver: d.id, driverName: d.name, driverKind: d.kind, stops: e.strategist.stops, pit: e.pit?.phase ?? null, boxCalled: Boolean(e.pitPlan || e.strategist.request),
           serviceLeft: e.pit?.phase === 'service' ? e.pit.serviceLeft : 0, serviceTotal: e.pit?.serviceTotal ?? 0,
           active: e.active, fuelPerLap: e.strategist.fuelPerLap, reason: e.strategist.reason, request: e.strategist.request,

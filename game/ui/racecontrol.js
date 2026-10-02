@@ -3,6 +3,8 @@
 // spotter that calls cars alongside (text, side arrows and an optional voice).
 import { esc } from './format.js';
 import { licenseById } from '../core/career.js';
+import { RACE_CLASSES } from '../core/classes.js';
+import { DEPLOY_MODES } from '../core/hybrid.js';
 
 const FLAGS = {
   green: { label: 'GREEN', bg: '#1fae4b', fg: '#fff' },
@@ -23,7 +25,8 @@ export class RaceControlHud {
     el.innerHTML = `
       <div class="rc-flag" data-rcflag hidden></div>
       <div class="rc-rel"><div class="rc-head"><span>RELATIVE</span><span data-rcsof></span></div><ol data-rcrel></ol>
-        <div class="rc-foot"><span data-rcinc>0x</span><span data-rcfuel></span></div></div>
+        <div class="rc-foot"><span data-rcinc>0x</span><span data-rcfuel></span></div>
+        <div class="rc-hyb" data-rchyb hidden><span class="lbl">HYBRID</span><i class="soc"><b data-rcsoc></b></i><span data-rcmode></span><span data-rckw class="kw"></span></div></div>
       <div class="rc-spot left" data-spotl></div><div class="rc-spot right" data-spotr></div>
       <div class="rc-spottxt" data-spottxt></div>`;
     root.append(el);
@@ -59,7 +62,8 @@ export class RaceControlHud {
       const team = ctx.teamsById[c.team], info = ctx.ratingOf?.(c) ?? null, lic = info ? licenseById(info.license) : null;
       const cls = c.id === focus.id ? 'me' : laps > 0 ? 'up' : laps < 0 ? 'down' : '';
       const gap = c.id === focus.id ? '' : `${ds > 0 ? '-' : '+'}${Math.abs(ds / v).toFixed(1)}`;
-      return `<li class="${cls}${c.pit ? ' pit' : ''}"><span class="p">${c.position}</span><span class="n" style="--team:${team.color}">${esc(team.short)}</span><span class="d">${esc(c.driverName)}</span>
+      const rc = RACE_CLASSES[c.raceClass] ?? RACE_CLASSES.gt3;
+      return `<li class="${cls}${c.pit ? ' pit' : ''}"><span class="p" style="box-shadow:inset 3px 0 0 ${rc.color}">${c.classPosition ?? c.position}</span><span class="n" style="--team:${team.color}">${esc(team.short)}</span><span class="d">${esc(c.driverName)}</span>
         ${lic ? `<span class="lic" style="background:${lic.color}">${lic.id} ${info.sr.toFixed(1)}</span><span class="ir">${kText(info.rating)}</span>` : '<span></span><span></span>'}<span class="g mono">${c.pit ? 'PIT' : gap}</span></li>`;
     }).join('');
     this.q('rcsof').textContent = ctx.sof ? `SOF ${ctx.sof}` : '';
@@ -73,6 +77,17 @@ export class RaceControlHud {
       const need = left * focus.fuelPerLap - focus.fuel;
       this.q('rcfuel').innerHTML = need > 0.5 ? `FUEL TO END <b>+${need.toFixed(1)} L</b>` : `FUEL OK <b>${(-need).toFixed(1)} L</b> spare`;
     } else this.q('rcfuel').textContent = '';
+
+    // ---- GTP hybrid: state of charge, deploy mode, live deploy / regen ----
+    const hy = focus.hybrid, hb = this.q('rchyb');
+    hb.hidden = !hy;
+    if (hy) {
+      this.q('rcsoc').style.width = `${(hy.soc * 100).toFixed(0)}%`;
+      this.q('rcsoc').className = hy.soc < .2 ? 'low' : '';
+      this.q('rcmode').textContent = `${DEPLOY_MODES[hy.mode]?.label ?? ''} · H`;
+      const kw = this.q('rckw'); kw.textContent = hy.kw > 1 ? `+${hy.kw.toFixed(0)} kW` : hy.kw < -1 ? `${hy.kw.toFixed(0)} kW` : '';
+      kw.className = `kw ${hy.kw > 1 ? 'dep' : hy.kw < -1 ? 'reg' : ''}`;
+    }
   }
 
   /** Spotter, per frame from live car poses: who is alongside the focus car. */
@@ -88,11 +103,23 @@ export class RaceControlHud {
       }
     }
     l.classList.toggle('on', left); r.classList.toggle('on', right);
-    const call = left && right ? 'THREE WIDE' : left ? 'CAR LEFT' : right ? 'CAR RIGHT' : (this.spot.l || this.spot.r) ? 'CLEAR' : '';
+    // Multiclass: a GT3 driver is warned of a prototype closing from behind.
+    let faster = null;
+    if (enabled && focusCar && focusCar.classId !== 'lmdh') {
+      const fx = Math.sin(focusCar.yaw), fz = Math.cos(focusCar.yaw), rx = -Math.cos(focusCar.yaw), rz = Math.sin(focusCar.yaw);
+      for (const o of cars) {
+        if (o.classId !== 'lmdh' || o.ghost) continue;
+        const dx = o.x - focusCar.x, dz = o.z - focusCar.z, along = dx * fx + dz * fz, side = dx * rx + dz * rz;
+        if (along < -5.2 && along > -70 && o.speed > focusCar.speed + 2) faster = side > 0.6 ? 'RIGHT' : side < -0.6 ? 'LEFT' : '';
+      }
+    }
+    const fasterCall = faster !== null ? `GTP BEHIND${faster ? ` · ${faster}` : ''}` : '';
+    const call = left && right ? 'THREE WIDE' : left ? 'CAR LEFT' : right ? 'CAR RIGHT' : (this.spot.l || this.spot.r) ? 'CLEAR' : fasterCall;
     const now = performance.now();
     if (call && call !== this.spot.said) {
       this.spot.said = call; this.spot.at = now; txt.textContent = call; txt.classList.add('on');
-      this.say(call === 'CLEAR' ? (this.spot.l && this.spot.r ? 'clear all round' : this.spot.l ? 'clear left' : 'clear right') : call.toLowerCase());
+      if (call.startsWith('GTP')) { if (now - (this.spot.gtpAt ?? -1e9) > 8000) { this.spot.gtpAt = now; this.say('prototype behind'); } }
+      else this.say(call === 'CLEAR' ? (this.spot.l && this.spot.r ? 'clear all round' : this.spot.l ? 'clear left' : 'clear right') : call.toLowerCase());
     }
     if (!call && now - this.spot.at > 1200) { txt.classList.remove('on'); this.spot.said = ''; }
     this.spot.l = left; this.spot.r = right;
