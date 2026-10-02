@@ -102,7 +102,7 @@ export class AsyncSeats {
         if (!host.failed && host.initialised) host.worker.postMessage({ type: 'reset', slot, cars: race.cars.map(snapshotCar) });
       },
       debug() { return local?.debug?.() ?? this.lastDebug ?? { architecture: driver.arch ?? driver.id }; },
-      visualDebug() { return null; }
+      visualDebug() { return local?.visualDebug?.() ?? (this.lastDebug?.trackingPoint ? { trackingPoint: this.lastDebug.trackingPoint } : null); }
     };
     host.seats.push(seat);
     return seat;

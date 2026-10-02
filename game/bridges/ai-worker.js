@@ -10,7 +10,8 @@ const MODULES = import.meta.glob('./*-bridge.js');
 const FACTORIES = {
   phantom: ['./phantom-bridge.js', 'createPhantomBridge'],
   'phantom-v2': ['./phantom-v2-bridge.js', 'createPhantomV2Bridge'],
-  'solinator-6.1': ['./solinator-bridge.js', 'createBenchmarkSolinatorBridge']
+  'solinator-6.1': ['./solinator-bridge.js', 'createBenchmarkSolinatorBridge'],
+  solstice: ['./solstice-bridge.js', 'createSolsticeBridge']
 };
 
 let track = null, bridge = null, cars = [], id = null, lensTime, ghostSent = false, stepCount = 0;

@@ -1,0 +1,25 @@
+{
+  "planHz": 8,
+  "horizon": 1.1,
+  "maxPlanMs": 14,
+  "envelopeHz": 3,
+  "laneRate": 1.7,
+  "tyrePrice": 0.0000002,
+  "path": {
+    "brakeReserve": 0.9, "brakeWearReserve": 0.2,
+    "curvatureSpan": 1, "variantSpan": 1,
+    "optimizerIterations": 12, "optimizerBins": 100,
+    "optimizerWidths": [90, 60, 30, 15, 8],
+    "projectDuringSmoothing": true
+  },
+  "policy": { "combinedDrive": true, "brakeFloor": 0.5, "axleBrake": true,
+    "lookahead": 0.7, "previewBrake": 24, "brakeLead": 0,
+    "betaGain": 1.7, "yawGain": 0.22, "slipLimit": 0.2, "gripUse": 0.97,
+    "actualBrakeReserve": true, "courseForceLimit": 0.92,
+    "saturationBrakeShare": 0.2, "warmForceTransition": true },
+  "tracks": {
+    "harbor-ring": { "path": {
+      "curvatureSpan": 4, "brakeReserve": 0.92, "brakeWearReserve": 0.35
+    } }
+  }
+}

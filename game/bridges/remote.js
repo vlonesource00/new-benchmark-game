@@ -7,7 +7,7 @@ import { Ghost as GhostV1 } from '../../subjects/phantom/src/ghost.js';
 import { Ghost as GhostV2 } from '../../subjects/phantom-v2/src/ghost.js';
 import { plain } from './remote-sync.js';
 
-export const OFFLOADED_IDS = Object.freeze(['phantom-v2', 'phantom', 'solinator-6.1']);
+export const OFFLOADED_IDS = Object.freeze(['phantom-v2', 'phantom', 'solinator-6.1', 'solstice']);
 const RUBBER_EVERY = 12;
 const GHOSTS = { phantom: GhostV1, 'phantom-v2': GhostV2 };
 
