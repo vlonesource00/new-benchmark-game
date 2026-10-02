@@ -162,14 +162,14 @@ export function runCornerRaceProbe() {
       const entry = race.entries[0], driver = entry.bridges[entry.active].driver;
       const s = race.track.nearest(entry.car.x, entry.car.z).s;
       if (race.time > 15 && driver.mode === 'ALONGSIDE') alongsideSeconds += dt;
-      if (race.time > 15 && driver.traffic.list.some(o => Math.abs(o.ds) < 25)) trafficSeconds += dt;
+      if (driver.traffic.list.some(o => Math.abs(o.ds) < 25)) trafficSeconds += dt;
       if (s > 2200 && s < 2400) {
         minimumSpeed = Math.min(minimumSpeed, entry.car.speed);
         minimumTarget = Math.min(minimumTarget, driver.targetSpeed);
       }
     } });
   return { type: 'native-corner-combat', conditions: race.config, provenance: race.sourceProvenance,
-    truncated: race.truncated, note: 'First 80 seconds of the normal race, including the reproduced corner encounter; not a completed endurance race.',
+    truncated: race.truncated, note: 'First 80 seconds of the normal race, counting close traffic throughout and observing the original corner sector; not a completed endurance race.',
     simulatedSeconds: race.simulatedSeconds, totalContacts: race.totalContacts,
     trafficSeconds, alongsideSeconds, minimumSpeed: Number.isFinite(minimumSpeed) ? minimumSpeed : null,
     minimumTarget: Number.isFinite(minimumTarget) ? minimumTarget : null,

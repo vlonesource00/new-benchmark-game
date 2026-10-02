@@ -15,6 +15,7 @@ import { runBenchmark } from './bench.mjs';
 import { cadenceBridgeFactory } from './cadence-bench.mjs';
 import { pairedSchedule } from './pair-model.mjs';
 import { runCombatProbe, runCornerRaceProbe } from './combat-probe.mjs';
+import { runDuelProbe } from './duel-probe.mjs';
 
 // Run with the JSON compatibility loader; these are short public-contract checks,
 // not endurance benchmarks or assertions of a particular tuning choice.
@@ -391,7 +392,29 @@ check('a passing lane must remain open through the observed rival turn-in', () =
   const traffic = new Traffic(trafficTrack); observe(traffic, self, [rival]);
   const proposals = traffic.proposals(self, centerPath);
   assert.equal(traffic.mode, 'attack');
-  assert.deepEqual(proposals.map(p => p.side), [-1], 'do not enter the side the rival is closing against the edge');
+  assert.deepEqual([...new Set(proposals.map(p => p.side))], [-1], 'do not enter the side the rival is closing against the edge');
+});
+
+check('a real SOLSTICE duel completes a shallow-bend pass without contact or losing momentum', () => {
+  const result = runDuelProbe({ seconds: 20, hz: 30, filter: 'gentle-right' }).results[0];
+  assert.ok(result.duel.passCompletedAt != null && result.duel.passCompletedAt < 15, 'complete a viable pass');
+  assert.equal(result.duel.contactSteps, 0, 'native bodies stay separated');
+  assert.ok(result.progressRatios[0] > .97, 'attacker retains its free-air progress');
+  for (const car of result.duel.metrics) {
+    assert.equal(car.offtrackSeconds, 0); assert.equal(car.damage, 0); assert.equal(car.errors, 0);
+    assert.equal(car.stoppedSeconds, 0); assert.ok(car.finite);
+  }
+});
+
+check('a warm worn rival crossing the exit lane stays clear at 60 Hz', () => {
+  const result = runDuelProbe({ seconds: 20, hz: 60, filter: 'exit-worn' }).results[0];
+  assert.ok(result.duel.passCompletedAt != null, 'finish the pass after the squeeze');
+  assert.equal(result.duel.contactSteps, 0);
+  assert.ok(result.progressRatios[0] > .9, 'preserve progress through the encounter');
+  for (const car of result.duel.metrics) {
+    assert.equal(car.offtrackSeconds, 0); assert.equal(car.damage, 0); assert.equal(car.errors, 0);
+    assert.equal(car.stoppedSeconds, 0); assert.ok(car.finite);
+  }
 });
 
 check('actual alongside position overrides an abandoned opposite passing side', () => {
@@ -466,6 +489,17 @@ check('leading clearance never discounts actual overlaps or lateral/rejoining th
   rear.vx += p.nx * 4; rear.vz += p.nz * 4;
   observe(traffic, self, [rear], .1);
   near(traffic.risk(self, .3, true), traffic.risk(self, .3), 'lateral uncertainty retains its full reserve');
+});
+
+check('the native Solenne grid launch clears a skewed slow rival without contact', () => {
+  const report = runBenchmark({ field: ['solstice', 'gemini-supreme-v4'], track: 'solenne',
+    teams: 2, laps: 12, seconds: 8, seed: 7 });
+  assert.ok(report.simulatedSeconds >= 7.99);
+  assert.equal(report.totalContacts, 0);
+  for (const car of report.results) {
+    assert.equal(car.offtrackSeconds, 0); assert.equal(car.damage, 0);
+    assert.equal(car.bridgeErrors, 0); assert.ok(car.finite);
+  }
 });
 
 check('native corner combat avoids the converging-rival contact and half-pace apex', () => {

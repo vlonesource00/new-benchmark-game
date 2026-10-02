@@ -68,6 +68,15 @@ placements and warm tyre state are fixtures, and its rival uses a fixed lane
 and speed cap; these are targeted regressions, not complete races. The
 `--case native-corners` option reproduces an encounter in the first 80 seconds
 of the normal SOLSTICE/Gemini race.
+`duel-probe.mjs` adds eleven encounters between two independent SOLSTICE drivers.
+Both choose their own lanes and speed after initialization, and each is also
+measured in free air. A completed pass requires a twelve-metre lead sustained
+for a second; the matched-pace case is a control, not a guaranteed opportunity.
+
+```sh
+node subjects/solstice/tools/duel-probe.mjs --hz 30 --seconds 20 --output subjects/solstice/results/example-duel.json
+```
+
 `weather-probe.mjs` observes native Changeable races, recording wet/dry fronts,
 box calls, services and lap weather without changing controls or strategy.
 

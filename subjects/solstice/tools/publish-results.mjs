@@ -9,7 +9,7 @@ for (const file of readdirSync(directory).sort()) {
   if (!file.endsWith('.json') || file === 'compact-summary.json') continue;
   if (selected.size ? !selected.has(file) : !file.startsWith('release-')) continue;
   const url = new URL(file, directory);
-  if (statSync(url).size > 1024 * 1024) continue;
+  if (statSync(url).size > 8 * 1024 * 1024) continue;
   const raw = readFileSync(url), data = JSON.parse(raw);
   const sourceHash = createHash('sha256').update(raw).digest('hex');
   if (data.schemaVersion === 2 && Array.isArray(data.results)) {
@@ -51,6 +51,13 @@ for (const file of readdirSync(directory).sort()) {
         rotationSeconds: (lap.rows ?? []).reduce((sum, row) => sum + (row.rotationSeconds ?? 0), 0),
         rotationViolationSeconds: (lap.rows ?? []).reduce((sum, row) => sum + (row.rotationViolationSeconds ?? 0), 0),
         activeGovernorCutSeconds: (lap.rows ?? []).reduce((sum, row) => sum + (row.activeGovernorCutSeconds ?? 0), 0)
+      })) });
+  } else if (data.type === 'solstice-duel') {
+    const compact = result => Object.fromEntries(Object.entries(result)
+      .filter(([key]) => !['samples', 'evaluations'].includes(key)));
+    measurements.push({ source: file, sourceHash, type: data.type, conditions: data.conditions,
+      results: data.results.map(({ setup, free, duel, progressRatios }) => ({
+        setup, free: free.map(compact), duel: compact(duel), progressRatios
       })) });
   } else if (data.type === 'controlled-combat') {
     const compact = result => Object.fromEntries(Object.entries(result)

@@ -22,10 +22,18 @@ export class ForcePolicy {
   }
 
   point(s, plan) {
-    return plan.hold == null ? this.path.at(s, plan.extra ?? 0, plan.bounds)
+    return plan.hold == null ? this.path.at(s, plan.extra ?? 0, plan.bounds,
+      plan.trafficLine ? this.path.curvatureSpan : this.path.variantSpan)
       : (() => { const p = this.track.at(s, plan.hold);
         return { ...p, offset: plan.hold,
           curvature: p.curvature / Math.max(.2, 1 - p.curvature * plan.hold) }; })();
+  }
+
+  envelope(plan, braking = false) {
+    const span = plan.trafficLine ? this.path.curvatureSpan : this.path.variantSpan;
+    const hold = braking ? plan.brakingHold ?? plan.hold : plan.hold;
+    return hold == null ? this.path.variantEnvelope(plan.extra ?? 0,
+      braking ? plan.brakingBounds ?? plan.bounds : plan.bounds, span) : this.path.laneEnvelope(hold, span);
   }
 
   axleSlip(car, start, force, grip) {
@@ -135,10 +143,7 @@ export class ForcePolicy {
     }
     const steer = clamp(delta / spec.steeringLock, -1, 1);
     const factor = plan.factor ?? 1;
-    const envelope = plan.hold == null ? this.path.variantEnvelope(plan.extra ?? 0, plan.bounds) : this.path.laneEnvelope(plan.hold);
-    const brakingEnvelope = (plan.brakingHold ?? plan.hold) == null
-      ? this.path.variantEnvelope(plan.extra ?? 0, plan.brakingBounds ?? plan.bounds)
-      : this.path.laneEnvelope(plan.brakingHold ?? plan.hold);
+    const envelope = this.envelope(plan), brakingEnvelope = this.envelope(plan, true);
     const reference = s => Math.min(this.path.sample(envelope, s), this.path.sample(brakingEnvelope, s)) * factor;
     let targetSpeed = Math.min(speedCap, reference(projection.s + 2));
     for (let ahead = 12; ahead < Math.min(240, speed * 4 + 30); ahead += 8) {
@@ -169,7 +174,9 @@ export class ForcePolicy {
     let demand = feed + o.speedGain * (targetSpeed - speed);
     const brakingLateral = actualBrakeReserve ? Math.abs(car.ay) : lateral;
     const longitudinal = Math.sqrt(Math.max(1, available * available - Math.min(available, brakingLateral) ** 2));
-    const brakingFloor = o.saturationBrakeShare > 0 && brakeUse > .1
+    // A collision response can trade more cornering force for deceleration.
+    // It is available only as an explicitly tested emergency trajectory.
+    const brakingFloor = plan.brakeAction ? Math.min(o.brakeAccel, available * .7) : o.saturationBrakeShare > 0 && brakeUse > .1
       ? Math.max(o.brakeFloor, clamp((speed - targetSpeed) * 1.5, 0, 6)) : o.brakeFloor;
     demand = clamp(demand, -Math.max(brakingFloor, longitudinal), Math.max(1.5, longitudinal));
     const ratio = spec.gears[car.gear] * spec.finalDrive;
@@ -205,7 +212,8 @@ export class ForcePolicy {
       // demand that the *previous* full lateral force survive unchanged when
       // an overspeed car now needs to brake. The private rollout evaluates
       // the resulting rotation and rejects an unstable pressure request.
-      const trade = targetSpeed < speed - .7 ? clamp(o.saturationBrakeShare, 0, .5) * brakeUse : 0;
+      const trade = targetSpeed < speed - .7
+        ? (plan.brakeAction ? .55 : clamp(o.saturationBrakeShare, 0, .5)) * brakeUse : 0;
       const front = Math.max(caps[0] * trade,
         Math.sqrt(Math.max(0, (caps[0] * .94) ** 2 - frontLateral ** 2)));
       const rear = Math.max(caps[1] * trade,

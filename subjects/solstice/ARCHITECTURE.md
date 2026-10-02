@@ -52,9 +52,12 @@ not proof that SOLSTICE beats them. Baselines and race results are recorded in
    open-loop between plans.
 5. Predict opponents from public positions, world velocities, yaw, lateral
    velocity and observed acceleration. Reserve their oriented footprint and
-   uncertainty through the horizon. Prepare both feasible passing sides before
-   committing to the selected trajectory; use road curvature to identify the
-   inside. Make at most one defensive move per approach and reject optional
+   uncertainty through the horizon. Compare bounded racing-line, parallel road
+   lane and shifted racing-line trajectories on both feasible passing sides;
+   use road curvature to identify the inside. Keep a useful side committed,
+   reconsider a closing door before body overlap, and remember a failed side
+   briefly instead of repeating the same unsuccessful approach. Make at most
+   one defensive move per approach and reject optional
    defensive trajectories that lose excessive progress or exit speed. Following
    brakes apply to a predicted occupied corridor. Alongside bodies receive
    clearance through corridors or a physically validated leading trajectory.
@@ -121,10 +124,32 @@ This exception is scoped to defended approaches, not passing rivals.
 
 Emergency braking candidates require a forward or immediately overlapping
 threat and cap the current target relative to current speed. They do not
-multiply every future corner speed by a half-pace factor. An infeasible body
-corridor falls back to a moving offset from the racing line rather than holding
-a fixed lateral coordinate through the corner. The native geometry, base pace
-settings, tyre feedback and temperature-and-wear rotation gate are unchanged.
+multiply every future corner speed by a half-pace factor. These native-tested
+candidates can trade more lateral force for braking, and prioritize a reduction
+in the first 0.6 seconds of risk over a less certain later encounter. Track,
+damage and stability rejections still exclude them.
+
+An infeasible outside corridor holds a wider road radius instead of following
+the hotlap line's lateral transition across its neighbour. An inside fallback
+retains a moving racing-line offset rather than tightening its corner radius.
+The physically clear leading candidate remains available to an established
+defensive approach even when the nominal corridor cannot fit. Actual body
+overlaps are never discounted. A separate escape candidate requires every
+alongside body to be completely behind and physically clear, with full risk.
+Two stationary grid cars with more than three metres of empty lateral space
+between their body widths do not impose an alongside lane fence while still
+widely separated during launch. This exception ends after four seconds or at
+15 m/s; both bodies remain in prediction and collision scoring throughout.
+With traffic within 60 metres, the complete small candidate set is compared;
+the soft wall-clock cutoff only shortens optional work in free air. Machine
+load must not decide which feasible combat trajectory is considered.
+
+Traffic trajectories use each circuit's calibrated curvature span consistently
+for steering, the whole-lap envelope and terminal feasibility. The periodic
+envelope still includes forward acceleration and backward braking. Live passing
+caps replace a stale cap only while the same rival, side and route remain viable;
+an explicit emergency action retains its lower cap. The solo line, base pace
+settings and temperature-and-wear rotation gate are unchanged.
 
 Additional rear rotation requires a rear tyre whose core is above its own
 optimum plus 4 degrees C and whose wear exceeds 12%. Both conditions must hold

@@ -31,6 +31,8 @@ export class Traffic {
     this.defended = new Map();
     this.sideMemory = new Map();
     this.cooldown = new Map();
+    this.failedSide = new Map();
+    this.wideGrid = new Set();
     this.engagement = null;
     this.mode = 'free';
     this.speedCap = Infinity;
@@ -39,7 +41,8 @@ export class Traffic {
     this.predictions = new Map();
     this.lastTacticalMode = 'free';
     this.wasCapped = false;
-    this.stats = { attackStarts: 0, defendMoves: 0, alongsideEpisodes: 0, completedPasses: 0, capEpisodes: 0 };
+    this.stats = { attackStarts: 0, defendMoves: 0, alongsideEpisodes: 0, completedPasses: 0,
+      abortedAttacks: 0, capEpisodes: 0 };
   }
 
   delta(a, b) {
@@ -58,6 +61,7 @@ export class Traffic {
     this.self = { ...me, ...dimensions(car), yaw: car.yaw, x: car.x, z: car.z,
       speed: finite(car.speed, Math.hypot(car.vx, car.vz)) };
     this.list = [];
+    if (now > 4 || this.self.speed >= 15) this.wideGrid.clear();
     for (const other of cars) {
       if (other === car || other.id === car.id || (car.ghost && other.ghost)) continue;
       if (![other.x, other.z, other.yaw].every(Number.isFinite)) continue;
@@ -66,6 +70,10 @@ export class Traffic {
       const speed = vx * p.tx + vz * p.tz;
       const latRate = clamp(vx * p.nx + vz * p.nz, -7, 7);
       const ds = this.delta(p.s, me.s), distance = Math.hypot(other.x - car.x, other.z - car.z);
+      if (now < .25 && this.self.speed < 2 && Math.abs(speed) < 2
+        && Math.abs(ds) < this.self.l + dims.l
+        && Math.abs(p.lateral - me.lateral) > this.self.w + dims.w + 3)
+        this.wideGrid.add(other.id);
       // One defensive move per approach, not one per opponent for the race.
       const defense = this.defended.get(other.id);
       if (defense) {
@@ -83,10 +91,11 @@ export class Traffic {
       if ((ds < -65 || ds > Math.max(180, this.self.speed * 3)) && distance > 45) continue;
       const outside = Math.abs(p.lateral) - (this.track.halfWidth + dims.l + 2);
       if (distance > 35 && outside > Math.abs(latRate) * 2.5 + 3) continue;
+      const headingOffset = angle(other.yaw - p.heading);
       this.list.push({ id: other.id, x: other.x, z: other.z, yaw: other.yaw, vx, vz,
         s: p.s, lateral: p.lateral, heading: p.heading, curvature: finite(p.curvature),
         tx: p.tx, tz: p.tz, nx: p.nx, nz: p.nz, ds, speed, acc, latRate, ...dims,
-        headingOffset: angle(other.yaw - p.heading),
+        headingOffset,
         irregular: speed < -2 || Math.abs(angle(Math.atan2(vx, vz) - p.heading)) > .7 || outside > 0 });
     }
     for (const [id, h] of this.history) if (now - h.time > 10) {
@@ -234,13 +243,20 @@ export class Traffic {
       + o.w * Math.abs(Math.cos(o.headingOffset)) + o.l * Math.abs(Math.sin(o.headingOffset)) + .65;
     const sideBounds = (o, side, horizon = .6) => {
       const q = this.predict(o, horizon).lateral, separation = separationFor(o) + .12;
-      return side > 0 ? { min: Math.max(-edge, Math.max(o.lateral, q) + separation), max: edge }
-        : { min: -edge, max: Math.min(edge, Math.min(o.lateral, q) - separation) };
+      const overlapping = Math.abs(o.ds) < (me.l ?? body.l) + o.l + 3;
+      return side > 0 ? { min: Math.max(-edge, (overlapping ? Math.max(o.lateral, q) : q) + separation), max: edge }
+        : { min: -edge, max: Math.min(edge, (overlapping ? Math.min(o.lateral, q) : q) - separation) };
     };
     const legal = bounds => bounds.min <= bounds.max;
     const immediate = o => Math.abs(o.ds) < (me.l ?? body.l) + o.l + 3;
     const sidesFor = o => {
-      if (this.engagement?.id === o.id && this.engagement.committed) return [this.engagement.side];
+      if (this.engagement?.id === o.id && this.engagement.committed) {
+        const side = this.engagement.side, bounds = sideBounds(o, side);
+        const q = clamp(base, bounds.min, Math.max(bounds.min, bounds.max));
+        const closingDoor = side * o.latRate > .5
+          && (!legal(bounds) || Math.abs(q - current) > Math.max(1.5, this.laneRate * .6));
+        if (immediate(o) || !closingDoor) return [side];
+      }
       const remembered = this.sideMemory.get(o.id);
       if (remembered && now - remembered.time < 8 && immediate(o)) return [remembered.side];
       return [1, -1];
@@ -253,8 +269,10 @@ export class Traffic {
         // A lane must survive the rival's observed turn-in until the bodies
         // meet, rather than merely being open at the instant of the decision.
         const bounds = sideBounds(o, side, horizon), q = clamp(base, bounds.min, Math.max(bounds.min, bounds.max));
+        const failed = this.failedSide.get(o.id);
         return { side, bounds, q, cost: Math.abs(q - current) + .55 * Math.abs(q - base)
-          + (preferInside && turn && side !== turn ? 1.5 : 0) };
+          + (preferInside && turn && side !== turn ? 1.5 : 0)
+          + (failed?.side === side && now < failed.until ? 2 : 0) };
       }).filter(c => legal(c.bounds) && this.laneClear(c.q, car, o.id));
       choices.sort((a, b) => a.cost - b.cost);
       return choices;
@@ -279,26 +297,39 @@ export class Traffic {
       if (cap < speed + .5) blocked.push({ o, cap, gap, closing: speed - lead });
     }
 
+    // At launch, a widely separated parallel grid car needs no lane fence.
+    // It remains in the full oriented-body prediction and collision cost.
     const alongside = this.list.filter(o => Math.abs(o.ds) < (me.l ?? body.l) + o.l + 2
-      && Math.abs(o.lateral - me.lateral) < (me.w ?? .99) + o.w + 3
+      && Math.abs(o.lateral) < this.track.halfWidth + (this.track.curbWidth ?? 0)
+      && (!this.wideGrid.has(o.id) || Math.abs(o.lateral - me.lateral) < (me.w ?? .99) + o.w + 1.2)
       && (Math.abs(o.lateral - me.lateral) > .8 || Math.abs(o.ds) < (me.l ?? 2.3) + o.l));
     this.followCap = blocked.reduce((cap, b) => Math.min(cap, b.cap), Infinity);
     if (this.engagement) {
       const rival = this.list.find(o => o.id === this.engagement.id);
       const e = this.engagement;
-      const cleared = !rival || (e.type === 'attack' ? rival.ds < -12 : rival.ds > 10);
+      const clearDistance = (me.l ?? body.l) + (rival?.l ?? body.l) + 1.25;
+      const cleared = !rival || (e.type === 'attack' ? rival.ds < -clearDistance : rival.ds > 10);
       if (cleared) {
-        if (e.type === 'attack' && rival?.ds < -12) this.stats.completedPasses++;
+        if (e.type === 'attack' && rival?.ds < -clearDistance) this.stats.completedPasses++;
         this.sideMemory.set(e.id, { side: e.side, time: now });
         this.engagement = null;
       } else {
         const advantage = e.type === 'attack' ? closingOn(rival) : rival.speed - speed;
         if (advantage < .3) e.noAdvantageSince ??= now;
         else e.noAdvantageSince = null;
-        const stalledAttack = e.type === 'attack' && now > e.until && e.startGap - rival.ds < 2;
+        e.bestGap = Math.min(e.bestGap ?? e.startGap, rival.ds);
+        if (rival.ds < (e.progressGap ?? e.startGap) - .75) {
+          e.progressGap = rival.ds; e.lastGain = now;
+        }
+        const stalledAttack = e.type === 'attack' && now > e.until && e.startGap - e.bestGap < 2;
         const expiredDefense = e.type === 'defend' && now > e.until;
         const lostCorridor = !legal(sideBounds(rival, e.side));
-        if (!immediate(rival) && ((e.noAdvantageSince != null && now - e.noAdvantageSince > 1) || stalledAttack || expiredDefense || lostCorridor)) {
+        if (!immediate(rival) && ((e.noAdvantageSince != null && now - e.noAdvantageSince > 1.5
+          && now - (e.lastGain ?? e.until - 5) > 1.5) || stalledAttack || expiredDefense || lostCorridor)) {
+          if (e.type === 'attack') {
+            this.stats.abortedAttacks++;
+            this.failedSide.set(e.id, { side: e.side, until: now + 10 });
+          }
           this.sideMemory.set(e.id, { side: e.side, time: now });
           this.cooldown.set(e.id, now + 1);
           this.engagement = null;
@@ -377,16 +408,25 @@ export class Traffic {
         this.engagement = null;
         return this.finishProposals('follow', [{ extra: 0, hold: null, bounds: null, factor: 1 }]);
       }
-      return this.finishProposals(alongside.length ? 'alongside' : 'follow',
-        [{ extra: current - this.baseline(path, me.s), hold: null, bounds: null,
-          factor: 1, yield: true }]);
+      // On the outside, hold the wider road radius instead of following a
+      // hotlap transition across the neighbour. On the inside, retain the
+      // native-tested racing-line continuation rather than tightening radius.
+      const outside = current * this.turnSide(me.s, speed) < 0;
+      const proposals = [{ extra: outside ? 0 : current - this.baseline(path, me.s),
+        hold: outside ? current : null, bounds: null, factor: 1, yield: true }];
+      if (alongside.every(o => this.defended.has(o.id) && o.ds < -.5 && separation(this.self, o) > .35))
+        proposals.push({ extra: 0, hold: null, bounds: null, factor: 1, tactic: 'clearance' });
+      if (alongside.every(o => o.ds < -(body.l + o.l) - .25 && separation(this.self, o) > .6))
+        proposals.push({ extra: 0, hold: null, bounds: null, factor: 1, tactic: 'escape', speedCap: this.followCap });
+      return this.finishProposals('alongside', proposals);
     }
-    const capFor = (corridor, attacking = false) => {
+    const capFor = (corridor, attacking = false, side = this.engagement?.side) => {
       const q = corridor ? clamp(base, corridor.min, corridor.max) : base;
       let cap = Infinity;
       for (const b of blocked) {
         const clearanceShift = Math.max(0, (me.w ?? .99) + b.o.w + .25 - Math.abs(b.o.lateral - current));
-        const exitTime = clearanceShift / this.laneRate + .25;
+        const separationRate = this.laneRate + Math.max(0, -(side ?? Math.sign(q - b.o.lateral)) * b.o.latRate);
+        const exitTime = clearanceShift / separationRate + .25;
         const catchTime = b.closing > .1 ? Math.max(0, b.gap) / b.closing : Infinity;
         const passable = attacking && this.engagement?.id === b.o.id
           && Math.abs(q - b.o.lateral) > separationFor(b.o)
@@ -399,9 +439,15 @@ export class Traffic {
       const rival = this.list.find(o => o.id === this.engagement.id);
       const alternatives = rival ? sideChoices(rival, true) : [];
       if (alternatives.length) {
-        const proposals = alternatives.map(choice => ({ extra: 0, hold: null, bounds: choice.bounds,
-          factor: 1, tactic: 'attack', rivalId: rival.id, side: choice.side,
-          speedCap: capFor(choice.bounds, true) }));
+        const proposals = alternatives.flatMap(choice => {
+          const common = { extra: 0, hold: null, bounds: choice.bounds, factor: 1,
+            tactic: 'attack', rivalId: rival.id, side: choice.side,
+            speedCap: capFor(choice.bounds, true, choice.side) };
+          const lane = clamp(current, choice.bounds.min + .15, Math.max(choice.bounds.min + .15, choice.bounds.max - .15));
+          const offset = rival.lateral - this.baseline(path, rival.s) + choice.side * (separationFor(rival) + .2);
+          return [{ ...common, route: 'line' }, { ...common, hold: lane, route: 'parallel' },
+            { ...common, bounds: null, extra: offset, route: 'offset' }];
+        });
         this.speedCap = Math.max(...proposals.map(p => p.speedCap));
         return this.finishProposals('attack', proposals);
       }
@@ -409,7 +455,16 @@ export class Traffic {
     this.speedCap = capFor(constrained ? bounds : null, this.engagement?.type === 'attack');
     const mode = alongside.length ? 'alongside' : this.engagement?.type ?? (Number.isFinite(this.speedCap) ? 'follow' : 'free');
     const proposals = [{ extra: 0, hold: null, bounds: constrained ? bounds : null, factor: 1,
+      ...(this.engagement?.type === 'attack' ? { tactic: 'attack', rivalId: this.engagement.id,
+        side: this.engagement.side, speedCap: this.speedCap } : {}),
       ...(mode === 'defend' ? { tactic: 'defend', rivalId: this.engagement.id, maxPaceLoss: .04 } : {}) }];
+    if (mode === 'alongside' && constrained) {
+      const lane = clamp(current, bounds.min + .15, Math.max(bounds.min + .15, bounds.max - .15));
+      proposals.push({ ...proposals[0], hold: lane, route: 'parallel' });
+      proposals.push({ ...proposals[0], extra: current - this.baseline(path, me.s), route: 'offset' });
+      if (alongside.every(o => o.ds < -(body.l + o.l) - .25 && separation(this.self, o) > .6))
+        proposals.push({ extra: 0, hold: null, bounds: null, factor: 1, tactic: 'escape', speedCap: this.followCap });
+    }
     if (mode === 'alongside' && alongside.every(o => this.defended.has(o.id) && o.ds < -.5
       && separation(this.self, o) > .35)) {
       // A clear leading car may keep its racing trajectory. The native

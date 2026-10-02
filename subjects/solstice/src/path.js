@@ -428,7 +428,7 @@ export class RacingPath {
     return array[i] + (array[j] - array[i]) * (p - i);
   }
 
-  variant(extra = 0, bounds = null) {
+  variant(extra = 0, bounds = null, span = this.variantSpan) {
     const edge = Math.max(0, this.drivableHalfWidth - this.margin);
     extra = Number.isFinite(extra) ? Math.round(clamp(extra, -2 * edge, 2 * edge) * 4) / 4 : 0;
     if (extra === 0 && bounds == null) {
@@ -444,7 +444,7 @@ export class RacingPath {
       max = Math.floor(hi * 4 + 1e-9) / 4;
       if (min > max) min = max = clamp((lo + hi) * .5, -edge, edge);
     }
-    const key = `${extra}:${bounds == null ? '*' : `${min}:${max}`}`;
+    const key = `${extra}:${bounds == null ? '*' : `${min}:${max}`}:${span}`;
     let entry = this.variantGeometries.get(key);
     if (entry) {
       this.variantGeometries.delete(key);
@@ -456,7 +456,7 @@ export class RacingPath {
       // fit the projected body. Geometry, never a parallel-line approximation,
       // describes the final clamped line.
       projectFootprint(this.base, q, this.drivableHalfWidth, this.spec, this.margin);
-      entry = Object.freeze({ q, geometry: Object.freeze(geometry(this.base, q, this.variantSpan)), extra,
+      entry = Object.freeze({ q, geometry: Object.freeze(geometry(this.base, q, span)), extra,
         bounds: bounds == null ? null : Object.freeze({ min, max }), key });
       this.variantGeometries.set(key, entry);
       if (this.variantGeometries.size > 64) {
@@ -475,13 +475,13 @@ export class RacingPath {
       estimatedLapTime: envelope?.time ?? null });
   }
 
-  variantEnvelope(extra = 0, bounds = null) {
-    return this.variant(extra, bounds).speed;
+  variantEnvelope(extra = 0, bounds = null, span = this.variantSpan) {
+    return this.variant(extra, bounds, span).speed;
   }
 
-  at(s, extra = 0, bounds = null) {
+  at(s, extra = 0, bounds = null, span = this.variantSpan) {
     s = wrap(s, this.length);
-    const variant = this.variant(extra, bounds), g = variant.geometry;
+    const variant = this.variant(extra, bounds, span), g = variant.geometry;
     const p = s / this.step, i = Math.floor(p), j = (i + 1) % this.n, t = p - i;
     const a = this.base[i], b = this.base[j];
     let nx = a.nx + (b.nx - a.nx) * t, nz = a.nz + (b.nz - a.nz) * t;
@@ -531,17 +531,18 @@ export class RacingPath {
     return ratios;
   }
 
-  laneEnvelope(offset) {
+  laneEnvelope(offset, span = this.variantSpan) {
     if (offset == null || !this.table) return this.speed;
     // Quantized caching avoids rebuilding a dynamics table while a lane
     // changes. The braking pass uses this lane's actual arc and curvature.
     const q = Math.round(offset * 4) / 4;
-    if (!this.laneEnvelopes.has(q)) {
+    const key = `${q}:${span}`;
+    if (!this.laneEnvelopes.has(key)) {
       const offsets = new Float32Array(this.n).fill(q);
-      const g = geometry(this.base, offsets, this.variantSpan);
-      this.laneEnvelopes.set(q, speedEnvelope(g, this.table, this.gripUse,
+      const g = geometry(this.base, offsets, span);
+      this.laneEnvelopes.set(key, speedEnvelope(g, this.table, this.gripUse,
         this.gripRatios(offsets, g), this.liveBrakeReserve).speed);
     }
-    return this.laneEnvelopes.get(q);
+    return this.laneEnvelopes.get(key);
   }
 }
