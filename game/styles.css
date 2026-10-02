@@ -288,6 +288,9 @@ input[type=range] { accent-color: var(--accent); width: 180px; }
 .tel td { padding: 5px 6px; border-bottom: 1px solid rgba(255,255,255,.04); font-family: var(--mono); font-size: 13px; }
 .tel td.t { font-family: var(--display); font-size: 17px; font-weight: 800; font-style: italic; }
 .tel .charts { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-top: 16px; }
+.tel .charts.four { grid-template-columns: 1fr 1fr; }
+.tel-soc { display: inline-block; width: 46px; height: 6px; background: rgba(255,255,255,.1); vertical-align: middle; margin-right: 4px; }
+.tel-soc i { display: block; height: 100%; }
 .tel canvas { width: 100%; height: 190px; background: rgba(255,255,255,.03); border: 1px solid var(--line); }
 .tel .chart-t { font-size: 12px; letter-spacing: .24em; color: var(--dim); margin-bottom: 4px; }
 .stintbar { display: flex; height: 12px; min-width: 140px; }
