@@ -1,6 +1,7 @@
 # SOLSTICE: whole-lap geometry, live tyre forces, bounded feedback planning
 
-Base: upgraded `2935523` of `new-benchmark-game`, on `solstice-port`.
+Integration base: upgraded `2935523` of `new-benchmark-game`; the combat
+revision builds on the released SOLSTICE configuration at `c01544c`.
 SOLSTICE writes only its own `car.controls`. Engine physics, timing, compounds,
 strategy, pit autopilot and other driver implementations remain upstream.
 The authorized integration exceptions forward the worker's aim point and skip
@@ -48,9 +49,12 @@ not proof that SOLSTICE beats them. Baselines and race results are recorded in
    open-loop between plans.
 5. Predict opponents from public positions, world velocities, yaw, lateral
    velocity and observed acceleration. Reserve their oriented footprint and
-   uncertainty through the horizon. Choose and hold one pass/defence lane;
-   return to the time-optimal line after the engagement. Following brakes only
-   apply to a predicted occupied corridor. Alongside cars receive clearance.
+   uncertainty through the horizon. Prepare both feasible passing sides before
+   committing to the selected trajectory; use road curvature to identify the
+   inside. Make at most one defensive move per approach and reject optional
+   defensive trajectories that lose excessive progress or exit speed. Following
+   brakes apply to a predicted occupied corridor. Alongside bodies receive
+   clearance through corridors or a physically validated leading trajectory.
 6. Read team fuel targets through a bridge callback in local mode; infer burn
    from public fuel state when worker context has no strategist. Save only when
    the stint needs it. The automatic gearbox is owned by the game, so fuel
@@ -91,6 +95,33 @@ planner may retain the faster feasible line; an actual alongside body still
 requires clearance. Execution uses the selected corridor, rather than applying
 the first traffic proposal regardless of the private comparison. Occupied-lane
 following limits remain available when the passing trajectory is rejected.
+
+### Combat momentum revision
+
+Passing preparation begins with up to four seconds to catch a slower rival.
+The terminal cost prices a blocked continuation beyond the short physics
+rollout, and lane feasibility includes the rival's observed turn-in until the
+bodies meet. The selected attack commits its side; actual alongside positions
+override an abandoned side. Speed caps depend on whether lateral clearance
+can be established before catching the car ahead.
+
+Optional defense uses a small lateral bias and a native rollout pace gate:
+predicted progress may lose at most the larger of 0.75 metres or 4%, and
+terminal speed must retain at least 94% of the baseline. Defense rearms after
+two seconds of separation, allowing a new approach without repeated moves in
+the same approach. A leading car in an established defensive approach can
+offer its normal racing trajectory when each alongside rear body is physically
+clear. This candidate still pays the full cost of actual predicted overlaps;
+only a steady rear car's expanding uncertainty margin is capped at 0.35 metres.
+Lateral crossings and irregular/rejoining cars retain their full reserve.
+This exception is scoped to defended approaches, not passing rivals.
+
+Emergency braking candidates require a forward or immediately overlapping
+threat and cap the current target relative to current speed. They do not
+multiply every future corner speed by a half-pace factor. An infeasible body
+corridor falls back to a moving offset from the racing line rather than holding
+a fixed lateral coordinate through the corner. The native geometry, base pace
+settings, tyre feedback and temperature-and-wear rotation gate are unchanged.
 
 Additional rear rotation requires a rear tyre whose core is above its own
 optimum plus 4 degrees C and whose wear exceeds 12%. Both conditions must hold

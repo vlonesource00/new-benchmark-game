@@ -10,10 +10,12 @@ seconds of measured stint fade. `RESULTS.md` distinguishes achieved AI laps,
 complete races, and analytical paired schedules using a human's assumed
 65-second average. Universal mixed-field dominance is not established.
 
-The final isolated Harbor run completes 20 laps with a 62.033-second best lap
-and 2.708 seconds of hard-stint fade, with zero off-track time, contacts,
-rescues, or controller errors. Full held-control runs at 20 and 30 Hz also
-complete without those failures and achieve clean laps below 64 seconds.
+The combat revision retains a 62.033-second best lap in a complete isolated
+20-lap Harbor race, with 2.950 seconds of hard-stint fade and zero off-track
+time, contacts, rescues, or controller errors. Controlled straight passes take
+3.175 and 3.925 seconds instead of about eight. Defense can retain a physically
+clear leading trajectory, avoiding the unnecessary corner slowdown reproduced
+under close rear pressure. The existing line, tyre, and pace settings are unchanged.
 
 ## Run
 
@@ -30,6 +32,7 @@ speed, worker latency, and the gold aim-point ring.
 
 ```sh
 node --no-warnings --loader ./subjects/solstice/tools/json-loader.mjs subjects/solstice/tools/check.mjs
+node --no-warnings --loader ./subjects/solstice/tools/json-loader.mjs subjects/solstice/tools/combat-probe.mjs --hz 30 --seconds 10 --output subjects/solstice/results/example-combat.json
 node --no-warnings --loader ./subjects/solstice/tools/json-loader.mjs subjects/solstice/tools/bench.mjs --driver solstice --track harbor-ring --teams 4 --laps 6 --seconds 1800 --seed 7 --weather clear --sun .6 --output subjects/solstice/results/example.json
 node --no-warnings --loader ./subjects/solstice/tools/json-loader.mjs subjects/solstice/tools/bench.mjs --field astra,phantom,phantom-v2,gemini-supreme-v4,solinator-6.1,solstice --track harbor-ring --teams 6 --laps 6 --seconds 1800 --seed 7 --weather clear --sun .6 --output subjects/solstice/results/example-mixed.json
 ```
@@ -52,6 +55,12 @@ actual overrides. `cadence-bench.mjs` additionally tests held controls at a
 specified update rate; this is a deterministic transport approximation, not a
 measurement of browser worker throughput. `station-probe.mjs` explains speed,
 slip, tyre work, and governor losses by 100-metre track section.
+`combat-probe.mjs` compares free running with controlled passing and defending
+encounters on native vehicle, wake, tyre, and collision physics. Its initial
+placements and warm tyre state are fixtures, and its rival uses a fixed lane
+and speed cap; these are targeted regressions, not complete races. The
+`--case native-corners` option reproduces an encounter in the first 80 seconds
+of the normal SOLSTICE/Gemini race.
 
 PowerShell can pass probe configuration without native JSON quoting problems:
 

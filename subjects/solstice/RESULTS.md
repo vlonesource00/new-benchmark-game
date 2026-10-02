@@ -1,11 +1,12 @@
 # Measured results
 
-The final Harbor configuration achieves a **62.033-second clean lap** in a
-normal GT/soft/20-lap race. Its eight clean hard-tyre laps fade by **2.708
-seconds**. The complete isolated race records zero off-track time, contacts,
-rescues, controller errors, or violations of the warm-and-worn rotation gate.
-This meets the requested opening-lap and hard-stint checkpoints; it does not
-establish universal race wins or 62.5-second laps on every compound.
+The combat revision retains a **62.033-second clean lap** in a normal
+GT/soft/20-lap Harbor race. Its eight clean hard-tyre laps fade by **2.950
+seconds**, within the requested 2-4-second allowance. The complete isolated
+race records zero off-track time, contacts, rescues, or controller errors.
+The new combat evidence is separated below from the released `c01544c`
+baseline. Neither set establishes universal wins or 62.5-second laps on every
+compound.
 
 All public measurements, inputs, and source hashes are in
 [compact-summary.json](results/compact-summary.json). Large local frame traces
@@ -27,7 +28,7 @@ within one uninterrupted tyre stint. Contacts are field-wide contact-step
 events, not attributable per-car incident counts. Bridge timing uses elapsed
 time around updates, not an operating-system CPU counter.
 
-## Final Harbor 20-lap run
+## Baseline Harbor 20-lap run (`c01544c`)
 
 `release-final-harbor-soft20-stations.json`: seed 7, marathon resource scaling,
 one SOLSTICE car, no experimental overrides, 20 completed laps, three stops.
@@ -108,7 +109,7 @@ and slow-update guards. Their recorded source hashes identify that revision;
 they are not presented as reruns of the exact final source. The final source
 is covered by the complete Harbor and held-update runs below.
 
-## Final verification
+## Baseline verification (`c01544c`)
 
 | Check | Result |
 |---|---|
@@ -135,6 +136,81 @@ the strategist, difficulty reference pace, and other AI code are unchanged.
 
 Universal mixed-field wins across all four circuits and three full-race seeds
 remain unproven. No claim is made that the physics prevents a faster result.
+
+## Combat revision acceptance (2026-10-02)
+
+The changes are confined to SOLSTICE's traffic planning and driver selection.
+The line asset, geometry, configuration, force policy, tyre physics, pit
+strategist, governor and other AIs are unchanged. Upstream rendering commits
+through `524bd1b` do not change the native simulation inputs used here.
+Each measurement retains source hashes; the older `release-*` entries remain
+baseline evidence rather than being relabeled as tests of this revision.
+
+### Controlled encounters
+
+`combat-baseline-30.json` and `combat-accepted-30.json` compare matched 10-second
+encounters at 30 Hz, with native 120 Hz physics. Placement, starting speed and
+warm hard tyres are fixtures; the rival uses the native force policy at a fixed
+lane and speed cap. The baseline's global rear-wear label predates per-fixture
+metadata: passing fixtures use 5% wear, and only `setup.worn` fixtures use 75%
+rear-right wear. These are targeted tests, not endurance race results.
+
+| Encounter | Baseline pass time s | Combat pass time s |
+|---|---:|---:|
+| Straight, 40 m initial gap | 7.975 | 3.175 |
+| Straight, 22 m initial gap | 8.008 | 3.925 |
+| Straight, offset rival | 2.942 | 2.775 |
+| Gentle right | 4.992 | 5.075 |
+| Gentle left | 3.467 | 3.208 |
+
+Free-run progress is identical for all seven matched baseline fixtures. The
+gentle-right pass is slightly slower; the gains are not uniform in every turn.
+All nine accepted encounters at each of 20, 30 and 60 Hz finish without
+contacts, off-track time, stops below 5 m/s, damage or bridge errors. Straight
+passes establish more than 2.59 metres of lateral centre separation while the
+bodies overlap longitudinally. Worn-tyre defensive encounters retain the lead.
+
+The tougher 14-metre rear-pressure fixture reproduced excessive braking in an
+intermediate combat candidate. `combat-pressure-close-30.json` and
+`combat-pressure-accepted6.json` are matched six-second tests of that candidate
+and this accepted revision, respectively; the former is not the `c01544c`
+baseline. Minimum speed improves from **56.372 to 94.414 km/h**, and progress
+relative to free running improves from **85.80% to 94.64%**, with no contact or
+lost lead. In the longer ten-second test the accepted revision retains
+94.84-95.79% of free progress across the three update rates. Actual overlaps
+and lateral/rejoining threats remain penalized in the native rollout.
+
+### Complete native races
+
+The five `combat-*-accepted*.json` race measurements use normal GT resources,
+soft starts, native ALIEN difficulty and the unchanged automatic pit planner.
+All races complete; none is a partial first-lap probe.
+
+| Race | SOLSTICE best clean lap s | Result |
+|---|---:|---|
+| Harbor solo, 20 laps, seed 7 | 62.033 | Finish 1433.683 s; three stops/swaps |
+| Harbor vs Gemini v4, 12 laps, seed 7 | 63.075 | SOLSTICE 895.325 s; Gemini 858.150 s |
+| Solenne vs Gemini v4, 12 laps, seed 7 | 61.017 | SOLSTICE 887.225 s; Gemini 839.000 s |
+| Harbor, two SOLSTICE/two Gemini, 6 laps, seed 17 | 62.383 / 63.692 | SOLSTICE P2/P3; all four finish |
+| Harbor, four SOLSTICE, 6 laps, seed 31, 30 Hz held | 63.492 fastest | All four finish; one physics-frame delivery delay |
+
+All five races have **zero field-wide contacts, off-track time, damage,
+controller errors or nonfinite state**. SOLSTICE has zero rescues throughout;
+Gemini has one rescue in the Harbor 12-lap comparison. The held-control race
+approximates transport cadence and does not establish browser worker throughput.
+
+The solo hard stint runs from lap 13 to lap 20 in 65.583, 66.083, 66.742,
+66.517, 67.133, 67.225, 67.575 and 68.533 seconds: **2.950 seconds of fade**.
+Rear-right tyre wear at the last line is 70.70%, leaving 29.30%. The existing
+opening pace and sustainable hard-stint behavior are retained. AI-only
+12-lap races still lose to Gemini through three stops versus one; the user's
+human soft opening followed by SOLSTICE on hards is a different schedule.
+This combat update does not change compound choices or paired strategy.
+
+The final controller suite passes **29 checks**, including held-control
+straight passes, close rear pressure, side commitment, defense rearming,
+turn-in lane closure, and the reproduced native corner encounter. The normal
+production game build passes with the existing bundle-size warning.
 
 ## Reproduce
 

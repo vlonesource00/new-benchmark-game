@@ -50,6 +50,12 @@ for (const file of readdirSync(directory).sort()) {
         rotationViolationSeconds: (lap.rows ?? []).reduce((sum, row) => sum + (row.rotationViolationSeconds ?? 0), 0),
         activeGovernorCutSeconds: (lap.rows ?? []).reduce((sum, row) => sum + (row.activeGovernorCutSeconds ?? 0), 0)
       })) });
+  } else if (data.type === 'controlled-combat') {
+    const compact = result => Object.fromEntries(Object.entries(result)
+      .filter(([key]) => !['samples', 'evaluations'].includes(key)));
+    measurements.push({ source: file, sourceHash, type: data.type, conditions: data.conditions,
+      results: data.results.map(({ setup, free, combat, progressLoss, progressRatio }) =>
+        ({ setup, free: compact(free), combat: compact(combat), progressLoss, progressRatio })) });
   } else if (data.type === 'pair-estimate') {
     measurements.push({ ...data, measuredSource: data.source, measuredSourceHash: data.sourceHash,
       source: file, sourceHash, type: 'pair-estimate' });
