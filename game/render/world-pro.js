@@ -6,6 +6,7 @@ import { PitLane } from '../core/pit.js';
 import { PitCrews } from './pit-crew.js';
 import { buildFill } from './fill.js';
 import { batchStatic, protectedRefs } from './batch.js';
+import { GrassField } from './grass.js';
 import { LIGHTING, wetSurface } from '../engine/render/surfaces.js';
 import { ribbon } from '../engine/render/world.js';
 import {
@@ -90,6 +91,21 @@ function sweep(track, profile, offset, side, steps = 1200, vScale = 4, { from = 
   const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2)); g.setIndex(idx); g.computeVertexNormals(); return g;
 }
 
+// Mipmaps average cutout alpha down with distance until foliage vanishes; scale alpha back up per mip level.
+function mipAlpha(material, size = 512, gain = .3) {
+  const prev = material.onBeforeCompile.bind(material);
+  material.onBeforeCompile = (sh, r) => {
+    prev(sh, r);
+    sh.fragmentShader = sh.fragmentShader.replace('#include <alphatest_fragment>', `
+      #ifdef USE_MAP
+      vec2 mdx = dFdx(vMapUv * ${size}.), mdy = dFdy(vMapUv * ${size}.);
+      diffuseColor.a *= 1. + max(0., .5 * log2(max(dot(mdx, mdx), dot(mdy, mdy)))) * ${gain};
+      #endif
+      #include <alphatest_fragment>`);
+  };
+  return material;
+}
+
 function foliageTexture(seed, palm = false) {
   return canvasTexture(512, 512, (c) => {
     const rng = random(seed);
@@ -165,6 +181,7 @@ export class World {
     this.buildClouds();
     this.sun = new THREE.DirectionalLight('#fff0d2', 3.8); this.sun.castShadow = true; this.sun.shadow.mapSize.set(4096, 4096);
     Object.assign(this.sun.shadow.camera, { left: -48, right: 48, top: 48, bottom: -48, near: 1, far: 320 });
+    this.sun.shadow.camera.layers.enable(1); // car shadow proxies live on layer 1 (render/car-pro.js)
     this.sun.shadow.bias = -.00012; this.sun.shadow.normalBias = .028;
     scene.add(this.sun, this.sun.target);
     this.hemi = new THREE.HemisphereLight('#c5dbe5', '#746646', 1); scene.add(this.hemi);
@@ -202,6 +219,9 @@ export class World {
     const t0 = performance.now(), { merged, removed } = typeof location !== 'undefined' && location.search.includes('nobatch') ? { merged: [], removed: 0 } : batchStatic(this.root, keep);
     this.batchStats = { merged: merged.length, removed, ms: +(performance.now() - t0).toFixed(1) };
     this.fillObjects = [...this.fillObjects.filter((o) => o.parent), ...merged.filter((m) => m.userData.layer === 'fill')];
+    // GPU grass blades around the camera (not on sand); High quality only.
+    this.timeUniform = TIME;
+    if (this.theme.ground !== 'sand') { this.grass = new GrassField(this, renderer, this.theme.ground === 'alpine' ? 'alpine' : 'grass'); this.live.add(this.grass.mesh); }
     this.centre = new THREE.Vector3(); this.shadowRight = new THREE.Vector3(); this.shadowUp = new THREE.Vector3();
     this.clock = performance.now() / 1000; this.screenTick = -1;
   }
@@ -214,12 +234,30 @@ export class World {
   occupy(x, z, r) { this.cells(x, z, r, (k) => { this.taken.add(k); }); }
   isFree(x, z, r) { return this.cells(x, z, r, (k) => !this.taken.has(k)); }
 
-  // Broadleaf tree cards shared by the scattered trees and the forest clumps.
+  // Broadleaf tree shared by the scattered trees and the forest clumps: a trunk
+  // with two limbs and a canopy built from foliage cards scattered through an
+  // ellipsoid. Card normals are bent out from the canopy centre, so the crown
+  // shades like a volume (lit side, dark underside) instead of flat crossed planes.
   treeAssets() {
     if (!this.trees) {
-      const mat = sway(new THREE.MeshStandardMaterial({ map: foliageTexture(57), alphaTest: .45, side: THREE.DoubleSide, roughness: .9, color: '#e8ecd6' }), .0009, 'tree');
-      const card = new THREE.PlaneGeometry(12, 12); card.translate(0, 6, 0);
-      this.trees = { geo: mergeGeometries([card, card.clone().rotateY(Math.PI / 2)]), mat };
+      const rng = random(4711), leaf = sway(new THREE.MeshStandardMaterial({ map: foliageTexture(57), alphaTest: .45, side: THREE.DoubleSide, roughness: .9, color: '#e8ecd6' }), .0009, 'tree');
+      const bark = sway(new THREE.MeshStandardMaterial({ color: '#5b4a3a', roughness: .95 }), .0009, 'tree-bark');
+      mipAlpha(leaf);
+      const trunk = new THREE.CylinderGeometry(.2, .38, 7, 7, 3); trunk.translate(0, 3.5, 0);
+      const limbs = [0, 1].map((i) => { const l = new THREE.CylinderGeometry(.08, .16, 3.2, 5); l.translate(0, 1.6, 0); l.rotateZ((i ? -1 : 1) * .6); l.rotateY(i * 2.2); l.translate(0, 5.2, 0); return l; });
+      const wood = mergeGeometries([trunk, ...limbs].map((g) => g.toNonIndexed()));
+      const centre = new THREE.Vector3(0, 8.2, 0), cards = [];
+      for (let i = 0; i < 14; i++) {
+        const c = new THREE.PlaneGeometry(5.2, 5.2);
+        c.rotateX((rng() - .5) * Math.PI); c.rotateY(rng() * Math.PI * 2);
+        const u = rng() * Math.PI * 2, v = Math.acos(2 * rng() - 1), r = .55 + .45 * Math.cbrt(rng());
+        c.translate(centre.x + Math.sin(v) * Math.cos(u) * 3.3 * r, centre.y + Math.cos(v) * 2.6 * r, centre.z + Math.sin(v) * Math.sin(u) * 3.3 * r);
+        const pos = c.attributes.position, nrm = c.attributes.normal, tmp = new THREE.Vector3();
+        for (let k = 0; k < pos.count; k++) { tmp.fromBufferAttribute(pos, k).sub(centre).normalize(); nrm.setXYZ(k, tmp.x, tmp.y * .8 + .2, tmp.z); }
+        cards.push(c.toNonIndexed());
+      }
+      const crown = mergeGeometries(cards);
+      this.trees = { geo: mergeGeometries([wood, crown], true), mat: [bark, leaf] };
     }
     return this.trees;
   }
@@ -416,10 +454,10 @@ export class World {
     if (this.theme.harbor) {
       // Terrain stops at the quay edge; the sea takes over east of x=770.
       const west = -3200, east = 770, ground = add(this.root, new THREE.PlaneGeometry(east - west, 6400), material, (east + west) / 2, -.055, 0, false);
-      ground.rotation.x = -Math.PI / 2;
+      ground.rotation.x = -Math.PI / 2; this.groundMeshes = [ground];
     } else {
       const ground = add(this.root, new THREE.PlaneGeometry(9000, 9000), material, this.bounds.cx, -.055, this.bounds.cz, false);
-      ground.rotation.x = -Math.PI / 2;
+      ground.rotation.x = -Math.PI / 2; this.groundMeshes = [ground];
     }
   }
 
@@ -994,7 +1032,12 @@ export class World {
     this.stars.visible = this.dark > .01; this.stars.frustumCulled = false; this.live.add(this.stars);
   }
 
+  setQuality(mode) {
+    if (this.grass) this.grass.mesh.visible = mode === 'high' || mode === 'ultra';
+  }
+
   dispose() {
+    this.grass?.dispose();
     for (const o of [this.root, this.live, this.sky, this.sun, this.sun.target, this.hemi, this.clouds, this.headlight, this.headlight.target, ...this.floods.flatMap((l) => [l, l.target])]) if (o) o.parent?.remove(o);
     const seen = new Set();
     for (const g of [this.root, this.live, this.sky, this.clouds]) g?.traverse((o) => {
@@ -1019,7 +1062,7 @@ export class World {
       f.rotateX(Math.PI / 2 * .9); f.rotateZ(.25); f.rotateY(i / 9 * Math.PI * 2 + rng() * .3); f.translate(1.4, 11, 0); f.computeVertexNormals(); fronds.push(f);
     }
     const palmGeo = mergeGeometries([trunkGeo.toNonIndexed(), mergeGeometries(fronds.map((f) => f.toNonIndexed()))], true);
-    const trunkMat = sway(std('#7b6a4f', .95), .0016, 'palm-trunk'), frondMat = sway(new THREE.MeshStandardMaterial({ map: foliageTexture(7, true), alphaTest: .4, side: THREE.DoubleSide, roughness: .8 }), .0018, 'palm-frond');
+    const trunkMat = sway(std('#7b6a4f', .95), .0016, 'palm-trunk'), frondMat = sway(new THREE.MeshStandardMaterial({ map: foliageTexture(7, true), alphaTest: .4, side: THREE.DoubleSide, roughness: .8 }), .0018, 'palm-frond'); mipAlpha(frondMat, 512, .6);
     const th = this.theme, palmMax = th.palms ?? 420, treeMax = th.trees ?? 1400;
     const palms = new THREE.InstancedMesh(palmGeo, [trunkMat, frondMat], 420); palms.count = 0;
     const plant = (mesh, x, z, sc, max) => { if (mesh.count >= max) return; d.position.set(x, -.05, z); d.rotation.set(0, rng() * 6.28, 0); d.scale.setScalar(sc); d.updateMatrix(); mesh.setMatrixAt(mesh.count++, d.matrix); };

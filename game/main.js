@@ -85,7 +85,7 @@ function buildWorld(trackId) {
   // One world at a time: switching circuit tears the old scenery down first.
   world?.dispose();
   track = new Track(trackById(trackId).scenario);
-  world = new World(scene, renderer, track);
+  world = new World(scene, renderer, track); world.setQuality?.(settings.quality);
   if (!finish) { finish = new VisualFinish(renderer, scene, camera); finish.setQuality(settings.quality); }
   effects ??= new CarEffects(scene);
   rain ??= new WeatherEffects(scene, 900);
@@ -163,7 +163,7 @@ const nav = {
   settings(patch) {
     Object.assign(settings, patch); save('pe.settings', settings);
     if ('volume' in patch) audio.setVolume(settings.volume);
-    if ('quality' in patch) finish?.setQuality(settings.quality);
+    if ('quality' in patch) { finish?.setQuality(settings.quality); world?.setQuality?.(settings.quality); }
     if ('pixelRatio' in patch) { renderer.setPixelRatio(Math.min(devicePixelRatio || 1, settings.pixelRatio)); resize(); }
   },
   start: () => startRace()

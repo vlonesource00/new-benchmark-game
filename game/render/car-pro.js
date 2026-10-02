@@ -27,6 +27,8 @@ function loadBody() {
       });
       const merged = new Map();
       for (const [name, list] of groups) merged.set(name, mergeGeometries(list, false));
+      // Position-only copy of the whole body for the shadow proxy.
+      const shadowGeo = mergeGeometries([...merged.values()].map((g) => { const c = new THREE.BufferGeometry(); c.setAttribute('position', g.attributes.position); return c; }), false);
       // Lamp centroids per side drive the glow sprites.
       const lamps = {};
       for (const key of ['LightF', 'LightR']) {
@@ -39,7 +41,7 @@ function loadBody() {
         }
         lamps[key] = [acc.l.divideScalar(Math.max(1, acc.nl)), acc.r.divideScalar(Math.max(1, acc.nr))];
       }
-      resolve({ merged, lamps });
+      resolve({ merged, lamps, shadowGeo });
     }, undefined, () => resolve(null));
   });
   return bodyPromise;
@@ -168,6 +170,7 @@ export class CarModel {
 
     this.ready = loadBody().then((body) => {
       if (!body) { this.useLegacyBody(); return; }
+      this.addShadowProxy(body.shadowGeo, car);
       const mats = { Paint: this.paint, Glass: S.glass, Carbon: S.carbon, Grille: S.grille, Chrome: S.chrome, Well: S.well, Hook: S.hook, LightF: S.lightF, LightR: this.tail };
       for (const [name, geo] of body.merged) {
         const m = mesh(geo, mats[name] || S.carbon, this.body, 0, 0, 0, name !== 'Glass' && name !== 'LightF' && name !== 'LightR');
@@ -185,6 +188,19 @@ export class CarModel {
 
     // Presentation state.
     this.pop = 0; this.prevThrottle = 0; this.prevGear = car.gear; this.flicker = 0;
+  }
+
+  // One merged shadow caster per car (body plus wheels) on layer 1, which only
+  // the sun's shadow camera sees: ~45 shadow draws per car become one, and the
+  // visible parts stop casting.
+  addShadowProxy(bodyGeo, car) {
+    shared.wheelShadow ??= new THREE.CylinderGeometry(.338, .338, .29, 12, 1).rotateZ(Math.PI / 2).deleteAttribute('normal').deleteAttribute('uv');
+    const wheels = car.wheels.map((w) => shared.wheelShadow.clone().translate(w.x, .345, w.z));
+    const geo = mergeGeometries([bodyGeo, ...wheels.map((g) => (g.index ? g.toNonIndexed() : g))], false);
+    shared.shadowOnly ??= new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false });
+    const proxy = new THREE.Mesh(geo, shared.shadowOnly); proxy.castShadow = true; proxy.layers.set(1);
+    this.root.traverse((o) => { if (o.isMesh) o.castShadow = false; });
+    this.body.add(proxy); this.shadowProxy = proxy;
   }
 
   useLegacyBody() {
@@ -230,7 +246,7 @@ export class CarModel {
       for (const p of wheel.placeholder) p.visible = false;
       const detail = template.clone(true);
       detail.traverse((o) => {
-        if (!o.isMesh) return; o.castShadow = true; o.receiveShadow = true;
+        if (!o.isMesh) return; o.castShadow = !this.shadowProxy; o.receiveShadow = true;
         if (o.material?.isMeshStandardMaterial) { o.material = o.material.clone(); o.material.envMapIntensity = 1.3; }
       });
       wheel.spin.add(detail);
