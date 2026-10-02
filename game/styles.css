@@ -90,7 +90,8 @@ input[type=range] { accent-color: var(--accent); width: 180px; }
 .setup-foot .summary { margin-right: auto; color: var(--dim); font-size: 16px; letter-spacing: .08em; text-transform: uppercase; }
 
 .team-list { display: grid; gap: 8px; }
-.team-row { display: grid; grid-template-columns: 34px 6px 1fr; gap: 12px; align-items: center; padding: 8px 10px; background: rgba(255,255,255,.03); }
+.team-row { display: grid; grid-template-columns: 30px 38px 6px 1fr; gap: 12px; align-items: center; padding: 8px 10px; background: rgba(255,255,255,.03); }
+.team-row .cls-tag { margin: 0; text-align: center; padding: 3px 0; }
 .team-row .grid-pos { font-family: var(--mono); color: var(--dim); font-size: 14px; }
 .team-row .bar { height: 36px; }
 .team-row b { font-size: 19px; font-style: italic; font-weight: 800; display: block; }
