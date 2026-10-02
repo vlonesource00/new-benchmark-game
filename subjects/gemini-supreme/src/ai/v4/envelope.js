@@ -21,11 +21,16 @@ export const DEFAULT_ENVELOPE = Object.freeze({
   aeroLat: 0.4     // fraction of modelled downforce that shows up as lateral grip (identified)
 });
 
-/** Temperature/pressure part of the host tyre law, normalised to its optimum. */
+/**
+ * Temperature/pressure/wear part of the tyre law, normalised to its optimum.
+ * Game tyres carry a compound (`optimum` window, `gripScale`) and fade gently
+ * until a cliff past 72 % wear; host tyres peak at 85 C and lose 35 % linearly.
+ */
 export function tyreThermalFactor(t) {
-  const temp = Math.min(1, Math.max(0.65, 1 - ((t.core - 85) / 105) ** 2));
+  const temp = Math.min(1, Math.max(0.65, 1 - ((t.core - (t.optimum ?? 85)) / 105) ** 2));
   const pressure = Math.min(1, Math.max(0.8, 1 - Math.abs(t.pressure - 2.15) * 0.13));
-  return temp * pressure * (1 - t.wear * 0.35);
+  const wear = t.optimum === undefined ? 1 - t.wear * 0.35 : 1 - 0.10 * t.wear - 1.2 * Math.max(0, t.wear - 0.72) ** 2;
+  return temp * pressure * wear * (t.gripScale ?? 1);
 }
 
 export class Envelope {

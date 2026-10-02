@@ -18,7 +18,7 @@ export class RacePlan {
     const geo = this.geo = new LineGeometry(track, options.ds);
     this.n = geo.n; this.ds = geo.ds;
     let q1 = minCurvature(geo, options.qMax);
-    if (options.relax !== false) q1 = relaxLine(geo, q1, options.qMax);
+    if (options.relax !== false) q1 = relaxLine(geo, q1, options.qMax, { iters: options.relaxIters ?? 1200, budgetMs: options.relaxMs ?? 1500 });
     this.q = minTime(geo, q1, this.envelope, options.qMax, { budgetMs: options.lineBudgetMs }).q;
     const g = geo.evaluate(this.q);
     this.k = g.k; this.seg = g.seg; this.px = g.px; this.pz = g.pz;

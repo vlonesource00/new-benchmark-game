@@ -19,19 +19,23 @@ export const DEFAULT_OPTIONS = Object.freeze({
   // plan
   // qMax null: track half-width minus edgeMargin (6.5 m on the 8.2 m Harbor Ring;
   // a fixed 6.5 put the outer wheels on the 0.88-grip kerb on narrower roads).
-  ds: 2, qMax: null, edgeMargin: 1.7, lineBudgetMs: 2500, envelope: null,
+  // relax*: elastic-band passes that straighten centreline kinks (1200 left Harbor Ring's
+  // 860 m kink at R 39 m; 4000 takes ~0.7 s off the planned lap)
+  ds: 2, qMax: null, edgeMargin: 1.7, lineBudgetMs: 2500, relaxIters: 4000, relaxMs: 3000, envelope: null,
   // tracker
-  tau: 0.085, ffLead: 0.10, kUs: 0.0, kpE: 1.4, kdE: 2.2, kr: 1.0, kb: 0, betaDead: 0.13, latHead: 1.15,
+  // kb: countersteer into body slip past betaDead; it holds slides the old kb 0 spun out of
+  tau: 0.085, ffLead: 0.10, kUs: 0.0, kpE: 1.4, kdE: 2.2, kr: 1.0, kb: 0.6, betaDead: 0.08, latHead: 1.15,
   vLead: 0.08, kv: 6, brakeGain: 1 / 27,
   // throttle governor: slip angle / rear slip ratio above which drive is cut
-  betaCut: 0.06, betaGain: 10, brakeBetaGain: 8, slipCut: 0.09, slipGain: 6,
+  // (0.09 rear slip is only ~74 % of the tyre's drive force; it held throttle back on half the lap)
+  betaCut: 0.10, betaGain: 10, brakeBetaGain: 8, slipCut: 0.16, slipGain: 6,
   // tyre model
-  gripTrim: 1.0, replanEvery: 0.5, util: 1.0, hotUtil: 0.94, hotCore: 100, hotSpan: 20,
+  gripTrim: 1.05, replanEvery: 0.5, util: 1.0, hotUtil: 0.94, hotCore: 100, hotSpan: 20,
   // recovery (off the road or pointing the wrong way)
   recLat: 8.8, recEc: 0.9, recSpeed: 14,
   // adaptive slip map: body slip above learnBeta trims the local speed for later
   // laps (window learnBack m before .. learnAhead m after); calm passes give it back
-  learn: true, learnBeta: 0.07, learnRate: 0.25, learnFloor: 0.9, learnBack: 60, learnAhead: 12, learnGive: 0.0015,
+  learn: true, learnBeta: 0.10, learnRate: 0.25, learnFloor: 0.9, learnBack: 120, learnAhead: 12, learnGive: 0.0015,
   // traffic
   // offset path: lateral utilisation and braking assumed for the tightened reference
   traffic: true, offSlow: 0.012, offUtil: 0.96, offBrake: 9,
@@ -47,7 +51,7 @@ export class GeminiV4Driver {
     o.passMax ??= o.qMax;
     this.track = track;
     this.spec = car.spec;
-    this.plan = RacePlan.get(track, car.spec, { ds: o.ds, qMax: o.qMax, lineBudgetMs: o.lineBudgetMs, envelope: o.envelope });
+    this.plan = RacePlan.get(track, car.spec, { ds: o.ds, qMax: o.qMax, lineBudgetMs: o.lineBudgetMs, relaxIters: o.relaxIters, relaxMs: o.relaxMs, envelope: o.envelope });
     this.env = this.plan.envelope;
     this.profile = new SpeedProfile(this.plan.n);
     this.grip = 1; this.util = o.util;
@@ -62,7 +66,8 @@ export class GeminiV4Driver {
   replan(car, time) {
     const o = this.options;
     const f = car.wheels.reduce((a, w) => a + tyreThermalFactor(w.tyre), 0) / 4;
-    const hottest = Math.max(...car.wheels.map((w) => w.tyre.core));
+    // Hot threshold is relative to the compound's window (host tyres: 85 C).
+    const hottest = Math.max(...car.wheels.map((w) => w.tyre.core - (w.tyre.optimum ?? 85) + 85));
     this.grip = f * o.gripTrim;
     // Past the hot threshold, run progressively below the limit (slip power falls
     // faster than grip). Continuous in temperature and rate-limited per replan so a
