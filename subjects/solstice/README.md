@@ -10,14 +10,17 @@ seconds of measured stint fade. `RESULTS.md` distinguishes achieved AI laps,
 complete races, and analytical paired schedules using a human's assumed
 65-second average. Universal mixed-field dominance is not established.
 
-The graphics-base verification retains a 62.033-second best lap in a complete
-isolated 20-lap Harbor race, with 2.833 seconds of hard-stint fade and zero off-track
-time, contacts, rescues, or controller errors. Controlled straight passes take
-3.175 and 3.925 seconds instead of about eight. Defense can retain a physically
-clear leading trajectory, avoiding the unnecessary corner slowdown reproduced
-under close rear pressure. The existing line, tyre, and pace settings are unchanged.
-The two Changeable races expose wet-weather contacts and pit-lane recoveries;
-their findings are recorded in `RESULTS.md` without retuning the driver.
+The combat rework on `graphics-aaa` at `0a4be3c` retains a 62.033-second best
+lap in a complete isolated 20-lap Harbor race, with 3.083 seconds of hard-stint
+fade and zero incidents. At 30 Hz, two independent SOLSTICEs complete six of
+eleven encounter passes instead of three; all 33 encounters across 20/30/60 Hz
+have zero contacts, off-track time, damage, stops or controller errors.
+The driver compares bounded, parallel and shifted passing lines, maintains
+useful commitments and releases stale speed caps as a passing lane opens.
+Defense retains momentum, including under close rear pressure.
+The baked lines and base pace settings are unchanged. The latest Changeable
+Harbor race has zero contacts but still needs a wet pit-lane recovery;
+`RESULTS.md` records it without dedicated weather retuning.
 
 ## Run
 

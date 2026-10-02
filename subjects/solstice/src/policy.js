@@ -182,7 +182,7 @@ export class ForcePolicy {
     const ratio = spec.gears[car.gear] * spec.finalDrive;
     const rpm = car.rpm;
     const torque = spec.maxTorque * clamp(1 - ((rpm - 5500) / 6700) ** 2, .45, 1);
-    const drive = Math.max(1, torque * ratio * .91 / spec.radius / mass);
+    const drive = Math.max(1, (torque * ratio * .91 / spec.radius + (car.hybridForce ?? 0)) / mass);
     const drag = .5 * 1.225 * spec.area * spec.cd * speed * speed / mass + .13;
     let throttle = clamp((demand + drag) / drive, 0, 1);
     const brakeTorqueAcceleration = 2 * spec.brakeTorque / (spec.radius * mass);

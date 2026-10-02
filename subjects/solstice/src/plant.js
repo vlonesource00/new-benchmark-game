@@ -18,7 +18,7 @@ export class PredictionTrack {
 
 const MOTION = ['x', 'z', 'y', 'yaw', 'vx', 'vz', 'u', 'v', 'speed', 'yawRate',
   'ax', 'ay', 'roll', 'pitch', 'heave', 'steering', 'gear', 'rpm', 'shiftTimer',
-  'fuel', 'fuelScale', 'damage', 's', 'lateral', 'impact', 'automatic', 'zone'];
+  'fuel', 'fuelScale', 'damage', 's', 'lateral', 'impact', 'automatic', 'zone', 'hybridForce'];
 
 export function shadowOf(car) {
   return copyVehicle(new Vehicle(car.id, 'SOLSTICE PREDICTION', car.color, car.classId), car);

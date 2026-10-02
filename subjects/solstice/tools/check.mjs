@@ -129,6 +129,20 @@ check('canonical game prediction parity and independent live wheel state', () =>
   assert.deepEqual(track.rubber, rubber, 'Prediction changed shared rubber');
 });
 
+check('GTP prediction retains the observed hybrid force without writing deployment state', () => {
+  const track = new Track('harbor-ring'), car = carAt(track, { speed: 30, classId: 'lmdh' });
+  car.hybridForce = 1200;
+  car.controls = { throttle: .6, brake: 0, steer: .01 };
+  const shadow = shadowOf(car), environment = new PredictionTrack(track);
+  assert.equal(shadow.hybridForce, car.hybridForce);
+  for (let i = 0; i < 60; i++) {
+    car.step(DT, environment, 0); shadow.step(DT, environment, 0);
+    for (const key of ['x', 'z', 'yaw', 'vx', 'vz', 'speed', 'fuel'])
+      near(shadow[key], car[key], `hybrid prediction ${key}`);
+  }
+  assert.equal(car.hybridForce, 1200);
+});
+
 const tracks = new Map(), paths = new Map();
 check('all four periodic paths respect actual vehicle footprint limits', () => {
   for (const name of ['harbor-ring', 'solenne', 'alpine', 'desert']) {

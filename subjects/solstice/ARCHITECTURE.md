@@ -2,9 +2,12 @@
 
 Integration base: upgraded `2935523` of `new-benchmark-game`; the combat
 revision builds on the released SOLSTICE configuration at `c01544c`.
-The current development base is `origin/graphics-aaa` at `bf90515`, including
-native Changeable weather fronts. Rebase onto that branch before new work and
+The current development base is `origin/graphics-aaa` at `0a4be3c`, including
+native Changeable weather fronts, stewards and GTP hybrids. Rebase onto that branch before new work and
 before pushing until its merge into `main` is confirmed.
+The private vehicle copy and drive-force estimate include observed hybrid thrust;
+deployment and energy state remain owned by the host. The reported pace target
+and endurance measurements use GT, not a tuned GTP race campaign.
 SOLSTICE writes only its own `car.controls`. Engine physics, timing, compounds,
 strategy, pit autopilot and other driver implementations remain upstream.
 The authorized integration exceptions forward the worker's aim point and skip
