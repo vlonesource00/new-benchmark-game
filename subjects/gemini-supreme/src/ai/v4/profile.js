@@ -33,7 +33,10 @@ export class SpeedProfile {
     };
     // Braking while cornering unloads the (aero-biased) rear: the usable
     // combined region is narrower than a circle on the brake side.
-    const pB = env.p.trail ?? 1;
+    // Above ~200 km/h the rear is lighter still (aero balance moves forward under
+    // braking): fast kinks taken while braking spun the car onto the kerb.
+    const pT = env.p.trail ?? 1, pF = env.p.trailFast ?? pT, vF = env.p.trailFastV ?? 55;
+    const pB = (vj) => pT + (pF - pT) * Math.min(1, Math.max(0, (vj - vF) / 10));
     // Forward (acceleration) pass, starting from the slowest node, twice around.
     for (let t = 1; t <= n; t++) {
       const i = (imin + t - 1) % n, j = (imin + t) % n;
@@ -46,7 +49,7 @@ export class SpeedProfile {
     for (let t = 1; t <= n; t++) {
       const j = (imin - t + 1 + n) % n, i = (imin - t + n) % n;
       const vj = v[j];
-      const dec = env.brake(vj, grip) * util * ellipse(vj, j, pB) + env.drag(vj);
+      const dec = env.brake(vj, grip) * util * ellipse(vj, j, pB(vj)) + env.drag(vj);
       const lim = Math.sqrt(vj * vj + 2 * seg[i] * dec);
       if (lim < v[i]) v[i] = lim;
     }

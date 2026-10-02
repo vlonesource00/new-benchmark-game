@@ -17,11 +17,12 @@ const angle = (a) => Math.atan2(Math.sin(a), Math.cos(a));
 
 export const DEFAULT_OPTIONS = Object.freeze({
   // plan
-  // qMax null: track half-width minus edgeMargin (6.5 m on the 8.2 m Harbor Ring;
-  // a fixed 6.5 put the outer wheels on the 0.88-grip kerb on narrower roads).
+  // qMax null: track half-width minus edgeMargin. 1.7 left no room for tracking error:
+  // running 2 m wide while braking at 240 km/h put the outer wheels on the 0.88-grip
+  // kerb and spun the car (Solenne 700 m, Desert 2700 m); 2.2 is clean and no slower.
   // relax*: elastic-band passes that straighten centreline kinks (1200 left Harbor Ring's
   // 860 m kink at R 39 m; 4000 takes ~0.7 s off the planned lap)
-  ds: 2, qMax: null, edgeMargin: 1.7, lineBudgetMs: 2500, relaxIters: 4000, relaxMs: 3000, envelope: null,
+  ds: 2, qMax: null, edgeMargin: 2.2, lineBudgetMs: 2500, relaxIters: 4000, relaxMs: 3000, envelope: null,
   // tracker
   // kb: countersteer into body slip past betaDead; it holds slides the old kb 0 spun out of
   tau: 0.085, ffLead: 0.10, kUs: 0.0, kpE: 1.4, kdE: 2.2, kr: 1.0, kb: 0.6, betaDead: 0.08, latHead: 1.15,
@@ -35,7 +36,7 @@ export const DEFAULT_OPTIONS = Object.freeze({
   recLat: 8.8, recEc: 0.9, recSpeed: 14,
   // adaptive slip map: body slip above learnBeta trims the local speed for later
   // laps (window learnBack m before .. learnAhead m after); calm passes give it back
-  learn: true, learnBeta: 0.10, learnRate: 0.25, learnFloor: 0.9, learnBack: 120, learnAhead: 12, learnGive: 0.0015,
+  learn: true, learnBeta: 0.10, learnRate: 0.25, learnFloor: 0.9, learnBack: 120, learnAhead: 12, learnGive: 0.0015, learnHitBeta: 0.2, learnHitCut: 0.035,
   // traffic
   // offset path: lateral utilisation and braking assumed for the tightened reference
   traffic: true, offSlow: 0.012, offUtil: 0.96, offBrake: 9,
@@ -58,7 +59,7 @@ export class GeminiV4Driver {
     this.replanAt = -1;
     this.offset = 0; this.offsetRate = 0;
     this.trim = new Float64Array(this.plan.n).fill(1);
-    this.lastNode = -1;
+    this.lastNode = -1; this.slideAt = -1; this.hitOn = false;
     this.traffic = o.traffic ? new TrafficLayer(this, o) : null;
     this.dbg = {};
   }
@@ -93,10 +94,25 @@ export class GeminiV4Driver {
         const j = (i + d + n) % n, w = d <= 0 ? 1 + d / (back + 1) * 0.5 : 1 - d / (ahead + 1);
         this.trim[j] = Math.max(o.learnFloor, this.trim[j] - cut * w);
       }
+      if (this.slideAt < 0) this.slideAt = s;
     } else if (i !== this.lastNode && absBeta < o.learnBeta * 0.5) {
+      this.slideAt = -1;
       this.trim[i] = Math.min(1, this.trim[i] + o.learnGive);
     }
     this.lastNode = i;
+  }
+
+  /** A slide that escalated (recovery or a big slip angle) cuts the stretch into
+   *  where it started at once: the rate-based map took ~3 laps of spins to learn it. */
+  learnHit(s) {
+    const o = this.options, plan = this.plan, n = plan.n;
+    const i = Math.floor(plan.index(this.slideAt >= 0 ? this.slideAt : s)) % n;
+    const back = Math.round(o.learnBack / plan.ds), ahead = Math.round((o.learnAhead + 40) / plan.ds);
+    for (let d = -back; d <= ahead; d++) {
+      const j = (i + d + n) % n, w = d <= 0 ? 1 + d / (back + 1) * 0.5 : 1;
+      this.trim[j] = Math.max(o.learnFloor, this.trim[j] - o.learnHitCut * w);
+    }
+    this.replanAt = -1;
   }
 
   learnCap() {
@@ -183,10 +199,20 @@ export class GeminiV4Driver {
       const tx = tp.x + tp.nx * lt, tz = tp.z + tp.nz * lt;
       const alpha = angle(Math.atan2(tx - car.x, tz - car.z) - car.yaw);
       const d = Math.hypot(tx - car.x, tz - car.z);
-      delta = speed < 15 ? 1.6 * alpha : Math.atan2(2 * L * Math.sin(alpha), d);
+      if (speed < 15) delta = 1.6 * alpha;
+      else {
+        // At speed, pursue along the velocity (not the nose) with yaw damping and
+        // countersteer: nose-based pursuit steered straight ahead mid-slide and spun.
+        const aC = angle(Math.atan2(tx - car.x, tz - car.z) - course);
+        const rR = 2 * speed * Math.sin(aC) / d;
+        delta = beta + Math.atan(L * rR / speed) + o.kr * (rR - car.yawRate);
+      }
     }
     const steer = clamp(delta / spec.steeringLock, -1, 1);
     if (o.learn && !recovering && speed > 20) this.learnSlip(proj.s, Math.abs(beta), dt);
+    const hit = speed > 20 && (recovering || Math.abs(beta) > o.learnHitBeta);
+    if (o.learn && hit && !this.hitOn) this.learnHit(proj.s);
+    this.hitOn = hit;
 
     // Longitudinal: profile feed-forward + speed feedback.
     const sL = proj.s + speed * o.vLead;

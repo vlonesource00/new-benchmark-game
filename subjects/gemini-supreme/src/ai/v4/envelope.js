@@ -18,6 +18,8 @@ export const DEFAULT_ENVELOPE = Object.freeze({
   fuel: 35,
   wing: 6,
   trail: 2.0,      // brake/lateral combination exponent (1 = circle, 2 = 1-r^2)
+  trailFast: 3.5,  // ... blended in from trailFastV (55 m/s) to +10 m/s
+  trailFastV: 55,
   aeroLat: 0.4     // fraction of modelled downforce that shows up as lateral grip (identified)
 });
 
