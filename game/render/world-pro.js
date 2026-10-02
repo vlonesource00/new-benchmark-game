@@ -4,6 +4,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { random, clamp, wrap } from '../engine/sim/math.js';
 import { PitLane } from '../core/pit.js';
 import { PitCrews } from './pit-crew.js';
+import { buildFill } from './fill.js';
 import { LIGHTING, wetSurface } from '../engine/render/surfaces.js';
 import { ribbon } from '../engine/render/world.js';
 import {
@@ -136,6 +137,12 @@ const SKY_STOPS = [[-.12, 'night'], [0, 'twilight'], [.2, 'dusk'], [.42, 'golden
     sun: new THREE.Color(p.sun), sky: new THREE.Color(p.sky), ground: new THREE.Color(p.ground), fog: new THREE.Color(p.fog) };
 });
 const sunHeight = (hour) => Math.sin(Math.PI * (hour - 6.5) / 13);
+// Night light: a dim, cool moon that barely casts shadows, and the floodlights.
+// The masts nearest the focused car get real spot lights; the shader pools light
+// the rest of the lap. The shadow light turns into a key from those masts, so car
+// shadows fall away from the nearest lamp instead of straight down from the sky.
+const MOON = { dir: new THREE.Vector3(-.35, .78, .52).normalize(), color: new THREE.Color('#9fb3e4'), intensity: .22, shadow: .2 };
+const FLOOD_COLOR = new THREE.Color('#ffefdc'), FLOOD_CANDELA = 5200, FLOOD_KEY = .5, FLOOD_SPOTS = 4;
 const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
 
 export class World {
@@ -144,7 +151,7 @@ export class World {
     this.theme = THEMES[track.id] ?? THEMES['harbor-ring'];
     this.root = new THREE.Group(); this.root.name = `${track.name} (static)`; scene.add(this.root);
     this.live = new THREE.Group(); this.live.name = `${track.name} (animated)`; scene.add(this.live);
-    this.rng = random(20260930); this.dummy = new THREE.Object3D(); this.animators = []; this.smoke = [];
+    this.rng = random(20260930); this.dummy = new THREE.Object3D(); this.animators = []; this.smoke = []; this.masts = [];
     const b = { x0: Infinity, x1: -Infinity, z0: Infinity, z1: -Infinity };
     for (let s = 0; s < track.length; s += 10) { const p = track.at(s); b.x0 = Math.min(b.x0, p.x); b.x1 = Math.max(b.x1, p.x); b.z0 = Math.min(b.z0, p.z); b.z1 = Math.max(b.z1, p.z); }
     this.bounds = { ...b, cx: (b.x0 + b.x1) / 2, cz: (b.z0 + b.z1) / 2, r: Math.hypot(b.x1 - b.x0, b.z1 - b.z0) / 2 };
@@ -162,9 +169,14 @@ export class World {
     this.setLighting(this.theme.lighting);
     // One beam for the focused car, always in the scene so turning it on never recompiles shaders.
     this.headlight = new THREE.SpotLight('#eef4ff', 0, 160, .34, .7, 1.6); scene.add(this.headlight, this.headlight.target);
+    // Fixed pool of floodlight spots, re-aimed at the nearest masts; always in the scene for the same reason.
+    this.floods = Array.from({ length: FLOOD_SPOTS }, () => { const l = new THREE.SpotLight(FLOOD_COLOR, 0, 190, 1.05, .85, 1.6); l.userData.mast = -1; scene.add(l, l.target); return l; });
+    this.keyDir = new THREE.Vector3(0, 1, 0); this.lightDir = new THREE.Vector3(); this.tmpDir = new THREE.Vector3(); this.tmpColor = new THREE.Color();
     this.lamps = 0; this.dark = this.theme.lighting === 'night' ? 1 : 0;
 
     this.clearOf = (x, z, r = 0) => Math.abs(track.nearest(x, z).lateral) > track.barrierOffset + 2.5 + r;
+    // Coarse occupancy grid (8 m cells) so the landscape fill, the city and the trees don't overlap.
+    this.taken = new Set(); this.glows = [];
     // Pit lane geometry, identical to the one the race builds (core/pit.js).
     this.lane = track.scenario?.pit ? new PitLane(track, 12) : null;
     const lane = this.lane, gapFrom = lane ? wrap(lane.boxStart - 34, track.length) : 0, gapTo = lane ? wrap(lane.boxEnd + 34, track.length) : 0;
@@ -172,13 +184,37 @@ export class World {
     this.pitGap = (s, side) => !!lane && side === lane.side && lane.inWindow(wrap(s, track.length), gapFrom, gapTo);
     this.buildTrack(); this.buildGround(); this.buildTrackside(); this.buildPitLane(); this.buildPaddock(); this.buildStands();
     if (this.theme.harbor) this.buildHarbor();
-    this.buildCity(); this.buildHills(); this.buildNature(); this.buildSkyLife();
+    this.buildCity();
+    // Landscape fill; its objects are kept so a lower quality setting can hide them.
+    const r0 = this.root.children.length, l0 = this.live.children.length; this.glows.push(...buildFill(this).glows);
+    this.fillObjects = [...this.root.children.slice(r0), ...this.live.children.slice(l0)];
+    this.buildHills(); this.buildNature(); this.buildSkyLife();
     if (this.theme.rocks) this.buildDesert();
     this.buildStars();
     this.root.traverse((o) => { o.updateMatrix(); o.matrixAutoUpdate = false; });
     this.centre = new THREE.Vector3(); this.shadowRight = new THREE.Vector3(); this.shadowUp = new THREE.Vector3();
     this.clock = performance.now() / 1000; this.screenTick = -1;
   }
+
+  cells(x, z, r, visit) {
+    const c = 8, x0 = Math.floor((x - r) / c), x1 = Math.floor((x + r) / c), z0 = Math.floor((z - r) / c), z1 = Math.floor((z + r) / c);
+    for (let i = x0; i <= x1; i++) for (let j = z0; j <= z1; j++) if (Math.hypot((i + .5) * c - x, (j + .5) * c - z) <= r + c * .71 && visit(`${i},${j}`) === false) return false;
+    return true;
+  }
+  occupy(x, z, r) { this.cells(x, z, r, (k) => { this.taken.add(k); }); }
+  isFree(x, z, r) { return this.cells(x, z, r, (k) => !this.taken.has(k)); }
+
+  // Broadleaf tree cards shared by the scattered trees and the forest clumps.
+  treeAssets() {
+    if (!this.trees) {
+      const mat = sway(new THREE.MeshStandardMaterial({ map: foliageTexture(57), alphaTest: .45, side: THREE.DoubleSide, roughness: .9, color: '#e8ecd6' }), .0009, 'tree');
+      const card = new THREE.PlaneGeometry(12, 12); card.translate(0, 6, 0);
+      this.trees = { geo: mergeGeometries([card, card.clone().rotateY(Math.PI / 2)]), mat };
+    }
+    return this.trees;
+  }
+  get treeGeo() { return this.treeAssets().geo; }
+  get treeMat() { return this.treeAssets().mat; }
 
   setLighting(mode = this.theme.lighting) {
     this.lightMode = mode;
@@ -189,6 +225,8 @@ export class World {
     u.turbidity.value = p.turbidity; u.rayleigh.value = { overcast: .4, night: .3, dusk: 2.4 }[mode] ?? 1.6;
     this.sun.intensity = p.intensity * (mode === 'overcast' ? .7 : 1.18); this.hemi.intensity = p.fill * .55;
     this.sun.color.set(p.sun); this.hemi.color.set(p.sky); this.hemi.groundColor.set(p.ground);
+    this.dark = mode === 'night' ? 1 : 0; FLOOD.value = this.dark;
+    this.daySun = { dir: this.sunDirection.clone(), intensity: this.sun.intensity, color: this.sun.color.clone(), shadow: mode === 'overcast' ? .35 : 1 };
     this.scene.fog.color.set(p.fog); this.scene.fog.density = p.density * .8; this.renderer.toneMappingExposure = p.exposure * .95;
     const cu = this.clouds.material.uniforms;
     cu.uSun.value.copy(this.sunDirection); cu.uCover.value = { golden: .5, day: .56, overcast: .26, dusk: .6, night: .72 }[mode] ?? .5;
@@ -213,16 +251,24 @@ export class World {
     this.lamps = Math.max(smooth(.24, .02, y), Math.min(1, rain * 4) * .8);
     FLOOD.value = this.lamps * (.35 + .65 * dark);
     if (this.facades) for (const m of this.facades) m.emissiveIntensity = .55 + 1.5 * dark;
-    const swing = (h - this.theme.hour) * .12 * (1 - dark), sx = .7 * Math.cos(swing) - .65 * Math.sin(swing), sz = .7 * Math.sin(swing) + .65 * Math.cos(swing);
-    this.sunDirection = new THREE.Vector3(sx, mix('elevation'), sz).normalize();
+    const glow = this.lamps * (.4 + .6 * dark);
+    for (const g of this.glows) { if (g.opacity) g.material.opacity = g.night * glow; else g.material.emissiveIntensity = g.day + (g.night - g.day) * glow; }
+    // The sun crosses the sky over the 13 daylight hours, so shadows swing round and
+    // stretch towards sunset; the theme's start hour keeps its art-directed angle.
+    const swing = (h - this.theme.hour) * Math.PI / 13, sx = .7 * Math.cos(swing) - .65 * Math.sin(swing), sz = .7 * Math.sin(swing) + .65 * Math.cos(swing);
+    this.sunDirection = new THREE.Vector3(sx, Math.max(.05, y), sz).normalize();
     const u = this.sky.material.uniforms;
     u.sunPosition.value.set(sx, clamp(y, -.12, 1), sz).normalize();
     u.turbidity.value = mix('turbidity') + 9 * cloud; u.rayleigh.value = (a.rayleigh + (b.rayleigh - a.rayleigh) * t) * (1 - .5 * cloud);
     this.sun.intensity = mix('intensity') * 1.18 * (1 - .72 * cloud); this.hemi.intensity = mix('fill') * .55 * (1 + .3 * cloud);
     col('sun', this.sun.color); col('sky', this.hemi.color); col('ground', this.hemi.groundColor);
+    // The night preset's own "sun" is replaced by the moon and floodlights in updateLight().
+    if (dark > 0) this.hemi.color.lerp(MOON.color, .35 * dark);
     col('fog', this.scene.fog.color); this.scene.fog.density = mix('density') * .8 * (1 + .5 * cloud + 2.5 * rain); this.renderer.toneMappingExposure = mix('exposure') * .95 * (1 - .1 * cloud);
     // Overcast light is grey: wash the sun, sky and haze towards their own luminance.
     for (const c of [this.sun.color, this.hemi.color, this.scene.fog.color]) { const l = c.r * .3 + c.g * .59 + c.b * .11; c.lerp(GREY.setScalar(l * 1.05), .65 * cloud); }
+    // Shadows fade as the sun sinks into the haze and under cloud.
+    this.daySun = { dir: this.sunDirection.clone(), intensity: this.sun.intensity, color: this.sun.color.clone(), shadow: smooth(-.02, .16, y) * (1 - .8 * cloud) };
     const cu = this.clouds.material.uniforms;
     cu.uSun.value.copy(this.sunDirection); cu.uCover.value = THREE.MathUtils.lerp(a.cover + (b.cover - a.cover) * t, .04, cloud);
     cu.uLit.value.copy(this.sun.color).multiplyScalar(1.25 * (1 - .45 * cloud)); cu.uShade.value.copy(this.scene.fog.color).multiplyScalar(.62);
@@ -410,6 +456,7 @@ export class World {
       const side = i % 2 ? 1 : -1, p = t.at(s, side * (t.barrierOffset + 7)); if (!this.clearOf(p.x, p.z, 1)) continue;
       d.position.set(p.x, 13, p.z); d.rotation.set(0, p.heading, 0); d.updateMatrix(); masts.setMatrixAt(masts.count++, d.matrix);
       d.position.y = 26.5; d.rotation.set(-.35 * side, p.heading + Math.PI / 2, 0); d.updateMatrix(); heads.setMatrixAt(heads.count++, d.matrix);
+      const aim = t.at(s + 12, -side * 2); this.masts.push({ x: p.x, y: 26, z: p.z, ax: aim.x, az: aim.z });
     }
     masts.castShadow = heads.castShadow = true; this.root.add(masts, heads);
     const huts = std('#e37a1f', .7), flagMats = ['#1f9e3a', '#f3d21c', '#1e5bd6'].map((c) => sway(new THREE.MeshStandardMaterial({ color: c, roughness: .8, side: THREE.DoubleSide }), .07, 'flag', 'flag'));
@@ -822,14 +869,17 @@ export class World {
       return m;
     };
     const geo = new THREE.BoxGeometry(1, 1, 1).translate(0, .5, 0);
-    const meshes = [0, 1, 2, 3].map((s) => { const m = new THREE.InstancedMesh(geo, facade(s), 160); m.count = 0; m.receiveShadow = true; this.root.add(m); return m; });
-    const roofs = new THREE.InstancedMesh(geo, std('#5d6365', .7, .4), 500); roofs.count = 0; this.root.add(roofs);
-    const building = (x, z, w, dd, h) => {
-      if (!this.clearOf(x, z, Math.hypot(w, dd) / 2 + 25)) return;
-      const m = meshes[Math.floor(rng() * 4)]; if (m.count >= 160) return;
-      d.position.set(x, 0, z); d.rotation.set(0, (rng() - .5) * .1, 0); d.scale.set(w, h, dd); d.updateMatrix(); m.setMatrixAt(m.count++, d.matrix);
-      for (let k = 0; k < 2 && roofs.count < 500; k++) { d.position.set(x + (rng() - .5) * w * .5, h, z + (rng() - .5) * dd * .5); d.scale.set(3 + rng() * 5, 2 + rng() * 3, 3 + rng() * 5); d.rotation.set(0, 0, 0); d.updateMatrix(); roofs.setMatrixAt(roofs.count++, d.matrix); }
+    const meshes = [0, 1, 2, 3].map((s) => { const m = new THREE.InstancedMesh(geo, facade(s), 200); m.count = 0; m.castShadow = true; m.receiveShadow = true; this.root.add(m); return m; });
+    const roofs = new THREE.InstancedMesh(geo, std('#5d6365', .7, .4), 600); roofs.count = 0; this.root.add(roofs);
+    const place = (x, z, w, dd, h, rot) => {
+      const m = meshes[Math.floor(rng() * 4)]; if (m.count >= 200) return;
+      this.occupy(x, z, Math.hypot(w, dd) / 2 + 4);
+      d.position.set(x, 0, z); d.rotation.set(0, rot, 0); d.scale.set(w, h, dd); d.updateMatrix(); m.setMatrixAt(m.count++, d.matrix);
+      for (let k = 0; k < 2 && roofs.count < 600; k++) { d.position.set(x + (rng() - .5) * w * .5, h, z + (rng() - .5) * dd * .5); d.scale.set(3 + rng() * 5, 2 + rng() * 3, 3 + rng() * 5); d.rotation.set(0, rot, 0); d.updateMatrix(); roofs.setMatrixAt(roofs.count++, d.matrix); }
     };
+    const building = (x, z, w, dd, h) => { if (this.clearOf(x, z, Math.hypot(w, dd) / 2 + 25)) place(x, z, w, dd, h, (rng() - .5) * .1); };
+    // The landscape fill adds low-rise blocks closer in; it does its own clearance checks.
+    this.cityBuilding = place;
     if (this.theme.city === 'village') {
       // Stone villages in the countryside, well clear of the circuit.
       const b = this.bounds;
@@ -889,7 +939,7 @@ export class World {
     const scrub = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(1, 1), std('#ffffff', 1), 1600); rocks.count = scrub.count = 0;
     const cap = new Map([[rocks, 900], [scrub, 1600]]), c = new THREE.Color();
     for (let i = 0; i < 14000; i++) {
-      const x = b.cx + (rng() - .5) * span, z = b.cz + (rng() - .5) * span; if (!this.clearOf(x, z, 6)) continue;
+      const x = b.cx + (rng() - .5) * span, z = b.cz + (rng() - .5) * span; if (!this.clearOf(x, z, 6) || !this.isFree(x, z, 3)) continue;
       const m = rng() < .4 ? rocks : scrub; if (m.count >= cap.get(m)) continue;
       const sc = m === rocks ? (rng() < .08 ? 4 + rng() * 9 : .6 + rng() * 2.4) : .5 + rng() * 1.1;
       d.position.set(x, sc * .25, z); d.rotation.set(rng() * 3, rng() * 6.28, rng() * 3); d.scale.set(sc * (.8 + rng() * .6), sc * (.5 + rng() * .5), sc * (.8 + rng() * .6)); d.updateMatrix();
@@ -907,7 +957,7 @@ export class World {
   }
 
   dispose() {
-    for (const o of [this.root, this.live, this.sky, this.sun, this.sun.target, this.hemi, this.clouds, this.headlight, this.headlight.target]) if (o) o.parent?.remove(o);
+    for (const o of [this.root, this.live, this.sky, this.sun, this.sun.target, this.hemi, this.clouds, this.headlight, this.headlight.target, ...this.floods.flatMap((l) => [l, l.target])]) if (o) o.parent?.remove(o);
     const seen = new Set();
     for (const g of [this.root, this.live, this.sky, this.clouds]) g?.traverse((o) => {
       o.geometry?.dispose();
@@ -936,18 +986,17 @@ export class World {
     const palms = new THREE.InstancedMesh(palmGeo, [trunkMat, frondMat], 420); palms.count = 0;
     const plant = (mesh, x, z, sc, max) => { if (mesh.count >= max) return; d.position.set(x, -.05, z); d.rotation.set(0, rng() * 6.28, 0); d.scale.setScalar(sc); d.updateMatrix(); mesh.setMatrixAt(mesh.count++, d.matrix); };
     for (let i = 0; i < 1600 && palms.count < palmMax; i++) {
-      const s = rng() * t.length, p = t.at(s, (rng() < .5 ? -1 : 1) * (t.barrierOffset + 10 + rng() * 30)); if (this.clearOf(p.x, p.z, 6) && (!th.harbor || p.x < 700)) plant(palms, p.x, p.z, .8 + rng() * .5, palmMax);
+      const s = rng() * t.length, p = t.at(s, (rng() < .5 ? -1 : 1) * (t.barrierOffset + 10 + rng() * 30)); if (this.clearOf(p.x, p.z, 6) && this.isFree(p.x, p.z, 3) && (!th.harbor || p.x < 700)) plant(palms, p.x, p.z, .8 + rng() * .5, palmMax);
     }
     if (th.harbor) for (let z = -760; z < 760; z += 26) if (this.clearOf(706, z, 6)) plant(palms, 706 + (rng() - .5) * 3, z, 1 + rng() * .2, 420);
     palms.castShadow = true; palms.receiveShadow = true; this.root.add(palms);
     // Broadleaf trees: crossed cards with sway.
-    const treeMat = sway(new THREE.MeshStandardMaterial({ map: foliageTexture(57), alphaTest: .45, side: THREE.DoubleSide, roughness: .9, color: '#e8ecd6' }), .0009, 'tree');
-    const card = new THREE.PlaneGeometry(12, 12); card.translate(0, 6, 0); const treeGeo = mergeGeometries([card, card.clone().rotateY(Math.PI / 2)]);
+    const { geo: treeGeo, mat: treeMat } = this.treeAssets();
     const trees = new THREE.InstancedMesh(treeGeo, treeMat, Math.max(1, treeMax)); trees.count = 0;
     const bb = this.bounds, spanX = th.harbor ? 1950 : bb.x1 - bb.x0 + 1200, spanZ = th.harbor ? 2000 : bb.z1 - bb.z0 + 1200;
     for (let i = 0; i < treeMax * 4 && trees.count < treeMax; i++) {
       const x = th.harbor ? -1400 + rng() * spanX : bb.x0 - 600 + rng() * spanX, z = th.harbor ? (rng() - .5) * spanZ : bb.z0 - 600 + rng() * spanZ;
-      if (th.harbor && x > 540 && rng() < .9) continue; if (!this.clearOf(x, z, 8)) continue;
+      if (th.harbor && x > 540 && rng() < .9) continue; if (!this.clearOf(x, z, 8) || !this.isFree(x, z, 4)) continue;
       if (Math.abs(t.nearest(x, z).lateral) < 45 && rng() < .6) continue;
       plant(trees, x, z, .6 + rng() * .9, treeMax); trees.setColorAt(trees.count - 1, new THREE.Color().setHSL(.18 + rng() * .06, .15, .72 + rng() * .25));
     }
@@ -977,7 +1026,7 @@ export class World {
     pines.count = trunks.count = 0; const c = new THREE.Color();
     for (let i = 0; i < max * 5 && pines.count < max; i++) {
       const x = bb.x0 - 700 + rng() * (bb.x1 - bb.x0 + 1400), z = bb.z0 - 700 + rng() * (bb.z1 - bb.z0 + 1400);
-      if (!this.clearOf(x, z, 7)) continue; if (Math.abs(t.nearest(x, z).lateral) < 40 && rng() < .7) continue;
+      if (!this.clearOf(x, z, 7) || !this.isFree(x, z, 4)) continue; if (Math.abs(t.nearest(x, z).lateral) < 40 && rng() < .7) continue;
       d.position.set(x, -.05, z); d.rotation.set(0, rng() * 6.28, 0); const sc = .8 + rng() * 1.3; d.scale.set(sc, sc * (.9 + rng() * .4), sc); d.updateMatrix();
       pines.setMatrixAt(pines.count, d.matrix); trunks.setMatrixAt(trunks.count++, d.matrix);
       pines.setColorAt(pines.count++, c.setHSL(.36 + rng() * .06, .35, .16 + rng() * .1));
@@ -1028,17 +1077,47 @@ export class World {
     this.heliTarget = new THREE.Vector3();
   }
 
+  // Blend the shadow light between the sun, the moon and the floodlight key, and
+  // aim the floodlight spots at the masts nearest the car. Returns the light direction.
+  updateLight(car, dt) {
+    const ds = this.daySun, dark = this.dark, flood = FLOOD.value, k = this.keyDir.set(0, 0, 0);
+    let close = 0;
+    if (flood > .002 && this.masts.length) {
+      const near = this.masts.map((m, i) => [i, Math.hypot(m.x - car.x, m.z - car.z)]).sort((a, b) => a[1] - b[1]).slice(0, FLOOD_SPOTS);
+      for (const l of this.floods) if (!near.some(([i]) => i === l.userData.mast)) l.userData.mast = -1;
+      for (const [i, d] of near) {
+        const l = this.floods.find((f) => f.userData.mast === i) ?? this.floods.find((f) => f.userData.mast === -1), m = this.masts[i];
+        l.userData.mast = i; l.position.set(m.x, m.y, m.z); l.target.position.set(m.ax, 0, m.az); l.target.updateMatrixWorld();
+        l.intensity = flood * FLOOD_CANDELA * smooth(250, 120, d);
+        // Key direction: towards the lamps, weighted by how much light each throws here.
+        const w = 1 / Math.max(400, d * d + m.y * m.y); k.add(this.tmpDir.set(m.x - car.x, m.y, m.z - car.z).normalize().multiplyScalar(w));
+      }
+      close = smooth(260, 70, near[0][1]);
+    } else for (const l of this.floods) { l.intensity = 0; l.userData.mast = -1; }
+    const key = flood * close;
+    if (k.lengthSq() > 0) k.normalize(); else k.copy(MOON.dir);
+    this.smoothKey ??= k.clone(); this.smoothKey.lerp(k, Math.min(1, dt * 2.5)).normalize();
+    // Night side: the moon, pulled towards the floodlight key near the masts.
+    const night = this.tmpDir.copy(MOON.dir).lerp(this.smoothKey, key).normalize();
+    const dir = this.lightDir.copy(ds.dir).lerp(night, dark).normalize();
+    this.sun.intensity = ds.intensity * (1 - dark) + dark * (MOON.intensity * (1 - key) + FLOOD_KEY * key);
+    this.sun.color.copy(ds.color).lerp(this.tmpColor.copy(MOON.color).lerp(FLOOD_COLOR, key), dark);
+    this.sun.shadow.intensity = ds.shadow * (1 - dark) + dark * (MOON.shadow + (.6 - MOON.shadow) * key);
+    return dir;
+  }
+
   update(car, time, countdown, aerial = false) {
     const now = performance.now() / 1000, dt = clamp(now - this.clock, 0, .1); this.clock = now; TIME.value = now % 3600;
     const centre = this.centre.set(car.x, 0, car.z);
     const extent = aerial ? 90 : 48;
     if (this.shadowExtent !== extent) { Object.assign(this.sun.shadow.camera, { left: -extent, right: extent, top: extent, bottom: -extent }); this.sun.shadow.camera.updateProjectionMatrix(); this.shadowExtent = extent; }
+    const dir = this.updateLight(car, dt);
     const texel = extent * 2 / this.sun.shadow.mapSize.x;
-    this.shadowRight.crossVectors(this.sunDirection, THREE.Object3D.DEFAULT_UP).normalize();
-    this.shadowUp.crossVectors(this.shadowRight, this.sunDirection).normalize();
+    this.shadowRight.crossVectors(dir, THREE.Object3D.DEFAULT_UP).normalize();
+    this.shadowUp.crossVectors(this.shadowRight, dir).normalize();
     const sx = centre.dot(this.shadowRight), sy = centre.dot(this.shadowUp);
     centre.addScaledVector(this.shadowRight, Math.round(sx / texel) * texel - sx).addScaledVector(this.shadowUp, Math.round(sy / texel) * texel - sy);
-    this.sun.position.copy(centre).addScaledVector(this.sunDirection, 160); this.sun.target.position.copy(centre); this.sun.target.updateMatrixWorld();
+    this.sun.position.copy(centre).addScaledVector(dir, 160); this.sun.target.position.copy(centre); this.sun.target.updateMatrixWorld();
     const wet = this.track.wetness || 0;
     if (wet !== this.visualWetness) {
       const s = wetSurface(wet); if ((this.roadMaterial.clearcoat > 0) !== (s.clearcoat > 0)) this.roadMaterial.needsUpdate = true;

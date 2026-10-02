@@ -50,7 +50,8 @@ renderer.setSize(...size());
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
+// Neutral keeps the sky blue and the grass green; ACES washed daylight out to a milky grey.
+renderer.toneMapping = THREE.NeutralToneMapping;
 renderer.toneMappingExposure = 1.0;
 const camera = new THREE.PerspectiveCamera(52, size()[0] / size()[1], 0.05, 10000);
 const spectator = new SpectatorCamera(camera, activeCanvas);
@@ -110,7 +111,9 @@ let teams = [], teamsById = {}, cars = [], models = [], race = null, seats = nul
 // the day cycle on the race covers about 20 minutes of daylight per lap.
 const START_HOURS = { morning: 8.5, afternoon: 14.5, sunset: 18.4, night: 22 };
 const startHour = () => START_HOURS[setup.startTime] ?? world.theme.hour ?? 15;
+let debugHour = null, debugClock = 0;
 function raceHour() {
+  if (debugHour !== null) return debugHour;
   if (!setup.dayCycle || !snap?.cars.length || !trackLength) return startHour();
   const lead = snap.cars.reduce((a, c) => (c.progress > a.progress ? c : a));
   return startHour() + Math.max(1, Math.min(8, snap.laps * .35)) * Math.max(0, Math.min(1, lead.progress / (snap.laps * trackLength)));
@@ -437,11 +440,11 @@ input.on((action) => {
 // `?timerloop` drives the loop from timers so it keeps running in hidden test panes.
 const nextFrame = new URLSearchParams(location.search).has('timerloop') ? (f) => setTimeout(() => f(performance.now()), 16) : (f) => requestAnimationFrame(f);
 // `?debug` exposes the live race and seat workers for inspection.
-if (new URLSearchParams(location.search).has('debug')) Object.defineProperty(window, '__pe', { value: { get race() { return race; }, get seats() { return seats; }, get focus() { return focusId; }, get world() { return world; } } });
+if (new URLSearchParams(location.search).has('debug')) Object.defineProperty(window, '__pe', { value: { get race() { return race; }, get seats() { return seats; }, get focus() { return focusId; }, get world() { return world; }, get renderer() { return renderer; }, get camera() { return camera; }, setup, startRace, get hour() { return debugHour; }, set hour(h) { debugHour = h; }, pump(n = 1, ms = 16) { for (let i = 0; i < n; i++) frame((debugClock = Math.max(debugClock, performance.now()) + ms), true); } } });
 let previous = performance.now() / 1000, menuAngle = 0;
 let menuProbe = null, menuWeather = null;
-function frame(ms) {
-  nextFrame(frame);
+function frame(ms, pumped = false) {
+  if (!pumped) nextFrame(frame);
   const now = ms / 1000, delta = Math.min(0.1, Math.max(0, now - previous)); previous = now;
   const raw = input.poll();
   if (race && raceActive && setup.drive) race.setInput(PLAYER_ID, overlay && paused ? { ...raw, throttle: 0, brake: 0.4, dir: 0 } : raw);
