@@ -5,6 +5,7 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
+import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
 import { FXAAShader } from 'three/addons/shaders/FXAAShader.js';
 
 // Filmic grade applied after tone mapping: split-tone, gentle S-curve,
@@ -28,6 +29,19 @@ const GradeShader = {
     }`
 };
 
+// Ambient occlusion from the beauty pass's own depth buffer: no second scene
+// render, so it costs GPU time only. GTAOPass expects a normal target to exist
+// even when it reconstructs normals from depth; a stub stands in for it.
+// The blend raises AO to a power (blendIntensity) instead of mixing, which
+// keeps open ground clean while deepening contact shadows under cars and stands.
+class DepthGTAOPass extends GTAOPass {
+  constructor(...args) {
+    super(...args);
+    this.blendMaterial.fragmentShader = this.blendMaterial.fragmentShader.replace('vec4(mix(vec3(1.), texel.rgb, intensity), texel.a)', 'vec4(vec3(pow(clamp(texel.r, 0., 1.), intensity)), texel.a)');
+  }
+}
+DepthGTAOPass.prototype.normalRenderTarget = { depthTexture: null, setSize() {}, dispose() {} };
+
 export class VisualFinish {
   constructor(renderer, scene, camera) {
     this.renderer = renderer; this.scene = scene; this.camera = camera; this.mode = 'performance'; this.speed = 0;
@@ -38,8 +52,11 @@ export class VisualFinish {
     if (mode !== 'performance' && !this.composer) {
       const w = Math.max(1, Math.floor(window.innerWidth || 1280)), h = Math.max(1, Math.floor(window.innerHeight || 720));
       const target = new THREE.WebGLRenderTarget(w, h, { type: THREE.HalfFloatType, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, format: THREE.RGBAFormat, samples: 0 });
+      target.depthTexture = new THREE.DepthTexture(w, h); target.depthTexture.type = THREE.UnsignedIntType;
       this.composer = new EffectComposer(this.renderer, target);
       this.composer.addPass(new RenderPass(this.scene, this.camera));
+      this.ao = new DepthGTAOPass(this.scene, this.camera, w, h, { depthTexture: target.depthTexture }, { radius: 2, distanceExponent: 1, thickness: 3, scale: 1.5, samples: 12, distanceFallOff: 1, screenSpaceRadius: false });
+      this.ao.blendIntensity = 3; this.composer.addPass(this.ao);
       this.bloom = new UnrealBloomPass(new THREE.Vector2(Math.max(64, w >> 1), Math.max(64, h >> 1)), .22, .55, .92);
       this.composer.addPass(this.bloom);
       this.composer.addPass(new OutputPass());
@@ -48,6 +65,7 @@ export class VisualFinish {
       this.composer.addPass(this.aa);
     }
     if (this.bloom) { this.bloom.strength = mode === 'ultra' ? .3 : .22; this.bloom.threshold = .92; }
+    if (this.ao) this.ao.enabled = mode === 'high' || mode === 'ultra';
     this.resize(Math.floor(window.innerWidth || 1280), Math.floor(window.innerHeight || 720));
   }
   setSpeed(speed) { this.speed = speed; }
@@ -62,6 +80,11 @@ export class VisualFinish {
     if ((this.renderer.domElement?.width ?? 0) <= 0 || (this.renderer.domElement?.height ?? 0) <= 0) return;
     if (this.mode === 'performance') { this.renderer.render(this.scene, this.camera); return; }
     const u = this.grade.uniforms; u.time.value = performance.now() / 1000 % 100; u.speed.value = Math.min(1, this.speed / 80);
+    if (this.ao?.enabled) {
+      // The beauty pass draws into whichever target is the read buffer this frame.
+      const depth = this.composer.readBuffer.depthTexture;
+      this.ao.gtaoMaterial.uniforms.tDepth.value = this.ao.pdMaterial.uniforms.tDepth.value = depth;
+    }
     try { this.composer.render(); } catch (err) { this.renderer.render(this.scene, this.camera); }
   }
 }

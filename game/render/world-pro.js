@@ -5,6 +5,7 @@ import { random, clamp, wrap } from '../engine/sim/math.js';
 import { PitLane } from '../core/pit.js';
 import { PitCrews } from './pit-crew.js';
 import { buildFill } from './fill.js';
+import { batchStatic, protectedRefs } from './batch.js';
 import { LIGHTING, wetSurface } from '../engine/render/surfaces.js';
 import { ribbon } from '../engine/render/world.js';
 import {
@@ -194,6 +195,13 @@ export class World {
     if (this.theme.rocks) this.buildDesert();
     this.buildStars();
     this.root.traverse((o) => { o.updateMatrix(); o.matrixAutoUpdate = false; });
+    // Merge the static scenery into a few hundred meshes; the fill keeps its own layer so it can still be hidden.
+    for (const o of this.fillObjects) o.userData.layer = 'fill';
+    const keep = protectedRefs(this); for (const g of this.glows) if (g.material?.isMaterial) keep.materials.add(g.material);
+    for (const o of this.fillObjects) { keep.meshes.delete(o); keep.objects.delete(o); }
+    const t0 = performance.now(), { merged, removed } = typeof location !== 'undefined' && location.search.includes('nobatch') ? { merged: [], removed: 0 } : batchStatic(this.root, keep);
+    this.batchStats = { merged: merged.length, removed, ms: +(performance.now() - t0).toFixed(1) };
+    this.fillObjects = [...this.fillObjects.filter((o) => o.parent), ...merged.filter((m) => m.userData.layer === 'fill')];
     this.centre = new THREE.Vector3(); this.shadowRight = new THREE.Vector3(); this.shadowUp = new THREE.Vector3();
     this.clock = performance.now() / 1000; this.screenTick = -1;
   }

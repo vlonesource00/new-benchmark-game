@@ -8,6 +8,10 @@ import { clamp, random } from '../engine/sim/math.js';
 //  - track temperature is air plus solar heating under a clear sky minus wet
 //    cooling, and is worth a few % of grip either side of a 35 °C optimum;
 //  - air temperature is the floor the tyres cool towards.
+// Changeable runs weather fronts instead of the drift: dry spells, cloud
+// building in, showers of varying strength and clearing skies, a few minutes
+// each, so a 12-lap race sees two or three real changes. Its start phase is
+// random too, so it is not always the same overcast-then-rain afternoon.
 export const WEATHER = {
   clear: { label: 'Clear', air: 24, cloud: [0, .25], rain: 0 },
   hot: { label: 'Hot', air: 33, cloud: [0, .1], rain: 0 },
@@ -24,28 +28,55 @@ export class Weather {
     this.preset = WEATHER[id] ?? WEATHER.clear; this.id = WEATHER[id] ? id : 'clear';
     this.rng = random(seed);
     const [lo, hi] = this.preset.cloud;
-    this.cloud = this.id === 'changeable' ? lo + this.rng() * (hi - lo) * .7 : (lo + hi) / 2;
+    this.cloud = (lo + hi) / 2;
     this.target = this.cloud; this.retarget = 0;
+    this.intensity = this.preset.rain;
+    if (this.id === 'changeable') this.startFront();
     this.sun = .6;   // sun height 0..1, fed by the race clock
     this.wet = this.rainFor(this.cloud);
     this.air = this.airFor(); this.trackTemp = this.trackTarget();
   }
-  rainFor(cloud) { return this.preset.rain * clamp((cloud - .72) / .2, 0, 1); }
+  rainFor(cloud) { return this.intensity * clamp((cloud - .72) / .2, 0, 1); }
+  // ---- changeable fronts ----
+  startFront() {
+    const r = this.rng(), phase = r < .4 ? 'dry' : r < .65 ? 'building' : r < .85 ? 'shower' : 'clearing';
+    this.intensity = .3 + .7 * this.rng() ** .8;
+    this.enterPhase(phase);
+    this.phaseLeft *= .3 + .7 * this.rng(); // join the phase part-way through
+    this.cloud = phase === 'dry' ? this.target : phase === 'building' ? .45 + .3 * this.rng() : phase === 'shower' ? this.target : .7 + .2 * this.rng();
+  }
+  enterPhase(phase) {
+    const r = () => this.rng();
+    this.phase = phase;
+    if (phase === 'dry') { this.phaseLeft = 150 + 170 * r(); this.target = .05 + .45 * r(); }
+    if (phase === 'building') { this.phaseLeft = 40 + 50 * r(); this.target = .88 + .12 * r(); this.intensity = .3 + .7 * r() ** .8; }
+    if (phase === 'shower') { this.phaseLeft = 60 + 150 * r(); this.target = .95 + .05 * r(); }
+    if (phase === 'clearing') { this.phaseLeft = 35 + 45 * r(); this.target = .25 + .35 * r(); }
+  }
+  stepFront(dt) {
+    if ((this.phaseLeft -= dt) <= 0) this.enterPhase({ dry: 'building', building: 'shower', shower: 'clearing', clearing: this.rng() < .2 ? 'building' : 'dry' }[this.phase]);
+    // Fronts move in fast: cloud closes in or breaks up over half a minute or so.
+    this.cloud += clamp(this.target - this.cloud, -.022 * dt, .022 * dt);
+  }
   airFor() { return this.preset.air + 3 * (this.sun - .5); }
   trackTarget() { return this.air + 22 * Math.max(0, this.sun) * (1 - .8 * this.cloud) - 10 * this.wet; }
   get rain() { return this.rainFor(this.cloud); }
   step(dt) {
     const [lo, hi] = this.preset.cloud;
-    if ((this.retarget -= dt) <= 0) { this.target = lo + this.rng() * (hi - lo); this.retarget = 60 + this.rng() * 90; }
-    this.cloud += clamp(this.target - this.cloud, -.006 * dt, .006 * dt);
+    if (this.phase) this.stepFront(dt);
+    else {
+      if ((this.retarget -= dt) <= 0) { this.target = lo + this.rng() * (hi - lo); this.retarget = 60 + this.rng() * 90; }
+      this.cloud += clamp(this.target - this.cloud, -.006 * dt, .006 * dt);
+    }
     const rain = this.rain;
     // Soaks in within a minute of rain; dries in a few minutes, faster when hot.
     if (this.wet < rain) this.wet = Math.min(rain, this.wet + (rain - this.wet) * dt / 50 + .002 * dt);
-    else this.wet = Math.max(rain, this.wet - (.0012 + Math.max(0, this.trackTemp) * .00004) * dt);
+    // Between changeable's showers the wind and the racing line dry it faster, so the dry spells count.
+    else this.wet = Math.max(rain, this.wet - (.0012 + Math.max(0, this.trackTemp) * .00004) * (this.phase ? 2.2 : 1) * dt);
     this.air = this.airFor();
     this.trackTemp += (this.trackTarget() - this.trackTemp) * Math.min(1, dt / 180);
   }
   /** Push the current state into the sim's track. */
   apply(track) { track.wetness = this.wet; track.tempGrip = tempGrip(this.trackTemp); track.ambient = this.air; }
-  snapshot() { return { id: this.id, label: this.preset.label, air: this.air, track: this.trackTemp, wet: this.wet, rain: this.rain, cloud: this.cloud }; }
+  snapshot() { return { id: this.id, label: this.preset.label, air: this.air, track: this.trackTemp, wet: this.wet, rain: this.rain, cloud: this.cloud, phase: this.phase ?? null }; }
 }

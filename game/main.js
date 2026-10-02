@@ -199,7 +199,7 @@ async function startRace() {
   setLoading($('#screen-loading'), 0.25, 'Seating the drivers…');
   try {
     seats = new AsyncSeats(def.id); seats.wantDebug = aiDebug.open;
-    race = new EnduranceRace({ track: new Track(def.scenario), teams, format: FORMATS[setup.formatId] ?? FORMATS.custom, laps: setup.laps, startCompound: setup.startCompound ?? 'medium', difficulty: difficultyById(setup.difficulty).k, weather: setup.weather ?? 'clear', seed: setup.seed, makeBridge: seats.factory() });
+    race = new EnduranceRace({ track: new Track(def.scenario), teams, format: FORMATS[setup.formatId] ?? FORMATS.custom, laps: setup.laps, startCompound: setup.startCompound ?? 'medium', difficulty: difficultyById(setup.difficulty).k, weather: setup.weather ?? 'clear', seed: setup.seed, weatherSeed: setup.weather === 'changeable' ? (Math.random() * 2 ** 31) | 0 : setup.seed, makeBridge: seats.factory() });
     await seats.start(race);
     world.setPitBoxes?.(race.lane, teams);
   } catch (error) {
@@ -440,7 +440,7 @@ input.on((action) => {
 // `?timerloop` drives the loop from timers so it keeps running in hidden test panes.
 const nextFrame = new URLSearchParams(location.search).has('timerloop') ? (f) => setTimeout(() => f(performance.now()), 16) : (f) => requestAnimationFrame(f);
 // `?debug` exposes the live race and seat workers for inspection.
-if (new URLSearchParams(location.search).has('debug')) Object.defineProperty(window, '__pe', { value: { get race() { return race; }, get seats() { return seats; }, get focus() { return focusId; }, get world() { return world; }, get renderer() { return renderer; }, get camera() { return camera; }, setup, startRace, get hour() { return debugHour; }, set hour(h) { debugHour = h; }, pump(n = 1, ms = 16) { for (let i = 0; i < n; i++) frame((debugClock = Math.max(debugClock, performance.now()) + ms), true); } } });
+if (new URLSearchParams(location.search).has('debug')) Object.defineProperty(window, '__pe', { value: { get race() { return race; }, get seats() { return seats; }, get focus() { return focusId; }, get world() { return world; }, get renderer() { return renderer; }, get camera() { return camera; }, get finish() { return finish; }, setup, startRace, get hour() { return debugHour; }, set hour(h) { debugHour = h; }, pump(n = 1, ms = 16) { for (let i = 0; i < n; i++) frame((debugClock = Math.max(debugClock, performance.now()) + ms), true); } } });
 let previous = performance.now() / 1000, menuAngle = 0;
 let menuProbe = null, menuWeather = null;
 function frame(ms, pumped = false) {

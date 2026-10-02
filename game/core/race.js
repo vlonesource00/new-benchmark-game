@@ -22,9 +22,9 @@ export const FIXED_DT = 1 / 120;
  * render is in `snapshot()`; nothing outside this class mutates race state.
  */
 export class EnduranceRace {
-  constructor({ track, teams, format = FORMATS.classic, laps = format.laps, classId = 'gt', startCompound = 'medium', makeBridge = createSeatBridge, difficulty = 1, weather = 'clear', seed = 7 }) {
+  constructor({ track, teams, format = FORMATS.classic, laps = format.laps, classId = 'gt', startCompound = 'medium', makeBridge = createSeatBridge, difficulty = 1, weather = 'clear', seed = 7, weatherSeed = seed }) {
     this.track = track; this.teams = teams;
-    this.weather = new Weather(weather, seed); this.weather.apply(track);
+    this.weather = new Weather(weather, weatherSeed); this.weather.apply(track);
     this.format = { ...format, laps };
     this.cal = calibrate(track, laps); this.laps = this.cal.laps;
     this.classId = carSpecFor(classId).key;
