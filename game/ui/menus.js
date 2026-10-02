@@ -133,8 +133,8 @@ export function renderSettings(el, settings, act) {
       <div class="block"><h3>Audio</h3>
         <div class="row"><label>Master volume</label><input type="range" min="0" max="1" step="0.05" value="${settings.volume}" data-volume></div></div>
       <div class="block"><h3>Graphics</h3>
-        <div class="row"><label>Post-processing<span class="hint">Bloom, grading and motion effects</span></label>${seg('quality', [['high', 'High'], ['low', 'Low']], settings.quality)}</div>
-        <div class="row"><label>Render scale</label>${seg('pixelRatio', [[1, '1×'], [1.5, '1.5×'], [1.75, 'Max']], settings.pixelRatio)}</div></div>
+        <div class="row"><label>Graphics quality<span class="hint">Ultra: 8K shadows, denser grass, finer AO</span></label>${seg('quality', [['ultra', 'Ultra'], ['high', 'High'], ['low', 'Low']], settings.quality)}</div>
+        <div class="row"><label>Render scale</label>${seg('pixelRatio', [[1, '1×'], [1.5, '1.5×'], [1.75, 'Native'], [2, '2× SSAA']], settings.pixelRatio)}</div></div>
       <div class="block"><h3>Controls</h3>
         <div class="row"><label>Drive</label><span class="mono">W/↑ throttle · S/↓/Space brake · A D steer · R reverse</span></div>
         <div class="row"><label>Race</label><span class="mono">P pit · T telemetry · C camera · Tab/[ ] focus · F my car · Esc pause</span></div>

@@ -5,6 +5,7 @@ import { random, clamp, wrap } from '../engine/sim/math.js';
 import { PitLane } from '../core/pit.js';
 import { PitCrews } from './pit-crew.js';
 import { buildFill } from './fill.js';
+import { buildTrackWear } from './trackwear.js';
 import { batchStatic, protectedRefs } from './batch.js';
 import { GrassField } from './grass.js';
 import { LIGHTING, wetSurface } from '../engine/render/surfaces.js';
@@ -202,7 +203,7 @@ export class World {
     const lane = this.lane, gapFrom = lane ? wrap(lane.boxStart - 34, track.length) : 0, gapTo = lane ? wrap(lane.boxEnd + 34, track.length) : 0;
     // The garages open straight onto the lane: no barrier on the pit side there.
     this.pitGap = (s, side) => !!lane && side === lane.side && lane.inWindow(wrap(s, track.length), gapFrom, gapTo);
-    this.buildTrack(); this.buildGround(); this.buildTrackside(); this.buildPitLane(); this.buildPaddock(); this.buildStands();
+    this.buildTrack(); this.buildGround(); this.buildTrackside(); buildTrackWear(this); this.buildPitLane(); this.buildPaddock(); this.buildStands();
     if (this.theme.harbor) this.buildHarbor();
     this.buildCity();
     // Landscape fill; its objects are kept so a lower quality setting can hide them.
@@ -1033,7 +1034,10 @@ export class World {
   }
 
   setQuality(mode) {
-    if (this.grass) this.grass.mesh.visible = mode === 'high' || mode === 'ultra';
+    this.grass?.setQuality(mode);
+    // Ultra doubles the sun's shadow resolution (same coverage, sharper edges).
+    const size = mode === 'ultra' ? 8192 : 4096;
+    if (this.sun.shadow.mapSize.x !== size) { this.sun.shadow.mapSize.set(size, size); this.sun.shadow.map?.dispose(); this.sun.shadow.map = null; }
   }
 
   dispose() {

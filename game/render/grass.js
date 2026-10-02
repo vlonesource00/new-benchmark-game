@@ -7,7 +7,7 @@ import * as THREE from 'three';
 // track, buildings, car parks and water, without any per-object bookkeeping.
 
 const PATCH = 120;          // metres of grass around the camera
-const DENSITY = 22;         // blades per square metre
+const DENSITY = { high: 22, ultra: 36 };   // blades per square metre
 const MASK_RES = 2048;
 
 const COLORS = {
@@ -34,11 +34,11 @@ function bladeGeometry() {
 
 export class GrassField {
   constructor(world, renderer, kind = 'grass') {
-    const rng = world.rng, n = Math.round(PATCH * PATCH * DENSITY);
+    const rng = world.rng, n = Math.round(PATCH * PATCH * DENSITY.ultra);
     const geo = bladeGeometry(), off = new Float32Array(n * 4);
     for (let i = 0; i < n; i++) off.set([rng() * PATCH, rng() * PATCH, .16 + rng() ** 2 * .4, rng() * Math.PI * 2], i * 4);
     geo.setAttribute('aBlade', new THREE.InstancedBufferAttribute(off, 4));
-    geo.instanceCount = n;
+    geo.instanceCount = n; this.max = n;
     geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e9);
 
     const [base, tip] = (COLORS[kind] ?? COLORS.grass).map((c) => new THREE.Color(c));
@@ -89,6 +89,12 @@ export class GrassField {
     parent.add(world.root); for (const m of hidden) m.visible = true;
     scene.overrideMaterial.dispose();
     return target;
+  }
+
+  // Blades are scattered uniformly, so any prefix of them is an even, sparser field.
+  setQuality(mode) {
+    this.mesh.visible = mode === 'high' || mode === 'ultra';
+    this.mesh.geometry.instanceCount = Math.round(this.max * (DENSITY[mode] ?? DENSITY.high) / DENSITY.ultra);
   }
 
   dispose() { this.mesh.geometry.dispose(); this.mesh.material.dispose(); this.mask.dispose(); }

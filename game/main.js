@@ -40,12 +40,14 @@ const save = (key, v) => { try { localStorage.setItem(key, JSON.stringify(v)); }
 
 // ---------- renderer ----------
 const settings = load('pe.settings', { volume: 0.5, quality: 'high', pixelRatio: 1.75 });
+// Render scale: capped at the display's own density, except 2× SSAA which supersamples past it.
+const pixelRatio = () => (settings.pixelRatio >= 2 ? Math.max(2, devicePixelRatio || 1) : Math.min(devicePixelRatio || 1, settings.pixelRatio));
 const canvas = $('#scene');
 const scene = new THREE.Scene();
 let activeCanvas = canvas;
 const { renderer } = createSafeWebGLRenderer(THREE, { canvas, appName: 'PHANTOM ENDURANCE', onCanvasReplaced: (c) => { activeCanvas = c; } });
 const size = () => [Math.max(1, innerWidth || 1280), Math.max(1, innerHeight || 720)];
-renderer.setPixelRatio(Math.min(devicePixelRatio || 1, settings.pixelRatio));
+renderer.setPixelRatio(pixelRatio());
 renderer.setSize(...size());
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -164,7 +166,7 @@ const nav = {
     Object.assign(settings, patch); save('pe.settings', settings);
     if ('volume' in patch) audio.setVolume(settings.volume);
     if ('quality' in patch) { finish?.setQuality(settings.quality); world?.setQuality?.(settings.quality); }
-    if ('pixelRatio' in patch) { renderer.setPixelRatio(Math.min(devicePixelRatio || 1, settings.pixelRatio)); resize(); }
+    if ('pixelRatio' in patch) { renderer.setPixelRatio(pixelRatio()); resize(); }
   },
   start: () => startRace()
 };

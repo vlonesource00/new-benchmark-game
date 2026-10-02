@@ -65,7 +65,7 @@ export class VisualFinish {
       this.composer.addPass(this.aa);
     }
     if (this.bloom) { this.bloom.strength = mode === 'ultra' ? .3 : .22; this.bloom.threshold = .92; }
-    if (this.ao) this.ao.enabled = mode === 'high' || mode === 'ultra';
+    if (this.ao) { this.ao.enabled = mode === 'high' || mode === 'ultra'; this.ao.updateGtaoMaterial({ samples: mode === 'ultra' ? 24 : 12 }); }
     this.resize(Math.floor(window.innerWidth || 1280), Math.floor(window.innerHeight || 720));
   }
   setSpeed(speed) { this.speed = speed; }
