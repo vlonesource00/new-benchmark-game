@@ -1,11 +1,13 @@
 # Measured results
 
-The final Harbor configuration achieves a **62.033-second clean lap** in a
-normal GT/soft/20-lap race. Its eight clean hard-tyre laps fade by **2.708
-seconds**. The complete isolated race records zero off-track time, contacts,
-rescues, controller errors, or violations of the warm-and-worn rotation gate.
-This meets the requested opening-lap and hard-stint checkpoints; it does not
-establish universal race wins or 62.5-second laps on every compound.
+The graphics-base verification retains a **62.033-second clean lap** in a normal
+GT/soft/20-lap Harbor race. Its eight clean hard-tyre laps fade by **2.833
+seconds**, within the requested 2-4-second allowance. The complete isolated
+race records zero off-track time, contacts, rescues, or controller errors.
+The new combat evidence is separated below from the released `c01544c`
+baseline. The earlier combat run measured 2.950 seconds of fade. Changeable
+weather coverage exposes contacts and pit-lane recoveries below. Neither set
+establishes universal wins or 62.5-second laps on every compound.
 
 All public measurements, inputs, and source hashes are in
 [compact-summary.json](results/compact-summary.json). Large local frame traces
@@ -27,7 +29,7 @@ within one uninterrupted tyre stint. Contacts are field-wide contact-step
 events, not attributable per-car incident counts. Bridge timing uses elapsed
 time around updates, not an operating-system CPU counter.
 
-## Final Harbor 20-lap run
+## Baseline Harbor 20-lap run (`c01544c`)
 
 `release-final-harbor-soft20-stations.json`: seed 7, marathon resource scaling,
 one SOLSTICE car, no experimental overrides, 20 completed laps, three stops.
@@ -108,7 +110,7 @@ and slow-update guards. Their recorded source hashes identify that revision;
 they are not presented as reruns of the exact final source. The final source
 is covered by the complete Harbor and held-update runs below.
 
-## Final verification
+## Baseline verification (`c01544c`)
 
 | Check | Result |
 |---|---|
@@ -135,6 +137,235 @@ the strategist, difficulty reference pace, and other AI code are unchanged.
 
 Universal mixed-field wins across all four circuits and three full-race seeds
 remain unproven. No claim is made that the physics prevents a faster result.
+
+## Combat revision acceptance (2026-10-02)
+
+The changes are confined to SOLSTICE's traffic planning and driver selection.
+The line asset, geometry, configuration, force policy, tyre physics, pit
+strategist, governor and other AIs are unchanged. Upstream rendering commits
+through `524bd1b` do not change the native simulation inputs used here.
+Each measurement retains source hashes; the older `release-*` entries remain
+baseline evidence rather than being relabeled as tests of this revision.
+
+### Controlled encounters
+
+`combat-baseline-30.json` and `combat-accepted-30.json` compare matched 10-second
+encounters at 30 Hz, with native 120 Hz physics. Placement, starting speed and
+warm hard tyres are fixtures; the rival uses the native force policy at a fixed
+lane and speed cap. The baseline's global rear-wear label predates per-fixture
+metadata: passing fixtures use 5% wear, and only `setup.worn` fixtures use 75%
+rear-right wear. These are targeted tests, not endurance race results.
+
+| Encounter | Baseline pass time s | Combat pass time s |
+|---|---:|---:|
+| Straight, 40 m initial gap | 7.975 | 3.175 |
+| Straight, 22 m initial gap | 8.008 | 3.925 |
+| Straight, offset rival | 2.942 | 2.775 |
+| Gentle right | 4.992 | 5.075 |
+| Gentle left | 3.467 | 3.208 |
+
+Free-run progress is identical for all seven matched baseline fixtures. The
+gentle-right pass is slightly slower; the gains are not uniform in every turn.
+All nine accepted encounters at each of 20, 30 and 60 Hz finish without
+contacts, off-track time, stops below 5 m/s, damage or bridge errors. Straight
+passes establish more than 2.59 metres of lateral centre separation while the
+bodies overlap longitudinally. Worn-tyre defensive encounters retain the lead.
+
+The tougher 14-metre rear-pressure fixture reproduced excessive braking in an
+intermediate combat candidate. `combat-pressure-close-30.json` and
+`combat-pressure-accepted6.json` are matched six-second tests of that candidate
+and this accepted revision, respectively; the former is not the `c01544c`
+baseline. Minimum speed improves from **56.372 to 94.414 km/h**, and progress
+relative to free running improves from **85.80% to 94.64%**, with no contact or
+lost lead. In the longer ten-second test the accepted revision retains
+94.84-95.79% of free progress across the three update rates. Actual overlaps
+and lateral/rejoining threats remain penalized in the native rollout.
+
+### Complete native races
+
+The five `combat-*-accepted*.json` race measurements use normal GT resources,
+soft starts, native ALIEN difficulty and the unchanged automatic pit planner.
+All races complete; none is a partial first-lap probe.
+
+| Race | SOLSTICE best clean lap s | Result |
+|---|---:|---|
+| Harbor solo, 20 laps, seed 7 | 62.033 | Finish 1433.683 s; three stops/swaps |
+| Harbor vs Gemini v4, 12 laps, seed 7 | 63.075 | SOLSTICE 895.325 s; Gemini 858.150 s |
+| Solenne vs Gemini v4, 12 laps, seed 7 | 61.017 | SOLSTICE 887.225 s; Gemini 839.000 s |
+| Harbor, two SOLSTICE/two Gemini, 6 laps, seed 17 | 62.383 / 63.692 | SOLSTICE P2/P3; all four finish |
+| Harbor, four SOLSTICE, 6 laps, seed 31, 30 Hz held | 63.492 fastest | All four finish; one physics-frame delivery delay |
+
+All five races have **zero field-wide contacts, off-track time, damage,
+controller errors or nonfinite state**. SOLSTICE has zero rescues throughout;
+Gemini has one rescue in the Harbor 12-lap comparison. The held-control race
+approximates transport cadence and does not establish browser worker throughput.
+
+The solo hard stint runs from lap 13 to lap 20 in 65.583, 66.083, 66.742,
+66.517, 67.133, 67.225, 67.575 and 68.533 seconds: **2.950 seconds of fade**.
+Rear-right tyre wear at the last line is 70.70%, leaving 29.30%. The existing
+opening pace and sustainable hard-stint behavior are retained. AI-only
+12-lap races still lose to Gemini through three stops versus one; the user's
+human soft opening followed by SOLSTICE on hards is a different schedule.
+This combat update does not change compound choices or paired strategy.
+
+The final controller suite passes **29 checks**, including held-control
+straight passes, close rear pressure, side commitment, defense rearming,
+turn-in lane closure, and the reproduced native corner encounter. The normal
+production game build passes with the existing bundle-size warning.
+
+## Graphics-base verification (`bf90515`)
+
+`solstice-combat` was rebased onto `origin/graphics-aaa`. The incoming native
+changes add Changeable weather fronts and an optional weather seed defaulting
+to the race seed. The driving configuration, line asset, force policy and
+combat implementation were not retuned. The controller suite again passes
+all 29 checks, and the production build passes with 159 modules and the
+existing bundle-size warning.
+
+`graphics-dry-harbor20.json` repeats the seed-7 GT/soft/20-lap isolated race:
+best clean lap **62.033 s**, finish **1433.750 s**, three stops/swaps, zero
+contacts, off-track time, damage, rescues or controller errors. The lap 13-20
+hard stint ranges from 65.583 to 68.417 s, giving **2.833 s of fade**, within
+the requested 2-4-second allowance. This differs slightly from the earlier
+2.950-second run; the measured opening pace is identical.
+
+`graphics-combat-30.json` repeats all nine 30 Hz controlled encounters.
+Every passing time, progress ratio and free-run progress matches the earlier
+accepted 30 Hz report exactly, including straight passes in 3.175/3.925 s and
+94.414 km/h minimum under close rear pressure. All nine have zero contacts,
+off-track time, damage, stops below 5 m/s and bridge errors.
+
+### Changeable weather findings
+
+Two normal 12-lap SOLSTICE/Gemini v4 races use native fronts, default seeded
+weather, ALIEN difficulty, soft starts, sun 0.6 and unchanged pit strategy.
+Both encounter dry, building, shower and clearing phases, substantial wetting
+and drying, and a fully dry track between showers. All four cars finish with
+finite state and zero controller errors. They do **not** meet a clean-race
+weather acceptance criterion.
+
+| Race | SOLSTICE finish s | Field car-pair contact steps | SOLSTICE off-track s | SOLSTICE damage | SOLSTICE rescues |
+|---|---:|---:|---:|---:|---:|
+| Harbor, seed 7 | 965.667 | 0 | 5.492 | 3.36% | 1 |
+| Solenne, seed 31 | 977.358 | 19 | 0 | 37.52% | 1 |
+
+Track wetness ranges from 0 to 0.931 at Harbor and 0 to 0.907 at Solenne.
+All 19 Solenne contact steps occur with rain above 0.02 and wetness at least
+0.08. These are repeated field-wide overlap steps, not 19 independent crashes;
+the engine records zero severe car-pair contacts and a peak closing speed of
+2.715 m/s. Damage also includes barriers and is not attributed solely to combat.
+The field counter includes the host's continued motion after a car finishes.
+
+Solenne's native event log identifies Gemini's recovery at **494.900 s** and
+SOLSTICE's at **629.592 s**, both in **PIT LANE** during the shower. SOLSTICE
+recovers at wetness 0.838 before service completes at 656.642 s. Gemini also
+records 33.700 s off track, 82.87% damage and one rescue. Wet pit-lane handling
+and traffic merit further investigation; no control or strategy tuning was
+applied in response to these findings.
+
+SOLSTICE's Harbor calls are TYRES on laps 3/6 and PLAN on lap 10, choosing
+soft/medium/soft. Solenne calls TYRES on laps 4/11 and PLAN on lap 8, choosing
+medium/soft/soft. Calls follow the existing fuel, degradation and race planner;
+the game exposes only soft/medium/hard compounds, and the strategist does not
+consult weather. For example, Harbor's lap-10 call requests softs at wetness
+0.886 during the shower. This is recorded behavior, not proof that a different
+available compound would be faster.
+
+`weather-probe.mjs` adds a read-only observer through the benchmark's `onStep`
+hook. Public summaries preserve fronts, pit calls/services, lap weather and
+available native event logs; periodic frame samples remain local. The first
+lap's weather accumulation includes the grid approach, while its lap time uses
+the native full-lap clock. Source hashes identify the observer revision used
+for each run; the Solenne run includes the subsequently added native event log.
+
+## Two independent SOLSTICE drivers: combat rework
+
+The current base is `origin/graphics-aaa` at `0a4be3c`. The eleven duel fixtures
+use two independent drivers, native vehicle/tyre/wake/collision physics and
+120 Hz integration, with held controls at 20, 30 or 60 Hz. Both choose their own
+lanes and speed after initialization. Each driver is also measured alone with
+the same fixture. A completed pass requires a twelve-metre lead sustained for
+one second. These twenty-second encounters are not complete races.
+
+The baseline uses the previous controller at rebased commit `c6b00d2` on the
+same game base, with the identical new probe. No opponent is constrained to a
+fixed lane or speed cap. Warm hard tyres and one asymmetric worn rear tyre are
+fixture conditions, not claims about normal tyre preparation or a race stint.
+
+| 30 Hz encounter | Previous completed pass s | Current completed pass s | Previous attacker progress / free | Current attacker progress / free |
+|---|---:|---:|---:|---:|
+| Straight, worn lead | 13.183 | 7.992 | 87.90% | 100.02% |
+| Straight, fresh lead | None | 10.842 | 87.83% | 100.38% |
+| Gentle right | None | 9.850 | 95.11% | 101.00% |
+| Gentle left | None | 13.558 | 90.16% | 94.86% |
+| Left-side initial overlap | 12.508 | 4.708 | 84.16% | 96.87% |
+| Right-side initial overlap | 4.067 | 5.883 | 92.92% | 95.37% |
+
+The current driver completes **6/11 passes at 20 Hz, 6/11 at 30 Hz and 8/11
+at 60 Hz**, versus **3/11** in the 30 Hz baseline. All 33 current encounters
+have zero engine contact steps, off-track time, damage, stops below 5 m/s,
+controller errors or nonfinite state. The baseline has one contact step.
+The matched-pace control does not complete a pass; its current attacker retains
+98.01% of free progress. The braking, exit and sector cases do not all pass
+within twenty seconds, and the sector-1550 case loses about 0.83 percentage
+points of attacker progress at 30 Hz. This is measured improvement, not a
+guarantee that every passing situation is faster.
+
+The nine original fixed-lane encounter regressions at 30 Hz remain clean.
+Under close rear pressure, the leader retains 100.24% of free progress,
+never stops and has a minimum speed of 121.98 km/h. Its rival does not clear
+the lead. The thirty-three contract/native regression checks and the game
+build pass on this base.
+
+### Complete dry races
+
+Normal GT, ALIEN, clear weather, soft starts, native fuel/wear/strategy/stops
+and swaps. The mixed races use seed 7; the four-SOLSTICE field uses seed 31.
+All cars complete the requested laps without disqualification. Every race
+below has zero field contact steps, off-track time, damage, rescues, incident
+points or controller errors.
+
+| Race | SOLSTICE best clean lap s | SOLSTICE finish s | Gemini v4 finish s | SOLSTICE / Gemini stops |
+|---|---:|---:|---:|---:|
+| Isolated Harbor, 20 laps | 62.033 | 1434.000 | — | 3 / — |
+| Harbor, 12 laps | 63.742 | 900.358 | 859.400 | 3 / 1 |
+| Solenne, 12 laps | 61.033 | 887.142 | 838.992 | 3 / 1 |
+| Four SOLSTICEs, Harbor, 6 laps, 30 Hz plus one-frame delay | 63.542 field minimum | 479.233–520.558 | — | 2–3 / — |
+
+The isolated Harbor hard stint, laps 13–20, ranges from **65.592 to 68.675 s**:
+**3.083 s maximum-to-minimum fade**, within the requested four-second limit.
+The first hard lap is 65.917 s, so first-to-last fade is 2.758 s. The complete
+race's median clean flying lap is 66.042 s. The original baked line and pace
+configuration are unchanged.
+
+The AI-only mixed results still lose total race time through three stops
+against Gemini's one. They do not reproduce a human's faster soft opening
+followed by a long SOLSTICE hard stint. Strategy and the assumed 65-second
+human average have not been changed by this combat work.
+
+### Current Changeable check
+
+The new Harbor 12-lap seed-7 run on `0a4be3c` reaches wetness 0.931 and completes
+dry/building/shower/clearing swings. Both cars finish twelve laps, with zero
+car-pair contact steps, zero severe contacts, no disqualifications and zero
+controller errors. SOLSTICE finishes in 961.892 s with 0.808 s off track,
+4.36% damage and one rescue; Gemini finishes in 956.733 s with 6.608 s off track,
+zero damage and no rescue. Their incident-point totals are zero and nine.
+
+SOLSTICE's native recovery is at **776.342 s**, explicitly **PIT LANE**, during
+the shower at wetness 0.931. It remains a wet pit-handling limitation despite
+the clean car-to-car result. No dedicated wet-grip, tyre-choice or pit-strategy
+tuning was performed. Earlier Changeable results above are historical runs,
+not substituted for this current verification.
+
+The compact public summary includes current input/source hashes and the exact
+saved-controller baseline. Full frame traces, rejected prototypes and temporary
+worktrees are not shipped. Held-cadence tests model control delivery; they do
+not measure real browser worker latency or throughput. Wall-clock CPU numbers
+were collected with concurrent local simulations and are not fair speed rankings.
+Private predictions include the new host's observed hybrid thrust, checked
+against the native GTP integrator; the pace and endurance acceptance above
+remain GT measurements.
 
 ## Reproduce
 

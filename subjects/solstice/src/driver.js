@@ -16,7 +16,7 @@ export class SolsticeDriver {
     this.track = track; this.o = { ...DEFAULTS, ...options }; this.teamState = teamState;
     this.path = null;
     this.policy = null;
-    this.traffic = new Traffic(track); this.prediction = new PredictionTrack(track);
+    this.traffic = new Traffic(track, { laneRate: this.o.laneRate }); this.prediction = new PredictionTrack(track);
     this.stats = { plans: 0, rollouts: 0, latencyMs: 0, maxLatencyMs: 0, cost: 0 };
     this.reset();
   }
@@ -183,10 +183,15 @@ export class SolsticeDriver {
     this.targetSpeed = this.pitPolicy.targetSpeed;
   }
   rollout(car, proposal, resource) {
+    this.lastRollout = { progress: -Infinity, speed: 0, imminentRisk: Infinity };
     copyVehicle(this.shadow, car);
     const shadow = this.shadow, dt = 1 / 120;
-    let score = 0, travelled = 0, lastS = this.track.nearest(car.x, car.z).s;
+    let score = 0, imminentRisk = 0, travelled = 0, lastS = this.track.nearest(car.x, car.z).s;
     let hold = this.hold, extra = this.extra, bounds = this.bounds && { ...this.bounds }, nextControl = 0;
+    if (proposal.yield) {
+      extra = proposal.hold == null ? car.lateral - this.path.at(lastS).offset : 0;
+      hold = proposal.hold == null ? null : car.lateral;
+    }
     if (bounds && !proposal.bounds) { extra = car.lateral - this.path.at(lastS).offset; bounds = null; }
     const startOff = Math.abs(car.lateral) > this.track.halfWidth + this.track.curbWidth;
     const initialBeta = car.speed > 5 ? Math.abs(angle(Math.atan2(car.vx, car.vz) - car.yaw)) : 0;
@@ -224,7 +229,9 @@ export class SolsticeDriver {
       const beta = shadow.speed > 5 ? Math.abs(angle(Math.atan2(shadow.vx, shadow.vz) - shadow.yaw)) : 0;
       if (beta > betaBoundary) return 1e6 + (horizon - t) * 1e3;
       score += dt * 12 * Math.max(0, beta - .17) ** 2;
-      score += dt * this.traffic.risk(shadow, t + dt);
+      const trafficRisk = this.traffic.risk(shadow, t + dt, proposal.tactic === 'clearance');
+      score += dt * trafficRisk;
+      if (t < .6) imminentRisk += dt * trafficRisk;
       const heatPrice = resource.push ? this.o.tyrePrice * .4 : this.o.tyrePrice;
       score += dt * heatPrice * shadow.wheels.reduce((sum, w) => sum + w.tyre.slipPower, 0);
       if (!Number.isFinite(score + shadow.x + shadow.z + shadow.speed)) return 1e9;
@@ -233,25 +240,30 @@ export class SolsticeDriver {
     const p = this.track.nearest(shadow.x, shadow.z), target = this.policy.point(p.s, terminalPlan);
     // Beyond this short rollout, retain the normal envelope as the braking
     // reference. A temporary faster policy must leave a feasible continuation.
-    const terminalCap = this.path.sample(hold == null ? this.path.variantEnvelope(extra, bounds) : this.path.laneEnvelope(hold), p.s + shadow.speed * .18);
+    const terminalCap = this.path.sample(this.policy.envelope(terminalPlan), p.s + shadow.speed * .18);
     const overspeed = Math.max(0, shadow.speed - terminalCap - .7);
     score += .16 * overspeed * overspeed + .025 * (p.lateral - target.offset) ** 2;
     const targetHeading = Math.atan2(this.policy.point(p.s + 8, terminalPlan).x - target.x,
       this.policy.point(p.s + 8, terminalPlan).z - target.z);
     score += .6 * angle(Math.atan2(shadow.vx, shadow.vz) - targetHeading) ** 2;
+    score += this.traffic.continuationCost(shadow, horizon, s => this.policy.point(s, proposal));
+    this.lastRollout = { progress: travelled, speed: shadow.speed, imminentRisk };
     return score - travelled / Math.max(20, car.speed) - .012 * shadow.speed;
   }
   plan(car, now, resource, proposals) {
     this.shadow ??= shadowOf(car);
     const start = clock();
-    const mandatory = this.traffic.mode === 'alongside';
-    const base = { extra: 0, hold: mandatory ? (proposals[0]?.hold ?? null) : null,
+    const mandatory = this.traffic.mode === 'alongside'
+      || (this.traffic.mode === 'attack' && this.traffic.engagement?.committed);
+    const base = { ...(mandatory ? proposals[0] : {}), extra: mandatory ? (proposals[0]?.extra ?? 0) : 0,
+      hold: mandatory ? (proposals[0]?.hold ?? null) : null,
       bounds: mandatory ? (proposals[0]?.bounds ?? null) : null,
-      speedCap: mandatory ? this.traffic.speedCap : this.traffic.followCap,
+      speedCap: mandatory ? (proposals[0]?.speedCap ?? this.traffic.speedCap) : this.traffic.followCap,
+      trafficLine: this.traffic.mode !== 'free' || Math.abs(this.extra) > .15 || this.bounds != null || this.hold != null,
       lookahead: this.selected.lookahead ?? this.policy.o.lookahead,
       factor: resource.factor, coast: resource.save, push: resource.push, forceGuard: resource.forceGuard };
     let candidates = [base];
-    for (const p of proposals) candidates.push({ ...p, speedCap: this.traffic.speedCap,
+    for (const p of proposals) candidates.push({ ...p, trafficLine: base.trafficLine, speedCap: p.speedCap ?? this.traffic.speedCap,
       factor: (p.factor ?? 1) * resource.factor, coast: resource.save, push: resource.push,
       forceGuard: resource.forceGuard });
     const rearTyres = car.wheels.slice(2, 4).map(w => w.tyre);
@@ -263,28 +275,45 @@ export class SolsticeDriver {
     const distinct = new Set();
     candidates = candidates.filter(p => {
       const key = JSON.stringify([p.extra, p.hold, p.bounds, p.factor, p.coast,
-        p.lookahead ?? this.policy.o.lookahead, p.rotation ?? this.policy.o.rotation, p.speedCap]);
+        p.lookahead ?? this.policy.o.lookahead, p.rotation ?? this.policy.o.rotation, p.speedCap,
+        p.tactic, p.side, p.rivalId]);
       if (distinct.has(key)) return false;
       distinct.add(key); return true;
     });
     // Stable deterministic tie-breaking: a busy grid keeps its existing lane.
-    let best = Infinity, chosen = base, count = 0;
+    let best = Infinity, chosen = base, count = 0, baseline = null, imminentRisk = Infinity;
+    const nearby = this.traffic.list.some(o => Math.abs(o.ds) < 60);
     for (const p of candidates) {
-      const value = this.rollout(car, p, resource);
-      if (value < best - .003) { best = value; chosen = p; }
+      const changingSide = p.tactic === 'attack' && this.traffic.engagement?.committed
+        && p.side !== this.traffic.engagement.side;
+      const value = this.rollout(car, p, resource) + (changingSide ? .025 : 0);
+      baseline ??= { ...this.lastRollout };
+      const preservePace = p.tactic !== 'defend' || !Number.isFinite(baseline.progress)
+        || (this.lastRollout.progress >= baseline.progress - Math.max(.75, baseline.progress * p.maxPaceLoss)
+          && this.lastRollout.speed >= baseline.speed * .94);
+      if (preservePace && value < best - .003) {
+        best = value; chosen = p; imminentRisk = this.lastRollout.imminentRisk;
+      }
       count++;
-      if (count >= 3 && clock() - start >= this.o.maxPlanMs) break;
+      if (!nearby && count >= Math.max(3, proposals.length + 1) && clock() - start >= this.o.maxPlanMs) break;
     }
     // A single predicted body overlap contributes over 40 points. If every
     // full-pace trajectory overlaps traffic, include actual braking actions.
     // Mere proximity and ordinary path/heat costs stay far below this gate.
-    if (best >= 25) for (const factor of [.86, .72, .5]) {
-      const p = { ...chosen, factor: factor * resource.factor };
+    if (best >= 25 && this.traffic.hasForwardThreat()) for (const fraction of [.86, .72, .5]) {
+      // Brake for the present obstacle without shrinking every later corner
+      // in the line's envelope. The latter could halve an already slow apex.
+      const p = { ...chosen, brakeAction: true, speedCap: Math.min(chosen.speedCap ?? Infinity, car.speed * fraction) };
       const value = this.rollout(car, p, resource); count++;
-      if (value < best) { best = value; chosen = p; }
+      // An immediate squeeze takes priority over a less certain later
+      // encounter. Track, damage and stability rejections still rule it out.
+      if (value < best || (value < 1e6 && this.lastRollout.imminentRisk < imminentRisk - 1)) {
+        best = value; chosen = p; imminentRisk = this.lastRollout.imminentRisk;
+      }
       if (best < 25) break;
     }
     this.selected = chosen;
+    this.traffic.accept(chosen);
     const latency = clock() - start;
     this.stats = { ...this.stats, plans: this.stats.plans + 1, rollouts: this.stats.rollouts + count,
       latencyMs: latency, maxLatencyMs: Math.max(latency, this.stats.maxLatencyMs), cost: best };
@@ -318,15 +347,23 @@ export class SolsticeDriver {
       this.predictGovernor.push = resource.push; this.predictGovernor.manageStep(car, step);
     }
     const proposals = this.traffic.proposals(car, this.path, now);
+    if (['clearance', 'escape'].includes(this.selected.tactic) && this.traffic.mode === 'alongside'
+      && !proposals.some(proposal => proposal.tactic === this.selected.tactic)) this.nextPlan = now;
+    if (this.selected.yield && proposals[0]?.yield
+      && (this.selected.hold == null) !== (proposals[0].hold == null)) this.nextPlan = now;
     if (now >= this.nextEnvelope) {
       this.path.rebuildEnvelope(car, this.envelopeGrip());
       this.nextEnvelope = now + 1 / this.o.envelopeHz;
     }
     if (now >= this.nextPlan) this.plan(car, now, resource, proposals);
-    // Optional attacks and defenses must pass the trajectory comparison.
-    // Only an actual alongside body can require a corridor between plans.
-    const requestedBounds = this.traffic.mode === 'alongside'
+    // Optional tactics and a clear leading trajectory must pass the native
+    // comparison. Other alongside situations retain the live body corridor.
+    const requestedBounds = this.traffic.mode === 'alongside' && !['clearance', 'escape'].includes(this.selected.tactic)
       ? (proposals[0]?.bounds ?? null) : (this.selected.bounds ?? null);
+    if (this.traffic.mode === 'alongside' && proposals[0]?.yield && this.selected.tactic !== 'clearance') {
+      this.extra = proposals[0].hold == null ? p.lateral - this.path.at(p.s).offset : 0;
+      this.hold = proposals[0].hold == null ? null : p.lateral;
+    }
     if (this.bounds && !requestedBounds) this.extra = p.lateral - this.path.at(p.s).offset;
     this.bounds = this.advanceBounds(this.bounds, requestedBounds, p.lateral, step);
     if (this.selected.hold != null) {
@@ -339,13 +376,18 @@ export class SolsticeDriver {
     this.extra += clamp((this.selected.extra ?? 0) - this.extra, -this.o.laneRate * step, this.o.laneRate * step);
     const plan = { ...this.selected, extra: this.extra, hold: this.hold,
       bounds: this.bounds, brakingBounds: requestedBounds, brakingHold: this.selected.hold,
-      forceGuard: resource.forceGuard };
+      forceGuard: resource.forceGuard, trafficLine: this.selected.trafficLine || Math.abs(this.extra) > .15 };
     if (Math.abs(p.lateral) > this.track.halfWidth + this.track.curbWidth) {
       plan.extra = 0; plan.hold = 0; plan.factor = .45; this.mode = 'REJOIN';
     } else this.mode = resource.save ? 'SAVE' : ({ attack: 'ATTACK', defend: 'DEFEND',
       alongside: 'ALONGSIDE', follow: 'FOLLOW', free: 'PACE', traffic: 'PACE' }[this.traffic.mode] ?? 'PACE');
-    const speedCap = this.selected.bounds || this.selected.hold != null
+    const livePass = this.selected.tactic === 'attack' && ['attack', 'alongside'].includes(this.traffic.mode)
+      ? proposals.find(proposal => proposal.rivalId === this.selected.rivalId && proposal.side === this.selected.side
+        && (proposal.route ?? 'line') === (this.selected.route ?? 'line')) : null;
+    const trafficCap = livePass ? livePass.speedCap : this.selected.bounds || this.selected.hold != null
       ? this.traffic.speedCap : this.traffic.followCap;
+    const speedCap = livePass && !this.selected.brakeAction ? trafficCap
+      : Math.min(trafficCap, this.selected.speedCap ?? Infinity);
     car.controls = this.policy.control(car, p, plan, speedCap);
     this.trackingPoint = { x: this.policy.lastTarget.x, z: this.policy.lastTarget.z };
     this.targetSpeed = this.policy.targetSpeed;

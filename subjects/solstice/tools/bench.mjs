@@ -25,6 +25,7 @@ const sourceFiles = [
   'game/core/async-seats.js', 'game/core/seat-worker.js', 'game/bridges/ai-worker.js',
   'game/bridges/remote.js', 'game/bridges/remote-sync.js', 'game/sim-worker.js',
   'game/core/race.js', 'game/core/rules.js', 'game/core/weather.js', 'game/core/difficulty.js',
+  'game/core/classes.js', 'game/core/hybrid.js', 'game/core/stewards.js',
   'game/core/pit.js', 'game/core/strategy.js', 'game/engine/sim/vehicle.js',
   'game/engine/sim/tyre.js', 'game/engine/sim/track.js', 'game/engine/sim/car-specs.js'
 ].sort();
@@ -58,9 +59,10 @@ const freshMetrics = () => ({ fuelUsed: 0, fuelAdded: 0, wearUsed: 0, tyreResets
   offtrackSeconds: 0, finite: true, firstNonfiniteAt: null, cpuMs: 0, updateCalls: 0,
   bridgeErrors: 0, trafficAvailable: false,
   traffic: { attackStarts: 0, defendMoves: 0, alongsideEpisodes: 0, completedPasses: 0, capEpisodes: 0 } });
-const carMetricSnapshot = (e, time) => ({ time, completedLaps: e.car.race.finishLaps ?? e.car.race.lap - 1,
+const carMetricSnapshot = (e, time, stewards = null) => ({ time, completedLaps: e.car.race.finishLaps ?? e.car.race.lap - 1,
   distanceM: e.car.race.progress, nativeBestLap: e.car.race.bestLap,
-  offtrackSeconds: e.car.race.offtrack, damage: e.car.damage,
+  offtrackSeconds: e.car.race.offtrack, damage: e.car.damage, dq: Boolean(e.car.race.dq),
+  incidentPoints: stewards?.of(e)?.inc ?? null,
   stops: e.strategist.stops, swaps: e.strategist.swaps,
   fuelRemainingLitres: e.car.fuel, finalMaxWear: maxWear(e.car) });
 const resourceCursor = (s, c, time, phase) => ({ phase, time, progress: c.race.progress,
@@ -210,7 +212,7 @@ export function runBenchmark({ driver = 'phantom', field = null, track = 'harbor
       s.wasOfftrack = offtrack;
       if (!finiteCar(c)) { s.finite = false; s.firstNonfiniteAt ??= race.time; }
       if (!raceStats.finishedMetrics) {
-        const end = carMetricSnapshot(e, race.time);
+        const end = carMetricSnapshot(e, race.time, race.stewards);
         if (p.progress < 0 && c.race.progress >= 0) {
           raceStats.gridApproachResources = resourceSegment(s, raceStats.cursor, end, race.track.length);
           raceStats.cursor = resourceCursor(s, c, race.time, 'timed-lap');
@@ -239,13 +241,13 @@ export function runBenchmark({ driver = 'phantom', field = null, track = 'harbor
   const results = order.map((c, position) => {
     const s = stats[c.id], e = race.entryOf(c), clean = s.laps.filter((l) => l.clean).map((l) => l.time);
     const steady = s.laps.filter((l) => l.clean && l.steady).map((l) => l.time);
-    const end = s.finishedMetrics ?? carMetricSnapshot(e, race.time), post = s.postFinish;
+    const end = s.finishedMetrics ?? carMetricSnapshot(e, race.time, race.stewards), post = s.postFinish;
     const raceDistanceM = Math.max(0, end.distanceM - s.startProgress);
     const distanceLapEquivalents = raceDistanceM / race.track.length;
     const partialResources = resourceSegment(s, s.cursor, end, race.track.length);
     return { car: c.id, driver: s.driver, position: position + 1, finishTime: c.race.finishTime,
       gap: race.interval(c, order[0]), metricEndTime: end.time, raceObservedSeconds: s.observedSeconds,
-      completedLaps: end.completedLaps, distanceM: end.distanceM,
+      completedLaps: end.completedLaps, dq: end.dq, incidentPoints: end.incidentPoints, distanceM: end.distanceM,
       raceDistanceM, distanceLapEquivalents,
       gridApproachLapEquivalent: Math.max(0, -s.startProgress / race.track.length),
       partialTimedLapEquivalent: Math.max(0, end.distanceM / race.track.length - end.completedLaps),
@@ -280,7 +282,7 @@ export function runBenchmark({ driver = 'phantom', field = null, track = 'harbor
         offtrackSeconds: post.offtrackSeconds, offtrackEpisodes: post.offtrackEpisodes,
         impactEpisodes: post.impactEpisodes, rescues: post.rescues,
         stops: e.strategist.stops - end.stops, swaps: e.strategist.swaps - end.swaps,
-        finalState: s.finishedMetrics ? carMetricSnapshot(e, race.time) : null } };
+        finalState: s.finishedMetrics ? carMetricSnapshot(e, race.time, race.stewards) : null } };
   });
   return { schemaVersion: 2, config: { driver: field ? null : driver, field: ids, track, requestedSeconds: seconds,
     laps: race.laps, teams: count, seed, weather: race.weather.id, sun, difficulty: level,

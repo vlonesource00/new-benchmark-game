@@ -1,6 +1,13 @@
 # SOLSTICE: whole-lap geometry, live tyre forces, bounded feedback planning
 
-Base: upgraded `2935523` of `new-benchmark-game`, on `solstice-port`.
+Integration base: upgraded `2935523` of `new-benchmark-game`; the combat
+revision builds on the released SOLSTICE configuration at `c01544c`.
+The current development base is `origin/graphics-aaa` at `0a4be3c`, including
+native Changeable weather fronts, stewards and GTP hybrids. Rebase onto that branch before new work and
+before pushing until its merge into `main` is confirmed.
+The private vehicle copy and drive-force estimate include observed hybrid thrust;
+deployment and energy state remain owned by the host. The reported pace target
+and endurance measurements use GT, not a tuned GTP race campaign.
 SOLSTICE writes only its own `car.controls`. Engine physics, timing, compounds,
 strategy, pit autopilot and other driver implementations remain upstream.
 The authorized integration exceptions forward the worker's aim point and skip
@@ -48,9 +55,15 @@ not proof that SOLSTICE beats them. Baselines and race results are recorded in
    open-loop between plans.
 5. Predict opponents from public positions, world velocities, yaw, lateral
    velocity and observed acceleration. Reserve their oriented footprint and
-   uncertainty through the horizon. Choose and hold one pass/defence lane;
-   return to the time-optimal line after the engagement. Following brakes only
-   apply to a predicted occupied corridor. Alongside cars receive clearance.
+   uncertainty through the horizon. Compare bounded racing-line, parallel road
+   lane and shifted racing-line trajectories on both feasible passing sides;
+   use road curvature to identify the inside. Keep a useful side committed,
+   reconsider a closing door before body overlap, and remember a failed side
+   briefly instead of repeating the same unsuccessful approach. Make at most
+   one defensive move per approach and reject optional
+   defensive trajectories that lose excessive progress or exit speed. Following
+   brakes apply to a predicted occupied corridor. Alongside bodies receive
+   clearance through corridors or a physically validated leading trajectory.
 6. Read team fuel targets through a bridge callback in local mode; infer burn
    from public fuel state when worker context has no strategist. Save only when
    the stint needs it. The automatic gearbox is owned by the game, so fuel
@@ -91,6 +104,55 @@ planner may retain the faster feasible line; an actual alongside body still
 requires clearance. Execution uses the selected corridor, rather than applying
 the first traffic proposal regardless of the private comparison. Occupied-lane
 following limits remain available when the passing trajectory is rejected.
+
+### Combat momentum revision
+
+Passing preparation begins with up to four seconds to catch a slower rival.
+The terminal cost prices a blocked continuation beyond the short physics
+rollout, and lane feasibility includes the rival's observed turn-in until the
+bodies meet. The selected attack commits its side; actual alongside positions
+override an abandoned side. Speed caps depend on whether lateral clearance
+can be established before catching the car ahead.
+
+Optional defense uses a small lateral bias and a native rollout pace gate:
+predicted progress may lose at most the larger of 0.75 metres or 4%, and
+terminal speed must retain at least 94% of the baseline. Defense rearms after
+two seconds of separation, allowing a new approach without repeated moves in
+the same approach. A leading car in an established defensive approach can
+offer its normal racing trajectory when each alongside rear body is physically
+clear. This candidate still pays the full cost of actual predicted overlaps;
+only a steady rear car's expanding uncertainty margin is capped at 0.35 metres.
+Lateral crossings and irregular/rejoining cars retain their full reserve.
+This exception is scoped to defended approaches, not passing rivals.
+
+Emergency braking candidates require a forward or immediately overlapping
+threat and cap the current target relative to current speed. They do not
+multiply every future corner speed by a half-pace factor. These native-tested
+candidates can trade more lateral force for braking, and prioritize a reduction
+in the first 0.6 seconds of risk over a less certain later encounter. Track,
+damage and stability rejections still exclude them.
+
+An infeasible outside corridor holds a wider road radius instead of following
+the hotlap line's lateral transition across its neighbour. An inside fallback
+retains a moving racing-line offset rather than tightening its corner radius.
+The physically clear leading candidate remains available to an established
+defensive approach even when the nominal corridor cannot fit. Actual body
+overlaps are never discounted. A separate escape candidate requires every
+alongside body to be completely behind and physically clear, with full risk.
+Two stationary grid cars with more than three metres of empty lateral space
+between their body widths do not impose an alongside lane fence while still
+widely separated during launch. This exception ends after four seconds or at
+15 m/s; both bodies remain in prediction and collision scoring throughout.
+With traffic within 60 metres, the complete small candidate set is compared;
+the soft wall-clock cutoff only shortens optional work in free air. Machine
+load must not decide which feasible combat trajectory is considered.
+
+Traffic trajectories use each circuit's calibrated curvature span consistently
+for steering, the whole-lap envelope and terminal feasibility. The periodic
+envelope still includes forward acceleration and backward braking. Live passing
+caps replace a stale cap only while the same rival, side and route remain viable;
+an explicit emergency action retains its lower cap. The solo line, base pace
+settings and temperature-and-wear rotation gate are unchanged.
 
 Additional rear rotation requires a rear tyre whose core is above its own
 optimum plus 4 degrees C and whose wear exceeds 12%. Both conditions must hold

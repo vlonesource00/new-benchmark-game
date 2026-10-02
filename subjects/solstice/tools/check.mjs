@@ -14,6 +14,8 @@ import { AI_DRIVERS, TEAM_LIVERIES } from '../../../game/core/teams.js';
 import { runBenchmark } from './bench.mjs';
 import { cadenceBridgeFactory } from './cadence-bench.mjs';
 import { pairedSchedule } from './pair-model.mjs';
+import { runCombatProbe, runCornerRaceProbe } from './combat-probe.mjs';
+import { runDuelProbe } from './duel-probe.mjs';
 
 // Run with the JSON compatibility loader; these are short public-contract checks,
 // not endurance benchmarks or assertions of a particular tuning choice.
@@ -125,6 +127,20 @@ check('canonical game prediction parity and independent live wheel state', () =>
     }
   }
   assert.deepEqual(track.rubber, rubber, 'Prediction changed shared rubber');
+});
+
+check('GTP prediction retains the observed hybrid force without writing deployment state', () => {
+  const track = new Track('harbor-ring'), car = carAt(track, { speed: 30, classId: 'lmdh' });
+  car.hybridForce = 1200;
+  car.controls = { throttle: .6, brake: 0, steer: .01 };
+  const shadow = shadowOf(car), environment = new PredictionTrack(track);
+  assert.equal(shadow.hybridForce, car.hybridForce);
+  for (let i = 0; i < 60; i++) {
+    car.step(DT, environment, 0); shadow.step(DT, environment, 0);
+    for (const key of ['x', 'z', 'yaw', 'vx', 'vz', 'speed', 'fuel'])
+      near(shadow[key], car[key], `hybrid prediction ${key}`);
+  }
+  assert.equal(car.hybridForce, 1200);
 });
 
 const tracks = new Map(), paths = new Map();
@@ -356,6 +372,161 @@ check('decelerating predictions stop rather than reverse and defense commits onc
   const fresh = traffic.list.find(o => o.id === leader.id), prediction = traffic.predict(fresh, 1);
   near(prediction.speed, fresh.speed, 'reset prediction has no stale braking acceleration', 1e-8);
   assert.ok(traffic.delta(prediction.s, fresh.s) > 0, 'fresh moving obstacle prediction progresses after clock reset');
+});
+
+check('attacks consider both lanes and distinguish road inside from racing-line transitions', () => {
+  for (const side of [1, -1]) {
+    const s = Array.from({ length: 500 }, (_, i) => i * trafficTrack.length / 500)
+      .find(s => [12, 24, 40, 65].every(a => side * trafficTrack.at(s + a).curvature > .001));
+    assert.ok(Number.isFinite(s), 'fixture has a consistent road bend');
+    const self = carAt(trafficTrack, { s, speed: 40 }), rival = carAt(trafficTrack, { id: 1, s: s + 32, speed: 29 });
+    const traffic = new Traffic(trafficTrack);
+    observe(traffic, self, [rival]);
+    const proposals = traffic.proposals(self, { at: () => ({ offset: 0, curvature: -side * .004 }) });
+    assert.equal(traffic.turnSide(s, self.speed), side, 'inside follows the real road, not the line change');
+    assert.deepEqual(new Set(proposals.map(p => p.side)), new Set([-1, 1]), 'both physically open lanes are offered');
+    assert.equal(proposals[0].side, side, 'inside breaks equal-distance side preference');
+    assert.ok(proposals.every(p => p.factor === 1), 'passing proposals keep full pace');
+  }
+});
+
+check('a blocked continuation favors preparing clearance beyond the short rollout', () => {
+  const self = fixtureCar(0, 0, 0, 40), rival = fixtureCar(1, 35, 0, 30), traffic = new Traffic(trafficTrack);
+  observe(traffic, self, [rival]); traffic.proposals(self, centerPath);
+  const blocked = traffic.continuationCost(self, 0, s => ({ ...trafficTrack.at(s, 0), offset: 0 }));
+  const clear = traffic.continuationCost(self, 0, s => ({ ...trafficTrack.at(s, 3), offset: 3 }));
+  assert.ok(blocked > clear, 'do not wait for overlap before pricing the occupied continuation');
+  near(clear, 0, 'a prepared clear lane has no following opportunity cost');
+});
+
+check('a passing lane must remain open through the observed rival turn-in', () => {
+  const self = fixtureCar(0, 0, 0, 40), rival = fixtureCar(1, 24, 0, 30);
+  const p = trafficTrack.nearest(rival.x, rival.z);
+  rival.vx += p.nx * 4; rival.vz += p.nz * 4;
+  const traffic = new Traffic(trafficTrack); observe(traffic, self, [rival]);
+  const proposals = traffic.proposals(self, centerPath);
+  assert.equal(traffic.mode, 'attack');
+  assert.deepEqual([...new Set(proposals.map(p => p.side))], [-1], 'do not enter the side the rival is closing against the edge');
+});
+
+check('a real SOLSTICE duel completes a shallow-bend pass without contact or losing momentum', () => {
+  const result = runDuelProbe({ seconds: 20, hz: 30, filter: 'gentle-right' }).results[0];
+  assert.ok(result.duel.passCompletedAt != null && result.duel.passCompletedAt < 15, 'complete a viable pass');
+  assert.equal(result.duel.contactSteps, 0, 'native bodies stay separated');
+  assert.ok(result.progressRatios[0] > .97, 'attacker retains its free-air progress');
+  for (const car of result.duel.metrics) {
+    assert.equal(car.offtrackSeconds, 0); assert.equal(car.damage, 0); assert.equal(car.errors, 0);
+    assert.equal(car.stoppedSeconds, 0); assert.ok(car.finite);
+  }
+});
+
+check('a warm worn rival crossing the exit lane stays clear at 60 Hz', () => {
+  const result = runDuelProbe({ seconds: 20, hz: 60, filter: 'exit-worn' }).results[0];
+  assert.ok(result.duel.passCompletedAt != null, 'finish the pass after the squeeze');
+  assert.equal(result.duel.contactSteps, 0);
+  assert.ok(result.progressRatios[0] > .9, 'preserve progress through the encounter');
+  for (const car of result.duel.metrics) {
+    assert.equal(car.offtrackSeconds, 0); assert.equal(car.damage, 0); assert.equal(car.errors, 0);
+    assert.equal(car.stoppedSeconds, 0); assert.ok(car.finite);
+  }
+});
+
+check('actual alongside position overrides an abandoned opposite passing side', () => {
+  const self = fixtureCar(0, 0, 3, 35), rival = fixtureCar(1, 2, 0, 34), traffic = new Traffic(trafficTrack);
+  observe(traffic, self, [rival]);
+  traffic.engagement = { id: rival.id, type: 'attack', side: -1, committed: true,
+    startGap: 30, until: 5, noAdvantageSince: null };
+  traffic.sideMemory.set(rival.id, { side: -1, time: 0 });
+  const proposal = traffic.proposals(self, centerPath)[0];
+  assert.equal(traffic.mode, 'alongside');
+  assert.equal(proposal.hold, null, 'conflicting old side cannot freeze the present lane');
+  assert.ok(proposal.bounds && proposal.bounds.min <= proposal.bounds.max, 'the physical side has a feasible corridor');
+  assert.ok(proposal.bounds.min > rival.lateral, 'corridor remains on the actual side of the rival');
+  assert.equal(traffic.engagement.side, 1);
+});
+
+check('defense rearms for a separate approach without repeating a move in the same approach', () => {
+  const self = fixtureCar(0, 0), rear = fixtureCar(1, -24, 1.5, 38), traffic = new Traffic(trafficTrack);
+  observe(traffic, self, [rear], 0); traffic.proposals(self, centerPath, 0);
+  observe(traffic, self, [rear], 4); traffic.proposals(self, centerPath, 4);
+  assert.equal(traffic.stats.defendMoves, 1, 'same close rival cannot cause repeated blocking');
+  rear.place(trafficTrack, straightS - 70, 1.5, 38);
+  observe(traffic, self, [rear], 5); traffic.proposals(self, centerPath, 5);
+  observe(traffic, self, [rear], 7.1); traffic.proposals(self, centerPath, 7.1);
+  rear.place(trafficTrack, straightS - 24, 1.5, 38);
+  observe(traffic, self, [rear], 8); traffic.proposals(self, centerPath, 8);
+  assert.equal(traffic.mode, 'defend', 'a separated rival can launch a new approach');
+  assert.equal(traffic.stats.defendMoves, 2);
+});
+
+check('native straight passes prepare separation and retain pace at held-control cadence', () => {
+  const report = runCombatProbe({ seconds: 10, hz: 30, filter: 'straight' });
+  assert.equal(report.results.length, 3);
+  for (const { setup, combat, progressRatio } of report.results) {
+    assert.ok(combat.passedAt !== null && combat.passedAt < 5, `${setup.name}: complete the overtake promptly`);
+    assert.equal(combat.contactSteps, 0, `${setup.name}: native bodies never contact`);
+    assert.equal(combat.offtrackSeconds, 0); assert.equal(combat.bridgeErrors, 0);
+    assert.equal(combat.stoppedSeconds, 0);
+    assert.ok(combat.minimumOverlapClearance > 2.1, `${setup.name}: leave actual lateral space`);
+    assert.ok(progressRatio > .85, `${setup.name}: avoid sustained following pace`);
+  }
+});
+
+check('worn hard-tyre defense preserves native corner progress without stopping', () => {
+  const report = runCombatProbe({ seconds: 6, hz: 30, filter: 'defend' });
+  for (const { setup, free, combat, progressRatio } of report.results) {
+    if (setup.name === 'defend-close') continue; // Separate side-by-side pressure check below.
+    assert.ok(combat.traffic.defendMoves > 0, `${setup.name}: a defensive approach is considered`);
+    assert.equal(combat.contactSteps, 0); assert.equal(combat.offtrackSeconds, 0);
+    assert.equal(combat.stoppedSeconds, 0); assert.equal(combat.bridgeErrors, 0);
+    assert.ok(progressRatio > .96, `${setup.name}: an optional block cannot cost significant progress`);
+    assert.ok(combat.minimumSpeed > free.minimumSpeed * .94, `${setup.name}: retain corner momentum`);
+  }
+});
+
+check('close rear pressure retains the lead and corner momentum with worn hards', () => {
+  const { free, combat, progressRatio } = runCombatProbe({ seconds: 8, hz: 30, filter: 'defend-close' }).results[0];
+  assert.ok(combat.minimumRearGap < 4.6, 'the faster rear car actually reaches alongside');
+  assert.equal(combat.rivalPassedAt, null, 'retain the position through the corner');
+  assert.ok(progressRatio > .94, 'retain momentum rather than park to block');
+  assert.ok(combat.minimumSpeed > free.minimumSpeed * .75);
+  assert.equal(combat.traffic.defendMoves, 1, 'one defensive move in this approach');
+  assert.equal(combat.contactSteps, 0); assert.equal(combat.offtrackSeconds, 0);
+  assert.equal(combat.stoppedSeconds, 0); assert.equal(combat.bridgeErrors, 0);
+});
+
+check('leading clearance never discounts actual overlaps or lateral/rejoining threats', () => {
+  const self = fixtureCar(0, 0, 0, 40), rear = fixtureCar(1, -2, 0, 41);
+  const traffic = new Traffic(trafficTrack); observe(traffic, self, [rear]);
+  assert.ok(traffic.risk(self, 0, true) >= 5000, 'physical collision penalty remains intact');
+  const p = trafficTrack.nearest(rear.x, rear.z);
+  rear.vx += p.nx * 4; rear.vz += p.nz * 4;
+  observe(traffic, self, [rear], .1);
+  near(traffic.risk(self, .3, true), traffic.risk(self, .3), 'lateral uncertainty retains its full reserve');
+});
+
+check('the native Solenne grid launch clears a skewed slow rival without contact', () => {
+  const report = runBenchmark({ field: ['solstice', 'gemini-supreme-v4'], track: 'solenne',
+    teams: 2, laps: 12, seconds: 8, seed: 7 });
+  assert.ok(report.simulatedSeconds >= 7.99);
+  assert.equal(report.totalContacts, 0);
+  for (const car of report.results) {
+    assert.equal(car.offtrackSeconds, 0); assert.equal(car.damage, 0);
+    assert.equal(car.bridgeErrors, 0); assert.ok(car.finite);
+  }
+});
+
+check('native corner combat avoids the converging-rival contact and half-pace apex', () => {
+  const report = runCornerRaceProbe();
+  assert.ok(report.simulatedSeconds >= 79.9, 'complete the reproduced encounter');
+  assert.ok(report.trafficSeconds > .2, 'exercise an actual close rival approach');
+  assert.equal(report.totalContacts, 0);
+  assert.ok(report.minimumSpeed > 5, 'do not park in the corner');
+  assert.ok(report.minimumTarget > 5, 'do not halve the already slow apex envelope');
+  for (const result of report.results) {
+    assert.equal(result.offtrackSeconds, 0); assert.equal(result.rescues, 0);
+    assert.equal(result.bridgeErrors, 0); assert.equal(result.damage, 0);
+  }
 });
 
 check('cadence wrapper delays outputs one physics frame and separates postfinish calls', () => {
