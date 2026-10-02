@@ -74,4 +74,6 @@ const env = globalThis.process?.env ?? {};
 export const MANAGE_OVER = Number(env.MANAGE_OVER ?? 14);
 export const MANAGE_FLOOR = Number(env.MANAGE_FLOOR ?? 0.92);
 const MANAGE_GAIN = Number(env.MANAGE_GAIN ?? 0.004);
-const SPIN_LIMIT = Number(env.SPIN_LIMIT ?? 0.09);
+// The game tyre's drive force peaks near 0.23 slip ratio; 0.09 gave only 77 % of it and
+// held every AI's throttle at ~0.65 on corner exits. 0.18 is 99 % of the peak.
+const SPIN_LIMIT = Number(env.SPIN_LIMIT ?? 0.18);

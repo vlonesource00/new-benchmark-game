@@ -26,7 +26,7 @@ export const DEFAULT_OPTIONS = Object.freeze({
   // tracker
   // kb: countersteer into body slip past betaDead; it holds slides the old kb 0 spun out of
   tau: 0.085, ffLead: 0.10, kUs: 0.0, kpE: 1.4, kdE: 2.2, kr: 1.0, kb: 0.6, betaDead: 0.08, latHead: 1.15,
-  vLead: 0.08, kv: 6, brakeGain: 1 / 27,
+  vLead: 0.08, kv: 6, brakeGain: 1 / 31,
   // throttle governor: slip angle / rear slip ratio above which drive is cut
   // (0.09 rear slip is only ~74 % of the tyre's drive force; it held throttle back on half the lap)
   betaCut: 0.10, betaGain: 10, brakeBetaGain: 8, slipCut: 0.16, slipGain: 6,
