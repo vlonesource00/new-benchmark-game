@@ -99,6 +99,10 @@ input[type=range] { accent-color: var(--accent); width: 180px; }
 .chip { font-size: 13px; letter-spacing: .06em; padding: 2px 8px; border: 1px solid var(--line); color: var(--dim); white-space: nowrap; }
 .chip.human { border-color: var(--accent); color: var(--ink); background: rgba(255,75,43,.16); }
 .chip.start::before { content: '▶ '; color: var(--accent-2); }
+.chip.pick { padding: 0 2px 0 8px; display: inline-flex; align-items: center; }
+.chip.pick select { background: transparent; border: 0; color: var(--ink); font: inherit; letter-spacing: inherit; padding: 2px; cursor: pointer; }
+.chip.pick select option { background: #111317; color: var(--ink); }
+.chip.pick:hover { border-color: var(--ink); }
 
 .roster { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
 .roster .card { background: var(--glass); border: 1px solid var(--line); padding: 18px; position: relative; overflow: hidden; }

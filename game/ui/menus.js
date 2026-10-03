@@ -33,6 +33,7 @@ export function renderMenu(el, act) {
     </div>
     <nav class="menu-list">
       <button class="menu-item" data-go="setup">Quick Race <small>Endurance</small></button>
+      <button class="menu-item" data-go="duel">AI Duel <small>Watch two AIs race</small></button>
       <button class="menu-item" disabled>Multiplayer <span class="lock">LAN · M4</span></button>
       <button class="menu-item" data-go="drivers">Drivers <small>AI roster</small></button>
       <button class="menu-item" data-go="settings">Settings</button>
@@ -109,9 +110,11 @@ export function renderSetup(el, s, teams, outlines, act, career = null) {
           <div class="block"><h3>Grid draw · seed ${s.seed}</h3>
             <div class="team-list">${teams.map((t) => `
               <div class="team-row"><span class="grid-pos">P${t.grid + 1}</span><span class="cls-tag" style="background:${RACE_CLASSES[t.raceClass ?? 'gt3'].color};color:${RACE_CLASSES[t.raceClass ?? 'gt3'].fg}">${RACE_CLASSES[t.raceClass ?? 'gt3'].label}</span><span class="bar" style="background:${t.color}"></span>
-                <div><b>${esc(t.name)}</b><div class="drivers">${t.drivers.map((d, i) => `<span class="chip ${d.kind === 'human' ? 'human' : ''} ${i === t.starter ? 'start' : ''}" title="${esc(d.arch ?? 'Human')}">${esc(d.name)}</span>`).join('')}</div></div>
+                <div><b>${esc(t.name)}</b><div class="drivers">${t.drivers.map((d, i) => d.kind === 'human'
+                  ? `<span class="chip human ${i === t.starter ? 'start' : ''}" title="Human">${esc(d.name)}</span>`
+                  : `<label class="chip pick ${i === t.starter ? 'start' : ''}" title="${esc(d.arch ?? '')}"><select data-pick="${esc(t.id)}" data-seat="${i}">${seatPool(t).map((a) => `<option value="${esc(a.id)}" ${a.id === d.id ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select></label>`).join('')}</div></div>
               </div>`).join('')}</div>
-            <div class="row" style="margin-top:12px"><label>Teammates<span class="hint">${player ? `You race for ${esc(player.name)}` : 'Every car is AI-driven'}</span></label><button class="back" data-reroll>⟳ Redraw</button></div>
+            <div class="row" style="margin-top:12px"><label>Teammates<span class="hint">${player ? `You race for ${esc(player.name)}` : 'Every car is AI-driven'} · choose any AI seat from its list · Redraw clears the picks</span></label><button class="back" data-reroll>⟳ Redraw</button></div>
           </div>
         </div>
       </div>
@@ -121,6 +124,7 @@ export function renderSetup(el, s, teams, outlines, act, career = null) {
   $(el, '[data-back]').addEventListener('click', () => act.go('menu'));
   $(el, '[data-start]').addEventListener('click', () => act.start());
   $(el, '[data-reroll]').addEventListener('click', () => act.set({ seed: Math.floor(Math.random() * 1e6) }));
+  $$(el, '[data-pick]').forEach((s) => s.addEventListener('change', () => act.pick(s.dataset.pick, Number(s.dataset.seat), s.value)));
   $$(el, '[data-track]').forEach((b) => b.addEventListener('click', () => act.set({ trackId: b.dataset.track })));
   $$(el, '[data-seg]').forEach((g) => $$(g, 'button').forEach((b) => b.addEventListener('click', () => {
     const key = g.dataset.seg, raw = b.dataset.v, v = raw === 'true' ? true : raw === 'false' ? false : raw;
@@ -135,6 +139,55 @@ export function renderSetup(el, s, teams, outlines, act, career = null) {
     else act.set({ teamCount: Math.max(4, Math.min(8, s.teamCount + d)) });
   })));
   $(el, '[data-name]').addEventListener('change', (e) => act.set({ playerName: e.target.value.trim().toUpperCase() || 'YOU' }, true));
+}
+
+/** AIs that may take a seat in this team's car: GTP seats only take prototype-capable AIs. */
+export function seatPool(team) {
+  const allowed = RACE_CLASSES[team.raceClass]?.ai;
+  return allowed ? AI_DRIVERS.filter((d) => allowed.includes(d.id)) : AI_DRIVERS;
+}
+
+/**
+ * AI duel: two AIs, one car each, same class, a short race from a rolling or
+ * standing start. A test bench to watch; nobody drives and nothing is rated.
+ */
+export function renderDuel(el, d, outlines, act) {
+  const ai = (id) => AI_DRIVERS.find((x) => x.id === id) ?? AI_DRIVERS[0];
+  const a = ai(d.a), b = ai(d.b), cls = RACE_CLASSES[d.raceClass] ?? RACE_CLASSES.gtp;
+  const untuned = cls.ai ? [...new Set([a, b])].filter((x) => !cls.ai.includes(x.id)) : [];
+  const pick = (key, x) => `<div class="row"><label>Driver ${key.toUpperCase()}<span class="hint">${esc(x.name)} · ${esc(x.arch)}</span></label>${seg(key, AI_DRIVERS.map((r) => [r.id, r.short]), x.id)}</div>`;
+  el.innerHTML = `
+    <div class="panel-wrap">
+      <div class="panel-head"><div><div class="kicker">AI test bench</div><h2>AI Duel</h2></div><button class="back" data-back>← Back</button></div>
+      <div class="grid-2">
+        <div>
+          <div class="block"><h3>Drivers</h3>
+            ${pick('a', a)}${pick('b', b)}
+            <div class="row"><label>Class<span class="hint">${untuned.length ? `${untuned.map((x) => esc(x.name)).join(' and ')} ${untuned.length > 1 ? 'are' : 'is'} not tuned for GTP: expect it off the pace` : esc(cls.name)}</span></label>${seg('raceClass', [['gtp', 'GTP'], ['gt3', 'GT3']], cls.id)}</div>
+            <div class="row"><label>Pole<span class="hint">${d.startType === 'standing' ? 'Pole sits ahead on the grid' : 'Rolling: pole on the right of the front row, the other alongside'}</span></label>${seg('pole', [['a', `A · ${a.short}`], ['b', `B · ${b.short}`], ['random', 'Random']], d.pole)}</div>
+          </div>
+          <div class="block"><h3>Race</h3>
+            <div class="row"><label>Laps<span class="hint">1–5 laps · fuel and tyres wear as in a normal race</span></label>${stepper('laps', d.laps)}</div>
+            <div class="row"><label>Start</label>${seg('startType', [['rolling', 'Rolling'], ['standing', 'Standing']], d.startType)}</div>
+            <div class="row"><label>Tyre</label>${seg('startCompound', COMPOUND_IDS.map((c) => [c, COMPOUNDS[c].label]), d.startCompound)}</div>
+            <div class="row"><label>Weather</label>${seg('weather', [['clear', 'Clear'], ['hot', 'Hot'], ['overcast', 'Overcast'], ['rain', 'Rain'], ['changeable', 'Changeable']], d.weather)}</div>
+            <div class="row"><label>AI pace<span class="hint">${esc(difficultyById(d.difficulty).blurb)}</span></label>${seg('difficulty', DIFFICULTIES.map((x) => [x.id, x.label]), difficultyById(d.difficulty).id)}</div>
+          </div>
+        </div>
+        <div>
+          <div class="block"><h3>Circuit</h3><div class="tracks">
+            ${TRACKS.map((t) => `<button class="track-card ${t.id === d.trackId ? 'sel' : ''}" data-track="${t.id}" ${t.ready ? '' : 'disabled'}>
+              ${t.ready ? '' : '<span class="tag">SOON</span>'}<b>${esc(t.name)}</b><span>${esc(t.place)}</span>${trackOutline(outlines[t.id])}</button>`).join('')}
+          </div></div>
+        </div>
+      </div>
+    </div>
+    <div class="setup-foot"><span class="summary">${esc(a.short)} vs ${esc(b.short)} · ${cls.label} · ${esc(trackById(d.trackId).name)} · ${d.laps} lap${d.laps > 1 ? 's' : ''}</span><button class="cta" data-start>Start duel</button></div>`;
+  $(el, '[data-back]').addEventListener('click', () => act.go('menu'));
+  $(el, '[data-start]').addEventListener('click', () => act.start());
+  $$(el, '[data-track]').forEach((btn) => btn.addEventListener('click', () => act.set({ trackId: btn.dataset.track })));
+  $$(el, '[data-seg]').forEach((g) => $$(g, 'button').forEach((btn) => btn.addEventListener('click', () => act.set({ [g.dataset.seg]: btn.dataset.v }))));
+  $$(el, '[data-step]').forEach((g) => $$(g, 'button').forEach((btn) => btn.addEventListener('click', () => act.set({ laps: Math.max(1, Math.min(5, d.laps + Number(btn.dataset.d))) }))));
 }
 
 export function renderDrivers(el, act) {

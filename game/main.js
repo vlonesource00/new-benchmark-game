@@ -22,13 +22,13 @@ import { loadCareer, recordRace, aiRating, aiLicense, strengthOfField, difficult
 import { EnduranceRace, FIXED_DT } from './core/race.js';
 import { AsyncSeats } from './core/async-seats.js';
 import { TRACKS, trackById } from './core/tracks.js';
-import { drawTeams, mulberry32 } from './core/teams.js';
-import { assignClasses, gridFromQualifying } from './core/classes.js';
+import { drawTeams, mulberry32, AI_DRIVERS, TEAM_LIVERIES } from './core/teams.js';
+import { assignClasses, gridFromQualifying, RACE_CLASSES } from './core/classes.js';
 import { DEPLOY_MODES, MODE_ORDER } from './core/hybrid.js';
 import { FORMATS } from './core/rules.js';
 import { Weather } from './core/weather.js';
 import { PlayerInput } from './ui/input.js';
-import { renderMenu, renderSetup, renderDrivers, renderSettings, renderLoading, setLoading, renderResults, renderQualifying } from './ui/menus.js';
+import { renderMenu, renderSetup, renderDrivers, renderSettings, renderLoading, setLoading, renderResults, renderQualifying, renderDuel, seatPool } from './ui/menus.js';
 import { Hud } from './ui/hud.js';
 import { AiDebugPanel } from './ui/ai-debug.js';
 import { AiLens } from './render/ai-lens.js';
@@ -110,12 +110,17 @@ const aiLens = new AiLens(scene);
 addEventListener('pointerdown', (e) => { if (e.target.closest?.('button, .menu-item, .track-card')) audio.cue('click'); });
 const telemetry = new TelemetryLog();
 const setup = load('pe.setup', { trackId: 'harbor-ring', formatId: 'classic', laps: FORMATS.classic.laps, teamCount: 6, drive: true, playerName: 'YOU', startCompound: 'medium', assist: true, gearbox: 'auto', startTime: 'track', dayCycle: true, weather: 'clear', seed: 20260930, difficulty: 'pro' });
+// AI duel: two AIs, one car each, a short race to watch (the menu's AI Duel screen).
+const duel = load('pe.duel', { a: 'claude-revolution', b: 'solstice', raceClass: 'gtp', trackId: 'harbor-ring', laps: 2, startType: 'rolling', startCompound: 'medium', weather: 'clear', pole: 'a', difficulty: 'alien' });
+let mode = 'race';
+// Settings of the session being set up or run: the race setup, or the duel's on top of it.
+const cfg = () => (mode === 'duel' ? { ...setup, trackId: duel.trackId, formatId: 'custom', laps: duel.laps, teamCount: 2, drive: false, session: 'hosted', qualifying: false, startCompound: duel.startCompound, weather: duel.weather, startType: duel.startType, difficulty: duel.difficulty } : setup);
 let screen = 'boot', overlay = null;
 // Driver career (licence, Safety Rating, iRating). Official races are rated and
 // matched to your iRating; hosted races use the chosen difficulty and are unrated.
 const career = loadCareer();
-const official = () => (setup.session ?? 'official') === 'official' && setup.drive;
-const raceDifficulty = () => (official() ? difficultyForRating(career.iRating) : setup.difficulty);
+const official = () => mode !== 'duel' && (setup.session ?? 'official') === 'official' && setup.drive;
+const raceDifficulty = () => (official() ? difficultyForRating(career.iRating) : cfg().difficulty);
 let raceInfo = null;
 let teams = [], teamsById = {}, cars = [], models = [], race = null, seats = null, snap = null, trackLength = 0;
 // Clock: each circuit starts at its own hour unless the setup picks one, and with
@@ -149,8 +154,30 @@ function setOverlay(name) {
 
 const humans = () => (setup.drive ? [{ id: PLAYER_ID, name: setup.playerName || 'YOU' }] : []);
 function redraw() {
-  teams = assignClasses(drawTeams({ teamCount: setup.teamCount, humans: humans(), seed: setup.seed, coDriver: setup.coDriver }), setup.field ?? 'multi', setup.playerClass ?? 'gtp', mulberry32(setup.seed ^ 0x5eed));
+  teams = mode === 'duel' ? duelTeams() : applyPicks(assignClasses(drawTeams({ teamCount: setup.teamCount, humans: humans(), seed: setup.seed, coDriver: setup.coDriver }), setup.field ?? 'multi', setup.playerClass ?? 'gtp', mulberry32(setup.seed ^ 0x5eed)));
   teamsById = Object.fromEntries(teams.map((t) => [t.id, t]));
+}
+const aiSeat = (ai) => ({ kind: 'ai', id: ai.id, name: ai.name, short: ai.short, arch: ai.arch });
+/** Hand-picked drivers over the seeded draw (setup.picks, valid for the seed they were made on). */
+function applyPicks(list) {
+  const seats = setup.picks?.seed === setup.seed ? setup.picks.seats ?? {} : {};
+  for (const t of list) {
+    t.drivers = t.drivers.map((d, i) => {
+      const ai = seatPool(t).find((x) => x.id === seats[t.id]?.[i]);
+      return d.kind === 'human' || !ai ? d : aiSeat(ai);
+    });
+  }
+  return list;
+}
+/** The two duel cars: one AI each, same class, pole as chosen. */
+function duelTeams() {
+  const cls = RACE_CLASSES[duel.raceClass] ?? RACE_CLASSES.gtp;
+  const ids = (duel.pole === 'random' ? Math.random() < 0.5 : duel.pole === 'b') ? [duel.b, duel.a] : [duel.a, duel.b];
+  return ids.map((id, grid) => {
+    const ai = AI_DRIVERS.find((x) => x.id === id) ?? AI_DRIVERS[0], livery = TEAM_LIVERIES[(id === duel.a ? 0 : 1) + (duel.a === duel.b ? grid : 0)];
+    const short = ids[0] === ids[1] ? `${ai.short}${grid + 1}` : ai.short;
+    return { ...livery, name: `${ai.name}${ids[0] === ids[1] ? ` #${grid + 1}` : ''}`, short, index: grid, grid, starter: 0, raceClass: cls.id, classId: cls.car, drivers: [aiSeat(ai)] };
+  });
 }
 
 const nav = {
@@ -158,7 +185,8 @@ const nav = {
   go(name) {
     save('pe.setup', setup);
     if (name === 'menu') { stopRace(); renderMenu($('#screen-menu'), nav); }
-    if (name === 'setup') { stopRace(); redraw(); renderSetup($('#screen-setup'), setup, teams, outlines, nav, career); }
+    if (name === 'setup') { stopRace(); mode = 'race'; redraw(); renderSetup($('#screen-setup'), setup, teams, outlines, nav, career); }
+    if (name === 'duel') { stopRace(); renderDuel($('#screen-duel'), duel, outlines, duelNav); }
     if (name === 'drivers') renderDrivers($('#screen-drivers'), nav);
     if (name === 'settings') renderSettings($('#screen-settings'), settings, nav);
     show(name);
@@ -171,13 +199,29 @@ const nav = {
     redraw();
     renderSetup($('#screen-setup'), setup, teams, outlines, nav, career);
   },
+  /** Seat pick from the grid draw; the player's own teammate is also their co-driver choice. */
+  pick(teamId, seat, id) {
+    const seats = setup.picks?.seed === setup.seed ? { ...setup.picks.seats } : {};
+    seats[teamId] = { ...seats[teamId], [seat]: id };
+    const patch = { picks: { seed: setup.seed, seats } };
+    if (teams.find((t) => t.id === teamId)?.drivers.some((d) => d.kind === 'human')) patch.coDriver = id;
+    nav.set(patch);
+  },
   settings(patch) {
     Object.assign(settings, patch); save('pe.settings', settings);
     if ('volume' in patch) audio.setVolume(settings.volume);
     if ('quality' in patch) { finish?.setQuality(settings.quality); world?.setQuality?.(settings.quality); }
     if ('pixelRatio' in patch) { renderer.setPixelRatio(pixelRatio()); resize(); }
   },
-  start: () => startRace()
+  start: () => { mode = 'race'; startRace(); }
+};
+const duelNav = {
+  go: nav.go,
+  set(patch) {
+    Object.assign(duel, patch); save('pe.duel', duel);
+    renderDuel($('#screen-duel'), duel, outlines, duelNav);
+  },
+  start: () => { save('pe.duel', duel); mode = 'duel'; startRace({ session: 'race' }); }
 };
 
 // ---------- race lifecycle ----------
@@ -199,9 +243,9 @@ function stopRace() {
  * Starts a session. With qualifying on, Go racing runs lone qualifying first;
  * its result screen then starts the race on that grid (keepGrid: no redraw).
  */
-async function startRace({ session = (setup.qualifying ?? true) ? 'qualifying' : 'race', keepGrid = false } = {}) {
+async function startRace({ session = (cfg().qualifying ?? true) ? 'qualifying' : 'race', keepGrid = false } = {}) {
   stopRace();
-  const token = raceToken;
+  const token = raceToken, setup = cfg();
   if (!keepGrid) redraw();
   const def = trackById(setup.trackId);
   if (official() && !meetsLicense(career, setup.formatId)) { toast(`Official ${FORMATS[setup.formatId]?.label ?? ''} races need a ${FORMAT_LICENSE[setup.formatId]} licence · race Hosted, or earn it in Sprint races`, 5000); return; }
@@ -215,7 +259,9 @@ async function startRace({ session = (setup.qualifying ?? true) ? 'qualifying' :
   setLoading($('#screen-loading'), 0.25, 'Seating the drivers…');
   try {
     seats = new AsyncSeats(def.id); seats.wantDebug = aiDebug.open;
-    race = new EnduranceRace({ track: new Track(def.scenario), teams, format: FORMATS[setup.formatId] ?? FORMATS.custom, laps: setup.laps, startCompound: setup.startCompound ?? 'medium', difficulty: difficultyById(raceDifficulty()).k, weather: setup.weather ?? 'clear', seed: setup.seed, weatherSeed: setup.weather === 'changeable' ? (Math.random() * 2 ** 31) | 0 : setup.seed, makeBridge: seats.factory(), session, startType: setup.startType ?? 'rolling' });
+    const duelRun = mode === 'duel';
+    race = new EnduranceRace({ track: new Track(def.scenario), teams, format: duelRun ? { ...FORMATS.custom, mandatoryStops: 0, mandatorySwap: false } : FORMATS[setup.formatId] ?? FORMATS.custom, laps: duelRun ? 12 : setup.laps, startCompound: setup.startCompound ?? 'medium', difficulty: difficultyById(raceDifficulty()).k, weather: setup.weather ?? 'clear', seed: setup.seed, weatherSeed: setup.weather === 'changeable' ? (Math.random() * 2 ** 31) | 0 : setup.seed, makeBridge: seats.factory(), session, startType: setup.startType ?? 'rolling' });
+    if (duelRun) race.laps = setup.laps;
     await seats.start(race);
     world.setPitBoxes?.(race.lane, teams);
   } catch (error) {
@@ -293,7 +339,7 @@ function onFinished() {
     if (token !== raceToken) return;
     if (replay) endReplay();
     raceActive = false; setOverlay(null);
-    renderResults($('#screen-results'), lastResults, teamsById, contacts, nav, careerChange);
+    renderResults($('#screen-results'), lastResults, teamsById, contacts, mode === 'duel' ? { ...nav, go: (n) => nav.go(n === 'setup' ? 'duel' : n) } : nav, careerChange);
     show('results');
   }, 3500);
   hud.announce('CHEQUERED FLAG', `${teamsById[lastResults[0].team].name} win`, 3.5);
@@ -436,7 +482,7 @@ function openPause() {
     volume: (v) => setVolume(v),
     resume: () => { setOverlay(null); setPaused(false); },
     telemetry: () => { setOverlay('telemetry'); drawTelemetry(); },
-    restart: () => startRace({ session: race?.session ?? 'race', keepGrid: race?.session === 'race' && setup.qualifying !== false }),
+    restart: () => startRace({ session: race?.session ?? 'race', keepGrid: race?.session === 'race' && cfg().qualifying !== false }),
     quit: () => nav.go('menu'),
     speed: (n) => { if (n === 1 || !playerDriving()) setSpeed(n); }
   });
@@ -444,7 +490,7 @@ function openPause() {
 
 input.on((action) => {
   if (screen !== 'race' || !raceActive) {
-    if (action === 'pause' && ['setup', 'drivers', 'settings'].includes(screen)) nav.go('menu');
+    if (action === 'pause' && ['setup', 'duel', 'drivers', 'settings'].includes(screen)) nav.go('menu');
     return;
   }
   if (replay) {
@@ -502,7 +548,7 @@ function frame(ms, pumped = false) {
   if (!pumped) nextFrame(frame);
   const now = ms / 1000, delta = Math.min(0.1, Math.max(0, now - previous)); previous = now;
   const raw = input.poll();
-  if (race && raceActive && setup.drive) race.setInput(PLAYER_ID, overlay && paused ? { ...raw, throttle: 0, brake: 0.4, dir: 0 } : raw);
+  if (race && raceActive && cfg().drive) race.setInput(PLAYER_ID, overlay && paused ? { ...raw, throttle: 0, brake: 0.4, dir: 0 } : raw);
   if (race && raceActive && !paused) {
     stepRace(delta);
     if (now - lastSnap >= 0.1 || (race.phase === 'finished' && !finishedSeen)) { lastSnap = now; publishSnapshot(); }
