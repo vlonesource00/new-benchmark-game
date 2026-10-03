@@ -1,8 +1,12 @@
 # A maneuver-first GTP racer
 
-Status: proposed architecture; no new controller is implemented. Grounded in
-the [game audit](GAME-AUDIT.md) at commit `ea7b402`. `next-racer` is a provisional
-ID. It is a separate subject and must preserve SOLSTICE.
+Status: design target with an implemented experimental runtime, **SPEARHEAD**,
+registered as `next-racer`. Grounded in the [game audit](GAME-AUDIT.md) at commit
+`ea7b402`. It is a separate subject and preserves SOLSTICE. The runtime currently
+uses bounded route families and a coarse whole-maneuver forecast followed by
+native prefix validation. This document's full corridor graph, rival-response
+coverage and acceptance requirements are not claimed complete; see
+[results](RESULTS.md) and [pass attribution](ATTRIBUTION.md).
 
 ## Objective and order of work
 

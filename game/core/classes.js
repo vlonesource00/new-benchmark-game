@@ -2,12 +2,12 @@
 // prototypes and GT3 cars share the track, start in class groups (GTP ahead),
 // and are classified, rated and coloured per class.
 import { PACE_PROFILES } from './pace-profiles.js';
+import { AI_DRIVERS } from './teams.js';
 
 export const RACE_CLASSES = Object.freeze({
-  gtp: { id: 'gtp', label: 'GTP', name: 'GTP HYBRID PROTOTYPE', car: 'lmdh', color: '#f2c230', fg: '#111', pace: 1.14, ai: ['solstice', 'gemini-supreme-v4', 'claude-revolution'] },
+  gtp: { id: 'gtp', label: 'GTP', name: 'GTP HYBRID PROTOTYPE', car: 'lmdh', color: '#f2c230', fg: '#111', pace: 1.14, ai: ['solstice', 'gemini-supreme-v4', 'claude-revolution', 'next-racer'] },
   gt3: { id: 'gt3', label: 'GT3', name: 'GT3', car: 'gt', color: '#e0443a', fg: '#fff', pace: 1, ai: null }
 });
-const GTP_NAMES = { solstice: ['SOLSTICE', 'SLC'], 'gemini-supreme-v4': ['GEMINI v4', 'GM4'], 'claude-revolution': ['CLAUDE REV', 'CRV'] };
 export const classOf = (team) => RACE_CLASSES[team?.raceClass] ?? RACE_CLASSES.gt3;
 export const classForCar = (car) => (car.classId === 'lmdh' ? RACE_CLASSES.gtp : RACE_CLASSES.gt3);
 
@@ -52,7 +52,8 @@ export function assignClasses(teams, fieldId = 'gt3', playerClass = 'gt3', rand 
     t.drivers = t.drivers.map((d) => {
       if (d.kind === 'human' || cls.ai.includes(d.id)) return d;
       const id = cls.ai[Math.floor(rand() * cls.ai.length)];
-      return { ...d, id, name: GTP_NAMES[id][0], short: GTP_NAMES[id][1] };
+      const roster=AI_DRIVERS.find(ai=>ai.id===id);
+      return { ...d, id, name:roster.name,short:roster.short,arch:roster.arch };
     });
   }
   // Class groups on the grid: GTP first, each class keeping its drawn order.

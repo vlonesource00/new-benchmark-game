@@ -1,0 +1,22 @@
+{
+  "planHz": 6,
+  "envelopeHz": 2,
+  "shortlist": 3,
+  "horizon": 1.15,
+  "path": {
+    "brakeReserve": 0.92, "brakeWearReserve": 0.25,
+    "curvatureSpan": 4, "variantSpan": 4,
+    "optimizerIterations": 12, "optimizerBins": 100,
+    "optimizerWidths": [90, 60, 30, 15, 8],
+    "projectDuringSmoothing": true
+  },
+  "policy": {
+    "combinedDrive": true, "brakeFloor": 0.5, "axleBrake": true,
+    "lookahead": 0.7, "previewBrake": 24, "brakeLead": 0,
+    "betaGain": 1.7, "yawGain": 0.22, "slipLimit": 0.2, "gripUse": 0.92,
+    "tractionSlip": 0.18, "driveSlip": 0.18, "hotDriveSlip": 0.12,
+    "warmCornerGripUse": 0.86, "actualBrakeReserve": true,
+    "courseForceLimit": 0.92, "saturationBrakeShare": 0.2,
+    "warmForceTransition": true
+  }
+}

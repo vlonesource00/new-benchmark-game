@@ -4,6 +4,8 @@
 // the car holds the last controls it received. Human seats stay local.
 import { createSeatBridge } from './field.js';
 import { plain } from '../bridges/remote-sync.js';
+import { nextRacerState } from '../bridges/next-racer-state.js';
+import { guardControls,previewRoute } from '../../subjects/next-racer/src/safety.js';
 
 const RUBBER_EVERY = 30;
 
@@ -65,8 +67,12 @@ export class AsyncSeats {
     const seat = {
       driverId: driver.id, errors: 0, remote: true,
       seq: -1, inFlight: false, controls: null, pendingDt: 0, lastLatency: 0, sentAt: 0, lastDebug: null,
+      epoch:0,controlTime:null,preview:null,controlDelay:.02,
       receive(data) {
+        if(driver.id==='next-racer'&&data.epoch!==this.epoch)return;
         this.inFlight = false; this.controls = data.controls; this.errors = data.errors;
+        if(driver.id==='next-racer'){this.controlTime=data.time;this.preview=data.preview??null;
+          this.controlDelay=Math.max(0,Math.min(.2,race.time-data.time));}
         this.lastLatency = performance.now() - this.sentAt;
         if (data.debug) this.lastDebug = data.debug;
       },
@@ -76,6 +82,9 @@ export class AsyncSeats {
           local.update(car, cars, dt, context); this.errors = local.errors ?? 0; return;
         }
         if (this.controls) car.controls = this.controls;
+        if(driver.id==='next-racer'&&this.controls)car.controls=guardControls(car,cars,race.track,this.controls,
+          {route:previewRoute(race.track,this.preview,context.time),
+            age:this.controlTime==null?0:Math.max(0,context.time-this.controlTime)}).controls;
         this.pendingDt += dt;
         this.post(context);
       },
@@ -92,11 +101,15 @@ export class AsyncSeats {
           type: 'step', slot, seq: this.seq, dt: Math.min(0.1, this.pendingDt), time: context.time, laps: context.totalLaps,
           cars: seats.cars(race), wetness: race.track.wetness, tempGrip: race.track.tempGrip,
           rubber: this.seq % RUBBER_EVERY === 1 ? race.track.rubber : undefined,
+          ...(driver.id==='next-racer'?{state:nextRacerState(race,race.cars[index]),
+            ambient:race.track.ambient,epoch:this.epoch,controlDelay:this.controlDelay}:{}),
           debug: seats.wantDebug || undefined
         });
         this.pendingDt = 0;
       },
       reset() {
+        this.epoch++;this.controlTime=null;this.preview=null;
+        if(driver.id==='next-racer'){this.lastDebug=null;seats.snap=null;seats.snapTime=-1;}
         this.controls = null; this.inFlight = false; this.pendingDt = 0; this.seq = -1;
         local?.reset?.({ cars: race.cars, track: race.track, line: race.lineFor(race.cars[index]) });
         if (!host.failed && host.initialised) host.worker.postMessage({ type: 'reset', slot, cars: race.cars.map(snapshotCar) });
