@@ -12,7 +12,7 @@ export const GEMINI_V4_CANDIDATE = Object.freeze({
  * observation (own car, other cars' poses, track) and the driver writes
  * `car.controls`. v3 keeps its shadow-world bridge for comparison.
  */
-export function createGeminiV4Bridge({ hostTrack, options = {} }) {
+export function createGeminiV4Bridge({ hostTrack, index, options = {} }) {
   let driver = null;
   // Headless tuning hook: GEMINI_V4_OPTS='{"kc":1.0}' overrides defaults.
   const env = typeof process !== 'undefined' && process.env?.GEMINI_V4_OPTS;
@@ -33,8 +33,12 @@ export function createGeminiV4Bridge({ hostTrack, options = {} }) {
         car.controls = { throttle: 0, brake: 0.6, steer: 0 };
       }
     },
-    reset() {
-      driver = null;
+    // Built on reset, not on the first update: the first build of the race plan
+    // takes seconds, and a seat worker's first update comes at the rolling-start
+    // handover, so the car would hold the pace-car pilot's controls into green.
+    reset(state) {
+      const car = state?.cars?.[index];
+      driver = car?.spec ? new GeminiV4Driver({ track: hostTrack, car, options }) : null;
       this.errors = 0;
       this.lastError = null;
     },
