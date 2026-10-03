@@ -41,7 +41,7 @@ Status: ✅ shipped · 🟡 prototype in this branch · ⬜ planned
 | Race (standing start, lights) | ✅ |
 | Practice (open session, no rating) | ⬜ phase 2 |
 | Lone qualifying (out lap + two timed laps, ghosted, grid by best per class) | ✅ |
-| Warm-up / gridding / formation lap / rolling start | ⬜ phase 2 |
+| Warm-up / gridding / formation lap / rolling start | ✅ rolling start (two-wide formation autopilot, green at start zone) |
 | Endurance team events (driver swaps, stints, fair-share) | ✅ swaps and stints |
 
 ## 4. In-car systems and HUD (black boxes)

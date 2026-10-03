@@ -260,11 +260,17 @@ export class Hud {
     const banner = this.q('banner');
     const mine = snap.cars.find((c) => c.team === playerTeamId);
     if (snap.phase === 'racing' && this.lastLit === 5) { this.lastLit = 0; this.cue('go'); }
+    // Rolling start: 'go' cue and a green flash when the formation ends.
+    if (snap.formation) this.formed = true;
+    else if (this.formed) { this.formed = false; this.cue('go'); this.flash = { big: 'GREEN FLAG', sub: 'Race on', color: '#3ad16b', until: performance.now() + 2500 }; }
     if (snap.session === 'qualifying' && snap.phase !== 'finished' && (snap.phase !== 'racing' || snap.time < 4)) {
       banner.innerHTML = `<div class="flagcard"><div class="title">QUALIFYING</div><div class="sub">Out lap, then ${snap.laps} timed laps · cars are ghosted · best clean lap sets your grid</div></div>`;
     } else if (snap.session === 'qualifying' && snap.phase === 'finished') {
       const top = cars.filter((c) => c.bestLap !== null).slice(0, 3);
       banner.innerHTML = `<div class="flagcard"><div class="chequer"></div><div class="title">QUALIFYING COMPLETE</div>${top.map((c) => `<div class="row" style="--team:${teamsById[c.team].color}"><b>P${c.position}</b><span>${esc(teamsById[c.team].name)}</span><em class="mono">${fmtLap(c.bestLap)}</em></div>`).join('')}</div>`;
+    } else if (snap.formation) {
+      const lead = snap.formation.toGreen;
+      banner.innerHTML = `<div class="flagcard"><div class="title">FORMATION LAP</div><div class="sub">${driving ? 'Autopilot holds your slot two-wide · you take the wheel at the green' : 'Two-wide behind the pole car'} · green in ${Math.ceil(lead)} m</div></div>`;
     } else if (snap.phase === 'countdown' || snap.phase === 'grid') {
       const lit = snap.phase === 'grid' ? 0 : Math.max(0, Math.min(5, Math.floor((4 - snap.countdown) / 0.7) + 1));
       if (lit > this.lastLit) this.cue('light');

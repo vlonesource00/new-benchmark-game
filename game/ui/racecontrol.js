@@ -40,8 +40,9 @@ export class RaceControlHud {
   update(snap, ctx, focus) {
     const L = ctx.trackLength || 1, cars = snap.cars;
     // ---- flag panel: the focus car's own flag beats the race-wide one ----
-    if (snap.phase === 'racing' && this.lastPhase !== 'racing') this.greenUntil = snap.time + 5;
-    this.lastPhase = snap.phase;
+    const phase = snap.formation ? 'formation' : snap.phase;
+    if (phase === 'racing' && this.lastPhase !== 'racing') this.greenUntil = snap.time + 5;
+    this.lastPhase = phase;
     let flag = focus.flag ?? (snap.flag === 'green' ? (snap.time < this.greenUntil ? 'green' : null) : snap.flag);
     const fp = this.q('rcflag');
     if (flag && FLAGS[flag]) {

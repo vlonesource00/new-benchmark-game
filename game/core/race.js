@@ -15,6 +15,7 @@ import { AI_DRIVERS } from './teams.js';
 import { Stewards, MEATBALL_DAMAGE } from './stewards.js';
 import { fitHybrid, hybridStep, aiDeployMode, HYBRID } from './hybrid.js';
 import { classProfile, classForCar } from './classes.js';
+import { FormationPilot, ROLLING, rollingLead } from './formation.js';
 
 export const FIXED_DT = 1 / 120;
 /** Lone qualifying: timed laps after the out lap, gap between cars on track (m), session cap (s). */
@@ -27,11 +28,13 @@ export const QUALI_LAPS = 2, QUALI_SPACING = 260, QUALI_TIME_LIMIT = 480;
  * render is in `snapshot()`; nothing outside this class mutates race state.
  */
 export class EnduranceRace {
-  constructor({ track, teams, format = FORMATS.classic, laps = format.laps, classId = 'gt', startCompound = 'medium', makeBridge = createSeatBridge, difficulty = 1, weather = 'clear', seed = 7, weatherSeed = seed, session = 'race' }) {
+  constructor({ track, teams, format = FORMATS.classic, laps = format.laps, classId = 'gt', startCompound = 'medium', makeBridge = createSeatBridge, difficulty = 1, weather = 'clear', seed = 7, weatherSeed = seed, session = 'race', startType = 'standing' }) {
     this.track = track; this.teams = teams;
     // 'qualifying': lone qualifying, iRacing-style. Every car runs an out lap and
     // QUALI_LAPS timed laps as a ghost; the best clean lap sets its grid slot.
     this.session = session;
+    // 'rolling': formation behind the leader, two-wide, green at the start zone (core/formation.js).
+    this.startType = session === 'race' ? startType : 'standing';
     this.weather = new Weather(weather, weatherSeed); this.weather.apply(track);
     this.format = { ...format, laps };
     this.cal = calibrate(track, laps); this.laps = session === 'qualifying' ? QUALI_LAPS : this.cal.laps;
@@ -77,27 +80,32 @@ export class EnduranceRace {
     const gridToFinish = wrap(track.finishS - track.gridS, track.length);
     this.time = 0; this.contacts = 0; this.results = null; this.finishedAt = null;
     this.stewards?.reset();
+    const lead = this.startType === 'rolling' ? rollingLead(track, this.entries.length) : 0;
     this.entries.forEach((e, i) => {
       const c = e.car;
       const quali = this.session === 'qualifying';
       // Qualifying spreads the cars round the lap so each runs in clear air.
-      const back = quali ? i * Math.min(QUALI_SPACING, track.length / this.entries.length) : Math.floor(i / 2) * rowSpacing;
-      c.place(track, track.gridS - back, quali ? 0 : i % 2 ? -laneOff : laneOff);
+      const rolling = this.startType === 'rolling';
+      const back = quali ? i * Math.min(QUALI_SPACING, track.length / this.entries.length) : rolling ? lead + Math.floor(i / 2) * ROLLING.row : Math.floor(i / 2) * rowSpacing;
+      const lane = rolling ? Math.min(ROLLING.lane, track.halfWidth * 0.4) : laneOff;
+      c.place(track, (rolling ? track.finishS : track.gridS) - back, quali ? 0 : i % 2 ? -lane : lane, rolling ? ROLLING.pace * 0.8 : 0);
       c.fuelScale = this.cal.fuelScale;
       c.fuel = quali ? Math.min(TANK_LITRES, (TANK_LITRES / this.cal.fuelLaps) * (QUALI_LAPS + 1.6)) : TANK_LITRES;
       // All-AI teams pick their own start tyre; a human team starts on the chosen one.
       const allAi = e.team.drivers.every((d) => d.kind === 'ai');
       if (quali) { this.fitTyres(c, 'soft', true); fitHybrid(c, 1); c.hybrid && (c.hybrid.playerMode = 'qual'); }
       else { this.fitTyres(c, allAi ? e.strategist.startCompound(this.cal.fuelLaps) : this.startCompound); fitHybrid(c); }
-      c.race = { progress: -gridToFinish - back, previousS: c.s, lap: 1, lastLap: null, bestLap: null, lapStart: 0, sector: 0, valid: true, sectors: [], secMark: 0, secValid: true, secCur: [null, null, null], secState: [null, null, null], secBest: [null, null, null], finishTime: null, offtrack: 0, pitLap: false };
+      c.race = { progress: rolling ? -back : -gridToFinish - back, previousS: c.s, lap: 1, lastLap: null, bestLap: null, lapStart: 0, sector: 0, valid: true, sectors: [], secMark: 0, secValid: true, secCur: [null, null, null], secState: [null, null, null], secBest: [null, null, null], finishTime: null, offtrack: 0, pitLap: false };
       e.pit = null; e.pitPlan = null; e.retired = null; e.stints = [{ driver: e.active, fromLap: 1, toLap: null }];
       for (const b of e.bridges) b.reset?.({ cars: this.cars, track, line: this.lineFor(c) });
     });
     this.timingHistory = this.cars.map((c) => [{ progress: c.race.progress, time: 0 }]); this.nextTimingAt = 0;
+    this.formation = this.startType === 'rolling' ? new FormationPilot(this) : null; this.greenAt = this.formation ? null : 0;
   }
   start() {
     this.reset(); this.phase = 'countdown';
-    if (this.session === 'qualifying') { this.countdown = 1.6; this.log('race', null, `QUALIFYING · OUT LAP + ${QUALI_LAPS} TIMED LAPS · GHOSTED`); }
+    if (this.formation) { this.phase = 'racing'; this.log('race', null, `ROLLING START · FORMATION · ${this.laps} LAPS · ${this.cal.fuelLaps}-LAP FUEL STINTS`); }
+    else if (this.session === 'qualifying') { this.countdown = 1.6; this.log('race', null, `QUALIFYING · OUT LAP + ${QUALI_LAPS} TIMED LAPS · GHOSTED`); }
     else { this.countdown = 4; this.log('race', null, `LIGHTS · ${this.laps} LAPS · ${this.cal.fuelLaps}-LAP FUEL STINTS`); }
   }
   /**
@@ -174,7 +182,11 @@ export class EnduranceRace {
     const projections = new Map(cars.map((c) => [c.id, track.nearest(c.x, c.z)]));
     const order = this.order();
     const context = { projections, order, totalLaps: this.laps, mode: 'race', time: this.time, paceObjective: 'race' };
-    for (const e of this.entries) {
+    if (this.formation && this.formation.step(dt, context)) {
+      this.formation = null; this.greenAt = this.time;
+      this.log('flag', null, 'GREEN FLAG · GREEN GREEN GREEN');
+    }
+    if (!this.formation) for (const e of this.entries) {
       const c = e.car, s = projections.get(c.id).s;
       // A disqualified car sits in its box, out of everyone's way.
       if (e.retired) { c.controls = { throttle: 0, brake: 1, steer: 0 }; continue; }
@@ -241,7 +253,8 @@ export class EnduranceRace {
       const c = e.car; if (!c.hybrid) continue;
       const bridge = e.bridges[e.active];
       c.hybrid.auto = !bridge.human || bridge.assisted;
-      if (c.hybrid.auto) {
+      if (this.formation) c.hybrid.mode = 'build';
+      else if (c.hybrid.auto) {
         // Only same-class rivals are worth the energy; other-class traffic is passed on pace.
         let ahead = Infinity, behind = Infinity;
         for (const o of cars) if (o !== c && o.classId === c.classId) {
@@ -259,7 +272,7 @@ export class EnduranceRace {
     this.entries.forEach((e) => this.rescue(e, dt));
     for (const e of this.entries) { const c = e.car; c.ghost = this.session === 'qualifying' || e.rescueGhost > 0 || Boolean(e.retired) || Boolean(e.pit && e.pit.phase !== 'approach' && this.lane.inLane(this.track.nearest(c.x, c.z).s)); }
     this.contacts += collisions(cars, this.collisionStats);
-    this.stewards.step(dt);
+    if (!this.formation) this.stewards.step(dt);
     this.entries.forEach((e) => this.timing(e));
     if (this.time >= this.nextTimingAt) {
       this.nextTimingAt = this.time + 0.25;
@@ -433,7 +446,7 @@ export class EnduranceRace {
     const order = this.order(), leader = order[0], hazards = this.stewards.hazards(), inClass = this.classPositions(order);
     return {
       flag: this.stewards.raceFlag(), incidentLimits: this.stewards.limits,
-      session: this.session, phase: this.phase, time: this.time, countdown: this.countdown, laps: this.laps, cal: { fuelLaps: this.cal.fuelLaps, tyreLaps: this.cal.tyreLaps },
+      session: this.session, formation: this.formation ? { toGreen: Math.max(0, this.formation.toGreen()) } : null, greenAt: this.greenAt, phase: this.phase, time: this.time, countdown: this.countdown, laps: this.laps, cal: { fuelLaps: this.cal.fuelLaps, tyreLaps: this.cal.tyreLaps },
       cars: this.cars.map((c) => {
         const e = this.entryOf(c), d = this.activeDriver(e);
         return {

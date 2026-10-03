@@ -85,7 +85,7 @@ if (args.includes('--quali')) {
 }
 const format = Object.values(FORMATS).find((f) => f.laps === laps) ?? FORMATS.custom;
 const difficulty = Number(opt('difficulty', 1));
-const race = new EnduranceRace({ track, teams, format, laps, difficulty });
+const race = new EnduranceRace({ track, teams, format, laps, difficulty, startType: args.includes('--rolling') ? 'rolling' : 'standing' });
 console.log(`${trackName} · ${race.laps} laps · fuel stint ${race.cal.fuelLaps} laps · tyre life ${race.cal.tyreLaps} laps (medium)`);
 for (const t of teams) console.log(`  P${t.grid + 1} ${t.name.padEnd(20)} ${t.drivers.map((d, i) => (i === t.starter ? '*' : ' ') + d.name).join('  ')}`);
 race.start();
