@@ -1,0 +1,283 @@
+{
+  "purpose": "Observed game contracts and isolated hybrid transition; no lap-time or new-AI claims",
+  "gitHead": "ea7b402ad02b0558e5c1d2e06627a1992e2d1971",
+  "node": "v24.18.0",
+  "sourceHashes": {
+    "game/main.js": "848f740b0626b9dd521c4b5e059eb620dd4357f363622405c12f47b275389e47",
+    "game/core/race.js": "b4248558dc474e1778c92a6c336eaf40ba6c399c3d2d5c6afcec66c9dae5439a",
+    "game/core/classes.js": "631c0105736754329852b2344ab3385b1d1fcd571a6ed98602f61b89396e1a80",
+    "game/core/formation.js": "1fed4b80f9b05f04a860d93e495a6efa0cfc558c9788b0400382969862a2e8bc",
+    "game/core/hybrid.js": "e8bad9ee3de79e39c7c292f091dfe27f9c829ae11369021e20f71d819735e472",
+    "game/core/strategy.js": "57325f7a033e25a1d9437ec919e1bed9be273e79622397a2aa15f194277513ad",
+    "game/core/rules.js": "f4baadf3f5bc6bd38a4d33233883d81fed4252c7a5ab9f0d96ac389cbd59c969",
+    "game/core/weather.js": "432d043b5e9654327d5501545ce38c24afda9680a99798ab3bc515fcf39d068e",
+    "game/core/stewards.js": "0f1252784c12ae3f7303c61a65412a145cac2df6d12b203994c3e5f8386956d3",
+    "game/core/pit.js": "3b87fb486520c7be02abaa04fc0cfe9fc67c40ac17249ce5e6183a0102e2470d",
+    "game/core/difficulty.js": "84882d570c6b90afc39f5bafc905c6f0274007bb566cc231e8c1d0623596fe5e",
+    "game/core/async-seats.js": "9cdd6c1016f3d026956f816c0820c6438b9fde8b48395f08a3454dff1cbe4891",
+    "game/core/seat-worker.js": "5a84e2eabf6791ef99aa2a414a70f16973d33d037c84c7f134ceef20abe5dbc0",
+    "game/core/field.js": "1d47ee59285c681a7129621c15ede661553da9370a93ddba74ba35bcbf8c2b2b",
+    "game/core/teams.js": "88499514eace1c2090025b034ca2dbf32f0fffb426e911707eda940ac9b49f4f",
+    "game/engine/sim/vehicle.js": "2461543ae06038557f30b578650a220bc19c68ded006330788af54503c731f63",
+    "game/engine/sim/tyre.js": "d5ac60f99396ac6dd2f8febc7835831978546a5baf6edaa79483f82e97414062",
+    "game/engine/sim/track.js": "00f08d4b051276f26e02826c05c2744f9b0223c7c674acb46e4dbd7df2c22249",
+    "game/engine/sim/car-specs.js": "dd5c5c4c62f5884e63e8b59b3906bbd6c93672f5784530c11e11750fbc731a2b",
+    "subjects/solstice/src/driver.js": "3dd6622b0a390a29f934066a8d01fc1757dc2bb08c255729fb99bcc5dab685c3",
+    "subjects/solstice/src/traffic.js": "e2288ad9b2358886da1180b7c1c0f5f83f2058fd5eaaf1537202ce58d67da2e4",
+    "subjects/solstice/src/path.js": "08f279876d603e0b168811192a3fb7bfbf7a0d5718c7a02af8ed2db7ad41b6dd",
+    "subjects/solstice/src/policy.js": "642889c983ec598db7faa3d6eb2ebe0764adbd6c8e9bd0b0a7bebfa925bb93e7",
+    "subjects/solstice/src/plant.js": "f17f1980f63c3816582dbe25cf8ccf7b054d972744d27b9dd2bd617c26008bce",
+    "subjects/solstice/config.json": "4009b095f864094fd49c70d5960b34575295d94557870b1c45ec479bc7a52bf2",
+    "subjects/solstice/data/lines.json": "0acb62db85d682df69fef962789c25920296f8ee86567028aaa3a0e774364c72",
+    "subjects/next-racer/tools/game-audit.mjs": "d9af648de0f481fbe514d2a2eb3b9b4f7d92de98d5c64f0caefec8512ef7c0c1",
+    "subjects/claude-revolution/ARCHITECTURE.md": "fab2f9d065b2fa1dc4b3e7f1da8ae2fb0ae57f124b8ca9939af7eb683cc69bde",
+    "subjects/claude-revolution/tools/bench-pace.mjs": "dbe07204c3a653ac2dabd331fcf69228f6731551ca302da380e9529c58114444"
+  },
+  "harbor": {
+    "lengthM": 2704.6192489145687,
+    "roadWidthM": 16.4,
+    "curbWidthM": 1.25,
+    "centerlineMeanSpeedAt53sMps": 51.03055186631262,
+    "centerlineMeanSpeedAt64sMps": 42.25967576429014
+  },
+  "contexts": [
+    {
+      "session": "race",
+      "observed": {
+        "keys": [
+          "mode",
+          "order",
+          "paceObjective",
+          "projections",
+          "time",
+          "totalLaps"
+        ],
+        "mode": "race",
+        "paceObjective": "race",
+        "time": 0.008333333333333333,
+        "dt": 0.008333333333333333,
+        "hybridModeBeforeHostPolicy": "balanced"
+      },
+      "primed": {
+        "time": 0,
+        "mode": "race"
+      },
+      "snapshotSession": "race",
+      "carGhostAfterStep": false,
+      "hybridModeAfterHostPolicy": "balanced",
+      "hostAmbient": 14.3,
+      "workerTrackDefaultAmbient": 24
+    },
+    {
+      "session": "qualifying",
+      "observed": {
+        "keys": [
+          "mode",
+          "order",
+          "paceObjective",
+          "projections",
+          "time",
+          "totalLaps"
+        ],
+        "mode": "race",
+        "paceObjective": "race",
+        "time": 0.008333333333333333,
+        "dt": 0.008333333333333333,
+        "hybridModeBeforeHostPolicy": "balanced"
+      },
+      "primed": {
+        "time": 0,
+        "mode": "race"
+      },
+      "snapshotSession": "qualifying",
+      "carGhostAfterStep": true,
+      "hybridModeAfterHostPolicy": "build",
+      "hostAmbient": 14.3,
+      "workerTrackDefaultAmbient": 24
+    }
+  ],
+  "rollingStart": {
+    "fixture": "single GTP, Harbor, default clear weather, native rolling autopilot",
+    "initial": {
+      "phase": "racing",
+      "time": 0,
+      "progress": -340,
+      "speed": 24,
+      "hasFormation": true
+    },
+    "firstFormationMode": "build",
+    "firstCall": {
+      "time": 10.825000000000026,
+      "speed": 14.737477257459231,
+      "mode": "race",
+      "contextKeys": [
+        "mode",
+        "order",
+        "paceObjective",
+        "projections",
+        "time",
+        "totalLaps"
+      ],
+      "formationStillOwnsCar": true
+    },
+    "resets": 3,
+    "calls": 117,
+    "beforeGreenCalls": 116,
+    "duplicateUpdateTimestamps": 1,
+    "greenAt": 11.783333333333305,
+    "formationCompleted": true,
+    "contacts": 0,
+    "observationLimit": "contract smoke only, not a field formation or new-driver performance test"
+  },
+  "transportSourceObservations": {
+    "seatRebuildsContextAsRace": true,
+    "seatRaceShimHasEntryOf": false,
+    "seatRaceShimHasCalibration": false,
+    "postsWetness": true,
+    "postsTempGrip": true,
+    "postsAmbient": false,
+    "postsRaceSession": false,
+    "postsFormationStatus": false,
+    "postsSnapshotTime": true,
+    "capsPostedDtAt100ms": true,
+    "browserUsesNearFixedSubsteps": true,
+    "browserRandomisesChangeableWeatherSeed": true,
+    "standardRunnerPassesWeatherOptionToRace": false
+  },
+  "registration": {
+    "prototypeAllowedDrivers": [
+      "solstice",
+      "gemini-supreme-v4"
+    ],
+    "unregisteredNewDriverAfterClassAssignment": "solstice"
+  },
+  "hybrid": {
+    "capacityJ": 3000000,
+    "regenKw": 300,
+    "efficiency": 0.86,
+    "modes": {
+      "qual": {
+        "id": "qual",
+        "label": "QUAL",
+        "kw": 120,
+        "from": 8,
+        "lift": 0,
+        "level": false
+      },
+      "attack": {
+        "id": "attack",
+        "label": "ATTACK",
+        "kw": 95,
+        "from": 14,
+        "lift": 40,
+        "level": false
+      },
+      "balanced": {
+        "id": "balanced",
+        "label": "BALANCED",
+        "kw": 70,
+        "from": 25,
+        "lift": 80,
+        "level": true
+      },
+      "build": {
+        "id": "build",
+        "label": "BUILD",
+        "kw": 20,
+        "from": 45,
+        "lift": 130,
+        "level": false
+      }
+    },
+    "transition": {
+      "fixture": "45 m/s, gear 5, 60% charge, balanced; full throttle then lift",
+      "observedForceN": 1329.2929292929293,
+      "nativeForceAfterLiftN": -1777.7777777777778,
+      "frozenForceAfterLiftN": 1329.2929292929293,
+      "nativeEnergyAfterLiftJ": 1800074.8484848484,
+      "frozenEnergyJ": 1799501.5151515151,
+      "oneStepWorldVelocityDifferenceMps": 0.0030675537392193114,
+      "independentEnergy": true,
+      "independentTyres": true,
+      "observedEnergyUnchangedJ": 1799501.5151515151
+    }
+  },
+  "endurance": {
+    "6": {
+      "laps": 6,
+      "fuelLaps": 4,
+      "tyreLaps": 5,
+      "fuelScale": 67.63496538069298,
+      "wearScale": 845.1149959949446,
+      "lapFuel": 15,
+      "refuelRate": 6.5,
+      "tyreChangeS": 5.5,
+      "swapS": 6,
+      "baseStopS": 2.2
+    },
+    "12": {
+      "laps": 12,
+      "fuelLaps": 8,
+      "tyreLaps": 10,
+      "fuelScale": 33.81748269034649,
+      "wearScale": 422.5574979974723,
+      "lapFuel": 7.5,
+      "refuelRate": 6.5,
+      "tyreChangeS": 5.5,
+      "swapS": 6,
+      "baseStopS": 2.2
+    },
+    "20": {
+      "laps": 20,
+      "fuelLaps": 9,
+      "tyreLaps": 11.25,
+      "fuelScale": 30.059984613641323,
+      "wearScale": 375.606664886642,
+      "lapFuel": 6.666666666666667,
+      "refuelRate": 6.5,
+      "tyreChangeS": 5.5,
+      "swapS": 6,
+      "baseStopS": 2.2
+    }
+  },
+  "compounds": {
+    "soft": {
+      "id": "soft",
+      "label": "SOFT",
+      "short": "S",
+      "color": "#ff3b3b",
+      "grip": 1.07,
+      "wear": 1.65,
+      "optimum": 82,
+      "heat": 1.06
+    },
+    "medium": {
+      "id": "medium",
+      "label": "MEDIUM",
+      "short": "M",
+      "color": "#ffd23b",
+      "grip": 1,
+      "wear": 1,
+      "optimum": 90,
+      "heat": 1
+    },
+    "hard": {
+      "id": "hard",
+      "label": "HARD",
+      "short": "H",
+      "color": "#f2f2f2",
+      "grip": 0.96,
+      "wear": 0.58,
+      "optimum": 99,
+      "heat": 0.9
+    }
+  },
+  "wearGrip": {
+    "0": 1,
+    "1": 0.80592,
+    "0.12": 0.988,
+    "0.72": 0.928,
+    "0.75": 0.9239200000000001,
+    "0.95": 0.84152
+  }
+}
