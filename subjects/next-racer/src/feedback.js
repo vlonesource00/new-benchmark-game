@@ -9,7 +9,7 @@ export function resetFeedback(car){executors.delete(car);}
 export function feedbackDebug(car){return executors.get(car)?.debug??null;}
 
 export function previewFeedback(car,track,preview,time){
-  const invalid=()=>{const executor=executors.get(car);if(executor)executor.debug=null;return null;};
+  const invalid=()=>{const executor=executors.get(car);if(executor){executor.debug=null;executor.controls=null;}return null;};
   if(!Number.isFinite(time)||!Array.isArray(preview?.course)||![preview.time,preview.s,preview.factor,preview.rotation].every(Number.isFinite)||time<preview.time-1e-8
     ||time-preview.time>.4||preview.course.length<2)return invalid();
   let executor=executors.get(car);
@@ -36,14 +36,27 @@ export function previewFeedback(car,track,preview,time){
     executor.route=route;executor.preview=preview;
   }
   const p=track.nearest(car.x,car.z),control=executor.control;
+  // The snapshot command and the first host evaluation share a timestamp.
+  // Re-evaluating that instant must not apply the steering slew twice.
+  const atSnapshot=Math.abs(time-preview.time)<1e-8;
+  const repeated=time===executor.time;
+  const dt=repeated?executor.dt:atSnapshot?(preview.controlPeriod??1/120):
+    executor.time==null?1/120:Math.max(1/240,time-executor.time);
+  const origin=repeated?executor.origin:atSnapshot?preview.steerOrigin:
+    executor.controls&&time>=executor.time&&time-executor.time<.2?executor.controls.steer:car.controls?.steer;
   const k=control.control(car,p,{route:executor.route,factor:preview.factor,rotation:preview.rotation,
-    dt:executor.time==null?1/120:Math.max(1/240,time-executor.time),
+    dt,
+    // AsyncSeats restores the last worker command before every host tick.
+    // Slew from the last command actually issued by this executor instead;
+    // otherwise steering stays pinned to an old reply throughout its delay.
+    steerOrigin:origin,steerBias:preview.steerBias,
     push:preview.push,cornerUse:preview.cornerUse,
     lookahead:preview.lookahead,brakeAction:preview.brakeAction,forceGuard:1},
     time<preview.yieldUntil?preview.yieldSpeed:Infinity);
-  k.steer=clamp(k.steer+(preview.steerBias??0),-1,1);
   if(preview.brakeMin){k.throttle=0;k.brake=Math.max(k.brake,preview.brakeMin);}
   executor.time=time;
+  executor.origin=origin;executor.dt=dt;
+  executor.controls=k;
   executor.debug={trackingPoint:control.lastTarget?{x:control.lastTarget.x,z:control.lastTarget.z}:null,
     targetSpeed:control.targetSpeed,feedbackHz:120,control:control.lastSignal};
   return k;

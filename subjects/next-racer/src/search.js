@@ -64,10 +64,16 @@ export function outcome(road,car,obs,route,episode,resources,prefix=null) {
 }
 
 export function choosePlan(road,car,obs,routes,episode,resources,validator,options={}) {
-  const validationResources={...resources,defending:episode.role==='defend'};
+  const validationResources={...resources,defending:episode.role==='defend',trafficHorizon:options.trafficHorizon};
+  let nominalNative=null;
   if(episode.role==='defend') {
     const free=routes.find(r=>r.kind==='free');
     if(free){
+      nominalNative=validatePrefix(car,obs,free,validator,validationResources,options.horizon??1.15);
+    }
+    // An exit budget compares two safe routes. If the nominal course would
+    // collide, keep side continuations available before choosing an escape.
+    if(free&&nominalNative.feasible){
       const clean={...obs,rivals:[]},pace={role:'pace',side:0,target:null};
       const reference=outcome(road,car,clean,free,pace,resources);
       routes=routes.filter(r=>{
@@ -97,8 +103,19 @@ export function choosePlan(road,car,obs,routes,episode,resources,validator,optio
     }
   }
   for(const entry of shortlist) {
-    const native=validatePrefix(car,obs,entry.route,validator,validationResources,options.horizon??1.15);
+    let native=entry.route.kind==='free'&&nominalNative?nominalNative:
+      validatePrefix(car,obs,entry.route,validator,validationResources,options.horizon??1.15);
     checks.push({kind:entry.route.kind,side:entry.route.side,...entry.outcome,...native,traces:undefined});
+    if(options.brakingVariants&&native.reason==='road-body'){
+      // A course may be viable with native combined-slip braking. Test that
+      // action before abandoning its geometry for a much slower outside lane.
+      // Traffic and stability vetoes retain their authority on the new action.
+      const braking=validatePrefix(car,obs,entry.route,validator,
+        {...validationResources,brakeAction:true},options.horizon??1.15);
+      checks.push({kind:entry.route.kind,side:entry.route.side,brakeAction:true,
+        ...entry.outcome,...braking,traces:undefined});
+      if(braking.feasible){native=braking;entry.brakeAction=true;}
+    }
     if(!native.feasible)continue;
     entry.native=native;
     entry.verifiedOutcome=outcome(road,car,obs,entry.route,episode,resources,native);
@@ -131,6 +148,7 @@ export function choosePlan(road,car,obs,routes,episode,resources,validator,optio
     checks.push({kind:entry.route.kind,side:entry.route.side,factor,...native,traces:undefined});
     if(native.feasible){winner={...entry,native};controlFactor=factor;brakeAction=true;break;}
   }
+  brakeAction=brakeAction||winner?.brakeAction===true;
   return {route:winner?.route??null,checks,evaluated:evaluated.map(x=>({kind:x.route.kind,side:x.route.side,...x.outcome})),
     native:winner?.native??null,controlFactor,brakeAction};
 }

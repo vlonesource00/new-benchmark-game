@@ -13,6 +13,7 @@ import { PitLane } from '../../../game/core/pit.js';
 import { drivingTrack } from '../src/pit.js';
 import { angle } from '../src/math.js';
 import { previewFeedback,feedbackDebug,resetFeedback } from '../src/feedback.js';
+import { ForceControl } from '../src/control.js';
 
 const checks=[];
 function test(name,fn){fn();checks.push(name);}
@@ -200,6 +201,58 @@ test('driver writes controls only',()=>{
   for(const key of Object.keys(before))if(key!=='controls')assert.deepEqual(a[key],before[key],key);
   for(const key of Object.keys(rivalBefore))assert.deepEqual(b[key],rivalBefore[key],'rival '+key);
 });
+test('delivery lag continues the previously exported live route feedback',()=>{
+  const bot=createNextRacerBridge({hostTrack:track}),c=carAt(track,0,'gt',780,0,48);
+  bot.reset({cars:[c]});
+  const road=bot.driver.road,on=road.at(780);
+  c.x=on.x;c.z=on.z;c.yaw=on.heading;c.vx=Math.sin(c.yaw)*48;c.vz=Math.cos(c.yaw)*48;
+  c.yawRate=48*on.curvature;
+  const initial=new Observer(track).observe(c,[c],{time:0},1/30,road);
+  const route=generateRoutes(road,c,initial,{role:'pace',target:null})[0];
+  bot.driver.plan={route,factor:1,brakeAction:false};bot.driver.lifecycle='RACE';
+  bot.driver.lastTime=0;bot.driver.lastResource={factor:1,rotation:0};
+  const preview=structuredClone(bot.controlPreview()),held={throttle:1,brake:0,steer:0};
+  c.controls=held;
+  const tick=(live,time,env)=>{
+    live.controls=held;
+    live.controls=guardControls(live,[],track,previewFeedback(live,env,preview,time)??held,
+      {route:previewRoute(track,preview,time),age:time}).controls;
+    live.step(1/120,env,wakes([live])[0]);
+  };
+  const liveTrack=new PredictionTrack(track);
+  for(let i=0;i<6;i++)tick(c,i/120,liveTrack);
+  const before=structuredClone(c),obs={...new Observer(track).observe(c,[c],
+    {time:.05,controlDelay:.1},1/30,road),executionPreview:preview,executionControls:held};
+  const predicted=actuationState(c,obs,bot.driver.control);
+  assert.deepEqual(structuredClone(c),before,'prediction must not alter the live car');
+  let steeringChange=0,last=c.controls.steer;
+  for(let i=0;i<12;i++){
+    tick(c,.05+i/120,liveTrack);steeringChange+=Math.abs(c.controls.steer-last);last=c.controls.steer;
+  }
+  assert(steeringChange>.01,'the exported route must change steering during this corner entry');
+  for(const key of ['x','z','vx','vz','yaw','yawRate','fuel'])
+    assert(Math.abs(predicted.car[key]-c[key])<1e-9,key);
+});
+test('serialized corner courses reproduce the native unsmoothed control',()=>{
+  const bot=createNextRacerBridge({hostTrack:track}),seed=carAt(track,0,'gt',250,0,40);
+  bot.reset({cars:[seed]});
+  const road=bot.driver.road,policy={...bot.driver.control.o,steerRate:0};
+  const native=new ForceControl(track,road,policy);
+  for(let station=0;station<track.length;station+=37)for(const departure of [-1.5,0,1.5]){
+    const c=shadowOf(seed),on=road.at(station);
+    c.x=on.x+Math.cos(on.heading)*departure;c.z=on.z-Math.sin(on.heading)*departure;
+    c.yaw=on.heading;c.vx=Math.sin(c.yaw)*40;c.vz=Math.cos(c.yaw)*40;c.yawRate=40*on.curvature;
+    const obs=new Observer(track).observe(c,[c],{time:1},1/120,road);
+    const route=generateRoutes(road,c,obs,{role:'pace',target:null})[0];
+    bot.driver.plan={route,factor:1,brakeAction:false};bot.driver.lifecycle='RACE';bot.driver.lastTime=1;
+    bot.driver.observer.lastProjection=obs.projection;bot.driver.lastResource={factor:1,rotation:0};
+    const preview=structuredClone(bot.controlPreview());preview.policy=policy;
+    const expected=native.control(c,obs.projection,{route,factor:1,rotation:0,brakeAction:false,forceGuard:1});
+    const actual=previewFeedback(c,track,preview,1);
+    for(const key of ['throttle','brake','steer'])assert(Math.abs(expected[key]-actual[key])<1e-7,
+      'station '+station+' departure '+departure+' '+key);
+  }
+});
 test('serialized route feedback follows live state, stays read-only and expires',()=>{
   for(const classId of ['gt','lmdh']){
     const c=carAt(track,0,classId,430,0,40),r=carAt(track,1,classId,460,0,30),
@@ -211,9 +264,21 @@ test('serialized route feedback follows live state, stays read-only and expires'
     assert(['throttle','brake','steer'].every(k=>Number.isFinite(first[k])));
     assert.deepEqual(structuredClone(c),before,'feedback writes no vehicle state');
     assert(Math.abs(first.steer-c.controls.steer)<.02,'serialized trajectory matches executor');
-    c.yaw+=.08;
+    c.controls=first;
+    assert.deepEqual(previewFeedback(c,track,preview,0),first,'same timestamp cannot advance steering twice');
+    const baseline=structuredClone(c);
+    baseline.controls.steer=0;
+    previewFeedback(baseline,track,preview,0);
+    const restored=previewFeedback(baseline,track,preview,1/120);
+    assert(Math.abs(restored.steer)>Math.abs(first.steer)+.03,
+      'host steering must continue between replies even when the worker command is restored');
+    baseline.controls.steer=0;
+    assert.deepEqual(previewFeedback(baseline,track,preview,1/120),restored,
+      'a repeated host tick cannot apply another steering increment');
+    c.yaw+=.16;
     const changed=previewFeedback(c,track,preview,1/120);
     assert(Math.abs(changed.steer-first.steer)>.03,'feedback responds before the next worker reply');
+    assert(Math.abs(changed.steer-first.steer)<.2,'feedback correction stays bounded within one physics step');
     assert.equal(feedbackDebug(c).feedbackHz,120);
     assert.equal(previewFeedback(c,track,preview,.41),null);
     assert.equal(feedbackDebug(c),null,'expired route must not retain an old aim point');

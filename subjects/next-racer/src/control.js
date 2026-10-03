@@ -56,7 +56,7 @@ export class ForceControl {
       const a = (lo + hi) / 2, sy = Math.tan(a) * 8.6;
       let lateral = 0;
       for (let j = 0; j < 2; j++) {
-        const longitudinal=start===0?this.o.frontSteeringSlip??this.o.steeringLongitudinal??1:this.o.steeringLongitudinal??1;
+        const longitudinal=start===0?this.o.frontSteeringSlip??1:1;
         const sx = tyres[j].tyre.kappa * 10.5*longitudinal, slip = Math.hypot(sx, sy);
         const shape = Math.tanh(slip) * (1 - .16 * clamp((slip - 1.4) / 5, 0, 1));
         lateral += peaks[j] * shape * sy / Math.max(1e-6, slip);
@@ -68,12 +68,13 @@ export class ForceControl {
 
   control(car, projection, plan = {}, speedCap = Infinity) {
     const o = this.o, spec = car.spec, speed = car.speed;
+    const surfaceGrip=this.track.surface(car.x,car.z).grip;
     const look = clamp(o.minLook + speed * (plan.lookahead ?? o.lookahead), o.minLook, o.maxLook);
+    const course = speed > 3 ? Math.atan2(car.vx, car.vz) : car.yaw;
     const path=plan.route??this.path;
     const station=o.courseProjection&&path.project?path.project(car.x,car.z,projection.s).s:projection.s;
     const ahead=d=>o.arcLook&&path.advance?path.advance(station,d):station+d;
     const target = this.point(ahead(look), plan);
-    const course = speed > 3 ? Math.atan2(car.vx, car.vz) : car.yaw;
     const beta = speed > 5 ? angle(course - car.yaw) : 0;
     const dx = target.x - car.x - car.vx * o.poseLead;
     const dz = target.z - car.z - car.vz * o.poseLead;
@@ -101,7 +102,7 @@ export class ForceControl {
         / Math.max(1, o.warmGuardRange), 0, 1) : 1);
     const requestedCurvature = curvature;
     if (o.courseForceLimit > 0 && speed > 8) {
-      const surface = this.track.surface(car.x, car.z).grip;
+      const surface = surfaceGrip;
       const capacity = [0, 2].map(start => car.wheels.slice(start, start + 2).reduce((sum, w) => {
         const share = start === 0 ? spec.frontWeight : 1 - spec.frontWeight;
         const load = w.load > 100 ? w.load : (mass * 9.81 + (car.aero?.downforce ?? 0)) * share / 2;
@@ -127,7 +128,7 @@ export class ForceControl {
       delta = Math.atan(spec.wheelbase * pursuit) + o.understeer * speed * speed * target.curvature
         + o.geometricBeta * beta + o.geometricYaw * (speed * pursuit - car.yawRate);
     } else {
-      const grip = this.track.surface(car.x, car.z).grip;
+      const grip = surfaceGrip;
       const force = mass * speed * speed * curvature;
       const front = this.axleSlip(car, 0, force * spec.frontWeight, grip);
       const rear = this.axleSlip(car, 2, force * (1 - spec.frontWeight), grip);
@@ -149,9 +150,9 @@ export class ForceControl {
           + o.yawGain * (speed * curvature * (1 + .2 * rotation) - car.yawRate);
       }
     }
-    let steer = clamp(delta / spec.steeringLock, -1, 1);
+    let steer = clamp(delta / spec.steeringLock+(plan.steerBias??0), -1, 1);
     if(o.steerRate){
-      const dt=clamp(plan.dt??1/120,1/240,.2),previous=car.controls?.steer??steer;
+      const dt=clamp(plan.dt??1/120,1/240,.2),previous=plan.steerOrigin??car.controls?.steer??steer;
       const rate=o.steerRate*(1+clamp((Math.abs(beta)-.12)*12,0,2));
       steer=clamp(steer,previous-rate*dt,previous+rate*dt);
     }
@@ -167,7 +168,7 @@ export class ForceControl {
     // A lane transfer changes curvature. Slow only for its actual course
     // demand rather than for the mere presence of traffic.
     const grip = Math.min(...car.wheels.map(w => tyreGrip(w.tyre, Math.max(1000, w.load)))) * spec.tyreGrip
-      * this.track.surface(car.x, car.z).grip;
+      * surfaceGrip;
     const coldUse = plan.cornerUse ?? o.cornerGripUse;
     const warmCornerUse = plan.push ? coldUse : plan.cornerUse ?? o.warmCornerGripUse ?? o.cornerGripUse;
     let cornerUse = coldUse + (warmCornerUse - coldUse) * clamp(warmUse * 4, 0, 1);
@@ -200,11 +201,6 @@ export class ForceControl {
     const actualBrakeReserve = o.actualBrakeReserve && brakeUse > .1;
     const next = reference(ahead(8)), here = reference(ahead(2));
     let feed = clamp((next * next - here * here) / 12, -o.brakeAccel, 10);
-    // A profile derivative describes a car travelling on that profile. Once
-    // traffic or a lane transfer has put us below it, blindly retaining its
-    // full braking feed-forward prevents the car from recovering momentum.
-    // The preview envelope and immediate force cap still set the safe target.
-    if(o.profileFeed&&feed<0)feed*=clamp(1-Math.max(0,targetSpeed-speed)/3,0,1);
     let demand = feed + o.speedGain * (targetSpeed - speed);
     const brakingLateral = actualBrakeReserve ? Math.abs(car.ay) : lateral;
     const longitudinal = Math.sqrt(Math.max(1, available * available - Math.min(available, brakingLateral) ** 2));
@@ -228,7 +224,7 @@ export class ForceControl {
       const warmth = clamp((driveHeat - o.thermalOver) / 12, 0, 1);
       const driveSlip = plan.push ? o.pushDriveSlip : o.driveSlip + (o.hotDriveSlip - o.driveSlip) * warmth;
       for (const w of car.wheels.slice(driven, driven + 2)) {
-        const load = Math.max(100, w.load), peak = load * tyreGrip(w.tyre, load) * spec.tyreGrip * this.track.surface(car.x, car.z).grip;
+        const load = Math.max(100, w.load), peak = load * tyreGrip(w.tyre, load) * spec.tyreGrip * surfaceGrip;
         const sx = driveSlip * 10.5, sy = Math.tan(clamp(w.tyre.alpha, -1.2, 1.2)) * 8.6;
         const slip = Math.hypot(sx, sy);
         const shape = Math.tanh(slip) * (1 - .16 * clamp((slip - 1.4) / 5, 0, 1));
@@ -238,7 +234,7 @@ export class ForceControl {
     }
     if (o.axleBrake && brake > 0 && speed > 5) {
       const caps = [0, 2].map(start => car.wheels.slice(start, start + 2).reduce((sum, w) =>
-        sum + Math.max(100, w.load) * tyreGrip(w.tyre, Math.max(100, w.load)) * spec.tyreGrip * this.track.surface(car.x, car.z).grip, 0));
+        sum + Math.max(100, w.load) * tyreGrip(w.tyre, Math.max(100, w.load)) * spec.tyreGrip * surfaceGrip, 0));
       const ay = Math.max(Math.abs(car.ay), lateral);
       const frontLateral = actualBrakeReserve ? Math.abs(car.wheels[0].tyre.fy + car.wheels[1].tyre.fy) : mass * ay * spec.frontWeight;
       const rearLateral = actualBrakeReserve ? Math.abs(car.wheels[2].tyre.fy + car.wheels[3].tyre.fy) : mass * ay * (1 - spec.frontWeight);

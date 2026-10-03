@@ -2,7 +2,7 @@
 // runs keep the rival, tyres, class, cadence, resources and traffic guard fixed.
 // The ablation disables maneuver generation; it does not remove the opponent.
 import { runEncounter,scenarios,sourceHashes } from './combat.mjs';
-import { mkdirSync,writeFileSync } from 'node:fs';
+import { mkdirSync,writeFileSync,readFileSync } from 'node:fs';
 import { dirname,resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -29,10 +29,11 @@ if(process.argv[1]&&pathToFileURL(resolve(process.argv[1])).href===import.meta.u
 const args=process.argv.slice(2),get=(k,d)=>args.find(a=>a.startsWith('--'+k+'='))?.slice(k.length+3)??d;
 const classId=get('class','lmdh'),hz=Number(get('hz',30)),seconds=Number(get('seconds',16)),filter=get('filter',null);
 const delayFrames=Number(get('delay-frames',0)),burstMs=Number(get('burst-ms',0));
+const file=get('options-file',null),options=file?JSON.parse(readFileSync(file,'utf8')):{};
 const round=x=>x==null?null:Math.round(x*100)/100;
 const rows=[];
 for(const setup of scenarios(classId).filter(s=>s.gap>0&&(!filter||s.name.includes(filter)))) {
-  const timing={classId,hz,seconds,delayFrames,burstMs,trace:true};
+  const timing={classId,hz,seconds,delayFrames,burstMs,trace:true,options};
   const combat=runEncounter(setup,timing);
   const nominal=runEncounter(setup,{...timing,maneuvers:false});
   const move=combat.maneuverEvidence;

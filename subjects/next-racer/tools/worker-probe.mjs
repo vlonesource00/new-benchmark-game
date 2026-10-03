@@ -12,7 +12,7 @@ import { dirname,resolve } from 'node:path';
 const args=process.argv.slice(2),get=(k,d)=>args.find(a=>a.startsWith('--'+k+'='))?.slice(k.length+3)??d;
 const realtime=args.includes('--realtime'),frames=Number(get('frames',540)),count=Number(get('cars',2)),
   burstMs=Number(get('burst-ms',0)),classId=get('class','lmdh'),sourceHashes=sourceStamp();
-const responses=[],delays=[];let liveRace=null;
+const responses=[],delays=[],encounters=[];let liveRace=null;
 globalThis.Worker=class {
   constructor(target){
     this.thread=new Thread(new URL('./seat-host.mjs',import.meta.url),{workerData:{target:target.href}});
@@ -54,7 +54,13 @@ try{
   await answers(seats);
   const started=performance.now();
   for(let frame=0;frame<frames;frame++){
-    for(let step=0;step<4;step++)race.step(FIXED_DT);
+    for(let step=0;step<4;step++){
+      const contacts=race.contacts;
+      race.step(FIXED_DT);
+      if(race.contacts>contacts&&encounters.length<24)encounters.push({time:race.time,cars:race.cars.map((c,i)=>({
+        id:c.id,s:c.s,lateral:c.lateral,speed:c.speed,x:c.x,z:c.z,yaw:c.yaw,controls:{...c.controls},
+        age:race.time-seats.hosts[i]?.seats[0]?.controlTime,debug:seats.hosts[i]?.seats[0]?.debug()}))});
+    }
     if(realtime)await sleep(Math.max(0,started+(frame+1)*1000/30-performance.now()));
     else await answers(seats);
   }
@@ -71,15 +77,22 @@ try{
   for(let i=0;i<4;i++)race.step(FIXED_DT);await answers(seats);
   assert.equal(active.errors,0);assert(active.controls);assert(active.controlTime>=race.time-4*FIXED_DT-1e-6);
   delays.sort((a,b)=>a-b);
+  const latency=responses.map(r=>r.debug?.stats?.latencyMs).filter(Number.isFinite).sort((a,b)=>a-b);
+  const quantile=(values,p)=>values[Math.min(values.length-1,Math.floor(values.length*p))]??null;
   const result={passed:!race.contacts&&race.entries.every(e=>!race.stewards.of(e).inc),
     sourceHashes,realtime,frames,count,classId,burstMs,wallSeconds:(performance.now()-started)/1000,
     delayP95:delays[Math.floor(delays.length*.95)]??null,delayMax:delays.at(-1)??null,
+    latencyP50:quantile(latency,.5),latencyP95:quantile(latency,.95),latencyMax:latency.at(-1)??null,
+    slowReplies:responses.filter(r=>r.debug?.stats?.latencyMs>50)
+      .sort((a,b)=>b.debug.stats.latencyMs-a.debug.stats.latencyMs).slice(0,12)
+      .map(r=>({time:r.time,intent:r.debug.intent,plan:r.debug.plan,stats:r.debug.stats,
+        checks:r.debug.checks?.map(c=>({kind:c.kind,side:c.side,ok:c.feasible,reason:c.reason}))})),encounters,
     responses:responses.length,simSeconds:race.time,phase:race.phase,
     formation:race.formation,contacts:race.contacts,incidents:race.entries.map(e=>race.stewards.of(e).inc),
     architectures:seats.hosts.map(h=>h.seats[0].debug().architecture),
     stampedPreview:true,staleEpochRejected:true,resetReplied:true};
   const out=get('out',null);if(out){mkdirSync(dirname(resolve(out)),{recursive:true});
     writeFileSync(out,JSON.stringify(result,null,2)+'\n');}
-  console.log(JSON.stringify({...result,sourceHashes:undefined}));
+  console.log(JSON.stringify({...result,sourceHashes:undefined,slowReplies:undefined,encounters:undefined}));
   if(!result.passed)process.exitCode=1;
 }finally{seats.dispose();delete globalThis.Worker;}

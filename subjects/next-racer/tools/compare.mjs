@@ -96,6 +96,8 @@ export function compare({drivers=['next-racer','claude-revolution'],classId='gt'
         s.samples.push({t:race.time,lap:c.race.lap,s:c.s,q:c.lateral,v:c.speed,x:c.x,z:c.z,
           yaw:c.yaw,r:c.yawRate,beta:angle(Math.atan2(c.vx,c.vz)-c.yaw),k:{...c.controls},mode,
           target:d.targetSpeed,control:d.control,stage:d.stage,side:d.side,
+          admission:d.checks?.map(c=>({kind:c.kind,side:c.side,feasible:c.feasible,reason:c.reason,
+            score:c.score,progress:c.progress,elapsed:c.elapsed,speed:c.speed,off:c.off,conflict:c.conflict?.t})),
           gap:race.cars.length===2?distance(race.cars[1-i].s,c.s,track.length):null});
       }
       sampleAt=race.time+1/30;

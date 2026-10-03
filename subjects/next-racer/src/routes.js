@@ -5,6 +5,11 @@ import { projectCourse,advanceCourse,geometryCourse } from './course.js';
 import { fairCorridor } from './corridor.js';
 
 const smooth = t => { t = clamp(t,0,1); return t*t*t*(10 + t*(-15 + 6*t)); };
+function smoothBound(x,bound,width){
+  if(width<=0)return clamp(x,-bound,bound);
+  const min=(a,b)=>Math.min(a,b)-width*Math.max(0,1-Math.abs(a-b)/width)**3/6;
+  return min(-min(-x,bound),bound);
+}
 function transferLength(road,car,delta,initialCurvature,minimum=28){
   const table=road.table,u=clamp(car.speed/table.step,0,table.nv-1),i=Math.min(table.nv-2,Math.floor(u));
   const lateral=table.lateral[i]+(table.lateral[i+1]-table.lateral[i])*(u-i);
@@ -70,8 +75,9 @@ export class Route {
         let x=p.x+Math.cos(h)*offset+Math.sin(h)*lead,
           z=p.z-Math.sin(h)*offset+Math.cos(h)*lead;
         const near=road.track.nearest(x,z),edge=road.track.halfWidth-car.spec.halfWidth-.4;
-        if(Math.abs(near.lateral)>edge){
-          const legal=road.track.at(near.s,clamp(near.lateral,-edge,edge));x=legal.x;z=legal.z;
+        const rounding=(description.roundWorld??0)*smooth(Math.max(0,d)/35);
+        if(Math.abs(near.lateral)>edge-rounding){
+          const legal=road.track.at(near.s,smoothBound(near.lateral,edge,rounding));x=legal.x;z=legal.z;
         }
         this.q[i]=road.track.nearest(x,z).lateral;
         return {x,z,nx:0,nz:0};
@@ -216,7 +222,7 @@ export function generateRoutes(road,car,obs,episode,options={}) {
   // then forces braking beside the rival as its return approaches.
   const clearTravel=episode.role==='attack'&&r.gap>-(car.spec.halfLength+r.halfLength+2)
     ?car.speed*(r.gap+car.spec.halfLength+r.halfLength+2)/Math.max(1,car.speed-r.speed):0;
-  const availableSides=alongside ? [episode.side||Math.sign(p.lateral-r.q)||1]
+  const availableSides=alongside||episode.locked ? [episode.side||Math.sign(p.lateral-r.q)||1]
     : episode.role==='defend'&&episode.covered ? [episode.side||Math.sign(p.lateral-r.q)||1] : [-1,1];
   for(const side of availableSides) {
     if(options.spaceTimeRoutes)for(const scale of [.9,1.1]){
@@ -247,11 +253,13 @@ export function generateRoutes(road,car,obs,episode,options={}) {
     const worldLane=clamp(rivalOffset+side*separation,-5,5);
     const ownBase=road.at(p.s),ownWorld=(car.x-ownBase.x)*Math.cos(ownBase.heading)
       -(car.z-ownBase.z)*Math.sin(ownBase.heading);
-    const worldReach=[190,270,length].filter(reach=>!options.clearanceHorizon||reach>=Math.min(length,clearTravel+70));
-    for(const reach of worldReach){
+    const worldReach=options.clearanceHorizon
+      ?[...new Set([clamp(clearTravel+85,190,length),clamp(clearTravel+155,270,length),length])]
+      :[190,270,length];
+    for(const reach of options.worldRoutes===false?[]:worldReach){
       const change=transferLength(road,car,worldLane-ownWorld,ownBase.curvature,alongside?12:28);
       candidates.push(new Route(road,car,obs,{kind:episode.role==='defend'?'world-carry':'world-pass',
-        side,lane:worldLane,length:reach,gate,world:true,knots:[
+        side,lane:worldLane,length:reach,gate,world:true,roundWorld:options.roundWorld,knots:[
           {d:change,q:worldLane},{d:reach-70,q:worldLane},{d:reach,q:0}
         ]}));
     }
@@ -277,7 +285,10 @@ export function generateRoutes(road,car,obs,episode,options={}) {
         // Pass on the approach, then reach the next corner in a usable exit
         // position. Keeping a side corridor through an unrelated corner can
         // needlessly price an otherwise easy pass out of the search.
-        for(const reach of [190,270,360]){
+        const returns=options.clearanceHorizon
+          ?[...new Set([clamp(clearTravel+85,190,length),clamp(clearTravel+155,270,length),360])]
+          :[190,270,360];
+        for(const reach of returns){
           if(reach>=length)continue;
           if(options.clearanceHorizon&&reach<clearTravel+70)continue;
           add('pass-return',side,lane,Math.max(30,transfer*.7),reach-70,{length:reach});

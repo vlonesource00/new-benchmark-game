@@ -1,7 +1,8 @@
 import { Vehicle, wakes } from '../../../game/engine/sim/vehicle.js';
 import { hybridStep, aiDeployMode } from '../../../game/core/hybrid.js';
 import { forecast } from './observation.js';
-import { bodyHalf, bodyClearance, guardControls } from './safety.js';
+import { bodyHalf, bodyClearance, guardControls,previewRoute } from './safety.js';
+import { previewFeedback } from './feedback.js';
 import { angle, distance, wrap } from './math.js';
 import { ForceControl } from './control.js';
 
@@ -36,12 +37,27 @@ export function shadowOf(car) {
   return dst;
 }
 export class PredictionTrack {
-  constructor(track){this.track=track;}
+  constructor(track){this.track=track;this.surfaces=new Map();this.projections=new Map();}
   get length(){return this.track.length;} get halfWidth(){return this.track.halfWidth;}
   get curbWidth(){return this.track.curbWidth;} get barrierOffset(){return this.track.barrierOffset;}
   get pitWall(){return this.track.pitWall;} get ambient(){return this.track.ambient;}
-  at(s,q=0){return this.track.at(s,q);} nearest(x,z){return this.track.nearest(x,z);}
-  surface(x,z){return this.track.surface(x,z);} deposit(){}
+  get wetness(){return this.track.wetness;}
+  at(s,q=0){return this.track.at(s,q);}
+  nearest(x,z){
+    const key=x+','+z;
+    if(!this.projections.has(key))this.projections.set(key,this.track.nearest(x,z));
+    return this.projections.get(key);
+  }
+  surface(x,z){
+    const key=x+','+z;
+    if(!this.surfaces.has(key)){
+      if(this.surfaces.size>256){this.surfaces.clear();this.projections.clear();}
+      const surface=this.track.surface(x,z);this.surfaces.set(key,surface);
+      this.projections.set(key,surface);
+    }
+    return this.surfaces.get(key);
+  }
+  deposit(){}
 }
 export function updateHybrid(car,cars,track,dt,state={}) {
   if(!car.hybrid)return;
@@ -65,15 +81,24 @@ export function actuationState(car,obs,control) {
         vx:Math.sin(f.heading)*f.speed,vz:Math.cos(f.heading)*f.speed,
         spec:{halfWidth:r.halfWidth,halfLength:r.halfLength}};
     });
-    self.controls=guardControls(self,others,track,car.controls).controls;
+    const held=executingCommand(self,obs,env,obs.time+t,car.controls);
+    self.controls=guardControls(self,others,track,held.controls,held.guard).controls;
     updateHybrid(self,[self,...others],track,dt,obs.context.state??obs.context);
     self.step(dt,env,wakes([self,...others])[0]);t+=dt;
   }
   return {car:self,projection:track.nearest(self.x,self.z),lag};
 }
 
+function executingCommand(car,obs,track,time,fallback){
+  const preview=obs.executionPreview;
+  if(!preview)return {controls:fallback,guard:{}};
+  const controls=previewFeedback(car,track,preview,time)??obs.executionControls??fallback;
+  return {controls,guard:{route:previewRoute(track,preview,time),age:Math.max(0,time-preview.time)}};
+}
+
 export function validatePrefix(car,obs,route,control,resources,horizon=1.25) {
   const track=control.track,environment=new PredictionTrack(track),self=shadowOf(car);
+  const executor=control instanceof ForceControl?new ForceControl(environment,control.path,control.o):control;
   const traces=[], dt=1/120, startWear=self.wheels.map(w=>w.tyre.wear);
   let minClearance=Infinity,off=0,maxBeta=0,progress=0,lastS=obs.projection.s,k=null,nextControl=0,elapsed=0,conflict=null;
   let steeringTravel=0,firstSteerChange=0,brakingSeconds=0,lastSteer=car.controls.steer,first=true;
@@ -90,6 +115,7 @@ export function validatePrefix(car,obs,route,control,resources,horizon=1.25) {
   const period=Math.max(1/120,Math.min(.2,(obs.context.feedbackPeriod??obs.elapsed)||1/30));
   const lag=Math.max(0,Math.min(.2,obs.context.controlDelay??0));
   const initialBeta=slipBeta(car);
+  const trafficHorizon=Math.min(horizon,resources.trafficHorizon??1.15);
   const predicted=rivalPrefixes(car,obs,control,horizon,period,resources.defending);
   const othersAt=t=>obs.rivals.map(r=>{
     const native=predicted.get(r.id)?.[Math.round(t/dt)];if(native)return native;
@@ -99,19 +125,23 @@ export function validatePrefix(car,obs,route,control,resources,horizon=1.25) {
       spec:{halfWidth:r.halfWidth,halfLength:r.halfLength},ghost:r.ghost};
   });
   for(let t=0;t<horizon-1e-7;t+=dt) {
-    const p=track.nearest(self.x,self.z);
+    const p=environment.nearest(self.x,self.z);
     const step=Math.round(t/dt);
     const others=othersAt(t);
-    if(t<lag-1e-8)k={...car.controls};
+    let guard={route};
+    if(t<lag-1e-8){
+      const held=executingCommand(self,obs,environment,obs.time+t,car.controls);
+      k=held.controls;guard=held.guard;
+    }
     else if(t+1e-8>=nextControl) {
-      k=control.control(self,p,{route,factor:resources.factor,rotation:resources.rotation,
+      k=executor.control(self,p,{route,factor:resources.factor,rotation:resources.rotation,
         dt:period,
         push:resources.push,cornerUse:resources.cornerUse,
         brakeAction:Boolean(resources.brakeAction),forceGuard:1},
         obs.time+t<route.created+(route.yieldFor??0)?route.yieldSpeed:Infinity);
       nextControl=Math.max(nextControl,lag)+period;
     }
-    self.controls=guardControls(self,others,track,k,{route}).controls;
+    self.controls=guardControls(self,others,environment,k,guard).controls;
     const change=Math.abs(self.controls.steer-lastSteer);
     if(first&&t>=lag-1e-8){firstSteerChange=change;first=false;}
     steeringTravel+=change;lastSteer=self.controls.steer;
@@ -119,14 +149,17 @@ export function validatePrefix(car,obs,route,control,resources,horizon=1.25) {
     updateHybrid(self,[self,...others],track,dt,obs.context.state??obs.context);
     self.step(dt,environment,wakes([self,...others])[0]);
     elapsed=t+dt;
-    const next=track.nearest(self.x,self.z),body=bodyHalf(self,next.heading);
+    const next=environment.nearest(self.x,self.z),body=bodyHalf(self,next.heading);
     progress+=distance(next.s,lastS,track.length);lastS=next.s;
-    off=Math.max(off,roadExcess(track,self,next));
+    off=Math.max(off,roadExcess(environment,self,next));
     maxBeta=Math.max(maxBeta,slipBeta(self));
     // Keep the original traffic response window while checking a longer road
     // continuation. Distant hypothetical rival branches are re-observed.
-    for(let i=0;t<1.15&&i<others.length;i++){
+    for(let i=0;i<others.length;i++){
       const r=obs.rivals[i];
+      const merging=['free','join'].includes(route.kind)&&r.gap<0&&Math.abs(r.dq)>1.2;
+      const occupiedHorizon=merging?trafficHorizon:Math.min(trafficHorizon,1.15);
+      if(t>=occupiedHorizon)continue;
       const native=predicted.get(r.id)?.[step+1];
       if(native){
         const behind=(native.x-self.x)*Math.sin(self.yaw)+(native.z-self.z)*Math.cos(self.yaw)<0;
@@ -141,8 +174,13 @@ export function validatePrefix(car,obs,route,control,resources,horizon=1.25) {
       // veto, but re-observe a pursuer's hypothetical lane response after the
       // immediate reaction window instead of forcing an emergency move into
       // it. An attacker reserves the occupied lane through the whole prefix.
-      const responseHorizon=resources.defending?.65:horizon;
-      for(const branch of native?(t<.12||t>responseHorizon?[]:[1,2]):[0,1,2]){
+      const responseHorizon=resources.defending&&r.stableLane?.65:occupiedHorizon;
+      const branches=native?(t<.12||t>responseHorizon?[]:[1,2]):[0,1,2];
+      // A steady occupied lane still has an immediate measured-motion
+      // continuation. Reserve it while the longer course model turns into
+      // the bend, without treating every road-following racer as a tangent.
+      if(r.stableLane&&!r.followsRoad&&t>=.12&&t<Math.min(.8,occupiedHorizon))branches.push(3);
+      for(const branch of branches){
         const f=forecast(track,r,t+dt,branch);
         if(native&&branch===1&&!f.learned)continue;
         measure(self,{...f,id:r.id,yaw:f.heading,
@@ -202,16 +240,16 @@ function rivalPrefixes(car,obs,control,horizon,period,defending=false) {
   profiles.set(profile,{horizon,traces});return traces;
 }
 
-export function escapeControl(car,p,control,resource,route,action) {
+export function escapeControl(car,p,control,resource,route,action,dt=1/120) {
   const k=control.control(car,p,{route,factor:resource.factor*action.factor,
     rotation:resource.rotation,push:resource.push,cornerUse:resource.cornerUse,
-    lookahead:action.lookahead,brakeAction:true,forceGuard:1});
-  k.steer=Math.max(-1,Math.min(1,k.steer+action.bias));
+    lookahead:action.lookahead,brakeAction:true,forceGuard:1,steerBias:action.bias,dt});
   if(action.brake){k.throttle=0;k.brake=Math.max(k.brake,action.brake);}
   return k;
 }
 export function escapePrefix(car,obs,control,resource,route) {
   const track=control.track,env=new PredictionTrack(track),period=Math.max(1/120,Math.min(.2,(obs.context.feedbackPeriod??obs.elapsed)||1/30));
+  const executor=control instanceof ForceControl?new ForceControl(env,control.path,control.o):control;
   // Validate the exit in traffic too. A short safe braking prefix can consume
   // the lateral reserve and leave no feasible continuation through a corner.
   const horizon=2.4,dt=1/120,predicted=rivalPrefixes(car,obs,control,horizon,period,resource.defending);
@@ -221,28 +259,35 @@ export function escapePrefix(car,obs,control,resource,route) {
       vx:Math.sin(f.heading)*f.speed,vz:Math.cos(f.heading)*f.speed,spec:{halfWidth:r.halfWidth,halfLength:r.halfLength}};
   })());
   const requests=[];
-  for(const lookahead of [.3,.55])for(const factor of [1,.82,.62])requests.push({lookahead,factor,bias:0});
+  for(const factor of [1,.82,.62])for(const lookahead of [.3,.55])requests.push({lookahead,factor,bias:0});
   for(const bias of [-.12,.12])requests.push({lookahead:.3,factor:.82,bias});
   requests.push({lookahead:.3,factor:.62,bias:0,brake:.85});
   let best=null;
   for(const request of requests) {
-    const self=shadowOf(car),initial=track.nearest(car.x,car.z);
-    const initialOff=roadExcess(track,car,initial);
+    // Prefer a safe high-momentum escape. Once that tier is admitted, the
+    // slower tiers cannot justify delaying its delivery to the live host.
+    if(best?.feasible&&request.factor<best.action.factor)break;
+    const self=shadowOf(car),initial=env.nearest(car.x,car.z);
+    const initialOff=roadExcess(env,car,initial);
     const initialBeta=slipBeta(car);
     let minimum=Infinity,off=0,beta=0,lastOff=initialOff,lastS=initial.s,progress=0,first=null,k=null,next=0;
     for(let i=0;i<Math.ceil(horizon/dt);i++) {
       const others=othersAt(i*dt);
-      if(i*dt<lag-1e-8)k={...car.controls};
+      let guard={route};
+      if(i*dt<lag-1e-8){
+        const held=executingCommand(self,obs,env,obs.time+i*dt,car.controls);
+        k=held.controls;guard=held.guard;
+      }
       else if(i*dt+1e-8>=next){
-        k=escapeControl(self,track.nearest(self.x,self.z),control,resource,route,request);
+        k=escapeControl(self,env.nearest(self.x,self.z),executor,resource,route,request,period);
         next=Math.max(next,lag)+period;
       }
-      self.controls=guardControls(self,others,track,k,{route}).controls;
+      self.controls=guardControls(self,others,env,k,guard).controls;
       first??={...self.controls};
       updateHybrid(self,[self,...others],track,dt,obs.context.state??obs.context);
       self.step(dt,env,wakes([self,...others])[0]);
-      const p=track.nearest(self.x,self.z),body=bodyHalf(self,p.heading);
-      lastOff=roadExcess(track,self,p);off=Math.max(off,lastOff);
+      const p=env.nearest(self.x,self.z),body=bodyHalf(self,p.heading);
+      lastOff=roadExcess(env,self,p);off=Math.max(off,lastOff);
       beta=Math.max(beta,slipBeta(self));
       progress+=distance(p.s,lastS,track.length);lastS=p.s;
       for(const r of obs.rivals){
@@ -260,7 +305,22 @@ export function escapePrefix(car,obs,control,resource,route) {
             bodyClearance(self,{x:f.x,z:f.z,yaw:f.heading,
               spec:{halfWidth:r.halfWidth,halfLength:r.halfLength}})-.12);
         }
+        if(r.stableLane&&!r.followsRoad&&i*dt>=.12&&i*dt<.8){
+          const f=forecast(track,r,(i+1)*dt,3);
+          if(Math.hypot(f.x-self.x,f.z-self.z)<14)minimum=Math.min(minimum,
+            bodyClearance(self,{x:f.x,z:f.z,yaw:f.heading,
+              spec:{halfWidth:r.halfWidth,halfLength:r.halfLength}})-.12);
+        }
       }
+      // A traffic collision is an immediate veto. For a rejected road/stress
+      // action retain the complete extrema: a millimetre at its first road
+      // breach is insufficient to rank a best-effort recovery against a
+      // course which would carry the whole car outside later in the corner.
+      if(minimum<.03)break;
+      // Extrema are needed to compare rejected recoveries only while no safe
+      // action exists. A monotone road/slip veto can never beat an admitted
+      // action, so do not spend another two seconds simulating that loser.
+      if(best?.feasible&&(off>Math.max(.001,initialOff+.03)||beta>Math.max(.4,initialBeta+.05)))break;
     }
     const feasible=minimum>=.03&&off<=Math.max(.001,initialOff+.03)
       &&(initialOff<=.001||lastOff<initialOff-.03)&&beta<=Math.max(.4,initialBeta+.05);

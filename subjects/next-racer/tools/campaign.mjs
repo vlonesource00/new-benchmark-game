@@ -2,13 +2,14 @@
 // candidate. A limited witness search can certify possibility, never impossibility.
 import { runEncounter,scenarios,sourceHashes } from './combat.mjs';
 import { cleanPass,attribute } from './attribution.mjs';
-import { mkdirSync,writeFileSync } from 'node:fs';
+import { mkdirSync,writeFileSync,readFileSync } from 'node:fs';
 import { dirname,resolve } from 'node:path';
 
 const args=process.argv.slice(2),get=(k,d)=>args.find(a=>a.startsWith('--'+k+'='))?.slice(k.length+3)??d;
 const classes=get('classes','lmdh,gt').split(','),rates=get('rates','20,30,60').split(',').map(Number),
   seeds=get('seeds','7,19,43,101,217,331').split(',').map(Number),seconds=Number(get('seconds',24)),
   filter=get('filter',null),delayFrames=Number(get('delay-frames',1)),burstMs=Number(get('burst-ms',75));
+const file=get('options-file',null),options=file?JSON.parse(readFileSync(file,'utf8')):{};
 function random(seed){let s=seed>>>0;return()=>{s^=s<<13;s^=s>>>17;s^=s<<5;return(s>>>0)/4294967296;};}
 const slim=({samples,events,modes,...r})=>({...r,events:events.length?events:undefined});
 const rows=[];
@@ -24,7 +25,7 @@ for(const classId of classes)for(const hz of rates)for(const seed of seeds) {
       speed:initial.speed*(1+(rng()-.5)*.08),rivalSpeed:initial.rivalSpeed*(1+(rng()-.5)*.08)};
     if(!initial.hotline&&!initial.adaptive&&!initial.blockers)pose.lane=(rng()>.5?1:-1)*(1.2+rng()*3.3);
     if(filter&&!pose.name.includes(filter))continue;
-    const timing={classId,hz,seconds,delayFrames,burstMs};
+    const timing={classId,hz,seconds,delayFrames,burstMs,options};
     let witness=null,witnessAttempts=0;
     if(pose.gap>0&&!pose.adaptive&&!pose.blockers)for(const offset of [-2.7,2.7]){
       for(const length of [190,270]){

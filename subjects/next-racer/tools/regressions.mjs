@@ -22,6 +22,8 @@ const gtDuel={name:'twins-closing',s:251.6523123178631,speed:49.015194770693775,
   rivalSpeed:41.58954895585776,gap:24.458942550718785,adaptive:true,rivalWorn:true};
 const crossing={name:'hotline-braking',s:615.3867211602628,speed:53.52684318087995,
   rivalSpeed:39.34502013102174,gap:31.624750393629075,hotline:true};
+const crossing1433={name:'hotline-braking',s:609.459477962926,speed:51.105655707269904,
+  rivalSpeed:38.583008421957494,gap:33.52124078333378,hotline:true};
 // These five failures were discovered by the admission campaign. Keep their
 // exact declarations in source so deleting ignored reports cannot hide them.
 const defense509={name:'defend-close',s:625.9700126964599,speed:51.70589366018772,
@@ -34,6 +36,7 @@ const cases=[{classId:'lmdh',hz:30,pose:left},{classId:'lmdh',hz:60,pose:left},
   {classId:'lmdh',hz:30,pose:wheelExit},
   {classId:'lmdh',hz:30,pose:gtpDuel},{classId:'gt',hz:30,pose:gtDuel},
   {classId:'gt',hz:60,pose:crossing,passRequired:false},
+  {classId:'gt',hz:30,pose:crossing1433,seed:1433},
   ...[20,30,60].map(hz=>({classId:'gt',hz,pose:defense509,seed:509})),
   ...[20,60].map(hz=>({classId:'gt',hz,pose:defense887,seed:887}))];
 const args=process.argv.slice(2),get=(key,d)=>args.find(a=>a.startsWith('--'+key+'='))?.slice(key.length+3)??d;
