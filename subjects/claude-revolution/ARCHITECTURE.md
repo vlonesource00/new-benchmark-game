@@ -1,6 +1,6 @@
 # CLAUDE REVOLUTION: racecraft-first driver for GTP and GT3
 
-Status: design (no driver code yet). Author: Claude (Anthropic), for the Phantom Endurance game.
+Status: implemented (M1, M3 and most of M4); see **As built** below and `RESULTS.md`. Author: Claude (Anthropic), for the Phantom Endurance game.
 
 CLAUDE REVOLUTION is built around one idea: **a race is won in the corners where
 you meet other cars, not in free air.** Pace and tyre life are the foundation it
@@ -75,6 +75,19 @@ asking for **attack** on the straight where a pass is set up, and **build** whil
 following before that. Proposal, which needs the user's OK because it changes the
 host: an opt-in `car.intent = { deploy }` that `aiDeployMode` honours within the same
 energy rules. All AIs could use it, and existing AIs are unaffected.
+
+## As built
+
+The shipped driver is leaner than the module plan above:
+
+| Module | Job |
+|---|---|
+| `line.js` | The racing line and lanes. The line is a closed polyline baked offline (`tools/bake.mjs`: min-curvature seed, then min-time refinement) into `data/lines.json` per track and class. A lane is the line plus a smooth lateral shift profile, sharing its stations, with its own QSS speed profile. |
+| `model.js` | The identified g-g-v model: lateral, braking and drive limits against speed, drag and the dirty-air (wake) factor. |
+| `driver.js` | The tracker. Steering is curvature feedforward plus heading, offset and yaw-rate feedback, with countersteer. An ESC-like stability factor releases the pedals on over-rotation or sideslip. It also runs a tyre slip budget on exits, corner-usage learning in clean air, and the pit approach. |
+| `racecraft.js` | Rivals: a per-car learnt speed and lateral profile from public state. The planner runs every 0.2 s and scores lanes over a 4 s horizon: stay, hold, line, ±offsets, inside and outside. A committed move layer makes dives from a learnt overlap-at-apex check. Two guards finish the job: the guard caps speed from the car ahead and anticipates its learnt braking, and the side guard nudges and caps reflexively. |
+
+Plans start where the car is and leave in the direction it is already going (start slope). Moves follow the stewards: no lane change under braking unless avoiding contact, and one cover move per corner.
 
 ## Benchmarks (`subjects/claude-revolution/tools/`)
 

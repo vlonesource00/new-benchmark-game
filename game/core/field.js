@@ -4,6 +4,7 @@ import { createPhantomV2Bridge } from '../bridges/phantom-v2-bridge.js';
 import { createGeminiV4Bridge } from '../bridges/gemini-v4-bridge.js';
 import { createBenchmarkSolinatorBridge } from '../bridges/solinator-bridge.js';
 import { createSolsticeBridge } from '../bridges/solstice-bridge.js';
+import { createRevolutionBridge } from '../bridges/revolution-bridge.js';
 import { HumanFilter } from './human.js';
 
 /**
@@ -50,6 +51,10 @@ export function createSeatBridge(driver, index, race) {
       if (!e || !race.cal) return null;
       return { fuelPerLap: e.strategist.fuelPerLap, fuelLaps: race.cal.fuelLaps,
         stintLaps: e.strategist.stintLaps, pitPlan: e.pitPlan };
+    } });
+    case 'claude-revolution': return createRevolutionBridge({ hostTrack, index, teamState: car => {
+      const e = race.entryOf?.(car);
+      return e ? { pitPlan: e.pitPlan } : null;
     } });
     default: throw new Error(`Unknown driver architecture: ${driver.id}`);
   }
