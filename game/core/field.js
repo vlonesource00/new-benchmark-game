@@ -5,6 +5,8 @@ import { createGeminiV4Bridge } from '../bridges/gemini-v4-bridge.js';
 import { createBenchmarkSolinatorBridge } from '../bridges/solinator-bridge.js';
 import { createSolsticeBridge } from '../bridges/solstice-bridge.js';
 import { createRevolutionBridge } from '../bridges/revolution-bridge.js';
+import { createNextRacerBridge } from '../bridges/next-racer-bridge.js';
+import { nextRacerState } from '../bridges/next-racer-state.js';
 import { HumanFilter } from './human.js';
 
 /**
@@ -56,6 +58,7 @@ export function createSeatBridge(driver, index, race) {
       const e = race.entryOf?.(car);
       return e ? { pitPlan: e.pitPlan } : null;
     } });
+    case 'next-racer': return createNextRacerBridge({hostTrack,index,state:car=>nextRacerState(race,car)});
     default: throw new Error(`Unknown driver architecture: ${driver.id}`);
   }
 }

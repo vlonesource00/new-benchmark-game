@@ -52,15 +52,22 @@ self.onmessage = ({ data }) => {
     if (data.rubber) track.rubber.set(data.rubber);
     if (data.wetness !== undefined) track.wetness = data.wetness;
     if (data.tempGrip !== undefined) track.tempGrip = data.tempGrip;
+    // Optional driver envelope. Restore the legacy ambient for legacy seats
+    // sharing this worker so their numerical contract remains unchanged.
+    track.ambient=data.ambient??24;
     replica(data.cars);
     const car = cars[index];
     const projections = new Map(cars.map((c) => [c.id, track.nearest(c.x, c.z)]));
     const order = [...cars].sort((a, b) => (a.race.finishTime ?? Infinity) - (b.race.finishTime ?? Infinity) || b.race.progress - a.race.progress);
     const context = { projections, order, totalLaps: data.laps, mode: 'race', time: data.time, paceObjective: 'race' };
+    if(data.state)context.state=data.state;
+    if(data.controlDelay!==undefined)context.controlDelay=data.controlDelay;
+    if(data.feedbackPeriod!==undefined)context.feedbackPeriod=data.feedbackPeriod;
     bridge.update(car, cars, data.dt, context);
     let debug;
     if (data.debug) { try { debug = plain(bridge.debug?.()); } catch { debug = undefined; } }
-    self.postMessage({ type: 'controls', seq: data.seq, controls: plain(car.controls), errors: bridge.errors ?? 0, debug });
+    self.postMessage({ type: 'controls', seq: data.seq, controls: plain(car.controls), errors: bridge.errors ?? 0, debug,
+      ...(data.epoch!==undefined?{epoch:data.epoch,time:data.time,preview:bridge.controlPreview?.()??null}: {}) });
   } catch (error) {
     self.postMessage({ type: 'fatal', message: String(error?.stack ?? error) });
   }
