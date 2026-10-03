@@ -62,7 +62,8 @@ export function hybridStep(car, dt) {
 export function aiDeployMode(car, gapAhead, lapsLeft, qualifying = false, gapBehind = Infinity) {
   const h = car.hybrid; if (!h || !h.auto) return;
   const soc = h.energy / HYBRID.capacity;
-  if (qualifying) { h.mode = 'qual'; return; }
+  // Qualifying: charge up on the out lap, then everything on the timed laps.
+  if (qualifying) { h.mode = qualifying === 'out' ? 'build' : 'qual'; return; }
   const fight = gapAhead < 40 || gapBehind < 25;
   h.mode = lapsLeft <= 1 && soc > 0.1 ? 'attack'
     : (fight && soc > 0.3) || soc > 0.9 ? 'attack'

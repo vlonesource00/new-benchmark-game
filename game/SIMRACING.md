@@ -40,7 +40,7 @@ Status: ✅ shipped · 🟡 prototype in this branch · ⬜ planned
 |---|---|
 | Race (standing start, lights) | ✅ |
 | Practice (open session, no rating) | ⬜ phase 2 |
-| Lone qualifying (two flying laps, grid by best) | ⬜ phase 2 |
+| Lone qualifying (out lap + two timed laps, ghosted, grid by best per class) | ✅ |
 | Warm-up / gridding / formation lap / rolling start | ⬜ phase 2 |
 | Endurance team events (driver swaps, stints, fair-share) | ✅ swaps and stints |
 

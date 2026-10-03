@@ -23,12 +23,12 @@ import { EnduranceRace, FIXED_DT } from './core/race.js';
 import { AsyncSeats } from './core/async-seats.js';
 import { TRACKS, trackById } from './core/tracks.js';
 import { drawTeams, mulberry32 } from './core/teams.js';
-import { assignClasses } from './core/classes.js';
+import { assignClasses, gridFromQualifying } from './core/classes.js';
 import { DEPLOY_MODES, MODE_ORDER } from './core/hybrid.js';
 import { FORMATS } from './core/rules.js';
 import { Weather } from './core/weather.js';
 import { PlayerInput } from './ui/input.js';
-import { renderMenu, renderSetup, renderDrivers, renderSettings, renderLoading, setLoading, renderResults } from './ui/menus.js';
+import { renderMenu, renderSetup, renderDrivers, renderSettings, renderLoading, setLoading, renderResults, renderQualifying } from './ui/menus.js';
 import { Hud } from './ui/hud.js';
 import { AiDebugPanel } from './ui/ai-debug.js';
 import { AiLens } from './render/ai-lens.js';
@@ -195,10 +195,14 @@ function stopRace() {
   clearCars();
 }
 
-async function startRace() {
+/**
+ * Starts a session. With qualifying on, Go racing runs lone qualifying first;
+ * its result screen then starts the race on that grid (keepGrid: no redraw).
+ */
+async function startRace({ session = (setup.qualifying ?? true) ? 'qualifying' : 'race', keepGrid = false } = {}) {
   stopRace();
   const token = raceToken;
-  redraw();
+  if (!keepGrid) redraw();
   const def = trackById(setup.trackId);
   if (official() && !meetsLicense(career, setup.formatId)) { toast(`Official ${FORMATS[setup.formatId]?.label ?? ''} races need a ${FORMAT_LICENSE[setup.formatId]} licence · race Hosted, or earn it in Sprint races`, 5000); return; }
   renderLoading($('#screen-loading'), def, setup);
@@ -211,7 +215,7 @@ async function startRace() {
   setLoading($('#screen-loading'), 0.25, 'Seating the drivers…');
   try {
     seats = new AsyncSeats(def.id); seats.wantDebug = aiDebug.open;
-    race = new EnduranceRace({ track: new Track(def.scenario), teams, format: FORMATS[setup.formatId] ?? FORMATS.custom, laps: setup.laps, startCompound: setup.startCompound ?? 'medium', difficulty: difficultyById(raceDifficulty()).k, weather: setup.weather ?? 'clear', seed: setup.seed, weatherSeed: setup.weather === 'changeable' ? (Math.random() * 2 ** 31) | 0 : setup.seed, makeBridge: seats.factory() });
+    race = new EnduranceRace({ track: new Track(def.scenario), teams, format: FORMATS[setup.formatId] ?? FORMATS.custom, laps: setup.laps, startCompound: setup.startCompound ?? 'medium', difficulty: difficultyById(raceDifficulty()).k, weather: setup.weather ?? 'clear', seed: setup.seed, weatherSeed: setup.weather === 'changeable' ? (Math.random() * 2 ** 31) | 0 : setup.seed, makeBridge: seats.factory(), session });
     await seats.start(race);
     world.setPitBoxes?.(race.lane, teams);
   } catch (error) {
@@ -260,6 +264,20 @@ function publishSnapshot() {
 
 function onFinished() {
   const token = raceToken;
+  if (race.session === 'qualifying') {
+    // The grid for the race: class groups kept, each ordered by best lap.
+    const results = race.classification();
+    teams = gridFromQualifying(teams, results);
+    teamsById = Object.fromEntries(teams.map((t) => [t.id, t]));
+    hud.announce('QUALIFYING COMPLETE', `${teamsById[results[0].team].name} on pole`, 3);
+    setTimeout(() => {
+      if (token !== raceToken) return;
+      raceActive = false; setOverlay(null);
+      renderQualifying($('#screen-results'), results, teamsById, { go: nav.go, startRace: () => startRace({ session: 'race', keepGrid: true }) });
+      show('results');
+    }, 3000);
+    return;
+  }
   lastResults = race.classification();
   const contacts = race.contacts;
   // Career: rate the player's result against the field (official races only change ratings).
@@ -418,7 +436,7 @@ function openPause() {
     volume: (v) => setVolume(v),
     resume: () => { setOverlay(null); setPaused(false); },
     telemetry: () => { setOverlay('telemetry'); drawTelemetry(); },
-    restart: () => startRace(),
+    restart: () => startRace({ session: race?.session ?? 'race', keepGrid: race?.session === 'race' && setup.qualifying !== false }),
     quit: () => nav.go('menu'),
     speed: (n) => { if (n === 1 || !playerDriving()) setSpeed(n); }
   });

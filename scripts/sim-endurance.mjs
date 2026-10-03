@@ -6,7 +6,7 @@ import { Track } from '../game/engine/sim/track.js';
 import { EnduranceRace, FIXED_DT, maxWear } from '../game/core/race.js';
 import { FORMATS, COMPOUNDS } from '../game/core/rules.js';
 import { drawTeams, AI_DRIVERS, mulberry32 } from '../game/core/teams.js';
-import { assignClasses } from '../game/core/classes.js';
+import { assignClasses, gridFromQualifying } from '../game/core/classes.js';
 
 const args = process.argv.slice(2);
 const opt = (name, fallback) => { const i = args.indexOf(`--${name}`); return i >= 0 ? args[i + 1] : fallback; };
@@ -71,7 +71,18 @@ ${body}
 const laps = Number(opt('laps', 6)), teamCount = Number(opt('teams', 6)), seed = Number(opt('seed', 7));
 const track = new Track(trackName);
 const ready = (d) => d.anyTrack || trackName === 'harbor-ring';
-const teams = assignClasses(drawTeams({ teamCount, seed, trackReady: ready }), opt('field', 'gt3'), 'gt3', mulberry32(seed));
+let teams = assignClasses(drawTeams({ teamCount, seed, trackReady: ready }), opt('field', 'gt3'), 'gt3', mulberry32(seed));
+const difficultyK = Number(opt('difficulty', 1));
+if (args.includes('--quali')) {
+  // Lone qualifying first; its classification sets the race grid.
+  const q = new EnduranceRace({ track, teams, format: FORMATS.custom, laps: 2, difficulty: difficultyK, session: 'qualifying' });
+  q.start(); const qw = Date.now();
+  while (q.phase !== 'finished') q.step(FIXED_DT);
+  const res = q.classification();
+  console.log(`qualifying ${fmt(q.time)} in ${((Date.now() - qw) / 1000).toFixed(1)}s wall · contacts ${q.contacts}`);
+  for (const r of res) console.log(`  Q${r.position} ${r.raceClass.toUpperCase()} P${r.classPosition} ${teams.find((t) => t.id === r.team).short} best ${fmt(r.bestLap)} inc ${r.incidents}x`);
+  teams = gridFromQualifying(teams, res);
+}
 const format = Object.values(FORMATS).find((f) => f.laps === laps) ?? FORMATS.custom;
 const difficulty = Number(opt('difficulty', 1));
 const race = new EnduranceRace({ track, teams, format, laps, difficulty });

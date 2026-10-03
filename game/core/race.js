@@ -17,6 +17,8 @@ import { fitHybrid, hybridStep, aiDeployMode, HYBRID } from './hybrid.js';
 import { classProfile, classForCar } from './classes.js';
 
 export const FIXED_DT = 1 / 120;
+/** Lone qualifying: timed laps after the out lap, gap between cars on track (m), session cap (s). */
+export const QUALI_LAPS = 2, QUALI_SPACING = 260, QUALI_TIME_LIMIT = 480;
 
 /**
  * Authoritative endurance race. Mirrors the host Session.step loop (same
@@ -25,11 +27,14 @@ export const FIXED_DT = 1 / 120;
  * render is in `snapshot()`; nothing outside this class mutates race state.
  */
 export class EnduranceRace {
-  constructor({ track, teams, format = FORMATS.classic, laps = format.laps, classId = 'gt', startCompound = 'medium', makeBridge = createSeatBridge, difficulty = 1, weather = 'clear', seed = 7, weatherSeed = seed }) {
+  constructor({ track, teams, format = FORMATS.classic, laps = format.laps, classId = 'gt', startCompound = 'medium', makeBridge = createSeatBridge, difficulty = 1, weather = 'clear', seed = 7, weatherSeed = seed, session = 'race' }) {
     this.track = track; this.teams = teams;
+    // 'qualifying': lone qualifying, iRacing-style. Every car runs an out lap and
+    // QUALI_LAPS timed laps as a ghost; the best clean lap sets its grid slot.
+    this.session = session;
     this.weather = new Weather(weather, weatherSeed); this.weather.apply(track);
     this.format = { ...format, laps };
-    this.cal = calibrate(track, laps); this.laps = this.cal.laps;
+    this.cal = calibrate(track, laps); this.laps = session === 'qualifying' ? QUALI_LAPS : this.cal.laps;
     this.classId = carSpecFor(classId).key;
     this.lines = new Map();
     this.lane = new PitLane(track, teams.length);
@@ -74,19 +79,27 @@ export class EnduranceRace {
     this.stewards?.reset();
     this.entries.forEach((e, i) => {
       const c = e.car;
-      c.place(track, track.gridS - Math.floor(i / 2) * rowSpacing, i % 2 ? -laneOff : laneOff);
-      c.fuelScale = this.cal.fuelScale; c.fuel = TANK_LITRES;
+      const quali = this.session === 'qualifying';
+      // Qualifying spreads the cars round the lap so each runs in clear air.
+      const back = quali ? i * Math.min(QUALI_SPACING, track.length / this.entries.length) : Math.floor(i / 2) * rowSpacing;
+      c.place(track, track.gridS - back, quali ? 0 : i % 2 ? -laneOff : laneOff);
+      c.fuelScale = this.cal.fuelScale;
+      c.fuel = quali ? Math.min(TANK_LITRES, (TANK_LITRES / this.cal.fuelLaps) * (QUALI_LAPS + 1.6)) : TANK_LITRES;
       // All-AI teams pick their own start tyre; a human team starts on the chosen one.
       const allAi = e.team.drivers.every((d) => d.kind === 'ai');
-      this.fitTyres(c, allAi ? e.strategist.startCompound(this.cal.fuelLaps) : this.startCompound);
-      fitHybrid(c);
-      c.race = { progress: -gridToFinish - Math.floor(i / 2) * rowSpacing, previousS: c.s, lap: 1, lastLap: null, bestLap: null, lapStart: 0, sector: 0, valid: true, sectors: [], secMark: 0, secValid: true, secCur: [null, null, null], secState: [null, null, null], secBest: [null, null, null], finishTime: null, offtrack: 0, pitLap: false };
+      if (quali) { this.fitTyres(c, 'soft', true); fitHybrid(c, 1); c.hybrid && (c.hybrid.playerMode = 'qual'); }
+      else { this.fitTyres(c, allAi ? e.strategist.startCompound(this.cal.fuelLaps) : this.startCompound); fitHybrid(c); }
+      c.race = { progress: -gridToFinish - back, previousS: c.s, lap: 1, lastLap: null, bestLap: null, lapStart: 0, sector: 0, valid: true, sectors: [], secMark: 0, secValid: true, secCur: [null, null, null], secState: [null, null, null], secBest: [null, null, null], finishTime: null, offtrack: 0, pitLap: false };
       e.pit = null; e.pitPlan = null; e.retired = null; e.stints = [{ driver: e.active, fromLap: 1, toLap: null }];
       for (const b of e.bridges) b.reset?.({ cars: this.cars, track, line: this.lineFor(c) });
     });
     this.timingHistory = this.cars.map((c) => [{ progress: c.race.progress, time: 0 }]); this.nextTimingAt = 0;
   }
-  start() { this.reset(); this.phase = 'countdown'; this.countdown = 4; this.log('race', null, `LIGHTS · ${this.laps} LAPS · ${this.cal.fuelLaps}-LAP FUEL STINTS`); }
+  start() {
+    this.reset(); this.phase = 'countdown';
+    if (this.session === 'qualifying') { this.countdown = 1.6; this.log('race', null, `QUALIFYING · OUT LAP + ${QUALI_LAPS} TIMED LAPS · GHOSTED`); }
+    else { this.countdown = 4; this.log('race', null, `LIGHTS · ${this.laps} LAPS · ${this.cal.fuelLaps}-LAP FUEL STINTS`); }
+  }
   /**
    * Marshal rescue: a car parked for 4 s (beached, pinned on a barrier, no
    * reverse gear) is lifted back onto the centreline where it stopped, keeping
@@ -166,7 +179,7 @@ export class EnduranceRace {
       // A disqualified car sits in its box, out of everyone's way.
       if (e.retired) { c.controls = { throttle: 0, brake: 1, steer: 0 }; continue; }
       // Strategy call once per lap, just before the approach point.
-      if (!e.pit && c.race.finishTime === null && c.race.progress > 0 && e.decidedLap !== c.race.lap && lane.inWindow(s, wrap(lane.approach - 120, lane.L), lane.approach)) {
+      if (this.session !== 'qualifying' && !e.pit && c.race.finishTime === null && c.race.progress > 0 && e.decidedLap !== c.race.lap && lane.inWindow(s, wrap(lane.approach - 120, lane.L), lane.approach)) {
         e.decidedLap = c.race.lap;
         e.pitPlan = e.strategist.decide(c, this.lapsLeft(c), e.team.drivers[e.active]?.kind !== 'human');
         if (e.pitPlan) this.log('strategy', e, `${e.team.short} · BOX THIS LAP · ${e.strategist.reason}`);
@@ -216,7 +229,7 @@ export class EnduranceRace {
           // Roster entries with `manage: false` run flat out all stint (no tyre-saving cap).
           const roster = AI_DRIVERS.find((a) => a.id === e.team.drivers[e.active]?.id);
           if (!(roster?.governor === false && e.governor.base >= .999)) {
-            e.governor.push = roster?.manage === false || this.lapsLeft(c) <= 1 || Boolean(e.pitPlan?.tyres);
+            e.governor.push = this.session === 'qualifying' || roster?.manage === false || this.lapsLeft(c) <= 1 || Boolean(e.pitPlan?.tyres);
             e.governor.manageStep(c, dt); e.governor.apply(c, s);
           }
         }
@@ -235,7 +248,7 @@ export class EnduranceRace {
           const d = wrap(o.s - c.s, track.length);
           if (d > 0) { ahead = Math.min(ahead, d); behind = Math.min(behind, track.length - d); }
         }
-        aiDeployMode(c, ahead, this.lapsLeft(c), this.session === 'qualifying', behind);
+        aiDeployMode(c, ahead, this.lapsLeft(c), this.session === 'qualifying' ? (c.race.progress < 0 ? 'out' : 'push') : false, behind);
       } else c.hybrid.mode = c.hybrid.playerMode ?? 'balanced';
       hybridStep(c, dt);
     }
@@ -244,7 +257,7 @@ export class EnduranceRace {
     // Pit-lane ghosting: two cars inside the lane under the autopilot never collide,
     // so box entries and releases cannot jam the lane.
     this.entries.forEach((e) => this.rescue(e, dt));
-    for (const e of this.entries) { const c = e.car; c.ghost = e.rescueGhost > 0 || Boolean(e.retired) || Boolean(e.pit && e.pit.phase !== 'approach' && this.lane.inLane(this.track.nearest(c.x, c.z).s)); }
+    for (const e of this.entries) { const c = e.car; c.ghost = this.session === 'qualifying' || e.rescueGhost > 0 || Boolean(e.retired) || Boolean(e.pit && e.pit.phase !== 'approach' && this.lane.inLane(this.track.nearest(c.x, c.z).s)); }
     this.contacts += collisions(cars, this.collisionStats);
     this.stewards.step(dt);
     this.entries.forEach((e) => this.timing(e));
@@ -253,6 +266,11 @@ export class EnduranceRace {
       for (const c of cars) { const h = this.timingHistory[c.id]; if (c.race.progress > h.at(-1).progress) { h.push({ progress: c.race.progress, time: this.time }); if (h.length > 4000) h.shift(); } }
     }
     const done = cars.filter((c) => c.race.finishTime !== null), home = done.filter((c) => !c.race.dq);
+    if (this.session === 'qualifying') {
+      // Session ends when every car has run its laps, or at the time limit.
+      if (done.length === cars.length || this.time > QUALI_TIME_LIMIT) { this.phase = 'finished'; this.results = this.standings(); this.log('flag', null, 'QUALIFYING COMPLETE'); }
+      return;
+    }
     if (home.length && this.finishedAt === null) { this.finishedAt = this.time; this.log('flag', null, `CHEQUERED FLAG · ${home[0].team.name} WINS`); }
     if (done.length === cars.length || (this.finishedAt !== null && this.time - this.finishedAt > 120)) { this.phase = 'finished'; this.results = this.standings(); }
   }
@@ -343,7 +361,7 @@ export class EnduranceRace {
         e.lapHadPit = Boolean(e.pit);
         r.lapStart = this.time; r.lap++; r.valid = true;
         // Chequered flag: once the winner is home, everyone finishes at their next crossing.
-        if ((r.lap > this.laps || this.finishedAt != null) && r.finishTime === null) { r.finishTime = this.time; r.finishLaps = r.lap - 1; e.stints.at(-1).toLap = r.lap - 1; }
+        if ((r.lap > this.laps || (this.finishedAt != null && this.session !== 'qualifying')) && r.finishTime === null) { r.finishTime = this.time; r.finishLaps = r.lap - 1; e.stints.at(-1).toLap = r.lap - 1; }
       }
     }
   }
@@ -363,6 +381,8 @@ export class EnduranceRace {
     r.secState[k] = overall ? 'purple' : personal ? 'green' : 'yellow';
   }
   order() {
+    // Qualifying ranks by best clean lap; cars without a time follow in grid order.
+    if (this.session === 'qualifying') return [...this.cars].sort((a, b) => (a.race.bestLap ?? Infinity) - (b.race.bestLap ?? Infinity) || a.id - b.id);
     return [...this.cars].sort((a, b) => {
       if (Boolean(a.race.dq) !== Boolean(b.race.dq)) return a.race.dq ? 1 : -1;
       const fa = a.race.finishTime !== null, fb = b.race.finishTime !== null;
@@ -373,6 +393,7 @@ export class EnduranceRace {
   standings() { return this.order(); }
   interval(car, leader = this.order()[0]) {
     if (car === leader) return 0;
+    if (this.session === 'qualifying') return car.race.bestLap !== null && leader.race.bestLap !== null ? car.race.bestLap - leader.race.bestLap : null;
     if (car.race.finishTime !== null && leader.race.finishTime !== null) return car.race.finishTime - leader.race.finishTime;
     return raceInterval(this.timingHistory[leader.id], car.race.progress, this.time, leader.race.progress);
   }
@@ -412,7 +433,7 @@ export class EnduranceRace {
     const order = this.order(), leader = order[0], hazards = this.stewards.hazards(), inClass = this.classPositions(order);
     return {
       flag: this.stewards.raceFlag(), incidentLimits: this.stewards.limits,
-      phase: this.phase, time: this.time, countdown: this.countdown, laps: this.laps, cal: { fuelLaps: this.cal.fuelLaps, tyreLaps: this.cal.tyreLaps },
+      session: this.session, phase: this.phase, time: this.time, countdown: this.countdown, laps: this.laps, cal: { fuelLaps: this.cal.fuelLaps, tyreLaps: this.cal.tyreLaps },
       cars: this.cars.map((c) => {
         const e = this.entryOf(c), d = this.activeDriver(e);
         return {

@@ -58,3 +58,16 @@ export function assignClasses(teams, fieldId = 'gt3', playerClass = 'gt3', rand 
   const rank = (t) => field.classes.indexOf(t.raceClass);
   return out.sort((a, b) => rank(a) - rank(b) || a.grid - b.grid).map((t, grid) => ({ ...t, grid }));
 }
+
+/**
+ * Race grid from a qualifying classification: classes keep their grid groups
+ * (fastest class first) and each group is ordered by best lap. Cars without a
+ * time line up at the back of their class in their drawn order.
+ */
+export function gridFromQualifying(teams, results) {
+  const best = new Map(results.map((r) => [r.team, r.bestLap ?? Infinity]));
+  const groups = [...new Set(teams.map((t) => t.raceClass ?? 'gt3'))];
+  return [...teams]
+    .sort((a, b) => groups.indexOf(a.raceClass ?? 'gt3') - groups.indexOf(b.raceClass ?? 'gt3') || best.get(a.id) - best.get(b.id) || a.grid - b.grid)
+    .map((t, grid) => ({ ...t, grid, qualifyingLap: Number.isFinite(best.get(t.id)) ? best.get(t.id) : null }));
+}

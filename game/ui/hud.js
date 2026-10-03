@@ -105,7 +105,8 @@ export class Hud {
 
     // Timing tower: alternates interval-to-car-ahead and gap-to-leader like a TV feed.
     const tower = this.q('tower'), intervals = Math.floor(snap.time / 12) % 2 === 0;
-    this.q('tmode').textContent = intervals ? 'INTERVAL' : 'GAP TO LEADER';
+    const quali = snap.session === 'qualifying';
+    this.q('tmode').textContent = quali ? 'BEST LAP' : intervals ? 'INTERVAL' : 'GAP TO LEADER';
     const final = snap.phase === 'racing' && leader && leader.lap >= snap.laps && !leader.finished;
     const fin = this.q('final');
     fin.textContent = snap.phase === 'finished' ? 'CHEQUERED' : final ? 'FINAL LAP' : '';
@@ -143,7 +144,7 @@ export class Hud {
       d.textContent = c.driverName;
       const lapsDown = ctx.trackLength ? Math.max(0, Math.floor((leader.progress - c.progress) / ctx.trackLength)) : 0;
       const ahead = cars[i - 1], aheadDown = ahead && ctx.trackLength ? Math.max(0, Math.floor((leader.progress - ahead.progress) / ctx.trackLength)) : 0;
-      const gapText = intervals && ahead && lapsDown === aheadDown ? fmtGap(c.gap - ahead.gap, c.position) : fmtGap(c.gap, c.position, lapsDown);
+      const gapText = quali ? (c.bestLap === null ? 'NO TIME' : c.position === 1 ? fmtLap(c.bestLap) : fmtGap(c.gap, c.position)) : intervals && ahead && lapsDown === aheadDown ? fmtGap(c.gap - ahead.gap, c.position) : fmtGap(c.gap, c.position, lapsDown);
       g.innerHTML = c.pit ? `<span class="flag pit">${PIT_LABEL[c.pit] ?? 'PIT'}</span>` : c.finished ? '<span class="flag chq">FIN</span>' : c.position === 1 ? `<span class="lead">L${Math.min(snap.laps, Math.max(1, c.lap))}</span>` : gapText;
       l.textContent = c.lastLap ? fmtLap(c.lastLap) : '—'; l.className = `l mono ${c.lastLap ? c.lastLapState ?? '' : ''}`;
       li.classList.toggle('fl', this.fastest?.id === c.id);
@@ -178,7 +179,7 @@ export class Hud {
     // Battle graphic: the focused car within a second of a rival.
     const battle = this.q('battle'), fi = cars.indexOf(focus);
     const near = (a, b) => a && b && !a.pit && !b.pit && !a.finished && !b.finished && Number.isFinite(b.gap - a.gap) && b.gap >= a.gap && b.gap - a.gap < 1;
-    const pair = snap.phase === 'racing' ? (near(cars[fi - 1], focus) ? [cars[fi - 1], focus] : near(focus, cars[fi + 1]) ? [focus, cars[fi + 1]] : null) : null;
+    const pair = snap.phase === 'racing' && snap.session !== 'qualifying' ? (near(cars[fi - 1], focus) ? [cars[fi - 1], focus] : near(focus, cars[fi + 1]) ? [focus, cars[fi + 1]] : null) : null;
     if (pair) {
       const [a, b] = pair, ta = teamsById[a.team], tb = teamsById[b.team];
       battle.hidden = false;
@@ -259,7 +260,12 @@ export class Hud {
     const banner = this.q('banner');
     const mine = snap.cars.find((c) => c.team === playerTeamId);
     if (snap.phase === 'racing' && this.lastLit === 5) { this.lastLit = 0; this.cue('go'); }
-    if (snap.phase === 'countdown' || snap.phase === 'grid') {
+    if (snap.session === 'qualifying' && snap.phase !== 'finished' && (snap.phase !== 'racing' || snap.time < 4)) {
+      banner.innerHTML = `<div class="flagcard"><div class="title">QUALIFYING</div><div class="sub">Out lap, then ${snap.laps} timed laps · cars are ghosted · best clean lap sets your grid</div></div>`;
+    } else if (snap.session === 'qualifying' && snap.phase === 'finished') {
+      const top = cars.filter((c) => c.bestLap !== null).slice(0, 3);
+      banner.innerHTML = `<div class="flagcard"><div class="chequer"></div><div class="title">QUALIFYING COMPLETE</div>${top.map((c) => `<div class="row" style="--team:${teamsById[c.team].color}"><b>P${c.position}</b><span>${esc(teamsById[c.team].name)}</span><em class="mono">${fmtLap(c.bestLap)}</em></div>`).join('')}</div>`;
+    } else if (snap.phase === 'countdown' || snap.phase === 'grid') {
       const lit = snap.phase === 'grid' ? 0 : Math.max(0, Math.min(5, Math.floor((4 - snap.countdown) / 0.7) + 1));
       if (lit > this.lastLit) this.cue('light');
       this.lastLit = lit;

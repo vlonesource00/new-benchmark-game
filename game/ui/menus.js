@@ -84,6 +84,7 @@ export function renderSetup(el, s, teams, outlines, act, career = null) {
             ${career ? `<div class="row"><label>Your licence<span class="hint">Sprint: R · Classic 12: D · Marathon 20: C licence for official races</span></label><span class="lic-chip" style="--lic:${licenseById(career.license).color}">${licenseText(career.license, career.sr)} · ${career.iRating} iR</span></div>` : ''}
             <div class="row"><label>Field<span class="hint">${s.field === 'gt3' ? 'GT3 only' : s.field === 'gtp' ? 'GTP hybrid prototypes only' : 'IMSA-style multiclass: GTP hybrids start ahead, GT3 behind · classified per class'}</span></label>${seg('field', Object.values(FIELDS).map((f) => [f.id, f.label]), s.field ?? 'multi')}</div>
             ${(s.field ?? 'multi') === 'multi' && s.drive ? `<div class="row"><label>Your class<span class="hint">${s.playerClass === 'gt3' ? 'GT3: ABS, traction control, watch your mirrors' : 'GTP: 1030 kg, hybrid deploy (H cycles mode), carbon brakes'}</span></label>${seg('playerClass', [['gtp', 'GTP'], ['gt3', 'GT3']], s.playerClass ?? 'gtp')}</div>` : ''}
+            <div class="row"><label>Qualifying<span class="hint">${(s.qualifying ?? true) ? 'Lone qualifying: out lap + 2 timed laps, ghosted · best lap sets the grid in each class' : 'Grid from the draw'}</span></label>${seg('qualifying', [[true, 'On'], [false, 'Off']], s.qualifying ?? true)}</div>
             <div class="row"><label>Format<span class="hint">${fmt.mandatoryStops} mandatory stop${fmt.mandatoryStops > 1 ? 's' : ''}${fmt.mandatorySwap ? ' · driver swap required' : ''}</span></label>
               ${seg('formatId', Object.values(FORMATS).map((f) => [f.id, f.label]), s.formatId)}</div>
             <div class="row"><label>Laps<span class="hint">5–20 laps; fuel and tyres scale with distance</span></label>${stepper('laps', s.laps)}</div>
@@ -207,6 +208,31 @@ function careerBlock(ch) {
       <div><small>INCIDENTS</small><b>${ch.incidents}x</b></div>
     </div>
     ${ch.promoted ? `<div class="cc-note up">PROMOTED · ${esc(lic.name)} licence</div>` : ch.demoted ? `<div class="cc-note dn">DEMOTED · ${esc(lic.name)} licence</div>` : ''}</div>`;
+}
+
+/** Qualifying classification, then on to the race from that grid. act: { go(name), startRace() } */
+export function renderQualifying(el, results, teamsById, act) {
+  const isMine = (r) => teamsById[r.team]?.drivers.some((d) => d.kind === 'human');
+  const mine = results.find(isMine), poles = results.filter((r) => r.classPosition === 1 && r.bestLap !== null);
+  el.innerHTML = `
+    <div class="panel-wrap">
+      <div class="panel-head"><div><div class="kicker">Qualifying${mine ? ` · you qualified ${RACE_CLASSES[mine.raceClass ?? 'gt3'].label} P${mine.classPosition}` : ''}</div><h2>Grid set</h2></div>
+        <div style="display:flex;gap:12px"><button class="cta ghost" data-menu>Main menu</button><button class="cta" data-race>Start the race</button></div></div>
+      <div class="podium">${poles.map((r) => `<div class="step p1" style="--team:${teamsById[r.team].color}"><div class="pos">${RACE_CLASSES[r.raceClass ?? 'gt3'].label} POLE</div>
+        <b>${esc(teamsById[r.team].name)}</b><span>${fmtLap(r.bestLap)}</span></div>`).join('')}</div>
+      <div class="block"><table class="results-table">
+        <thead><tr><th>Pos</th><th>Class</th><th>Team</th><th>Driver</th><th>Best lap</th><th>Gap</th><th>Inc</th></tr></thead>
+        <tbody>${results.map((r) => {
+          const t = teamsById[r.team], k = RACE_CLASSES[r.raceClass ?? 'gt3'];
+          const lead = results.find((x) => x.raceClass === r.raceClass && x.classPosition === 1);
+          const gap = r.bestLap === null ? 'NO TIME' : r === lead ? '—' : `+${(r.bestLap - lead.bestLap).toFixed(3)}`;
+          return `<tr class="${isMine(r) ? 'me' : ''}"><td>${r.position}</td><td><span class="cls-tag" style="background:${k.color};color:${k.fg}">${k.label} P${r.classPosition}</span></td><td class="t"><span style="display:inline-block;width:5px;height:18px;background:${t.color};margin-right:8px;vertical-align:middle"></span>${esc(t.name)}</td>
+            <td>${esc(t.drivers[r.stints?.[0]?.driver ?? 0]?.name ?? '')}</td><td>${fmtLap(r.bestLap)}</td><td>${gap}</td><td>${r.incidents ?? 0}x</td></tr>`;
+        }).join('')}</tbody></table>
+        <div style="margin-top:10px;color:var(--faint);font-size:14px">The race grid keeps the class groups: each class lines up in its qualifying order.</div></div>
+    </div>`;
+  $(el, '[data-menu]').addEventListener('click', () => act.go('menu'));
+  $(el, '[data-race]').addEventListener('click', () => act.startRace());
 }
 
 export function renderResults(el, results, teamsById, contacts, act, careerChange = null) {
