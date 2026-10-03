@@ -6,10 +6,13 @@ const args=process.argv.slice(2),get=(k,d)=>args.find(a=>a.startsWith('--'+k+'='
 const from=get('from',null);if(!from)throw new Error('Use --from=<campaign.json>');
 const corpus=JSON.parse(readFileSync(from,'utf8')),
   row=corpus.rows.find(r=>r.pose.name===get('case','defend-corner')
-    &&r.classId===get('class','lmdh')&&r.hz===Number(get('hz',20))&&r.seed===Number(get('seed',101)));
+    &&r.classId===get('class','lmdh')&&r.hz===Number(get('hz',20))
+    &&(get('seed',null)==null||r.seed===Number(get('seed',101))));
 if(!row)throw new Error('Declared fixture not found');
-const result=runEncounter(row.pose,{classId:row.classId,hz:row.hz,seconds:corpus.seconds,
-  delayFrames:corpus.delayFrames,burstMs:corpus.burstMs,trace:true,
+const result=runEncounter(row.pose,{classId:row.classId,hz:row.hz,seconds:corpus.seconds??24,
+  options:{...(get('options-file',null)?JSON.parse(readFileSync(get('options-file',null),'utf8')):{}),
+    ...(args.includes('--clearance-horizon')?{clearanceHorizon:true}:{})},
+  delayFrames:corpus.delayFrames??1,burstMs:corpus.burstMs??75,trace:true,
   maneuvers:!args.includes('--nominal'),free:args.includes('--free')});
 const out=get('out','subjects/next-racer/results/replay.json');
 mkdirSync(dirname(resolve(out)),{recursive:true});

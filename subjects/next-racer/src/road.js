@@ -3,6 +3,8 @@
 import { tyreGrip } from '../../../game/engine/sim/tyre.js';
 import { carSpecFor } from '../../../game/engine/sim/car-specs.js';
 import baked from '../data/lines.json' with { type: 'json' };
+import { projectCourse,advanceCourse,geometryCourse } from './course.js';
+import { optimizeFlow } from './line-optimizer.js';
 
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
 const wrap = (x, n) => ((x % n) + n) % n;
@@ -299,6 +301,17 @@ function optimize(base, step, track, spec, options) {
   const table = dynamicsTable({ wetness: 0, tempGrip: 1 }, nominal, options.driveSlip);
   const width = track.halfWidth + (options.kerbUse ?? 0);
   const seed = minimumCurvature(base, step, width, spec, options);
+  if(options.lineModel==='flow')return optimizeFlow(base,step,seed,q=>{
+    const g=geometry(base,q,options.curvatureSpan),e=speedEnvelope(g,table,.92,ratiosFlow(q,g));
+    let yawWork=0;
+    for(let i=0;i<q.length;i++){
+      const j=(i+1)%q.length,dt=2*g.ds[i]/Math.max(1,e.speed[i]+e.speed[j]);
+      const delta=e.speed[j]*g.curvature[j]-e.speed[i]*g.curvature[i];
+      yawWork+=delta*delta/Math.max(.02,dt);
+    }
+    return {cost:e.time+.025*yawWork,time:e.time,geometry:g};
+  },q=>projectFootprint(base,q,width,spec,options.margin),options);
+  function ratiosFlow(q,g){return options.kerbUse>0?kerbRatios(base,q,g,track,spec):null;}
   let best = new Float32Array(base.length), bestGeometry = geometry(base, best, options.curvatureSpan);
   const ratios = (q, g) => options.kerbUse > 0 ? kerbRatios(base, q, g, track, spec) : null;
   let bestTime = speedEnvelope(bestGeometry, table, .94, ratios(best, bestGeometry)).time;
@@ -350,7 +363,7 @@ export class Road {
     this.step = this.length / this.n;
     const spec = options.spec ?? options.car?.spec ?? carSpecFor(options.classId);
     const settings = {
-      modelVersion: 2,
+      modelVersion: options.lineModel==='flow'?3:2,
       margin: Math.max(1.15, options.margin ?? 1.2), wing: options.wing ?? options.car?.setup?.wing ?? 6,
       // false reproduces the former peak-ellipse model for bounded ablations.
       // .18 lies near peak drive force in the upgraded game tyre model.
@@ -362,6 +375,7 @@ export class Road {
       optimizerWidths: (options.optimizerWidths ?? [60, 30, 15]).filter(w => Number.isFinite(w) && w >= 4 && w <= 200).slice(0, 8),
       optimizerBins: clamp(Math.floor(options.optimizerBins ?? 64), 1, 160)
     };
+    if(options.lineModel==='flow')settings.lineModel='flow';
     this.driveSlip = settings.driveSlip;
     this.curvatureSpan = settings.curvatureSpan;
     this.variantSpan = clamp(Math.round(options.variantSpan ?? this.curvatureSpan), 1, 8);
@@ -411,6 +425,13 @@ export class Road {
         geometryCache.set(phaseKey, shifted);
       }
       cached = shifted;
+    }
+    if(Array.isArray(options.offsets)&&options.offsets.length===this.n&&options.offsets.every(Number.isFinite)){
+      const q=new Float32Array(options.offsets);
+      const bound=this.drivableHalfWidth-settings.margin;
+      for(let i=0;i<q.length;i++)q[i]=clamp(q[i],-bound,bound);
+      cached={...cached,q,geometry:geometry(cached.base,q,this.curvatureSpan)};
+      this.geometrySource='candidate';
     }
     this.q = new Float32Array(cached.q);
     this.base = cached.base;
@@ -500,7 +521,11 @@ export class Road {
     return result;
   }
 
+  project(x,z,hint){return projectCourse(geometryCourse(this.geometry,this.step,this.length),x,z,hint);}
+  advance(s,metres){return advanceCourse(geometryCourse(this.geometry,this.step,this.length),s,metres);}
+
   rebuildEnvelope(car, gripUse = .90) {
+    this.envelopeVersion=(this.envelopeVersion??0)+1;
     const table = dynamicsTable(this.track, car, this.driveSlip);
     this.table = table;
     this.gripUse = clamp(gripUse, .4, .99);

@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { runEncounter,sourceHashes } from './combat.mjs';
 import { cleanPass,attribute } from './attribution.mjs';
-import { mkdirSync,writeFileSync } from 'node:fs';
+import { mkdirSync,writeFileSync,readFileSync } from 'node:fs';
 import { dirname,resolve } from 'node:path';
 
 const left={name:'gentle-left',s:1276.9949273113161,speed:40.58367516175098,
@@ -36,8 +36,10 @@ const cases=[{classId:'lmdh',hz:30,pose:left},{classId:'lmdh',hz:60,pose:left},
   {classId:'gt',hz:60,pose:crossing,passRequired:false},
   ...[20,30,60].map(hz=>({classId:'gt',hz,pose:defense509,seed:509})),
   ...[20,60].map(hz=>({classId:'gt',hz,pose:defense887,seed:887}))];
+const args=process.argv.slice(2),get=(key,d)=>args.find(a=>a.startsWith('--'+key+'='))?.slice(key.length+3)??d;
+const optionsFile=get('options-file',null),options=optionsFile?JSON.parse(readFileSync(optionsFile,'utf8')):{};
 const rows=cases.map(({classId,hz,pose,seed=null,passRequired=true})=>{
-  const timing={classId,hz,seconds:24,delayFrames:1,burstMs:75},result=runEncounter(pose,timing);
+  const timing={classId,hz,seconds:24,delayFrames:1,burstMs:75,options},result=runEncounter(pose,timing);
   let reference=null,attribution=null,failure=null;
   try{
   assert.equal(result.bridgeErrors,0);assert.equal(result.contactSteps,0);

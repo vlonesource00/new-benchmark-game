@@ -1,6 +1,8 @@
 import { geometry, speedEnvelope } from './road.js';
 import { clamp, angle, distance, wrap } from './math.js';
 import { forecast } from './observation.js';
+import { projectCourse,advanceCourse,geometryCourse } from './course.js';
+import { fairCorridor } from './corridor.js';
 
 const smooth = t => { t = clamp(t,0,1); return t*t*t*(10 + t*(-15 + 6*t)); };
 function transferLength(road,car,delta,initialCurvature,minimum=28){
@@ -33,6 +35,26 @@ export class Route {
     if((description.kind==='free'&&!description.world)||description.nominal){
       this.geometry=road.geometry;this.speed=road.speed;
       this.key=description.kind+':'+(description.yieldSpeed??0);return;
+    }
+    if(description.field){
+      const initial=description.field(0),gradient=(description.field(1)-description.field(-1))*.5;
+      const transfer=description.transfer;
+      for(let i=0;i<road.n;i++){
+        const d=distance(i*road.step,this.start,road.length);
+        if(d<0&&d>-90)this.q[i]+= (obs.projection.lateral-road.q[i])*smooth((d+90)/90);
+        if(d<0||d>this.length)continue;
+        const t=clamp(d/transfer,0,1),position=1-10*t**3+15*t**4-6*t**5,
+          velocity=t-6*t**3+8*t**4-3*t**5;
+        this.q[i]=description.field(d)+(this.knots[0].q-initial)*position
+          +(slope-gradient)*transfer*velocity;
+      }
+      if(description.fair)this.q=fairCorridor(road,this.q,{start:this.start,length:this.length,
+        transfer,side:description.side,field:description.field});
+      this.geometry=geometry(road.base,this.q,road.curvatureSpan);
+      this.speed=speedEnvelope(this.geometry,road.table,road.gripUse,
+        road.gripRatios(this.q,this.geometry),road.liveBrakeReserve).speed;
+      this.key=description.kind+':'+description.side+':'+description.lane.toFixed(2);
+      return;
     }
     if(description.world){
       const f=road.at(this.start),dx=car.x-f.x,dz=car.z-f.z;
@@ -107,10 +129,15 @@ export class Route {
   }
   refresh() {
     const r=this.road;
+    if(this.envelopeVersion===r.envelopeVersion)return this;
+    if(this.kind==='free'&&!this.world){this.speed=r.speed;this.envelopeVersion=r.envelopeVersion;return this;}
     this.speed=speedEnvelope(this.geometry,r.table,r.gripUse,
       r.gripRatios(this.q,this.geometry),r.liveBrakeReserve).speed;
+    this.envelopeVersion=r.envelopeVersion;
     return this;
   }
+  project(x,z,hint){return projectCourse(geometryCourse(this.geometry,this.road.step,this.road.length),x,z,hint);}
+  advance(s,metres){return advanceCourse(geometryCourse(this.geometry,this.road.step,this.road.length),s,metres);}
 }
 
 export function cornerGate(track,s,reach=400) {
@@ -136,7 +163,7 @@ export function refugeRoutes(road,car,obs,nominal) {
   })];
 }
 
-export function generateRoutes(road,car,obs,episode) {
+export function generateRoutes(road,car,obs,episode,options={}) {
   const p=obs.projection,r=episode.target,edge=road.track.halfWidth-car.spec.halfWidth-.4;
   const length=clamp(car.speed*7+60,240,500),gate=cornerGate(road.track,p.s,length-70);
   const candidates=[];
@@ -163,6 +190,9 @@ export function generateRoutes(road,car,obs,episode) {
   if(needsJoin)candidates.push(new Route(road,car,obs,{kind:'join',side:0,lane:0,length,gate,
     world:true,knots:[{d:join,q:0},{d:length,q:0}]}));
   if(!r)return candidates;
+  const catching=Math.max(1,car.speed-r.speed),approach=(r.gap-car.spec.halfLength-r.halfLength)/catching;
+  if(options.approachSeconds&&episode.role==='attack'&&episode.stage==='Prepare'
+    &&r.gap>35&&approach>options.approachSeconds)return candidates;
   if(episode.role==='defend')for(const delta of [7,10]){
     // If staying outside would destroy the corner exit, briefly let a much
     // faster rival clear the crossing, then take the full-speed exit. This is
@@ -174,16 +204,42 @@ export function generateRoutes(road,car,obs,episode) {
   }
   // Keep the nominal continuation available. Body validation decides when
   // it is safe to return; overlap does not mandate a slow side corridor.
-  const separation=car.spec.halfWidth+r.halfWidth+.55;
+  const separation=car.spec.halfWidth+r.halfWidth+(options.passMargin??.55);
   const closing=Math.max(2,car.speed-r.speed);
   const ttc=Math.max(0,(r.gap-car.spec.halfLength-r.halfLength)/closing);
   const predicted=forecast(road.track,r,Math.min(2,ttc));
   const alongside=episode.stage==='Alongside'||episode.stage==='Clear';
   const transfer=alongside?clamp(car.speed*.45,12,24):clamp(Math.max(32,car.speed*.9),32,100);
   const holdTo=Math.max(gate.exit,Math.max(70,r.gap+car.speed*2.5));
+  // Reserve the side lane until the rear bumper can clear. A short candidate
+  // that returns before that point creates an attractive fictitious pass and
+  // then forces braking beside the rival as its return approaches.
+  const clearTravel=episode.role==='attack'&&r.gap>-(car.spec.halfLength+r.halfLength+2)
+    ?car.speed*(r.gap+car.spec.halfLength+r.halfLength+2)/Math.max(1,car.speed-r.speed):0;
   const availableSides=alongside ? [episode.side||Math.sign(p.lateral-r.q)||1]
     : episode.role==='defend'&&episode.covered ? [episode.side||Math.sign(p.lateral-r.q)||1] : [-1,1];
   for(const side of availableSides) {
+    if(options.spaceTimeRoutes)for(const scale of [.9,1.1]){
+      const width=separation+.1,long=car.spec.halfLength+r.halfLength+2;
+      const field=d=>{
+        const base=road.at(p.s+d).offset;
+        if(d<0||d>length)return base;
+        const speed=Math.max(12,(car.speed+road.at(p.s+d*.5).speed)*.5);
+        const t=Math.max(0,d/speed)*scale,f=forecast(road.track,r,Math.min(6.6,t));
+        const gap=distance(f.s,p.s+d,road.length),padding=Math.max(22,speed*.7);
+        const weight=smooth((long+padding-Math.abs(gap))/padding);
+        const boundary=f.q+side*width;
+        const lane=side>0?Math.max(base,boundary):Math.min(base,boundary);
+        return clamp(base+(lane-base)*weight,-edge,edge);
+      };
+      const q=field(Math.min(80,car.speed*1.1));
+      const change=transferLength(road,car,q-p.lateral,base.curvature,alongside?18:35);
+      candidates.push(new Route(road,car,obs,{kind:episode.role==='defend'?'space-time-cover':'space-time-pass',
+        side,lane:q,length,gate,field,transfer:change,knots:[]}));
+      if(options.fairCorridors&&scale===.9)candidates.push(new Route(road,car,obs,
+        {kind:episode.role==='defend'?'flow-cover':'flow-pass',side,lane:q,length,gate,
+          field,transfer:change,fair:true,knots:[]}));
+    }
     const referenceQ=alongside?(side>0?Math.max(r.q,predicted.q):Math.min(r.q,predicted.q)):predicted.q;
     const lane=referenceQ+side*separation;
     const rivalBase=road.at(r.s),rivalOffset=(r.x-rivalBase.x)*Math.cos(rivalBase.heading)
@@ -191,7 +247,7 @@ export function generateRoutes(road,car,obs,episode) {
     const worldLane=clamp(rivalOffset+side*separation,-5,5);
     const ownBase=road.at(p.s),ownWorld=(car.x-ownBase.x)*Math.cos(ownBase.heading)
       -(car.z-ownBase.z)*Math.sin(ownBase.heading);
-    const worldReach=[190,270,length];
+    const worldReach=[190,270,length].filter(reach=>!options.clearanceHorizon||reach>=Math.min(length,clearTravel+70));
     for(const reach of worldReach){
       const change=transferLength(road,car,worldLane-ownWorld,ownBase.curvature,alongside?12:28);
       candidates.push(new Route(road,car,obs,{kind:episode.role==='defend'?'world-carry':'world-pass',
@@ -223,6 +279,7 @@ export function generateRoutes(road,car,obs,episode) {
         // needlessly price an otherwise easy pass out of the search.
         for(const reach of [190,270,360]){
           if(reach>=length)continue;
+          if(options.clearanceHorizon&&reach<clearTravel+70)continue;
           add('pass-return',side,lane,Math.max(30,transfer*.7),reach-70,{length:reach});
         }
       }

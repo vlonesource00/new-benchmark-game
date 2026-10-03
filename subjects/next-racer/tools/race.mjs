@@ -1,11 +1,13 @@
 import { Track } from '../../../game/engine/sim/track.js';
 import { EnduranceRace,FIXED_DT } from '../../../game/core/race.js';
 import { createSeatBridge } from '../../../game/core/field.js';
+import { createNextRacerBridge } from '../../../game/bridges/next-racer-bridge.js';
+import { nextRacerState } from '../../../game/bridges/next-racer-state.js';
 import { AI_DRIVERS } from '../../../game/core/teams.js';
 import { FORMATS } from '../../../game/core/rules.js';
 import { guardControls,previewRoute } from '../src/safety.js';
 import { previewFeedback,resetFeedback } from '../src/feedback.js';
-import { mkdirSync,writeFileSync } from 'node:fs';
+import { mkdirSync,writeFileSync,readFileSync } from 'node:fs';
 import { sourceStamp } from './source.mjs';
 import { dirname,resolve } from 'node:path';
 
@@ -13,6 +15,7 @@ const args=process.argv.slice(2),get=(k,d)=>args.find(a=>a.startsWith('--'+k+'='
 const trackId=get('track','harbor-ring'),laps=Number(get('laps',12)),classId=get('class','lmdh'),
   hz=Number(get('hz',30)),weather=get('weather','clear'),seed=Number(get('seed',7));
 const ids=get('drivers','next-racer,gemini-supreme-v4').split(',');
+const optionsFile=get('options-file',null),options=optionsFile?JSON.parse(readFileSync(optionsFile,'utf8')):{};
 const experiments={thermalBudget:args.includes('--thermal-budget'),cornerBudget:Number(get('corner-budget',0))||null,
   brakeWearReserve:get('brake-wear-reserve',null),previewBrake:get('preview-brake',null)};
 const teams=ids.map((id,i)=>{
@@ -25,7 +28,8 @@ const teams=ids.map((id,i)=>{
 const observations=[];
 const sourceHashes=sourceStamp();
 function heldBridge(driver,index,race) {
-  const bridge=createSeatBridge(driver,index,race);
+  const bridge=driver.id==='next-racer'?createNextRacerBridge({hostTrack:race.track,index,options,
+    state:car=>nextRacerState(race,car)}):createSeatBridge(driver,index,race);
   // Explicit controls-only research override, never enabled in the shipped
   // driver by this tool. The native strategist, tyres and pit service remain
   // authoritative. Qualifying/final-lap/pit push keeps its existing policy.
@@ -54,19 +58,19 @@ function heldBridge(driver,index,race) {
     bridge.reset=snapshot=>{reset(snapshot);install();};
     bridge.update=(...values)=>{install();update(...values);install();};
   }
-  if(driver.id!=='next-racer'||hz>=120)return bridge;
+  if(hz>=120)return bridge;
   let next=0,held=null,last=0,preview=null;
   return {driverId:driver.id,
     get errors(){return bridge.errors;},get lastError(){return bridge.lastError;},
     update(car,cars,dt,context){
       if(context.time+1e-8>=next||!held) {
         bridge.update(car,cars,Math.max(dt,context.time-last),{...context,feedbackPeriod:1/120});
-        held={...car.controls};preview=structuredClone(bridge.controlPreview());last=context.time;next=context.time+1/hz;
-        observations.push(bridge.driver.stats.latencyMs);
+        held={...car.controls};preview=structuredClone(bridge.controlPreview?.()??null);last=context.time;next=context.time+1/hz;
+        if(driver.id==='next-racer')observations.push(bridge.driver.stats.latencyMs);
       }
-      car.controls=guardControls(car,cars,race.track,previewFeedback(car,race.track,preview,context.time)??held,
+      car.controls=driver.id==='next-racer'?guardControls(car,cars,race.track,previewFeedback(car,race.track,preview,context.time)??held,
         {route:previewRoute(race.track,preview,context.time),
-        age:Math.max(0,context.time-last)}).controls;
+        age:Math.max(0,context.time-last)}).controls:held;
     },
     reset(snapshot){next=0;held=null;last=0;preview=null;resetFeedback(race.cars[index]);bridge.reset(snapshot);},
     debug(){return bridge.debug();},visualDebug(){return bridge.visualDebug();}

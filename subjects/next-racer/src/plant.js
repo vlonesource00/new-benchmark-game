@@ -76,6 +76,7 @@ export function validatePrefix(car,obs,route,control,resources,horizon=1.25) {
   const track=control.track,environment=new PredictionTrack(track),self=shadowOf(car);
   const traces=[], dt=1/120, startWear=self.wheels.map(w=>w.tyre.wear);
   let minClearance=Infinity,off=0,maxBeta=0,progress=0,lastS=obs.projection.s,k=null,nextControl=0,elapsed=0,conflict=null;
+  let steeringTravel=0,firstSteerChange=0,brakingSeconds=0,lastSteer=car.controls.steer,first=true;
   const measure=(self,other,padding,t,branch)=>{
     if(Math.hypot(other.x-self.x,other.z-self.z)>=14)return;
     const clearance=bodyClearance(self,other)-padding;
@@ -104,12 +105,17 @@ export function validatePrefix(car,obs,route,control,resources,horizon=1.25) {
     if(t<lag-1e-8)k={...car.controls};
     else if(t+1e-8>=nextControl) {
       k=control.control(self,p,{route,factor:resources.factor,rotation:resources.rotation,
+        dt:period,
         push:resources.push,cornerUse:resources.cornerUse,
         brakeAction:Boolean(resources.brakeAction),forceGuard:1},
         obs.time+t<route.created+(route.yieldFor??0)?route.yieldSpeed:Infinity);
       nextControl=Math.max(nextControl,lag)+period;
     }
     self.controls=guardControls(self,others,track,k,{route}).controls;
+    const change=Math.abs(self.controls.steer-lastSteer);
+    if(first&&t>=lag-1e-8){firstSteerChange=change;first=false;}
+    steeringTravel+=change;lastSteer=self.controls.steer;
+    if(self.controls.brake>.05)brakingSeconds+=dt;
     updateHybrid(self,[self,...others],track,dt,obs.context.state??obs.context);
     self.step(dt,environment,wakes([self,...others])[0]);
     elapsed=t+dt;
@@ -148,6 +154,7 @@ export function validatePrefix(car,obs,route,control,resources,horizon=1.25) {
   }
   const feasible=off<=.001&&minClearance>=.04&&maxBeta<=Math.max(.45,initialBeta+.05)&&Number.isFinite(progress);
   return {feasible,observedAt:obs.time,progress,speed:self.speed,endS:lastS,elapsed,off,
+    firstSteerChange,steeringTravel,brakingSeconds,
     minClearance:Number.isFinite(minClearance)?minClearance:null,maxBeta,conflict,
     wear:self.wheels.map((w,i)=>w.tyre.wear-startWear[i]),hybrid:self.hybrid?.energy??null,traces,
     reason:off>.001?'road-body':minClearance<.04?'body-conflict':maxBeta>.45?'unstable':null};

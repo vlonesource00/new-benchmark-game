@@ -2,6 +2,7 @@
 // Serialized geometry is data, not executable policy or an opponent intent.
 import { ForceControl } from './control.js';
 import { angle,clamp,distance } from './math.js';
+import { projectCourse,advanceCourse } from './course.js';
 
 const executors=new WeakMap();
 export function resetFeedback(car){executors.delete(car);}
@@ -27,18 +28,23 @@ export function previewFeedback(car,track,preview,time){
       return {x:mix(1),z:mix(2),heading:angle(a[3]+angle(b[3]-a[3])*t),
         curvature:mix(4),speed:Math.max(0,mix(5)),offset:mix(6),metric:mix(7)};
     };
-    const route={at,speed:points},path={at,sample:(_,s)=>at(s).speed};
+    const course={x:points.map(p=>p[1]),z:points.map(p=>p[2]),step,period:track.length,
+      start:preview.s+start,closed:false};
+    const route={at,speed:points,project:(x,z,hint)=>projectCourse(course,x,z,hint),
+      advance:(s,metres)=>advanceCourse(course,s,metres)},path={at,sample:(_,s)=>at(s).speed};
     executor.control=new ForceControl(track,path,preview.policy);
     executor.route=route;executor.preview=preview;
   }
   const p=track.nearest(car.x,car.z),control=executor.control;
   const k=control.control(car,p,{route:executor.route,factor:preview.factor,rotation:preview.rotation,
+    dt:executor.time==null?1/120:Math.max(1/240,time-executor.time),
     push:preview.push,cornerUse:preview.cornerUse,
     lookahead:preview.lookahead,brakeAction:preview.brakeAction,forceGuard:1},
     time<preview.yieldUntil?preview.yieldSpeed:Infinity);
   k.steer=clamp(k.steer+(preview.steerBias??0),-1,1);
   if(preview.brakeMin){k.throttle=0;k.brake=Math.max(k.brake,preview.brakeMin);}
+  executor.time=time;
   executor.debug={trackingPoint:control.lastTarget?{x:control.lastTarget.x,z:control.lastTarget.z}:null,
-    targetSpeed:control.targetSpeed,feedbackHz:120};
+    targetSpeed:control.targetSpeed,feedbackHz:120,control:control.lastSignal};
   return k;
 }

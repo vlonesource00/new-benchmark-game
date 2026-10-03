@@ -13,7 +13,7 @@ import { cornerGate,Route } from '../src/routes.js';
 import { Observer,forecast } from '../src/observation.js';
 import { bodyHalf,bodyClearance,guardControls,previewRoute } from '../src/safety.js';
 import { previewFeedback } from '../src/feedback.js';
-import { writeFileSync,mkdirSync } from 'node:fs';
+import { writeFileSync,mkdirSync,readFileSync } from 'node:fs';
 import { dirname,resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { sourceStamp } from './source.mjs';
@@ -56,9 +56,9 @@ export function scenarios(classId) {
   ];
 }
 export function runEncounter(setup,{classId='gt',hz=30,seconds=16,free=false,trace=false,maneuvers=true,
-  prescribed=null,delayFrames=0,burstMs=0}={}) {
+  prescribed=null,delayFrames=0,burstMs=0,options={}}={}) {
   const track=new Track('harbor-ring'),seed=fixture(track,0,classId,setup.s,0,setup.speed,setup.worn);
-  const bridge=createNextRacerBridge({hostTrack:track,options:{maneuvers:prescribed?false:maneuvers}});bridge.reset({cars:[seed]});
+  const bridge=createNextRacerBridge({hostTrack:track,options:{...options,maneuvers:prescribed?false:maneuvers}});bridge.reset({cars:[seed]});
   const road=bridge.driver.road,self=fixture(track,0,classId,setup.s,road.at(setup.s).offset,setup.speed,setup.worn);
   let latestObservation=null;
   if(trace){
@@ -82,7 +82,7 @@ export function runEncounter(setup,{classId='gt',hz=30,seconds=16,free=false,tra
   const rivalRoad=new Road(track,{car:rival});rivalRoad.rebuildEnvelope(rival,.88);
   const policy=new ForceControl(track,setup.hotline?road:rivalRoad,
     setup.hotline?{...bridge.driver.control.o}:{courseForceLimit:.90,actualBrakeReserve:true});
-  const adaptive=setup.adaptive?createNextRacerBridge({hostTrack:track,index:1}):null;
+  const adaptive=setup.adaptive?createNextRacerBridge({hostTrack:track,index:1,options}):null;
   let progress=0,last=setup.s,next=0,contactSteps=0,contactEpisodes=0,contact=false;
   let off=0,minimumSpeed=Infinity,stopped=0,clearSince=null,passedAt=null,passHeld=false,bridgeErrors=0;
   let rivalOfftrackSeconds=0,rivalStoppedSeconds=0;
@@ -211,17 +211,19 @@ export function runEncounter(setup,{classId='gt',hz=30,seconds=16,free=false,tra
     p95Ms:latencies[Math.floor(latencies.length*.95)],maxMs:latencies.at(-1),modes,...(trace?{samples}:{}),
     events,lastError:bridge.lastError??adaptive?.lastError??null};
 }
-export function runCombat({classId='gt',hz=30,filter=null,seconds=16,trace=false,delayFrames=0,burstMs=0}={}) {
-  const rows=scenarios(classId).filter(s=>!filter||s.name.includes(filter)).map(s=>runEncounter(s,{classId,hz,seconds,trace,delayFrames,burstMs}));
+export function runCombat({classId='gt',hz=30,filter=null,seconds=16,trace=false,delayFrames=0,burstMs=0,options={}}={}) {
+  const rows=scenarios(classId).filter(s=>!filter||s.name.includes(filter)).map(s=>runEncounter(s,{classId,hz,seconds,trace,delayFrames,burstMs,options}));
   return {classId,hz,seconds,sourceHashes,runs:rows.length,contacts:rows.reduce((s,r)=>s+r.contactSteps,0),
     offtrack:rows.reduce((s,r)=>s+r.offtrackSeconds,0),errors:rows.reduce((s,r)=>s+r.bridgeErrors,0),
     passes:rows.filter(r=>r.passedAt!==null&&r.passHeld&&!r.contactSteps&&!r.offtrackSeconds&&!r.bridgeErrors).length,rows};
 }
 if(process.argv[1]&&pathToFileURL(resolve(process.argv[1])).href===import.meta.url) {
   const args=process.argv.slice(2),get=(k,d)=>args.find(a=>a.startsWith('--'+k+'='))?.slice(k.length+3)??d;
+  const file=get('options-file',null),options=file?JSON.parse(readFileSync(file,'utf8')):{};
+  if(args.includes('--clearance-horizon'))options.clearanceHorizon=true;
   const result=runCombat({classId:get('class','gt'),hz:Number(get('hz',30)),filter:get('filter',null),
     seconds:Number(get('seconds',16)),trace:args.includes('--trace'),
-    delayFrames:Number(get('delay-frames',0)),burstMs:Number(get('burst-ms',0))});
+    delayFrames:Number(get('delay-frames',0)),burstMs:Number(get('burst-ms',0)),options});
   const out=get('out',null);
   if(out){mkdirSync(dirname(resolve(out)),{recursive:true});writeFileSync(out,JSON.stringify(result,null,2)+'\n');}
   console.log(JSON.stringify({...result,sourceHashes:undefined,

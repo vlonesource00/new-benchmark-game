@@ -6,7 +6,7 @@ import { Resources } from './resources.js';
 import { generateRoutes,refugeRoutes } from './routes.js';
 import { choosePlan } from './search.js';
 import { guardControls,reverseSpace } from './safety.js';
-import { escapePrefix,escapeControl,actuationState } from './plant.js';
+import { escapePrefix,escapeControl,actuationState,validatePrefix } from './plant.js';
 import { PitGuide,drivingTrack } from './pit.js';
 import { angle, clamp } from './math.js';
 
@@ -31,7 +31,8 @@ export class SpearheadDriver {
     const environment=drivingTrack(this.track,count);
     this.road=new Road(environment.track,{...this.o.path,car});
     const physical={...this.o.policy,warmForceTransition:false,
-      ...(car.classId==='lmdh'?{cornerGripUse:.88,warmCornerGripUse:.84,previewBrake:12}:{previewBrake:8})};
+      ...(car.classId==='lmdh'?{cornerGripUse:.88,warmCornerGripUse:.84,previewBrake:12}:{previewBrake:8}),
+      ...this.o.physical};
     this.control=new ForceControl(environment.track,this.road,physical);
     this.validator=new ForceControl(environment.track,this.road,physical);
     this.road.rebuildEnvelope(car,this.control.o.gripUse);
@@ -54,6 +55,7 @@ export class SpearheadDriver {
     if(obs.time>=this.nextEnvelope){
       const wet=clamp(((this.track.wetness??0)-.08)/.14,0,1),grip=this.control.o.gripUse;
       this.road.rebuildEnvelope(car,grip+(Math.min(grip,.86)-grip)*wet);
+      this.plan?.route.refresh();
       this.nextEnvelope=obs.time+1/(this.o.envelopeHz??2);
     }
     const forbidden=this.o.maneuvers===false||lifecycle==='FINISHED'||state.formation||state.phase==='countdown'||state.session==='qualifying'
@@ -76,7 +78,24 @@ export class SpearheadDriver {
         const urgent=!this.plan||this.plan.role!==episode.role||this.plan.episode!==episode.id
           ||(episode.target&&this.plan.target!==episode.target.id);
         if(obs.time>=this.nextPlan||urgent) {
-          const routes=generateRoutes(this.road,car,obs,this.o.maneuvers===false?{role:'pace',target:null}:episode);
+          let sustained=null;
+          const prior=this.plan?.route,nominalPoint=this.road.at(p.s);
+          const departure=(car.x-nominalPoint.x)*Math.cos(nominalPoint.heading)
+            -(car.z-nominalPoint.z)*Math.sin(nominalPoint.heading);
+          if(this.o.sustainRoute&&!urgent&&prior&&prior.side&&!this.plan.escape
+            &&this.plan.factor===1&&!prior.yieldFor&&obs.time-prior.created<4
+            &&(episode.stage==='Alongside'||episode.stage==='Clear'||Math.abs(departure)>.8)){
+            prior.refresh();
+            const native=validatePrefix(car,obs,prior,this.validator,
+              {...resource,defending:episode.role==='defend'},this.o.horizon??2.4);
+            if(native.feasible)sustained={route:prior,native,checks:[{kind:prior.kind,side:prior.side,
+              retained:true,...native,traces:undefined}],evaluated:[]};
+          }
+          if(sustained){
+            this.plan={...this.plan,created:obs.time,native:sustained.native,validUntil:obs.time+.5};
+            this.checks=sustained.checks;this.stats.plans++;this.stats.rollouts++;
+          }else{
+          const routes=generateRoutes(this.road,car,obs,this.o.maneuvers===false?{role:'pace',target:null}:episode,this.o);
           const previous=this.plan?.route;
           if(this.o.maneuvers!==false&&previous&&previous.kind!=='free'&&previous.kind!=='follow'
             &&this.plan.target===episode.target?.id&&episode.target&&this.plan.role===episode.role
@@ -88,7 +107,7 @@ export class SpearheadDriver {
             previous.refresh();routes.push(previous);previous.continuation=true;
           }
           let result;
-          const settings={...this.o,horizon:this.o.horizon??2.4};
+          const settings={...this.o,horizon:episode.target?(this.o.maneuverHorizon??this.o.horizon??2.4):this.o.horizon??2.4};
           // Test ablation: retain the same force controller and traffic guard,
           // but follow the nominal line without a maneuver search or escape.
           result=this.o.maneuvers===false?{route:routes[0],checks:[],evaluated:[]}:
@@ -114,7 +133,10 @@ export class SpearheadDriver {
             this.selected={kind:refuge.kind==='emergency-hold'?'emergency-hold':'emergency-join',side:refuge.side};
             this.stats.emergencies++;
           }
-          this.nextPlan=obs.time+1/(this.o.planHz??6);
+          }
+          const stableAir=this.o.freeAirHz&&!obs.rivals.length&&this.plan?.route.kind==='free'
+            &&Math.abs(departure)<.6&&Math.abs(angle(Math.atan2(car.vx,car.vz)-nominalPoint.heading))<.08;
+          this.nextPlan=obs.time+1/(stableAir?this.o.freeAirHz:this.o.planHz??6);
         }
         const route=this.plan.route;
         const commandCar=application.car,commandProjection=application.projection;
@@ -138,6 +160,7 @@ export class SpearheadDriver {
     return {architecture:'SPEARHEAD',intent:this.lifecycle==='RACE'?this.episodes.role.toUpperCase():this.lifecycle,
       stage:this.episodes.stage,target:this.episodes.target,side:this.episodes.side,
       targetSpeed:this.targetSpeed,plan:this.selected,epoch:this.epoch,
+      control:this.control?.lastSignal??null,
       trackingPoint:this.trackingPoint?{x:this.trackingPoint.x,z:this.trackingPoint.z}:null,
       latency:this.stats.latencyMs,stats:{...this.stats},safety:this.safetyReason,
       resources:this.resources.status,checks:this.checks,evaluated:this.evaluated};

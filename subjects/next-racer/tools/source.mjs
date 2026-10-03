@@ -2,9 +2,9 @@ import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 export function sourceStamp(){
   const files=['src/driver.js','src/routes.js','src/search.js','src/plant.js','src/control.js','src/feedback.js',
-    'src/road.js','src/safety.js','src/observation.js','src/episode.js','src/resources.js',
+    'src/road.js','src/course.js','src/line-optimizer.js','src/corridor.js','src/safety.js','src/observation.js','src/episode.js','src/resources.js',
     'src/pit.js','config.json','data/lines.json','tools/combat.mjs','tools/attribution.mjs',
-    'tools/campaign.mjs','tools/race.mjs','tools/opportunity.mjs','tools/regressions.mjs',
+    'tools/campaign.mjs','tools/race.mjs','tools/opportunity.mjs','tools/regressions.mjs','tools/compare.mjs','tools/bake.mjs','tools/refine.mjs',
     'game/bridges/next-racer-bridge.js','game/bridges/next-racer-state.js',
     'game/core/field.js','game/core/teams.js','game/core/classes.js','game/core/async-seats.js',
     'game/core/seat-worker.js','game/core/race.js','game/core/strategy.js','game/core/rules.js',

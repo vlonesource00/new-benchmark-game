@@ -84,24 +84,46 @@ export function choosePlan(road,car,obs,routes,episode,resources,validator,optio
   const count=options.shortlist??3,shortlist=evaluated.slice(0,count),checks=[];
   const nominal=evaluated.find(e=>e.route.kind==='free');
   if(nominal&&!shortlist.includes(nominal))shortlist[shortlist.length-1]=nominal;
+  const continuation=evaluated.find(e=>e.route.continuation);
+  if(options.stableMoves&&continuation&&!shortlist.includes(continuation))
+    shortlist[Math.max(0,shortlist.length-2)]=continuation;
+  if(options.diversePrefixes&&episode.target){
+    // A cheap forecast can put several near-identical lane variants above a
+    // useful curved course. Spend the native budget on distinct geometries.
+    const family=r=>r.kind.startsWith('flow-')?'flow':r.world?'world':r.kind.startsWith('space-time')?'timed':'lane';
+    for(const group of ['flow','world','lane']){
+      const candidate=evaluated.find(e=>e.route.kind!=='free'&&!e.route.continuation&&family(e.route)===group);
+      if(candidate&&!shortlist.includes(candidate))shortlist.push(candidate);
+    }
+  }
   for(const entry of shortlist) {
     const native=validatePrefix(car,obs,entry.route,validator,validationResources,options.horizon??1.15);
     checks.push({kind:entry.route.kind,side:entry.route.side,...entry.outcome,...native,traces:undefined});
     if(!native.feasible)continue;
     entry.native=native;
     entry.verifiedOutcome=outcome(road,car,obs,entry.route,episode,resources,native);
+    if(options.stableMoves)entry.verifiedOutcome.score-=native.firstSteerChange*18+native.steeringTravel*5;
   }
   const feasible=shortlist.filter(x=>x.native?.feasible);
-  if(episode.role==='attack')feasible.sort((a,b)=>b.verifiedOutcome.score-a.verifiedOutcome.score
+  if(episode.role==='attack'||options.stableMoves)feasible.sort((a,b)=>b.verifiedOutcome.score-a.verifiedOutcome.score
     ||a.route.key.localeCompare(b.route.key));
   if(!feasible.length)for(const entry of evaluated.filter(e=>!shortlist.includes(e)).slice(0,3)){
     const native=validatePrefix(car,obs,entry.route,validator,validationResources,options.horizon??1.15);
     checks.push({kind:entry.route.kind,side:entry.route.side,...entry.outcome,...native,traces:undefined});
-    if(native.feasible){entry.native=native;feasible.push(entry);break;}
+    if(native.feasible){entry.native=native;
+      entry.verifiedOutcome=outcome(road,car,obs,entry.route,episode,resources,native);
+      feasible.push(entry);break;}
   }
   // Whole-exit progress is still the principal objective. The short native
   // prefix can veto an unsafe option; it cannot reward stopping to defend.
   let winner=feasible[0]??null,controlFactor=1,brakeAction=false;
+  if(options.stableMoves&&winner){
+    const kept=feasible.find(e=>e.route.continuation);
+    // A small change in an uncertain six-second forecast cannot justify
+    // interrupting a physically safe maneuver. A closing lane still vetoes
+    // the continuation in the same native collision check as every candidate.
+    if(kept&&winner!==kept&&winner.verifiedOutcome.score<kept.verifiedOutcome.score+6)winner=kept;
+  }
   if(!winner)for(const factor of [1,.94,.86,.74]) {
     const entry=evaluated.find(e=>e.route.kind==='free')??evaluated[0];
     const native=validatePrefix(car,obs,entry.route,validator,{...validationResources,
