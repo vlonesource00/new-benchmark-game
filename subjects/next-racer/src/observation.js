@@ -36,6 +36,9 @@ export class Observer {
       const dq = other.speed * Math.sin(angle(course - p.heading));
       const laneMap = prior?.laneMap ?? new Map();
       if (fresh) laneMap.set(Math.floor(p.s / 20), p.lateral);
+      const recentQ=fresh?[...(prior?.recentQ??[]),p.lateral].slice(-8):prior?.recentQ??[];
+      const stableLane=recentQ.length>=5&&Math.max(...recentQ)-Math.min(...recentQ)<.25
+        &&Math.abs(dq)<1.2&&Math.abs(angle(course-p.heading))<.1;
       const recent=Array.from(laneMap.values()).slice(-6);
       const varied=recent.length>2&&Math.max(...recent)-Math.min(...recent)>.5;
       const r = Object.freeze({
@@ -49,7 +52,7 @@ export class Observer {
         halfLength: Math.max(2.28, other.spec?.halfLength ?? 2.3),
         ghost: Boolean(other.ghost && car.ghost),
         finished: other.race?.finishTime != null, pit: Boolean(other.race?.pitLap),
-        road:physicalRoad, followsRoad:physicalRoad&&varied&&Math.abs(p.lateral-physicalRoad.at(p.s).offset)<1.2
+        road:physicalRoad,stableLane, followsRoad:physicalRoad&&varied&&Math.abs(p.lateral-physicalRoad.at(p.s).offset)<1.2
           && Math.abs(angle(course-physicalRoad.at(p.s+8).heading))<.14,
         envelope:physicalRoad?physicalRoad.laneEnvelope(p.lateral):null,
         classFactor:physicalRoad!==road||other.classId===car.classId?1:other.classId==='gt'?.84:1.16,
@@ -57,7 +60,7 @@ export class Observer {
         laneMap
       });
       if (!r.ghost && Math.abs(r.gap) < 450) rivals.push(r);
-      if (fresh) this.history.set(other.id, { speed: roadSpeed, accel, course, laneMap });
+      if (fresh) this.history.set(other.id, { speed: roadSpeed, accel, course, laneMap,recentQ });
     }
     if (fresh) { this.time = time; this.serial++; }
     return Object.freeze({ time, fresh, elapsed, projection, rivals,
@@ -101,7 +104,10 @@ function predict(track, rival, t, branch = 0) {
       let desired=velocity(u+dt);
       if(rival.road)desired=Math.min(desired,
         Math.sqrt((rival.road.sample(rival.envelope,s+25)*rival.classFactor)**2+2*10*25));
-      v=Math.max(0,v+clamp((desired-v)*3,-12,4)*dt);
+      // Velocity already integrates the measured acceleration. Rate-limit
+      // that target directly; a second low-pass delayed observed braking and
+      // placed the rival several metres ahead of its real corner passage.
+      v=Math.max(0,v+clamp(desired-v,-Math.max(12,-accel)*dt,Math.max(4,accel)*dt));
       const a=track.at(s-.5,q),b=track.at(s+.5,q),metric=Math.max(.35,Math.hypot(b.x-a.x,b.z-a.z));
       s+=v*dt/metric;q=futureQ;
     }
@@ -123,10 +129,23 @@ function predict(track, rival, t, branch = 0) {
       const env=rival.followsRoad?rival.road.speed:rival.envelope;
       desired=Math.min(desired,Math.sqrt((rival.road.sample(env,s+25)*rival.classFactor)**2+2*10*25));
     }
-    vFuture=Math.max(0,vFuture+clamp((desired-vFuture)*3,-12,4)*dt);
+    vFuture=Math.max(0,vFuture+clamp(desired-vFuture,-Math.max(12,-accel)*dt,Math.max(4,accel)*dt));
     s+=vFuture*dt;
   }
   const remembered = rival.laneMap.get(Math.floor(((s % track.length + track.length) % track.length) / 20));
+  const bin=Math.floor(((s%track.length+track.length)%track.length)/20),
+    currentBin=Math.floor(((rival.s%track.length+track.length)%track.length)/20),
+    previousLane=rival.laneMap.get(bin?bin-1:Math.floor((track.length-1e-6)/20));
+  // Repeated public passages reveal a rival's line through a coming bend.
+  // Treat that measured line as an additional possibility, never as its
+  // private intent. New, unseen road sections retain the motion branches.
+  if(branch===1&&bin!==currentBin&&remembered!=null&&previousLane!=null){
+    const fraction=((s%20)+20)%20/20,q=previousLane+(remembered-previousLane)*fraction,
+      p=track.at(s,q),slope=(remembered-previousLane)/20,
+      relative=angle(rival.yaw-(rival.course??rival.yaw))*Math.exp(-t*2);
+    return {...p,q,heading:p.heading+Math.atan(slope)+relative,speed:vFuture,
+      uncertainty:.14+Math.min(.7,t*.08),learned:true};
+  }
   // A measured lateral velocity is not a six-second lane-change order.
   // Integrate its decay once; the old extra time multiplier invented large
   // crossings on gentle bends and made natural passes look blocked.

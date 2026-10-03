@@ -30,7 +30,7 @@ export class Resources {
     // a tyre change or change the host's planned stops.
     const factor=threatened?clamp(1-(Math.max(...remaining)-.80)*.055,.97,1):1;
     const rotation=car.wheels.slice(2).some(w=>w.tyre.core>w.tyre.optimum+4&&w.tyre.wear>.12)? .12:0;
-    this.status={plannedLaps:planned,forecastWear:remaining,over,lapFuel,rotation,factor,
+    this.status={plannedLaps:planned,forecastWear:remaining,over,lapFuel,rotation,factor,push,
       saveFuel:!push&&lapFuel>0&&car.fuel/lapFuel<planned-.15};
     return this.status;
   }

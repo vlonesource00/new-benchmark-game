@@ -9,8 +9,17 @@ import { longitudinal } from './road.js';
 // by the driver so imagined alternatives cannot change execution feedback.
 export function outcome(road,car,obs,route,episode,resources,prefix=null) {
   let s=prefix?.endS??obs.projection.s,v=Math.max(2,prefix?.speed??car.speed),travel=prefix?.progress??0,
-    conflicts=0,minimum=Infinity,passed=0,work=0,exitTime=null,gateSpeed=null;
+    conflicts=0,riskCost=0,minimum=Infinity,passed=0,work=0,exitTime=null,gateSpeed=null;
   const dt=.15,horizon=6.6,target=episode.target;
+  const conflictAt=t=>{
+    conflicts++;
+    // The observed-motion window remains a hard native veto. Beyond that
+    // window, possible responses rank exits but must not count each future
+    // sample as an immediate collision. Re-observation happens before the
+    // uncertain merge; otherwise a clear committed pass loses to a return
+    // that needs braking right now.
+    riskCost+=episode.role==='attack'&&t>1.15?200*dt/(1+4*(t-1.15))**2:200;
+  };
   for(let t=prefix?.elapsed??0;t<horizon;t+=dt) {
     const p=route.at(s),next=route.at(s+20);
     let desired=Math.min(p.speed,Math.sqrt(next.speed**2+2*12*20))*resources.factor;
@@ -23,11 +32,11 @@ export function outcome(road,car,obs,route,episode,resources,prefix=null) {
         const q=forecast(road.track,r,t,branch),d=distance(q.s,s,road.length),separation=Math.abs(p.offset-q.q)-width;
         if(episode.role==='defend'&&!route.world){
           const overlap=Math.abs(d)<car.spec.halfLength+r.halfLength+1;
-          if(overlap){minimum=Math.min(minimum,separation);if(separation<0)conflicts+=1;}
+          if(overlap){minimum=Math.min(minimum,separation);if(separation<0)conflictAt(t);}
         }else if(Math.hypot(p.x-q.x,p.z-q.z)<14){
           const physical=bodyClearance({x:p.x,z:p.z,yaw:p.heading,spec:car.spec},
             {x:q.x,z:q.z,yaw:q.heading,spec:{halfWidth:r.halfWidth,halfLength:r.halfLength}})-.3;
-          minimum=Math.min(minimum,physical);if(physical<0)conflicts+=1;
+          minimum=Math.min(minimum,physical);if(physical<0)conflictAt(t);
         }
       }
       if(target?.id===r.id&&gap<-(car.spec.halfLength+r.halfLength+2))passed+=dt;
@@ -42,7 +51,7 @@ export function outcome(road,car,obs,route,episode,resources,prefix=null) {
     if(exitTime==null&&s-obs.projection.s>=route.gate.exit){exitTime=t+dt;gateSpeed=v;}
     work+=Math.max(0,v*v*Math.abs(p.curvature)-18)*dt;
   }
-  let score=travel+v*1.2-conflicts*200-work*.08;
+  let score=travel+v*1.2-riskCost-work*.08;
   if(episode.role==='attack')score+=Math.min(passed,2)*14;
   if(episode.role==='defend'&&target){
     const end=forecast(road.track,target,horizon);
@@ -51,7 +60,7 @@ export function outcome(road,car,obs,route,episode,resources,prefix=null) {
   if(route.side===episode.side&&route.side)score+=5;
   if(route.continuation)score+=12;
   if(route.kind==='follow')score-=3;
-  return {score,travel,exitSpeed:v,exitTime,gateSpeed,passed,conflicts,minimum:Number.isFinite(minimum)?minimum:null};
+  return {score,travel,exitSpeed:v,exitTime,gateSpeed,passed,conflicts,riskCost,minimum:Number.isFinite(minimum)?minimum:null};
 }
 
 export function choosePlan(road,car,obs,routes,episode,resources,validator,options={}) {
@@ -85,7 +94,7 @@ export function choosePlan(road,car,obs,routes,episode,resources,validator,optio
   const feasible=shortlist.filter(x=>x.native?.feasible);
   if(episode.role==='attack')feasible.sort((a,b)=>b.verifiedOutcome.score-a.verifiedOutcome.score
     ||a.route.key.localeCompare(b.route.key));
-  if(!feasible.length)for(const entry of evaluated.slice(shortlist.length,shortlist.length+3)){
+  if(!feasible.length)for(const entry of evaluated.filter(e=>!shortlist.includes(e)).slice(0,3)){
     const native=validatePrefix(car,obs,entry.route,validator,validationResources,options.horizon??1.15);
     checks.push({kind:entry.route.kind,side:entry.route.side,...entry.outcome,...native,traces:undefined});
     if(native.feasible){entry.native=native;feasible.push(entry);break;}

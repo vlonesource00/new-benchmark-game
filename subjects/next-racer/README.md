@@ -47,18 +47,24 @@ node --no-warnings --loader ./subjects/solstice/tools/json-loader.mjs subjects/n
 ```
 
 The campaign varies public poses, gaps, speeds and rival lanes, uses 20/30/60 Hz
-held controls with one frame of delay and occasional 75 ms bursts, and checks
+planning replies with one frame of delay and occasional 75 ms bursts, and checks
 declared native trajectory witnesses before the candidate. A witness can prove
 an opportunity exists; failure to find one does not prove impossibility.
 Raw traces stay in the ignored `results/` directory.
 
 The controller owns observations, episodes, independent tyre/force envelopes,
 world and road passing routes, native prefix validation, feedback escapes and
-delivery-lag prediction. Native host strategy, hybrid operation, pit service,
+delivery-lag prediction. Its worker chooses routes; a lightweight native host
+executor follows the serialized route with live physical feedback at 120 Hz.
+This separates maneuver latency from immediate steering correction. Native
+host strategy, hybrid operation, pit service,
 swaps, qualifying and formation remain in charge. The additive registration
 uses the existing Alien-only governor bypass; lower difficulties retain their
 native cap. Worker state and the short stamped route preview are specific to
 this driver. Its private pit surface view leaves the shared worker track alone.
+Course data expires, resets clear host feedback, and other drivers keep their
+existing execution path. Attack attribution compares the same executor with
+and without maneuver search; it requires physical movement before overlap.
 
 Continue on `origin/graphics-aaa`, fetching and rebasing before implementation
 and before publishing. PR #1 was already merged into that branch. The latest

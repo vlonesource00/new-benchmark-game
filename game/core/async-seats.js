@@ -6,6 +6,7 @@ import { createSeatBridge } from './field.js';
 import { plain } from '../bridges/remote-sync.js';
 import { nextRacerState } from '../bridges/next-racer-state.js';
 import { guardControls,previewRoute } from '../../subjects/next-racer/src/safety.js';
+import { previewFeedback,feedbackDebug,resetFeedback } from '../../subjects/next-racer/src/feedback.js';
 
 const RUBBER_EVERY = 30;
 
@@ -82,7 +83,8 @@ export class AsyncSeats {
           local.update(car, cars, dt, context); this.errors = local.errors ?? 0; return;
         }
         if (this.controls) car.controls = this.controls;
-        if(driver.id==='next-racer'&&this.controls)car.controls=guardControls(car,cars,race.track,this.controls,
+        if(driver.id==='next-racer'&&this.controls)car.controls=guardControls(car,cars,race.track,
+          previewFeedback(car,race.track,this.preview,context.time)??this.controls,
           {route:previewRoute(race.track,this.preview,context.time),
             age:this.controlTime==null?0:Math.max(0,context.time-this.controlTime)}).controls;
         this.pendingDt += dt;
@@ -102,20 +104,22 @@ export class AsyncSeats {
           cars: seats.cars(race), wetness: race.track.wetness, tempGrip: race.track.tempGrip,
           rubber: this.seq % RUBBER_EVERY === 1 ? race.track.rubber : undefined,
           ...(driver.id==='next-racer'?{state:nextRacerState(race,race.cars[index]),
-            ambient:race.track.ambient,epoch:this.epoch,controlDelay:this.controlDelay}:{}),
+            ambient:race.track.ambient,epoch:this.epoch,controlDelay:this.controlDelay,feedbackPeriod:1/120}:{}),
           debug: seats.wantDebug || undefined
         });
         this.pendingDt = 0;
       },
       reset() {
         this.epoch++;this.controlTime=null;this.preview=null;
-        if(driver.id==='next-racer'){this.lastDebug=null;seats.snap=null;seats.snapTime=-1;}
+        if(driver.id==='next-racer'){this.lastDebug=null;seats.snap=null;seats.snapTime=-1;resetFeedback(race.cars[index]);}
         this.controls = null; this.inFlight = false; this.pendingDt = 0; this.seq = -1;
         local?.reset?.({ cars: race.cars, track: race.track, line: race.lineFor(race.cars[index]) });
         if (!host.failed && host.initialised) host.worker.postMessage({ type: 'reset', slot, cars: race.cars.map(snapshotCar) });
       },
-      debug() { return local?.debug?.() ?? this.lastDebug ?? { architecture: driver.arch ?? driver.id }; },
-      visualDebug() { return local?.visualDebug?.() ?? (this.lastDebug?.trackingPoint ? { trackingPoint: this.lastDebug.trackingPoint } : null); }
+      debug() { return local?.debug?.() ?? (driver.id==='next-racer'&&this.lastDebug?
+        {...this.lastDebug,...feedbackDebug(race.cars[index])}:this.lastDebug) ?? { architecture: driver.arch ?? driver.id }; },
+      visualDebug() { const point=driver.id==='next-racer'?feedbackDebug(race.cars[index])?.trackingPoint:null;
+        return local?.visualDebug?.() ?? (point?{trackingPoint:point}:this.lastDebug?.trackingPoint ? { trackingPoint: this.lastDebug.trackingPoint } : null); }
     };
     host.seats.push(seat);
     return seat;

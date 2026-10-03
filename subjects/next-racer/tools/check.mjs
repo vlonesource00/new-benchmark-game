@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { Track } from '../../../game/engine/sim/track.js';
 import { Vehicle,wakes } from '../../../game/engine/sim/vehicle.js';
 import { fitHybrid,hybridStep,aiDeployMode } from '../../../game/core/hybrid.js';
-import { shadowOf,PredictionTrack,updateHybrid,actuationState,slipBeta } from '../src/plant.js';
+import { shadowOf,PredictionTrack,updateHybrid,actuationState,slipBeta,validatePrefix } from '../src/plant.js';
 import { createNextRacerBridge } from '../../../game/bridges/next-racer-bridge.js';
 import { Observer,forecast } from '../src/observation.js';
 import { Episodes } from '../src/episode.js';
@@ -11,6 +11,8 @@ import { guardControls,previewRoute,reverseSpace } from '../src/safety.js';
 import { COMPOUNDS } from '../../../game/core/rules.js';
 import { PitLane } from '../../../game/core/pit.js';
 import { drivingTrack } from '../src/pit.js';
+import { angle } from '../src/math.js';
+import { previewFeedback,feedbackDebug,resetFeedback } from '../src/feedback.js';
 
 const checks=[];
 function test(name,fn){fn();checks.push(name);}
@@ -87,6 +89,57 @@ test('braking observation moves the forecast body less than coasting',()=>{
   const slow=forecast(track,r,.4),coast=forecast(track,{...r,accel:0},.4);
   assert(Math.hypot(slow.x-r.x,slow.z-r.z)<Math.hypot(coast.x-r.x,coast.z-r.z)-.5);
 });
+test('a previously observed bend line is a separate public-motion hypothesis',()=>{
+  const o=new Observer(track),r=o.observe(a,[a,b],{time:0},1/30,bridge.driver.road).rivals[0];
+  const s=forecast(track,r,.75).s,bin=Math.floor(s/20);
+  assert.notEqual(bin,Math.floor(r.s/20));
+  r.laneMap.set(bin-1,2);r.laneMap.set(bin,-3);
+  const learned=forecast(track,r,.75,1),mean=forecast(track,r,.75,0);
+  assert.equal(learned.learned,true);assert(Math.hypot(learned.x-mean.x,learned.z-mean.z)>.2);
+  const unknown={...r,laneMap:new Map([[Math.floor(r.s/20),r.q]])};
+  assert.notEqual(forecast(track,unknown,.75,1).learned,true);
+});
+test('native prefix matches repeated delayed worker replies',()=>{
+  const route={created:0},dt=1/120,horizon=.6;
+  const command=c=>({throttle:Math.max(0,Math.min(1,.2+(47-c.speed)*.08)),brake:0,
+    steer:.025*Math.sin(c.x/30)});
+  const policy={track,control:command};
+  for(const [lag,period]of [[0,1/30],[.05,.05],[.125,.15]]){
+    const c=carAt(track,0,'lmdh',250,0,45),before=structuredClone(c);
+    const obs=new Observer(track).observe(c,[c],{time:0,controlDelay:lag,totalLaps:12},period);
+    const predicted=validatePrefix(c,obs,route,policy,{factor:1,rotation:0},horizon);
+    assert(predicted.feasible,predicted.reason);
+    const live=shadowOf(c);let held={...c.controls},pending=null,next=0;
+    // Independent host loop: issue state-dependent commands at snapshot time,
+    // deliver later, and retain the previous command between replies.
+    for(let t=0;t<horizon-1e-7;t+=dt){
+      const deliver=()=>{if(pending&&t+1e-8>=pending.at){held=pending.k;pending=null;}};
+      deliver();
+      if(t+1e-8>=next&&!pending){
+        live.controls=held;
+        const current={...obs,projection:track.nearest(live.x,live.z)};
+        const application=actuationState(live,current,policy);
+        pending={at:t+lag,k:command(application.car)};next=t+period;deliver();
+      }
+      live.controls=guardControls(live,[],track,held,{route}).controls;
+      updateHybrid(live,[live],track,dt,{totalLaps:12});
+      live.step(dt,new PredictionTrack(track),wakes([live])[0]);
+    }
+    assert(Math.abs(predicted.speed-live.speed)<1e-9,'queued speed');
+    assert(Math.abs(predicted.endS-track.nearest(live.x,live.z).s)<1e-9,'queued course');
+    assert(Math.abs(predicted.hybrid-live.hybrid.energy)<1e-9,'queued motor');
+    assert.deepEqual(structuredClone(c),before,'prediction is read-only');
+  }
+});
+test('a joining corridor preserves the measured course during lateral motion',()=>{
+  const c=shadowOf(a),road=bridge.driver.road,here=road.at(c.s),course=here.heading+.25;
+  c.vx=Math.sin(course)*c.speed;c.vz=Math.cos(course)*c.speed;
+  const obs=new Observer(track).observe(c,[c,b],{time:0},1/30,road),
+    routes=generateRoutes(road,c,obs,new Episodes(track).update(c,obs)),
+    join=routes.find(r=>r.kind==='join');
+  assert(join);assert(Math.abs(join.knots[0].slope
+    -Math.tan(angle(course-road.at(obs.projection.s).heading)))<1e-8);
+});
 test('actuation prediction holds the observed command through delivery lag without live edits',()=>{
   const c=shadowOf(a),before=structuredClone(c);c.controls={throttle:.6,brake:0,steer:.04};
   const obs=new Observer(track).observe(c,[c],{time:0,controlDelay:1/30},1/30);
@@ -146,6 +199,45 @@ test('driver writes controls only',()=>{
   assert.equal(bridge.errors,0,bridge.lastError);
   for(const key of Object.keys(before))if(key!=='controls')assert.deepEqual(a[key],before[key],key);
   for(const key of Object.keys(rivalBefore))assert.deepEqual(b[key],rivalBefore[key],'rival '+key);
+});
+test('serialized route feedback follows live state, stays read-only and expires',()=>{
+  for(const classId of ['gt','lmdh']){
+    const c=carAt(track,0,classId,430,0,40),r=carAt(track,1,classId,460,0,30),
+      bot=createNextRacerBridge({hostTrack:track});
+    bot.update(c,[c,r],1/30,{time:0,totalLaps:12,feedbackPeriod:1/120});
+    assert.equal(bot.errors,0,bot.lastError);
+    const preview=structuredClone(bot.controlPreview());assert(preview?.course?.length>60);
+    const before=structuredClone(c),first=previewFeedback(c,track,preview,0);
+    assert(['throttle','brake','steer'].every(k=>Number.isFinite(first[k])));
+    assert.deepEqual(structuredClone(c),before,'feedback writes no vehicle state');
+    assert(Math.abs(first.steer-c.controls.steer)<.02,'serialized trajectory matches executor');
+    c.yaw+=.08;
+    const changed=previewFeedback(c,track,preview,1/120);
+    assert(Math.abs(changed.steer-first.steer)>.03,'feedback responds before the next worker reply');
+    assert.equal(feedbackDebug(c).feedbackHz,120);
+    assert.equal(previewFeedback(c,track,preview,.41),null);
+    assert.equal(feedbackDebug(c),null,'expired route must not retain an old aim point');
+    previewFeedback(c,track,preview,0);
+    assert.equal(previewFeedback(c,track,null,0),null);
+    assert.equal(feedbackDebug(c),null,'pit/formation preview must clear road feedback');
+    assert.equal(previewFeedback(c,track,preview,NaN),null);
+    assert.equal(previewFeedback(c,track,{...preview,course:{}},0),null);
+    assert.equal(previewFeedback(c,track,{...preview,course:[[0,NaN]]},0),null);
+    resetFeedback(c);assert.equal(feedbackDebug(c),null);
+  }
+});
+test('native qualifying, last lap and tyre box calls reach the physical push policy',()=>{
+  const c=shadowOf(a),bot=createNextRacerBridge({hostTrack:track});
+  c.wheels[3].tyre.core=120;c.wheels[3].tyre.wear=.5;
+  for(const state of [{session:'qualifying'},{totalLaps:1},{totalLaps:12,pitPlan:{tyres:true}}]){
+    bot.update(c,[c],1/30,{time:0,state});
+    assert.equal(bot.driver.resources.status.push,true);
+    assert.equal(bot.controlPreview()?.push,true);
+    bot.reset({cars:[c]});
+  }
+  bot.update(c,[c],1/30,{time:0,state:{totalLaps:12}});
+  assert.equal(bot.driver.resources.status.push,false);
+  assert.equal(bot.controlPreview()?.push,false);
 });
 test('additional rear rotation requires heat and wear on the same wheel',()=>{
   const c=shadowOf(a);c.wheels[2].tyre.core=110;c.wheels[2].tyre.wear=.05;

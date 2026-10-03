@@ -2,7 +2,7 @@
   "planHz": 6,
   "envelopeHz": 2,
   "shortlist": 3,
-  "horizon": 1.15,
+  "horizon": 2.4,
   "path": {
     "brakeReserve": 0.92, "brakeWearReserve": 0.25,
     "curvatureSpan": 4, "variantSpan": 4,

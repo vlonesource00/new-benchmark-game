@@ -23,8 +23,13 @@ export class Route {
     this.road=road; this.start=obs.projection.s; this.created=obs.time;
     this.length=description.length; this.q=new Float32Array(road.q);
     const course=car.speed>3?Math.atan2(car.vx,car.vz):car.yaw;
-    const slope=clamp(Math.tan(angle(course-obs.projection.heading)),-.15,.15);
+    const slope=clamp(Math.tan(angle(course-obs.projection.heading)),-.6,.6);
     this.knots=[{d:0,q:obs.projection.lateral,slope},...description.knots];
+    if(description.corridor){
+      this.corridorOrigin=this.preferred(road.sample(road.q,this.start));
+      this.corridorSlope=(this.preferred(road.sample(road.q,this.start+1))
+        -this.preferred(road.sample(road.q,this.start-1)))*.5;
+    }
     if((description.kind==='free'&&!description.world)||description.nominal){
       this.geometry=road.geometry;this.speed=road.speed;
       this.key=description.kind+':'+(description.yieldSpeed??0);return;
@@ -32,7 +37,7 @@ export class Route {
     if(description.world){
       const f=road.at(this.start),dx=car.x-f.x,dz=car.z-f.z;
       this.knots[0]={d:0,q:dx*Math.cos(f.heading)-dz*Math.sin(f.heading),
-        slope:clamp(Math.tan(angle(course-f.heading)),-.15,.15)};
+        slope:clamp(Math.tan(angle(course-f.heading)),-.6,.6)};
       const longitudinal=dx*Math.sin(f.heading)+dz*Math.cos(f.heading);
       const points=road.points.map((p,i)=>{
         const d=distance(i*road.step,this.start,road.length),h=p.heading;
@@ -68,10 +73,22 @@ export class Route {
       road.gripRatios(this.q,this.geometry),road.liveBrakeReserve).speed;
     this.key=description.kind+':'+description.side+':'+description.lane.toFixed(2);
   }
+  preferred(base) {
+    const width=1,h=Math.max(0,1-Math.abs(base-this.lane)/width),round=width*h*h*h/6;
+    // Round toward the free side so smoothing cannot cross the occupied
+    // corridor boundary. Hard max/min joints introduced artificial curvature
+    // and forced braking while a car carried a perfectly usable side lane.
+    return this.side>0?Math.max(base,this.lane)+round:Math.min(base,this.lane)-round;
+  }
   corridorOffset(d,base) {
     const transfer=this.knots[1].d,hold=this.knots[2].d;
-    const bound=this.lane,preferred=this.side>0?Math.max(base,bound):Math.min(base,bound);
-    if(d<transfer)return interpolate(this.knots[0],{d:transfer,q:preferred},d);
+    const preferred=this.preferred(base);
+    if(d<transfer){
+      const t=clamp(d/transfer,0,1),position=1-10*t**3+15*t**4-6*t**5,
+        velocity=t-6*t**3+8*t**4-3*t**5;
+      return preferred+(this.knots[0].q-this.corridorOrigin)*position
+        +(this.knots[0].slope-this.corridorSlope)*transfer*velocity;
+    }
     if(d<hold)return preferred;
     return preferred+(base-preferred)*smooth((d-hold)/Math.max(1,this.length-hold));
   }
@@ -174,7 +191,7 @@ export function generateRoutes(road,car,obs,episode) {
     const worldLane=clamp(rivalOffset+side*separation,-5,5);
     const ownBase=road.at(p.s),ownWorld=(car.x-ownBase.x)*Math.cos(ownBase.heading)
       -(car.z-ownBase.z)*Math.sin(ownBase.heading);
-    const worldReach=alongside?[length]:[190,270,length];
+    const worldReach=[190,270,length];
     for(const reach of worldReach){
       const change=transferLength(road,car,worldLane-ownWorld,ownBase.curvature,alongside?12:28);
       candidates.push(new Route(road,car,obs,{kind:episode.role==='defend'?'world-carry':'world-pass',
@@ -191,8 +208,10 @@ export function generateRoutes(road,car,obs,episode) {
         add('cover',side,cover,Math.max(65,transfer),gate.exit,{defend:true});
       const legalTransfer=transferLength(road,car,lane-p.lateral,ownBase.curvature,alongside?12:28);
       add('carry',side,lane,legalTransfer,holdTo,{defend:true});
-      const relative=Math.max(2,r.speed-car.speed),clearDistance=clamp(car.speed
-        *(Math.abs(r.gap)+car.spec.halfLength+r.halfLength+4)/relative,legalTransfer+30,length-80);
+      const relative=Math.max(2,Math.abs(r.speed-car.speed)),clearance=car.spec.halfLength+r.halfLength+4,
+        separating=r.gap*(r.speed-car.speed)>0,
+        remaining=separating?Math.max(0,clearance-Math.abs(r.gap)):clearance+Math.abs(r.gap),
+        clearDistance=clamp(car.speed*remaining/relative,legalTransfer+30,length-80);
       add('carry-release',side,lane,legalTransfer,clearDistance,{defend:true,length:Math.min(length,clearDistance+75)});
     } else {
       const legalTransfer=transferLength(road,car,lane-p.lateral,ownBase.curvature,alongside?12:28);

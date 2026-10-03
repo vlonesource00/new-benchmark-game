@@ -62,6 +62,7 @@ self.onmessage = ({ data }) => {
     const context = { projections, order, totalLaps: data.laps, mode: 'race', time: data.time, paceObjective: 'race' };
     if(data.state)context.state=data.state;
     if(data.controlDelay!==undefined)context.controlDelay=data.controlDelay;
+    if(data.feedbackPeriod!==undefined)context.feedbackPeriod=data.feedbackPeriod;
     bridge.update(car, cars, data.dt, context);
     let debug;
     if (data.debug) { try { debug = plain(bridge.debug?.()); } catch { debug = undefined; } }

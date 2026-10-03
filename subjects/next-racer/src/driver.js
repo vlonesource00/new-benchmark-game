@@ -50,6 +50,7 @@ export class SpearheadDriver {
     }
     this.lifecycle=lifecycle;this.lastState=state;this.lastTime=obs.time;
     const resource=this.resources.update(car,obs,{...state,totalLaps:context.totalLaps??state.totalLaps});
+    this.lastResource=resource;
     if(obs.time>=this.nextEnvelope){
       const wet=clamp(((this.track.wetness??0)-.08)/.14,0,1),grip=this.control.o.gripUse;
       this.road.rebuildEnvelope(car,grip+(Math.min(grip,.86)-grip)*wet);
@@ -87,7 +88,7 @@ export class SpearheadDriver {
             previous.refresh();routes.push(previous);previous.continuation=true;
           }
           let result;
-          const settings=obs.rivals.some(r=>Math.abs(r.gap)<100)?this.o:{...this.o,horizon:2.4};
+          const settings={...this.o,horizon:this.o.horizon??2.4};
           // Test ablation: retain the same force controller and traffic guard,
           // but follow the nominal line without a maneuver search or escape.
           result=this.o.maneuvers===false?{route:routes[0],checks:[],evaluated:[]}:
@@ -103,7 +104,7 @@ export class SpearheadDriver {
             this.episodes.accept(result.route,obs);
           } else {
             const escapes=refugeRoutes(this.road,car,obs,routes[0]).map(route=>({route,
-              escape:escapePrefix(car,obs,this.validator,resource,route)}));
+              escape:escapePrefix(car,obs,this.validator,{...resource,defending:episode.role==='defend'},route)}));
             escapes.sort((a,b)=>Number(b.escape.feasible)-Number(a.escape.feasible)
               ||b.escape.score-a.escape.score);
             const {route:refuge,escape}=escapes[0];
@@ -118,6 +119,7 @@ export class SpearheadDriver {
         const route=this.plan.route;
         const commandCar=application.car,commandProjection=application.projection;
         const nominal=this.control.control(commandCar,commandProjection,{route,factor:resource.factor*(this.plan.factor??.9),rotation:resource.rotation,
+          push:resource.push,cornerUse:resource.cornerUse,
           brakeAction:this.plan.brakeAction??true,
           forceGuard:clamp((obs.elapsed-.025)/.015,0,1)},
           obs.time+application.lag<route.created+(route.yieldFor??0)?route.yieldSpeed:Infinity);
@@ -141,10 +143,19 @@ export class SpearheadDriver {
       resources:this.resources.status,checks:this.checks,evaluated:this.evaluated};
   }
   controlPreview() {
-    if(!this.plan?.route||this.lastTime==null||this.plan.escape)return null;
+    if(!this.plan?.route||this.lastTime==null||!['RACE','QUALIFY_OUT','QUALIFY_PUSH'].includes(this.lifecycle))return null;
     const s=this.observer.lastProjection?.s??this.plan.route.start;
-    const points=[];
-    for(let d=-8;d<=128;d+=8)points.push([d,this.plan.route.at(s+d).offset]);
-    return {s,time:this.lastTime,points};
+    const points=[],course=[],route=this.plan.route,escape=this.plan.escape?.action;
+    if(!escape)for(let d=-8;d<=128;d+=8)points.push([d,route.at(s+d).offset]);
+    for(let d=-20;d<=360;d+=4){
+      const p=route.at(s+d);course.push([d,p.x,p.z,p.heading,p.curvature,p.speed,p.offset,p.metric]);
+    }
+    return {s,time:this.lastTime,points,course,policy:{...this.control.o},
+      factor:(this.lastResource?.factor??1)*(escape?.factor??this.plan.factor??1),
+      rotation:this.lastResource?.rotation??0,push:this.lastResource?.push??false,
+      cornerUse:this.lastResource?.cornerUse,lookahead:escape?.lookahead,
+      steerBias:escape?.bias??0,brakeMin:escape?.brake??0,
+      brakeAction:escape?true:this.plan.brakeAction??true,
+      yieldUntil:route.created+(route.yieldFor??0),yieldSpeed:route.yieldSpeed??0};
   }
 }

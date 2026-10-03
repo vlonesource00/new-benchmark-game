@@ -8,10 +8,11 @@ import { createNextRacerBridge } from '../../../game/bridges/next-racer-bridge.j
 import { ForceControl } from '../src/control.js';
 import { Road } from '../src/road.js';
 import { updateHybrid,roadExcess } from '../src/plant.js';
-import { distance } from '../src/math.js';
+import { distance,angle } from '../src/math.js';
 import { cornerGate,Route } from '../src/routes.js';
 import { Observer,forecast } from '../src/observation.js';
 import { bodyHalf,bodyClearance,guardControls,previewRoute } from '../src/safety.js';
+import { previewFeedback } from '../src/feedback.js';
 import { writeFileSync,mkdirSync } from 'node:fs';
 import { dirname,resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -86,14 +87,15 @@ export function runEncounter(setup,{classId='gt',hz=30,seconds=16,free=false,tra
   let off=0,minimumSpeed=Infinity,stopped=0,clearSince=null,passedAt=null,passHeld=false,bridgeErrors=0;
   let rivalOfftrackSeconds=0,rivalStoppedSeconds=0;
   let selfContactSteps=0,otherContactSteps=0;
-  let firstOfftrack=null;
+  let firstOfftrack=null,firstWheelExcursion=null;
   const gate=cornerGate(track,setup.s,400),samples=[],events=[],modes={},latencies=[];
   let maxDeparture=0,overlapDeparture=0,maneuverSeconds=0,firstMove=null,firstAlongside=null;
   const held=new Map(),previews=new Map(),stamps=new Map(),pending=new Map(),delays=new Map();
   let lastPosted=null,exitAt=null,exitSpeedAtGate=null,bodyExcursion=0,wheelExcursion=0;
   const post=(bot,car,time,projections)=>{
     const previous={...car.controls},elapsed=lastPosted==null?1/hz:time-lastPosted;
-    bot.update(car,cars,elapsed,{time,projections,totalLaps:12,controlDelay:delays.get(car.id)??delayFrames/hz});
+    bot.update(car,cars,elapsed,{time,projections,totalLaps:12,controlDelay:delays.get(car.id)??delayFrames/hz,
+      feedbackPeriod:1/120});
     const extra=burstMs&&time%6>=3&&time%6<3.3?burstMs/1000:0;
     pending.set(car.id,{applyAt:time+delayFrames/hz+extra,k:{...car.controls},
       preview:structuredClone(bot.controlPreview()),time});
@@ -106,7 +108,7 @@ export function runEncounter(setup,{classId='gt',hz=30,seconds=16,free=false,tra
   const fixed=prescribed?new Route(road,self,new Observer(track).observe(self,cars,{time:0},1/hz,road),
     {kind:'prescribed',side:Math.sign(prescribed.offset),lane:prescribed.offset,
       world:true,length:prescribed.length,gate,knots:[
-        {d:prescribed.transfer,q:prescribed.offset},{d:prescribed.length-70,q:prescribed.offset},
+        {d:prescribed.transfer,q:prescribed.offset},{d:prescribed.hold??prescribed.length-70,q:prescribed.offset},
         {d:prescribed.length,q:0}]}):null;
   for(let time=0;time<seconds-DT/2;time+=DT) {
     deliver(time);
@@ -115,12 +117,18 @@ export function runEncounter(setup,{classId='gt',hz=30,seconds=16,free=false,tra
       if(!pending.has(self.id)){
       post(bridge,self,time,projections);
       if(fixed){
-        fixed.refresh();self.controls=bridge.driver.control.control(self,projections.get(self.id),
-          {route:fixed,forceGuard:1,factor:bridge.driver.resources.status.factor??1});
+        fixed.refresh();
+        // The independent witness uses the same delivered route preview and
+        // live 120 Hz feedback as the production candidate. A held-pedal
+        // witness was an unfairly weaker controller at low worker cadences.
+        bridge.driver.plan={route:fixed,factor:1,brakeAction:false};
+        bridge.driver.selected={kind:'prescribed',side:fixed.side};
+        const resource=bridge.driver.resources.status;
+        self.controls=bridge.driver.control.control(self,projections.get(self.id),
+          {route:fixed,forceGuard:1,factor:resource.factor??1,push:resource.push,
+            rotation:resource.rotation,cornerUse:resource.cornerUse});
         const request=pending.get(self.id);request.k={...self.controls};
-        const s=projections.get(self.id).s,points=[];
-        for(let d=-8;d<=128;d+=8)points.push([d,fixed.at(s+d).offset]);
-        request.preview={s,time,points};
+        request.preview=structuredClone(bridge.driver.controlPreview());
         self.controls=held.get(self.id)??{throttle:0,brake:0,steer:0};
       }
       latencies.push(bridge.driver.stats.latencyMs);
@@ -132,7 +140,8 @@ export function runEncounter(setup,{classId='gt',hz=30,seconds=16,free=false,tra
     deliver(time);
     if(!adaptive)for(const other of cars.slice(1))other.controls=policy.control(other,projections.get(other.id),
       {...(setup.hotline?{}:{hold:setup.blockers?(other.id===1?-3.6:3.6):lane}),forceGuard:1},setup.rivalSpeed);
-    for(const c of cars)if(held.has(c.id))c.controls=guardControls(c,cars,track,held.get(c.id),
+    for(const c of cars)if(held.has(c.id))c.controls=guardControls(c,cars,track,
+      previewFeedback(c,track,previews.get(c.id),time)??held.get(c.id),
       {route:previewRoute(track,previews.get(c.id),time),age:Math.max(0,time-stamps.get(c.id))}).controls;
     for(const c of cars)updateHybrid(c,cars,track,DT,{totalLaps:12});
     const air=wakes(cars);cars.forEach((c,i)=>c.step(DT,track,air[i]));
@@ -149,6 +158,7 @@ export function runEncounter(setup,{classId='gt',hz=30,seconds=16,free=false,tra
         z=self.z-Math.sin(self.yaw)*w.x+Math.cos(self.yaw)*w.z;
       wheelExcursion=Math.max(wheelExcursion,Math.abs(track.nearest(x,z).lateral)-track.halfWidth-track.curbWidth);
     }
+    if(wheelExcursion>.08)firstWheelExcursion??=time;
     const gap=distance(q.s,p.s,track.length);
     const physicalGap=(rival.x-self.x)*Math.sin(self.yaw)+(rival.z-self.z)*Math.cos(self.yaw);
     const fullClear=gap<-(self.spec.halfLength+rival.spec.halfLength+2)
@@ -180,7 +190,9 @@ export function runEncounter(setup,{classId='gt',hz=30,seconds=16,free=false,tra
     modes[mode]=(modes[mode]??0)+DT;
     if(trace&&Math.floor((time+DT)*4)>Math.floor(time*4))samples.push({t:time,s:p.s,q:p.lateral,gap,
       rivalQ:q.lateral,v:self.speed,target:d.targetSpeed,k:{...self.controls},plan:d.plan,stage:d.stage,safety:d.safety,
-      checks:d.checks,departure,physicalGap,contact:hits,
+      checks:d.checks,departure,physicalGap,contact:hits,intent:d.intent,
+      observedRival:latestObservation?.rivals.map(r=>({id:r.id,q:r.q,dq:r.dq,stableLane:r.stableLane,
+        followsRoad:r.followsRoad,alignment:angle(r.course-track.at(r.s).heading),turn:r.turn,accel:r.accel})),
       motion:{x:self.x,z:self.z,yaw:self.yaw,vx:self.vx,vz:self.vz,
         rival:{x:rival.x,z:rival.z,yaw:rival.yaw,vx:rival.vx,vz:rival.vz}},
       forecast:latestObservation?.rivals.filter(r=>r.id===rival.id).flatMap(r=>[.4,.8,1.15].map(h=>{
@@ -194,7 +206,7 @@ export function runEncounter(setup,{classId='gt',hz=30,seconds=16,free=false,tra
     passedAt,passHeld,contactSteps,contactEpisodes,offtrackSeconds:off,damage:self.damage,bridgeErrors,
     rivalOfftrackSeconds,rivalStoppedSeconds,
     selfContactSteps,otherContactSteps,
-    firstOfftrack,
+    firstOfftrack,firstWheelExcursion,
     maneuverEvidence:{maxDeparture,overlapDeparture,maneuverSeconds,firstMove,firstAlongside},
     p95Ms:latencies[Math.floor(latencies.length*.95)],maxMs:latencies.at(-1),modes,...(trace?{samples}:{}),
     events,lastError:bridge.lastError??adaptive?.lastError??null};

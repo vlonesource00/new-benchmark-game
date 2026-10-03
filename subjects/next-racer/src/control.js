@@ -159,8 +159,9 @@ export class ForceControl {
     // demand rather than for the mere presence of traffic.
     const grip = Math.min(...car.wheels.map(w => tyreGrip(w.tyre, Math.max(1000, w.load)))) * spec.tyreGrip
       * this.track.surface(car.x, car.z).grip;
-    let cornerUse = o.cornerGripUse + ((plan.push ? o.cornerGripUse : o.warmCornerGripUse ?? o.cornerGripUse) - o.cornerGripUse)
-      * clamp(warmUse * 4, 0, 1);
+    const coldUse = plan.cornerUse ?? o.cornerGripUse;
+    const warmCornerUse = plan.push ? coldUse : plan.cornerUse ?? o.warmCornerGripUse ?? o.cornerGripUse;
+    let cornerUse = coldUse + (warmCornerUse - coldUse) * clamp(warmUse * 4, 0, 1);
     cornerUse += (Math.min(cornerUse, .84) - cornerUse) * wet;
     // A lower corner target saves tyre energy; it does not reduce the real
     // force available to brake an overspeed car down to that target.

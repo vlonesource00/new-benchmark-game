@@ -1,6 +1,60 @@
 # SPEARHEAD results and historical investigation
 
-## Runtime checkpoint
+## Current checkpoint (2026-10-03)
+
+The runtime and native worker/host execution are built. Full acceptance remains
+open. Do not describe the current driver as a completed maximum-combat racer.
+Large raw results and rejected experiments remain in ignored `results/` files.
+Every run records the source hashes it actually loaded.
+
+| Check | Result | Qualification |
+|---|---|---|
+| Contracts | 23 passed | Native private prediction, hybrid, controls-only writes, lifecycle, stamped live feedback, public line history and push-policy forwarding |
+| Retained regressions | 10 passed / 5 failed out of 15; zero contacts, off-tracks, wheel excursions or stops | Includes two causally demonstrated adaptive duels, a safety-only crossing case, and five explicit close-defense sector-budget failures |
+| Development campaign | 297 trials; 89/89 independently witnessed opportunities converted; zero contacts, off-tracks, wheel excursions or defense-budget failures | Seeds 7, 19, 43; 20/30/60 Hz planning with delayed replies and 75 ms bursts; checkpoint before the subsequent public-history/rounded-corridor changes |
+| Independent campaign | 297 trials; 82/82 witnessed opportunities converted; zero contacts/off-tracks; all 54 defenders retain the position | Seeds 509, 887, 1297; five GT3 close-defense cases fail sector/exit-speed budgets. Now retained development failures, not fresh blind data |
+| Actual paced seat workers | Four cars, 60 s at real 30 FPS pacing, native 120 Hz feedback; no contacts/incidents in either class | GTP 5,104 replies / GT3 5,173; 58.3 ms delay p95 with injected 75 ms bursts. Node worker load, not browser GPU/FPS acceptance |
+| GTP native qualifying | 53.167 s best valid; both timed laps valid, no contacts/incidents | Push forwarding fixed; still above <53 s |
+| GT3 native qualifying | Prior clean checkpoint 63.925 s | <64 s achieved at that checkpoint; must repeat after final runtime changes |
+| GTP native 20-lap hard start | Both SPEARHEAD cars finish without contacts/incidents; 4 stops/swaps each | First hard stint fades 5.01 s, exceeding 4 s; winner is Gemini v4 by 26.64 s. No claim of endurance acceptance |
+| GT3 native 20-lap hard start with public-history response | Zero contacts/incidents/damage/errors; 4 native stops/swaps | Finishes 1500.83 s versus Gemini 1449.30 s. Earlier stop timing changed naturally; this is not proof that the original contact encounter was repaired in isolation |
+| Production build | Passed, 191 modules | Existing large-chunk warning remains |
+
+The adaptive duel regressions demonstrate a move, not merely a fast trajectory:
+GTP passes and holds at 5.07 s; GT3 at about 6.45 s. Each leaves its nominal line
+by over 2.5 m before overlap; its paired nominal-line continuation does not pass.
+Equal-resource twins and several closing twins still have no demonstrated held
+pass; lack of an independent witness does not establish impossibility.
+
+The five new defense failures lose roughly 47–51% of sector time and 31–32% of
+exit speed against free air. Their nominal continuations **with traffic** also
+contact the rival and leave the road. Reducing collision margins is therefore
+not an accepted correction. Experimental changes to defense-budget ordering,
+temporary combat push and extra host braking did not pass and were removed.
+The failed cases remain required regressions; no criterion was relaxed.
+
+Reducing the emergency traffic horizon to the normal planner's 1.15 s window
+kept the older ten regressions safe but did not improve the five defense cases;
+that experiment was reverted. The independent prescribed-route probe now uses
+the same rich preview and live feedback as production. Its first 12 alternatives
+for seed 509 provide no safe lead-retaining witness within the defense budgets.
+Safe alternatives still lose about 44–46% of sector time; this bounded search
+does not establish impossibility. All five exact initial fixtures are declared
+in the regression tool, rather than surviving only in ignored result dumps.
+
+The simple thermal cap and reduced wear-braking reserve did not solve the long
+hard-stint fade; the latter also introduced native incidents. Axle-weighted
+corner targets increased heat/fade. None was promoted into production tuning.
+The latest rounded side-corridor geometry improves several retained bend passes
+and keeps all ten regressions clean; its complete campaign remains to be run.
+
+Next: resolve the independently retained close-defense cases, then rerun a new
+unused validation set, native field/endurance/Changeable checks, qualifying and
+the actual planned-stint fade measurement. Solo pace tuning stays deferred
+while combat acceptance is open. SOLSTICE and native physics/strategy are
+preserved. No new PR has been published for this unfinished checkpoint.
+
+## Historical runtime checkpoints
 
 SPEARHEAD is implemented and registered as `next-racer`. This is an experimental
 checkpoint, not acceptance of the completed racer. The source, tuning, tyre
@@ -8,16 +62,17 @@ physics, strategy and difficulty reference of existing drivers are preserved.
 
 | Check | Observed result | Limit |
 |---|---|---|
-| Runtime contract checks | 18 passed | Private native plant, hybrid, controls-only writes, duplicate observations, host preview, tyre gate, pit surface, delivery lag, safe recovery, finished seats and native stint metadata |
-| Production build | Passed, 183 modules | Existing large-chunk warning remains |
+| Runtime contract checks | 21 passed | Adds repeated delayed-reply parity, measured joining course and live read-only host feedback with expiry |
+| Production build | Passed, 191 modules | Existing large-chunk warning remains |
 | Actual seat-worker and AsyncSeats probe | 438 replies, 18.03 simulated seconds; zero contacts and incidents | Node adapter executes the real browser-worker module; not a browser frame-rate/load campaign |
 | Base encounters, both classes | 33 trials, 24 s each, 30 Hz, one-frame delay plus 75 ms bursts; zero contacts, off-tracks, stopped periods and bridge errors | 12/14 GTP and 11/13 GT3 attacking fixtures give held passes; defense, equal-resource duels and exact-line braking require further work |
 | Varied straight smoke campaign | 18 GTP trials across 20/30/60 Hz, seeds 7 and 101; all clean, 12/12 witnessed opportunities converted | Twelve fixed-lane passes were natural trajectory passes; six exact-fast-line passes earned tactical credit; small subset only |
 | Varied defense checkpoint | 108 trials, both classes, 20/30/60 Hz, 3 development and 3 held-out seeds; zero contacts, off-tracks, stops, bridge errors or budget failures; all 108 retain the lead | Worst sector loss 2.25%; minimum exit-speed ratio 97.27%; captured before the subsequent evaluated-action correction |
-| Retained native regressions | 5 passed; zero contacts, off-tracks or stopped periods | Four previously failing bend passages plus the close GT3 defense case; development regressions, not an independent admission campaign |
-| Native 6-lap GTP, clear, hard start, seed 7 | Finished 461.57 s, best valid 62.54 s; zero contacts, incidents, damage and bridge errors; 2 stops / 2 swaps | Gemini v4 finished 419.75 s; no lap-target or fade claim |
+| Retained native regressions | 6 passed; zero contacts, off-tracks, wheel departures or stopped periods | GT3 close-defense exit 7.13 s versus 7.03 s in free air; development regressions, not an independent admission campaign |
+| Replays of 21 previous road/wheel failures | All clean after the worker/host split | Captured before the subsequent rival-forecast refinement; the full mixed rerun remains required |
+| Native 6-lap GTP, clear, hard start, seed 7 | Finished 434.38 s, best valid 57.50 s; zero contacts, incidents, damage and bridge errors; 2 stops / 2 swaps | Gemini v4 finished 419.43 s; no lap-target or fade claim |
 | Native 6-lap GT3, Changeable, hard start, seed 19 | Finished 519.23 s, best valid 68.32 s; zero contacts, SPEARHEAD incidents, damage and bridge errors; 2 stops / 2 swaps | Wetness 0–0.79 and all four front phases observed; Gemini v4 finished 494.20 s with 2 incidents |
-| Native 6-lap GTP, Changeable, hard start, seed 43 | Finished 490.70 s, best valid 68.41 s; 1 contact, 2 SPEARHEAD incidents, 2 stops / 2 swaps | Wet/dry integration remains an open failure; no weather retune |
+| Native 6-lap GTP, Changeable, hard start, seed 43 | Finished 479.57 s, best valid 67.97 s; zero contacts, incidents, damage and bridge errors; 2 stops / 2 swaps | Improved from the earlier one-contact/two-incident run through generic feedback changes; no weather retune |
 | Native GTP qualifying, soft start | Completed, best valid 61.38 s; 0 contacts, 4 SPEARHEAD incidents, 0 stops | Lifecycle works; complete qualifying safety gate remains open |
 
 The longer delayed test originally failed after completing passes: subsequent
@@ -32,12 +87,17 @@ surface/wall geometry in a private Track view. Weather, rubber and ambient stay
 live without modifying legacy seats. Native pit decisions and driver swaps
 were observed in the full-race fixtures above.
 
-The full varied campaign remains under evaluation. The first 594-trial corpus
+The historical varied campaign remained under evaluation. The first 594-trial corpus
 converted 202/205 independently witnessed opportunities, but had 1,343 native
 contact steps. Correcting the curved body/kerb guard reduced the next checkpoint
 to 163 contact steps and again 202/205 conversions; it still had off-tracks,
 stopped periods and 11 defense-budget failures. Neither checkpoint passed.
-A new full run evaluates the further combat corrections described below.
+The evaluated-action checkpoint then converted 205/205 witnessed opportunities
+with zero contacts, stops, bridge errors and defense-budget failures, but still
+had 11.93 seconds of native off-track running in nine trials. It did not pass.
+A new 594-trial run evaluates the subsequent worker/host feedback split, longer
+road/escape continuation and rival forecast corrections. Checkpoints persist
+every 24 trials; a partial file is explicitly marked incomplete.
 Every failure must remain in the corpus. No solo pace sweep, global physics
 change or weather retune has been used to hide that gap. Native pit laps are
 excluded from pace/fade evidence; the two clean hard laps before the first stop
@@ -79,6 +139,27 @@ but the second timed lap was invalid with two incidents and a fully worn rear
 right soft tyre. This is safety/resource evidence, not acceptance of either
 the lap target or the fade target. Combat fixes have not included a pace sweep
 or wet tuning.
+
+The immediate executor now follows serialized geometry using the live car at
+the native physics rate, while the worker owns maneuver selection. A retained
+GTP delay-burst corner that previously went off-track after completing its pass
+now remains clean. The closing GTP duel completes at 4.44 s with a 2.65 m
+departure before overlap; its matched nominal-line run does not pass. That is
+deliberate-maneuver evidence, not a faster solo trajectory.
+
+Defense also exposed an over-conservative spacing rejection. Its matched
+nominal run kept the lead at full pace without contact, while the planner
+braked through a physically clear rear-side passage. A smaller extra margin
+for an established line with a steady observed rival behind reduced that
+GT3 sector from 10.33 s to 7.13 s, versus 7.03 s in free air. Native body
+separation remains required; the full defense rerun must verify generality.
+
+The seeds 101, 217 and 331 were initially held out, then inspected and used
+to repair failures. They are now retained regression data, not fresh blind
+validation. A new unused seed set is required before an independent acceptance
+claim. Wheel departures beyond 0.08 m of the native road/kerb now also reject
+clean-pass credit, and their timing prevents later faults from being mislabelled
+as tactical necessity.
 
 Reproduce integration checks:
 

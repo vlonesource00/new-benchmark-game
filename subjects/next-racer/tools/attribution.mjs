@@ -7,7 +7,7 @@ import { dirname,resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 export const cleanPass=r=>r.passHeld&&r.passedAt!=null&&!r.contactSteps&&!r.offtrackSeconds
-  &&!r.rivalOfftrackSeconds&&!r.bridgeErrors;
+  &&!r.rivalOfftrackSeconds&&!r.stopped&&!r.bridgeErrors&&(r.wheelExcursion??0)<=.08;
 export function attribute(combat,nominal) {
   const move=combat.maneuverEvidence;
   const moved=move.maneuverSeconds>=.15&&move.overlapDeparture>.8
@@ -15,7 +15,8 @@ export function attribute(combat,nominal) {
   const gain=nominal.passedAt!=null&&combat.passedAt!=null?nominal.passedAt-combat.passedAt:null;
   const nominalPassingFault=nominal.passedAt!=null&&(
     nominal.events?.some(e=>e.t<=nominal.passedAt+1e-6)
-    ||nominal.firstOfftrack!=null&&nominal.firstOfftrack<=nominal.passedAt);
+    ||nominal.firstOfftrack!=null&&nominal.firstOfftrack<=nominal.passedAt
+    ||nominal.firstWheelExcursion!=null&&nominal.firstWheelExcursion<=nominal.passedAt);
   const verdict=!cleanPass(combat)?'no clean held pass':!moved?'normal-trajectory pass':
     nominal.passedAt==null?'maneuver enables pass':
     nominalPassingFault?'maneuver enables clean pass':

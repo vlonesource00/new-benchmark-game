@@ -3,6 +3,7 @@ import { hybridStep, aiDeployMode } from '../../../game/core/hybrid.js';
 import { forecast } from './observation.js';
 import { bodyHalf, bodyClearance, guardControls } from './safety.js';
 import { angle, distance, wrap } from './math.js';
+import { ForceControl } from './control.js';
 
 // Slip direction is meaningful only above the controller's 5 m/s threshold.
 // Brake/resistance integration can reverse tiny velocity components at rest;
@@ -85,27 +86,27 @@ export function validatePrefix(car,obs,route,control,resources,horizon=1.25) {
         other:{x:other.x,z:other.z,yaw:other.yaw,speed:other.speed}};
     }
   };
-  const period=Math.max(1/120,Math.min(.1,obs.elapsed||1/30));
+  const period=Math.max(1/120,Math.min(.2,(obs.context.feedbackPeriod??obs.elapsed)||1/30));
   const lag=Math.max(0,Math.min(.2,obs.context.controlDelay??0));
   const initialBeta=slipBeta(car);
-  const predicted=rivalPrefixes(car,obs,control,horizon,period);
+  const predicted=rivalPrefixes(car,obs,control,horizon,period,resources.defending);
+  const othersAt=t=>obs.rivals.map(r=>{
+    const native=predicted.get(r.id)?.[Math.round(t/dt)];if(native)return native;
+    const f=forecast(track,r,t);
+    return {...f,id:r.id,classId:r.classId,yaw:f.heading,ax:r.accel,
+      vx:Math.sin(f.heading)*f.speed,vz:Math.cos(f.heading)*f.speed,
+      spec:{halfWidth:r.halfWidth,halfLength:r.halfLength},ghost:r.ghost};
+  });
   for(let t=0;t<horizon-1e-7;t+=dt) {
     const p=track.nearest(self.x,self.z);
     const step=Math.round(t/dt);
-    const others=obs.rivals.map(r=>{
-      const native=predicted.get(r.id)?.[step];if(native)return native;
-      const f=forecast(track,r,t);
-      return {...f,id:r.id,classId:r.classId,yaw:f.heading,
-        ax:r.accel,
-        vx:Math.sin(f.heading)*f.speed,vz:Math.cos(f.heading)*f.speed,
-        spec:{halfWidth:r.halfWidth,halfLength:r.halfLength},ghost:r.ghost};
-    });
+    const others=othersAt(t);
     if(t<lag-1e-8)k={...car.controls};
     else if(t+1e-8>=nextControl) {
-      const nominal=control.control(self,p,{route,factor:resources.factor,rotation:resources.rotation,
+      k=control.control(self,p,{route,factor:resources.factor,rotation:resources.rotation,
+        push:resources.push,cornerUse:resources.cornerUse,
         brakeAction:Boolean(resources.brakeAction),forceGuard:1},
         obs.time+t<route.created+(route.yieldFor??0)?route.yieldSpeed:Infinity);
-      k=guardControls(self,others,track,nominal,{route}).controls;
       nextControl=Math.max(nextControl,lag)+period;
     }
     self.controls=guardControls(self,others,track,k,{route}).controls;
@@ -116,19 +117,28 @@ export function validatePrefix(car,obs,route,control,resources,horizon=1.25) {
     progress+=distance(next.s,lastS,track.length);lastS=next.s;
     off=Math.max(off,roadExcess(track,self,next));
     maxBeta=Math.max(maxBeta,slipBeta(self));
-    for(let i=0;i<others.length;i++){
+    // Keep the original traffic response window while checking a longer road
+    // continuation. Distant hypothetical rival branches are re-observed.
+    for(let i=0;t<1.15&&i<others.length;i++){
       const r=obs.rivals[i];
       const native=predicted.get(r.id)?.[step+1];
       if(native){
-        measure(self,native,.22+Math.min(.25,t*.12),t+dt,'motion');
+        const behind=(native.x-self.x)*Math.sin(self.yaw)+(native.z-self.z)*Math.cos(self.yaw)<0;
+        const established=resources.defending&&r.stableLane&&route.kind==='free'&&behind;
+        // A rival already transferring laterally can continue its turn-in
+        // instead of following the damped mean. Reserve that uncertainty
+        // before entering overlap; do not charge a steady rear pursuer for it.
+        const laneUncertainty=resources.defending?0:Math.min(.4,Math.abs(r.dq)*t*.12);
+        measure(self,native,established?.10:.22+Math.min(.25,t*.12)+laneUncertainty,t+dt,'motion');
       }
       // A defender owns its established lane. Keep the full observed-motion
       // veto, but re-observe a pursuer's hypothetical lane response after the
       // immediate reaction window instead of forcing an emergency move into
       // it. An attacker reserves the occupied lane through the whole prefix.
       const responseHorizon=resources.defending?.65:horizon;
-      for(const branch of native?(t<.12||t>responseHorizon?[]:[2]):[0,1,2]){
+      for(const branch of native?(t<.12||t>responseHorizon?[]:[1,2]):[0,1,2]){
         const f=forecast(track,r,t+dt,branch);
+        if(native&&branch===1&&!f.learned)continue;
         measure(self,{...f,id:r.id,yaw:f.heading,
           spec:{halfWidth:r.halfWidth,halfLength:r.halfLength}},Math.min(.3,f.uncertainty),t+dt,branch);
       }
@@ -144,24 +154,37 @@ export function validatePrefix(car,obs,route,control,resources,horizon=1.25) {
 }
 
 const prefixCache=new WeakMap();
-function rivalPrefixes(car,obs,control,horizon,period) {
-  const existing=prefixCache.get(obs);
+function rivalPrefixes(car,obs,control,horizon,period,defending=false) {
+  const profile=defending?'defend':'attack';
+  let profiles=prefixCache.get(obs);if(!profiles){profiles=new Map();prefixCache.set(obs,profiles);}
+  const existing=profiles.get(profile);
   if(existing&&existing.horizon>=horizon)return existing.traces;
   const traces=new Map(),track=control.track,env=new PredictionTrack(track),dt=1/120;
   for(const r of obs.rivals.filter(r=>Math.abs(r.gap)<100)) {
     const rival=shadowOf(r.physical);
     const samples=[],initial={...rival.controls};
+    const laneFollower=defending&&r.stableLane&&r.road?new ForceControl(track,r.road,control.o):null;
     const record=()=>({id:r.id,classId:r.classId,x:rival.x,z:rival.z,yaw:rival.yaw,
       vx:rival.vx,vz:rival.vz,ax:rival.ax,s:rival.s,lateral:rival.lateral,speed:rival.speed,spec:rival.spec,ghost:rival.ghost});
     samples.push(record());
     for(let t=0;t<horizon-1e-7;t+=dt) {
-      if(t>=.12){
-        const f=forecast(track,r,t+dt);
+      if(t>=.12&&!(laneFollower&&t<1.15)){
+        // A steady observed lane through the entry follows road curvature.
+        // Projecting its old tangent into the bend invented a crossing and
+        // forced a defender to brake alongside a car that kept its lane.
+        const f=forecast(track,r,t+dt,defending&&r.stableLane?2:0);
         samples.push({...f,id:r.id,classId:r.classId,yaw:f.heading,ax:r.accel,
           vx:Math.sin(f.heading)*f.speed,vz:Math.cos(f.heading)*f.speed,spec:rival.spec,ghost:rival.ghost});
         continue;
       }
       rival.controls={...initial};
+      if(laneFollower&&t>=.12){
+        // Infer only the lateral continuation from its observed steady lane.
+        // Longitudinal intent remains the public pedal state, and all forces,
+        // ABS, traction, hybrid and tyre response come from the private plant.
+        const steering=laneFollower.control(rival,track.nearest(rival.x,rival.z),{hold:r.q,forceGuard:1});
+        rival.controls.steer=steering.steer;
+      }
       const other={id:car.id,classId:car.classId,s:car.s,x:car.x+car.vx*t,z:car.z+car.vz*t,
         yaw:car.yaw,vx:car.vx,vz:car.vz,speed:car.speed};
       updateHybrid(rival,[rival,other],track,dt,obs.context.state??obs.context);
@@ -169,20 +192,27 @@ function rivalPrefixes(car,obs,control,horizon,period) {
     }
     traces.set(r.id,samples);
   }
-  prefixCache.set(obs,{horizon,traces});return traces;
+  profiles.set(profile,{horizon,traces});return traces;
 }
 
 export function escapeControl(car,p,control,resource,route,action) {
   const k=control.control(car,p,{route,factor:resource.factor*action.factor,
-    rotation:resource.rotation,lookahead:action.lookahead,brakeAction:true,forceGuard:1});
+    rotation:resource.rotation,push:resource.push,cornerUse:resource.cornerUse,
+    lookahead:action.lookahead,brakeAction:true,forceGuard:1});
   k.steer=Math.max(-1,Math.min(1,k.steer+action.bias));
   if(action.brake){k.throttle=0;k.brake=Math.max(k.brake,action.brake);}
   return k;
 }
 export function escapePrefix(car,obs,control,resource,route) {
-  const track=control.track,env=new PredictionTrack(track),period=Math.max(1/120,Math.min(.1,obs.elapsed||1/30));
-  const horizon=.55,dt=1/120,predicted=rivalPrefixes(car,obs,control,horizon,period);
+  const track=control.track,env=new PredictionTrack(track),period=Math.max(1/120,Math.min(.2,(obs.context.feedbackPeriod??obs.elapsed)||1/30));
+  // Validate the exit in traffic too. A short safe braking prefix can consume
+  // the lateral reserve and leave no feasible continuation through a corner.
+  const horizon=2.4,dt=1/120,predicted=rivalPrefixes(car,obs,control,horizon,period,resource.defending);
   const lag=Math.max(0,Math.min(.2,obs.context.controlDelay??0));
+  const othersAt=t=>obs.rivals.map(r=>predicted.get(r.id)?.[Math.round(t/dt)]??(()=>{
+    const f=forecast(track,r,t);return {...f,id:r.id,classId:r.classId,yaw:f.heading,
+      vx:Math.sin(f.heading)*f.speed,vz:Math.cos(f.heading)*f.speed,spec:{halfWidth:r.halfWidth,halfLength:r.halfLength}};
+  })());
   const requests=[];
   for(const lookahead of [.3,.55])for(const factor of [1,.82,.62])requests.push({lookahead,factor,bias:0});
   for(const bias of [-.12,.12])requests.push({lookahead:.3,factor:.82,bias});
@@ -194,10 +224,7 @@ export function escapePrefix(car,obs,control,resource,route) {
     const initialBeta=slipBeta(car);
     let minimum=Infinity,off=0,beta=0,lastOff=initialOff,lastS=initial.s,progress=0,first=null,k=null,next=0;
     for(let i=0;i<Math.ceil(horizon/dt);i++) {
-      const others=obs.rivals.map(r=>predicted.get(r.id)?.[i]??(()=>{
-        const f=forecast(track,r,i*dt);return {...f,id:r.id,classId:r.classId,yaw:f.heading,
-          vx:Math.sin(f.heading)*f.speed,vz:Math.cos(f.heading)*f.speed,spec:{halfWidth:r.halfWidth,halfLength:r.halfLength}};
-      })());
+      const others=othersAt(i*dt);
       if(i*dt<lag-1e-8)k={...car.controls};
       else if(i*dt+1e-8>=next){
         k=escapeControl(self,track.nearest(self.x,self.z),control,resource,route,request);
@@ -217,6 +244,12 @@ export function escapePrefix(car,obs,control,resource,route) {
         if(i*dt>=.12){
           const f=forecast(track,r,(i+1)*dt,2);
           if(Math.hypot(f.x-self.x,f.z-self.z)<14)minimum=Math.min(minimum,
+            bodyClearance(self,{x:f.x,z:f.z,yaw:f.heading,
+              spec:{halfWidth:r.halfWidth,halfLength:r.halfLength}})-.12);
+        }
+        if(i*dt>=.12&&i*dt<1.15){
+          const f=forecast(track,r,(i+1)*dt,1);
+          if(f.learned&&Math.hypot(f.x-self.x,f.z-self.z)<14)minimum=Math.min(minimum,
             bodyClearance(self,{x:f.x,z:f.z,yaw:f.heading,
               spec:{halfWidth:r.halfWidth,halfLength:r.halfLength}})-.12);
         }

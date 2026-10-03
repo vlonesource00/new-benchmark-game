@@ -14,7 +14,35 @@ overlap. A clean pass must clear both bodies, stay ahead for one second, reach
 the next corner gate, remain held at the end, and have no contacts or off-tracks.
 Route names alone are insufficient. Results record runtime source hashes.
 
-## Measured checkpoint: Harbor, warm hards, 30 Hz, 24-second encounters
+## Current evidence and limits (2026-10-03)
+
+The retained adaptive duel fixtures demonstrate useful maneuvers: GTP completes
+and holds its pass at about 5.07 s and GT3 at about 6.45 s. Both depart over
+2.5 m before overlap; the matched nominal-line continuation does not pass.
+Equal-resource twins remain unpassed in the measured window. The closing duel
+fixtures give the leading car lower starting speed and more worn tyres, so
+these results establish conversion of an approach, not universal twin-car wins.
+
+The 297-trial independent checkpoint converted 82/82 opportunities established
+by a separate controls-only route witness, with zero contacts/off-tracks. Five
+close-defense cases still fail sector and exit-speed budgets. Those cases are
+now explicitly declared in `tools/regressions.mjs`; their admission seeds are
+development data after investigation. Overall combat acceptance remains open.
+
+The prescribed-route probe now delivers the same full route preview and live
+120 Hz feedback as the production driver. Its former held-command execution
+was a weaker controller at low planning cadences. A successful earlier witness
+still proves existence of a trajectory; failure to find one never proves
+impossibility. Pass attribution requires no stopped periods as well as the
+body, wheel and contact checks.
+
+On the seed-509 GT3 close-defense encounter, none of the first 12 prescribed
+offset/duration alternatives meets the 3% sector-loss and 95% exit-speed budgets
+while remaining safe and retaining the lead. Safe alternatives still lose
+roughly 44–46% of sector time. This is a limited search, not an impossibility
+result. The driver's five failures remain required; no criterion was relaxed.
+
+## Historical checkpoint: Harbor, warm hards, 30 Hz, 24-second encounters
 
 These paired runs include one frame of control delay and occasional 75 ms
 delivery bursts. The figures below were captured after delivery-lag prediction,

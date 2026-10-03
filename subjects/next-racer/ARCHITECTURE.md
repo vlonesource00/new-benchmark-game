@@ -392,7 +392,24 @@ host so a cap is never mistaken for hesitation inside the driver.
 
 ## 9. Scheduling and actual workers
 
-Start with perception/control/safety on every delivered observation, tactical
+The current runtime separates worker planning from physics-rate execution.
+The worker sends finite sampled world geometry, speed envelope, force policy,
+resource limits and any evaluated emergency action. Only SPEARHEAD's native
+seat reconstructs that data for live 120 Hz feedback. The host cannot invent
+a different maneuver, and stale course data expires. Main-thread fixed-snapshot
+measurements were roughly 12-15 microseconds per car/update in Node; browser
+field-load acceptance is still required. This is a local measurement, not a
+browser performance guarantee.
+
+Road and emergency continuation are checked for 2.4 seconds;
+the traffic response window remains 1.15 seconds. A defender
+continuing its existing line has a smaller extra spacing margin only when a
+steady observed rival is behind it. Physical body separation, road legality,
+stability and the immediate response branch remain mandatory. Steady-lane
+inference uses public motion history, and its private native continuation
+holds the observed pedals while predicting lateral tracking.
+
+The remaining design target starts with perception/control/safety on every delivered observation, tactical
 planning at 5–10 Hz when contested, and resource/envelope updates at 2–3 Hz or
 on meaningful state changes. Avoid copying full-lap geometry on every message.
 Warm-start within a topology, but retain a different topology in the beam.
@@ -404,8 +421,8 @@ stop optional search. Do not send a partially checked candidate.
 
 Worker output should carry its epoch, source sequence/time and validity horizon.
 The host must reject stale replies after reset/swap and know when held controls
-outlive validation. A driver-specific minimal host guard for that condition is
-an integration proposal, not an existing capability. It must leave other AIs'
+outlive validation. SPEARHEAD's driver-specific host guard and finite route
+feedback now implement that integration. They leave other AIs'
 behavior unchanged and must not introduce a blanket race speed cap.
 
 During rolling-start preview the host overwrites prepared driver inputs. Do not
@@ -434,7 +451,7 @@ is not accepted.
 | Solinator 6.1 | Physical arrival gates, two-stage transfers, explicit braking alternatives | Expand from a small lateral-port beam to corner-relative route regions, response branches and pass-completion terminal states |
 | Astra | Maneuver memory, attack episodes, prediction diagnostics and continuation checks | Retain memory/diagnostics but require contact-free native validation and momentum-preserving outcome scoring |
 | SOLSTICE | Fast clean baseline, class geometry, per-wheel force control and alternate lanes | Replace the line-centered short battle search; model evolving hybrid/wake and complete approach-to-exit episodes |
-| CLAUDE REVOLUTION proposal | Corner opportunity map, rival profiles and planned-stint tyre budget | Keep combat before solo optimization, validate several different route topologies, and retain this user's stricter lap/contact objectives; it has no driver runtime yet |
+| CLAUDE REVOLUTION | Corner opportunity map, rival profiles and planned-stint tyre budget in the original proposal | Retain this user's stricter lap/contact objectives and combat-first order; upstream now has a registered runtime at `fcc5e28`, preserved by this branch |
 
 Sources: Phantom [sampler.js](../phantom-v2/src/sampler.js), lines 34–38,
 210–239 and 286–354; [field.js](../phantom-v2/src/field.js);
@@ -450,7 +467,8 @@ measured on the same native game/class/cadence and matched fixtures.
 
 ## Proposed module boundaries
 
-No modules in this table are implemented yet. Keep the public subject independent
+This table describes the full target decomposition; the bounded runtime above
+implements a subset with its own modules. Keep the public subject independent
 of SOLSTICE's runtime imports so preserving one driver does not constrain or
 silently change the other.
 

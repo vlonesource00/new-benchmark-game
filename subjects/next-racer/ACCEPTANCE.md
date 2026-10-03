@@ -1,8 +1,10 @@
 # Combat-first acceptance campaign
 
-Status: proposed tests for an unimplemented driver. The source audit and existing
-SOLSTICE checks are the only new verification completed in this investigation.
-None of the gates below is claimed as passed by `next-racer`.
+Status: implemented experimental driver, with partial verification recorded in
+[RESULTS.md](RESULTS.md). Contracts, retained regressions and paced native worker
+probes pass. Independent close-defense budgets, the GTP lap target and complete
+planned-stint fade remain open. The full design campaign below is not claimed
+complete; passing a short development corpus does not waive its new failures.
 
 ## Development gate order
 
