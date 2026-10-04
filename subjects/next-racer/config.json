@@ -6,6 +6,7 @@
   "stableMoves": true,
   "physicsPace": true,
   "nativeStrategy": true,
+  "endurancePriors": { "gt": { "fuelScale": 0.88, "hardColdCredit": 0.9 } },
   "trafficHorizon": 2,
   "commitSeconds": 0,
   "approachSeconds": 3,

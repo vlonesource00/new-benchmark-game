@@ -31,7 +31,8 @@ const teams=ids.map((id,i)=>{
 const observations=[];
 const sourceHashes=sourceStamp();
 function heldBridge(driver,index,race) {
-  if(driver.id==='next-racer')installNativeStrategy(race,race.cars[index]);
+  if(driver.id==='next-racer')installNativeStrategy(race,race.cars[index],
+    {priors:options.endurancePriors?.[race.cars[index].classId]});
   const bridge=driver.id==='next-racer'?createNextRacerBridge({hostTrack:race.track,index,options,
     state:car=>nextRacerState(race,car)}):createSeatBridge(driver,index,race);
   // Explicit controls-only research override, never enabled in the shipped

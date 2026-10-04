@@ -43,6 +43,17 @@ test('own endurance planner preserves native requests and physical stop costs',(
   assert.equal(e.strategist.decide,TeamStrategist.prototype.decide);
   assert.equal(e.strategist.servicePlan,TeamStrategist.prototype.servicePlan);
 });
+test('the fuel prior learns from native laps without changing the source strategist',()=>{
+  const {car,e,race}=strategyFixture(),old=e.strategist,original=old.fuelPerLap;
+  assert(installNativeStrategy(race,car,{enabled:true}));const s=e.strategist,before=s.fuelPerLap;
+  assert(before<original);assert.equal(old.fuelPerLap,original);
+  const c=carAt(new Track('harbor-ring'),0,'gt',500,0,35);
+  c.race.lastLap=65;c.fuel=34.3;for(const w of c.wheels)w.tyre.wear=.17;
+  s.lapMark={fuel:40,wear:.1};s.observeLap(c,true);
+  assert(Math.abs(s.fuelPerLap-(before+5.7)/2)<1e-9);
+  assert.equal(s.observeLap,TeamStrategist.prototype.observeLap);
+  assert.equal(old.fuelPerLap,original);
+});
 test('planner installation leaves human teams, other drivers and weather untouched',()=>{
   for(const change of [
     f=>f.e.team.drivers[1].kind='human',f=>f.e.team.drivers[0].id='solstice',
