@@ -46,6 +46,7 @@ export class SpearheadDriver {
     const state=context.state??{},obs={...this.observer.observe(car,cars,context,dt,this.road),
       executionPreview:this.executionPreview,executionControls:this.executionControls},p=obs.projection;
     this.stats.observerMs=clock()-start;this.stats.envelopeMs=0;this.stats.searchMs=0;
+    this.stats.routesMs=0;this.stats.admissionMs=0;
     const lifecycle=car.race?.finishTime!=null?'FINISHED':state.phase==='countdown'?'PRIME':
       state.formation?'FORMATION_PREVIEW':state.pit?'PIT_'+state.pit.toUpperCase():
       state.session==='qualifying'?((car.race?.progress??0)<0?'QUALIFY_OUT':'QUALIFY_PUSH'):'RACE';
@@ -115,6 +116,7 @@ export class SpearheadDriver {
             if(native.feasible)result={route:previous,native,checks:[{kind:previous.kind,side:previous.side,...native,traces:undefined}]};
           }
           if(!result){
+          const routesStart=clock();
           const routes=generateRoutes(this.road,car,obs,this.o.maneuvers===false?{role:'pace',target:null}:episode,this.o);
           if(this.o.maneuvers!==false&&previous&&previous.kind!=='free'&&previous.kind!=='follow'
             &&this.plan.target===episode.target?.id&&episode.target&&this.plan.role===episode.role
@@ -128,8 +130,12 @@ export class SpearheadDriver {
           // The maneuver ablation keeps native admission, brake actions and
           // recovery. Only tactical geometry is disabled; removing safety too
           // confounded the comparison with a different clear-track controller.
+          for(const route of routes)route.retainLane=this.o.retainOverlapLane!==false;
+          this.stats.routesMs=clock()-routesStart;
+          const admissionStart=clock();
           result=this.o.nativeAdmission===false?{route:routes[0],checks:[],evaluated:[]}:
             choosePlan(this.road,car,obs,routes,episode,resource,this.validator,settings);
+          this.stats.admissionMs=clock()-admissionStart;
           this.checks=result.checks;this.evaluated=result.evaluated??[];
           this.stats.plans++;this.stats.rollouts+=result.checks.length;
           if(result.route) {
@@ -142,6 +148,7 @@ export class SpearheadDriver {
           } else {
             const escapes=[];
             for(const route of refugeRoutes(this.road,car,obs,routes[0])){
+              route.retainLane=this.o.retainOverlapLane!==false;
               const escape=escapePrefix(car,obs,this.validator,{...resource,defending:episode.role==='defend'},route);
               escapes.push({route,escape});
               if(escape.feasible&&escape.action.factor===1)break;
@@ -212,7 +219,7 @@ export class SpearheadDriver {
     for(let station=start;station<=s+360+step;station+=step){
       const p=route.at(station);course.push([station-s,p.x,p.z,p.heading,p.curvature,p.speed,p.offset,p.metric]);
     }
-    const preview={s,time:this.lastTime,points,course,policy:{...this.control.o},
+    const preview={s,time:this.lastTime,points,course,policy:{...this.control.o},retainLane:route.retainLane,
       steerOrigin:this.steerOrigin,controlPeriod:this.controlPeriod,
       factor:(this.lastResource?.factor??1)*(escape?.factor??this.plan.factor??1),
       rotation:this.lastResource?.rotation??0,push:this.lastResource?.push??false,

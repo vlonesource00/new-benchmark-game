@@ -1,5 +1,9 @@
 # SPEARHEAD pursuit and defense candidate
 
+The later overlap and planning-cost update is documented in
+[COMBAT-MOMENTUM.md](COMBAT-MOMENTUM.md). Measurements below describe the
+`c515813` pursuit baseline, before that update.
+
 This follow-up to `d86e9d1` addresses racecraft that sacrifices approach pace
 without a reachable pass or a closing threat. Combat is still under development;
 the candidate has not established consistent race wins over CRV.

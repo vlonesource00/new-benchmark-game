@@ -67,11 +67,16 @@ export function outcome(road,car,obs,route,episode,resources,prefix=null) {
 export function choosePlan(road,car,obs,routes,episode,resources,validator,options={}) {
   resources={...resources,forecastRiskDecay:options.forecastRiskDecay??true};
   const validationResources={...resources,defending:episode.role==='defend',trafficHorizon:options.trafficHorizon};
+  const horizon=options.horizon??1.15;
+  const tactical=routes.some(r=>r.side&&!r.kind.startsWith('emergency-'));
+  const requestedStep=typeof options.rankingStep==='number'?options.rankingStep:options.rankingStep?.[car.classId];
+  const rankingStep=tactical&&requestedStep===1/60?1/60:1/120;
+  const rankingResources={...validationResources,predictionStep:rankingStep};
   let nominalNative=null;
   if(episode.role==='defend') {
     const free=routes.find(r=>r.kind==='free');
     if(free){
-      nominalNative=validatePrefix(car,obs,free,validator,validationResources,options.horizon??1.15);
+      nominalNative=validatePrefix(car,obs,free,validator,rankingResources,horizon);
     }
     // An exit budget compares two safe routes. If the nominal course would
     // collide, keep side continuations available before choosing an escape.
@@ -106,14 +111,14 @@ export function choosePlan(road,car,obs,routes,episode,resources,validator,optio
   }
   for(const entry of shortlist) {
     let native=entry.route.kind==='free'&&nominalNative?nominalNative:
-      validatePrefix(car,obs,entry.route,validator,validationResources,options.horizon??1.15);
+      validatePrefix(car,obs,entry.route,validator,rankingResources,horizon);
     checks.push({kind:entry.route.kind,side:entry.route.side,...entry.outcome,...native,traces:undefined});
     if(options.brakingVariants&&native.reason==='road-body'){
       // A course may be viable with native combined-slip braking. Test that
       // action before abandoning its geometry for a much slower outside lane.
       // Traffic and stability vetoes retain their authority on the new action.
       const braking=validatePrefix(car,obs,entry.route,validator,
-        {...validationResources,brakeAction:true},options.horizon??1.15);
+        {...rankingResources,brakeAction:true},horizon);
       checks.push({kind:entry.route.kind,side:entry.route.side,brakeAction:true,
         ...entry.outcome,...braking,traces:undefined});
       if(braking.feasible){native=braking;entry.brakeAction=true;}
@@ -136,8 +141,27 @@ export function choosePlan(road,car,obs,routes,episode,resources,validator,optio
   }
   if(episode.role==='attack'||options.stableMoves)feasible.sort((a,b)=>b.verifiedOutcome.score-a.verifiedOutcome.score
     ||a.route.key.localeCompare(b.route.key));
+  if(options.stableMoves&&feasible.length){
+    const kept=feasible.find(e=>e.route.continuation),best=feasible[0];
+    if(kept&&best!==kept&&best.verifiedOutcome.score<kept.verifiedOutcome.score+6)
+      feasible=[kept,...feasible.filter(e=>e!==kept)];
+  }
+  // Compare complete maneuvers at a cheaper integration rate, then admit the
+  // preferred course again at the game's original 120 Hz. Unlike truncating
+  // comparisons, this retains the braking point and corner exit in ranking.
+  // Selected live controls never use the coarse simulation's admission.
+  if(rankingStep>1/120){
+    let admitted=null;
+    for(const entry of feasible){
+      const native=validatePrefix(car,obs,entry.route,validator,
+        {...validationResources,brakeAction:entry.brakeAction===true},horizon);
+      checks.push({kind:entry.route.kind,side:entry.route.side,finalAdmission:true,...native,traces:undefined});
+      if(native.feasible){entry.native=native;admitted=entry;break;}
+    }
+    feasible=admitted?[admitted]:[];
+  }
   if(!feasible.length)for(const entry of evaluated.filter(e=>!shortlist.includes(e)).slice(0,3)){
-    const native=validatePrefix(car,obs,entry.route,validator,validationResources,options.horizon??1.15);
+    const native=validatePrefix(car,obs,entry.route,validator,validationResources,horizon);
     checks.push({kind:entry.route.kind,side:entry.route.side,...entry.outcome,...native,traces:undefined});
     if(native.feasible){entry.native=native;
       entry.verifiedOutcome=outcome(road,car,obs,entry.route,episode,resources,native);
@@ -146,17 +170,10 @@ export function choosePlan(road,car,obs,routes,episode,resources,validator,optio
   // Whole-exit progress is still the principal objective. The short native
   // prefix can veto an unsafe option; it cannot reward stopping to defend.
   let winner=feasible[0]??null,controlFactor=1,brakeAction=false;
-  if(options.stableMoves&&winner){
-    const kept=feasible.find(e=>e.route.continuation);
-    // A small change in an uncertain six-second forecast cannot justify
-    // interrupting a physically safe maneuver. A closing lane still vetoes
-    // the continuation in the same native collision check as every candidate.
-    if(kept&&winner!==kept&&winner.verifiedOutcome.score<kept.verifiedOutcome.score+6)winner=kept;
-  }
   if(!winner)for(const factor of [1,.94,.86,.74]) {
     const entry=evaluated.find(e=>e.route.kind==='free')??evaluated[0];
     const native=validatePrefix(car,obs,entry.route,validator,{...validationResources,
-      factor:resources.factor*factor,brakeAction:true},options.horizon??1.15);
+      factor:resources.factor*factor,brakeAction:true},horizon);
     checks.push({kind:entry.route.kind,side:entry.route.side,factor,...native,traces:undefined});
     if(native.feasible){winner={...entry,native};controlFactor=factor;brakeAction=true;break;}
   }

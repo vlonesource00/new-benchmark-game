@@ -61,13 +61,14 @@ export function runEncounter(setup,{classId='gt',hz=30,seconds=16,free=false,tra
   const recorded=setup.initialState&&Object.assign(new Vehicle(setup.initialState.id,'recorded','#ddd',classId),
     structuredClone(setup.initialState));
   const bridge=createNextRacerBridge({hostTrack:track,options:{...options,maneuvers:prescribed?false:maneuvers}});bridge.reset({cars:[recorded??seed]});
-  const road=bridge.driver.road,self=recorded??fixture(track,0,classId,setup.s,road.at(setup.s).offset,setup.speed,setup.worn,setup.compound);
+  const road=bridge.driver.road,self=recorded??fixture(track,0,classId,setup.s,
+    setup.selfLane??road.at(setup.s).offset,setup.speed,setup.worn,setup.compound);
   let latestObservation=null;
   if(trace){
     const observe=bridge.driver.observer.observe.bind(bridge.driver.observer);
     bridge.driver.observer.observe=(...args)=>(latestObservation=observe(...args));
   }
-  const initial=road.at(setup.s);
+  const initial=setup.selfLane==null?road.at(setup.s):track.at(setup.s,setup.selfLane);
   if(!recorded){self.yaw=initial.heading;self.vx=Math.sin(initial.heading)*setup.speed;
     self.vz=Math.cos(initial.heading)*setup.speed;self.yawRate=setup.speed*initial.curvature;}
   const lane=setup.lane??road.at(setup.s+setup.gap).offset;
@@ -93,6 +94,7 @@ export function runEncounter(setup,{classId='gt',hz=30,seconds=16,free=false,tra
   let selfContactSteps=0,otherContactSteps=0;
   let firstOfftrack=null,firstWheelExcursion=null;
   const gate=cornerGate(track,setup.s,400),samples=[],events=[],modes={},latencies=[];
+  const planningTimings=[];let lastTimedPlan=0;
   let maxDeparture=0,overlapDeparture=0,maneuverSeconds=0,firstMove=null,firstAlongside=null;
   const held=new Map(),previews=new Map(),stamps=new Map(),pending=new Map(),delays=new Map();
   let lastPosted=null,exitAt=null,exitSpeedAtGate=null,bodyExcursion=0,wheelExcursion=0;
@@ -136,6 +138,12 @@ export function runEncounter(setup,{classId='gt',hz=30,seconds=16,free=false,tra
         self.controls=held.get(self.id)??{throttle:0,brake:0,steer:0};
       }
       latencies.push(bridge.driver.stats.latencyMs);
+      const stats=bridge.driver.stats;
+      if(trace&&stats.plans!==lastTimedPlan){
+        planningTimings.push({t:time,plan:stats.plans,routes:stats.routesMs,
+          admission:stats.admissionMs,search:stats.searchMs});
+        lastTimedPlan=stats.plans;
+      }
       if(adaptive&&!free&&!pending.has(rival.id))post(adaptive,rival,time,projections);
       lastPosted=time;
       }
@@ -203,6 +211,7 @@ export function runEncounter(setup,{classId='gt',hz=30,seconds=16,free=false,tra
     if(trace&&Math.floor((time+DT)*4)>Math.floor(time*4))samples.push({t:time,s:p.s,q:p.lateral,gap,
       rivalQ:q.lateral,v:self.speed,target:d.targetSpeed,k:{...self.controls},plan:d.plan,stage:d.stage,safety:d.safety,
       checks:d.checks,departure,physicalGap,contact:hits,intent:d.intent,
+      timing:{routes:d.stats?.routesMs,admission:d.stats?.admissionMs,search:d.stats?.searchMs},
       control:feedbackDebug(self)?.control??d.control,liveGuard,clearance:bodyClearance(self,rival),
       ay:self.ay,tyres:self.wheels.map(w=>({wear:w.tyre.wear,core:w.tyre.core,alpha:w.tyre.alpha,
         kappa:w.tyre.kappa,load:w.load})),
@@ -225,7 +234,7 @@ export function runEncounter(setup,{classId='gt',hz=30,seconds=16,free=false,tra
     selfContactSteps,otherContactSteps,
     firstOfftrack,firstWheelExcursion,
     maneuverEvidence:{maxDeparture,overlapDeparture,maneuverSeconds,firstMove,firstAlongside},
-    p95Ms:latencies[Math.floor(latencies.length*.95)],maxMs:latencies.at(-1),modes,...(trace?{samples}:{}),
+    p95Ms:latencies[Math.floor(latencies.length*.95)],maxMs:latencies.at(-1),modes,...(trace?{samples,planningTimings}:{}),
     events,lastError:bridge.lastError??adaptive?.lastError??null};
 }
 export function runCombat({classId='gt',hz=30,filter=null,seconds=16,trace=false,delayFrames=0,burstMs=0,options={}}={}) {

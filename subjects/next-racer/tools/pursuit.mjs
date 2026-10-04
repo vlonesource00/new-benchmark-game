@@ -34,6 +34,8 @@ function summary(run,setup){
   return {progress:run.progress,exitAt:run.exitAt,exitSpeedAtGate:run.exitSpeedAtGate,
     passedAt:run.passedAt,passHeld:run.passHeld,finalGap:run.finalGap,
     contacts:run.contactSteps,offtrack:run.offtrackSeconds,damage:run.damage,errors:run.bridgeErrors,
+    rivalOfftrack:run.rivalOfftrackSeconds,rivalStopped:run.rivalStoppedSeconds,
+    p95Ms:run.p95Ms,maxMs:run.maxMs,
     firstMoveGap:firstMove?.gap??null,firstMove:run.maneuverEvidence.firstMove,
     alongside:run.maneuverEvidence.firstAlongside,
     maxRivalLead:Math.max(-Infinity,...run.samples.map(s=>s.gap)),

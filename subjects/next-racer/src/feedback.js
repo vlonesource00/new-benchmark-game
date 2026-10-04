@@ -7,9 +7,17 @@ import { projectCourse,advanceCourse } from './course.js';
 const executors=new WeakMap();
 export function resetFeedback(car){executors.delete(car);}
 export function feedbackDebug(car){return executors.get(car)?.debug??null;}
+const currentPose=(car,executor)=>executor?.pose?.[0]===car.x&&executor.pose[1]===car.z&&executor.pose[2]===car.yaw;
+export function feedbackGuardOrigin(car){
+  const executor=executors.get(car);return currentPose(car,executor)?executor.origin:null;
+}
+export function acceptGuardControls(car,controls){
+  const executor=executors.get(car);
+  if(currentPose(car,executor))executor.controls={...controls};
+}
 
 export function previewFeedback(car,track,preview,time){
-  const invalid=()=>{const executor=executors.get(car);if(executor){executor.debug=null;executor.controls=null;}return null;};
+  const invalid=()=>{const executor=executors.get(car);if(executor){executor.debug=null;executor.controls=null;executor.pose=null;}return null;};
   if(!Number.isFinite(time)||!Array.isArray(preview?.course)||![preview.time,preview.s,preview.factor,preview.rotation].every(Number.isFinite)||time<preview.time-1e-8
     ||time-preview.time>.4||preview.course.length<2)return invalid();
   let executor=executors.get(car);
@@ -30,7 +38,7 @@ export function previewFeedback(car,track,preview,time){
     };
     const course={x:points.map(p=>p[1]),z:points.map(p=>p[2]),step,period:track.length,
       start:preview.s+start,closed:false};
-    const route={at,speed:points,project:(x,z,hint)=>projectCourse(course,x,z,hint),
+    const route={at,speed:points,retainLane:preview.retainLane,project:(x,z,hint)=>projectCourse(course,x,z,hint),
       advance:(s,metres)=>advanceCourse(course,s,metres)},path={at,sample:(_,s)=>at(s).speed};
     executor.control=new ForceControl(track,path,preview.policy);
     executor.route=route;executor.preview=preview;
@@ -57,6 +65,7 @@ export function previewFeedback(car,track,preview,time){
   executor.time=time;
   executor.origin=origin;executor.dt=dt;
   executor.controls=k;
+  executor.pose=[car.x,car.z,car.yaw];
   executor.debug={trackingPoint:control.lastTarget?{x:control.lastTarget.x,z:control.lastTarget.z}:null,
     targetSpeed:control.targetSpeed,feedbackHz:120,control:control.lastSignal};
   return k;

@@ -17,6 +17,7 @@ import { drivingTrack } from '../src/pit.js';
 import { angle } from '../src/math.js';
 import { previewFeedback,feedbackDebug,resetFeedback } from '../src/feedback.js';
 import { ForceControl } from '../src/control.js';
+import { choosePlan } from '../src/search.js';
 import { Resources } from '../src/resources.js';
 import { installNativeStrategy,SpearheadStrategist } from '../src/strategy.js';
 
@@ -301,6 +302,27 @@ test('native prefix matches repeated delayed worker replies',()=>{
     assert.deepEqual(structuredClone(c),before,'prediction is read-only');
   }
 });
+test('defense reobserves a future rear catch while retaining immediate body vetoes',()=>{
+  const route={kind:'free',created:0,at:()=>({offset:0})},
+    policy={track,control:()=>({throttle:0,brake:0,steer:0})};
+  for(const gap of [12,25]){
+    const c=carAt(track,0,'gt',250,0,45),r=carAt(track,1,'gt',250-gap,0,60);
+    const seen=new Observer(track).observe(c,[c,r],{time:0},1/30),
+      obs={...seen,rivals:[{...seen.rivals[0],dq:3,stableLane:false}]};
+    const resources={factor:1,rotation:0,trafficHorizon:2};
+    const attacking=validatePrefix(c,obs,route,policy,resources,2.4),
+      defending=validatePrefix(c,obs,route,policy,{...resources,defending:true},2.4);
+    assert.equal(attacking.reason,'body-conflict','an attacker must reserve its future merge');
+    if(gap===12){
+      assert.equal(defending.reason,'body-conflict','an immediate rear sweep still vetoes defense');
+      assert(defending.conflict.t<1.15);
+    }else{
+      assert(attacking.conflict.t>1.15);
+      assert(defending.feasible,defending.reason);
+      assert(Math.abs(defending.elapsed-2.4)<1e-8,'the complete road continuation remains checked');
+    }
+  }
+});
 test('a joining corridor preserves the measured course during lateral motion',()=>{
   const c=shadowOf(a),road=bridge.driver.road,here=road.at(c.s),course=here.heading+.25;
   c.vx=Math.sin(course)*c.speed;c.vz=Math.cos(course)*c.speed;
@@ -374,10 +396,50 @@ test('an immediate cut-in still has braking authority during overlap',()=>{
   const safe=guardControls(own,[own,other],track,{throttle:1,brake:0,steer:0},{route:{at:()=>({offset:0})}});
   assert.equal(safe.controls.throttle,0);assert(safe.controls.brake>0);
 });
-test('a command steering across an overlapping car cannot waive the guard',()=>{
-  const own=carAt(track,20,'lmdh',250,3,45),other=carAt(track,21,'lmdh',252,0,44);
-  const safe=guardControls(own,[own,other],track,{throttle:1,brake:0,steer:-.9},{route:{at:()=>({offset:0})}});
-  assert.equal(safe.controls.throttle,0);assert(safe.controls.brake>0);
+test('an unsafe overlapping merge preserves the clear course and drive',()=>{
+  for(const side of [-1,1])for(const gap of [-2,2]){
+    const own=carAt(track,20,'lmdh',250,side*3,45),other=carAt(track,21,'lmdh',250+gap,0,44);
+    const command={throttle:1,brake:0,steer:-side*.9};
+    const safe=guardControls(own,[own,other],track,command,{route:{at:()=>({offset:0})}});
+    assert.equal(safe.reason,'hold-overlap-lane');
+    assert.equal(safe.controls.throttle,1);assert.equal(safe.controls.brake,0);
+    assert(Math.abs(safe.controls.steer)<Math.abs(command.steer)*.2);
+    assert.equal(command.steer,-side*.9,'input command remains unchanged');
+    own.controls=safe.controls;other.controls={throttle:1,brake:0,steer:0};
+    for(let i=0;i<24;i++){
+      const air=wakes([own,other]);own.step(1/120,track,air[0]);other.step(1/120,track,air[1]);
+      assert(bodyClearance(own,other)>.10,'native bodies remain separate');
+      assert.equal(collisions([own,other]),0);
+    }
+  }
+});
+
+test('an established pullout keeps drive before the nose reaches overlap',()=>{
+  for(const side of [-1,1]){
+    const own=carAt(track,20,'gt',250,side*3.5,45),other=carAt(track,21,'gt',257,0,38);
+    const k={throttle:1,brake:0,steer:0};
+    const safe=guardControls(own,[own,other],track,k,{route:{at:()=>({offset:0})}});
+    assert.deepEqual(safe.controls,k);
+    own.controls=k;other.controls=k;
+    for(let i=0;i<36;i++){
+      const air=wakes([own,other]);own.step(1/120,track,air[0]);other.step(1/120,track,air[1]);
+      assert(bodyClearance(own,other)>.2);
+      assert.equal(collisions([own,other]),0);
+    }
+  }
+});
+test('coarse maneuver ranking always returns a full native admission',()=>{
+  const c=carAt(track,0,'gt',250,0,45),r=carAt(track,1,'gt',272,0,36);
+  const bot=createNextRacerBridge({hostTrack:track});bot.reset({cars:[c,r]});
+  const road=bot.driver.road,obs=new Observer(track).observe(c,[c,r],{time:0},1/30,road);
+  const episode=new Episodes(track).update(c,obs,false,{road});
+  const routes=generateRoutes(road,c,obs,episode,{spaceTimeRoutes:true});
+  const result=choosePlan(road,c,obs,routes,episode,{factor:1,rotation:0},bot.driver.validator,
+    {rankingStep:1/60,horizon:2.4});
+  assert(result.route);assert(result.native.feasible);
+  assert.equal(result.native.integrationStep,1/120);
+  assert(result.native.elapsed>=2.4-1/120);
+  assert(result.checks.some(c=>c.finalAdmission&&c.feasible&&c.integrationStep===1/120));
 });
 test('recovery cannot reverse into an approaching car',()=>{
   const behind=carAt(track,2,'lmdh',230,0,50),beside=carAt(track,3,'lmdh',230,4,50);

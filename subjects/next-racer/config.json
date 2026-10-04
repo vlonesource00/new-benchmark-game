@@ -3,6 +3,8 @@
   "envelopeHz": 2,
   "shortlist": 3,
   "horizon": 2.4,
+  "rankingStep": { "lmdh": 0.016666666666666666 },
+  "retainOverlapLane": true,
   "stableMoves": true,
   "physicsPace": true,
   "nativeStrategy": true,

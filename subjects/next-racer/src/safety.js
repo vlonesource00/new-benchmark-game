@@ -1,4 +1,5 @@
 import { clamp, angle, distance } from './math.js';
+import { feedbackGuardOrigin,acceptGuardControls } from './feedback.js';
 
 export function bodyHalf(car, heading) {
   const e=angle(car.yaw-heading), w=Math.max(.98,car.spec?.halfWidth??.99),l=Math.max(2.28,car.spec?.halfLength??2.3);
@@ -42,7 +43,7 @@ export function previewRoute(track,preview,time) {
   if(!preview||!Number.isFinite(preview.s)||!Number.isFinite(preview.time)
     ||time<preview.time-1e-6||time-preview.time>.22||!Array.isArray(preview.points)
     ||preview.points.length<2||preview.points.some(p=>!Number.isFinite(p[0])||!Number.isFinite(p[1])))return null;
-  return {at(s){
+  return {retainLane:preview.retainLane,at(s){
     const d=distance(s,preview.s,track.length),points=preview.points;
     let i=0;while(i<points.length-2&&d>points[i+1][0])i++;
     const a=points[i],b=points[i+1],t=clamp((d-a[0])/Math.max(.001,b[0]-a[0]),0,1);
@@ -50,12 +51,12 @@ export function previewRoute(track,preview,time) {
   }};
 }
 
-function immediatePose(car,t,steer=null) {
+function immediatePose(car,t,steer=null,origin=null) {
   const speed=car.speed,rate=car.yawRate??0;
   // Public measured motion over the next reply window. For our own car also
   // reserve the rotation requested by this command, rather than certifying a
   // straight sweep and then steering across the other car's nose.
-  const previous=car.controls?.steer??steer;
+  const previous=origin??car.controls?.steer??steer;
   const requested=steer==null?rate:rate+speed/Math.max(2,car.spec.wheelbase)
     *(Math.tan(steer*car.spec.steeringLock)-Math.tan(previous*car.spec.steeringLock));
   const turn=rate+clamp(requested-rate,-6*t,6*t)*.5,delta=turn*t;
@@ -66,26 +67,67 @@ function immediatePose(car,t,steer=null) {
     yaw:car.yaw+delta,spec:car.spec};
 }
 
-function alongsideClearance(car,other,controls,curvature) {
+function alongsideClearance(car,other,controls,curvature,origin) {
   const heading=car.speed>2?Math.atan2(car.vx,car.vz):car.yaw;
   const along=(other.x-car.x)*Math.sin(heading)+(other.z-car.z)*Math.cos(heading);
   const overlapping=Math.abs(along)<=(car.spec?.halfLength??2.3)+(other.spec?.halfLength??2.3)+.5;
+  const across=(other.x-car.x)*Math.cos(heading)-(other.z-car.z)*Math.sin(heading);
+  // Once the pullout has physically separated the bodies, the front-quarter
+  // approach is a passing lane too. Waiting for scoring-station overlap used
+  // to demand following-speed braking just before a clear pass could close.
+  const established=along>0&&along<(car.spec?.halfLength??2.3)+(other.spec?.halfLength??2.3)+3
+    &&Math.abs(across)>bodyHalf(car,heading).width+bodyHalf(other,heading).width+.35;
   // In a bend a lateral closing motion can sweep into a front quarter before
   // the station projections count as overlap. On straights the lane/catch
   // check below remains authoritative. A clear sweep waives following-speed
   // braking only for cars actually alongside.
-  if(!overlapping&&(Math.abs(curvature)<.003||Math.hypot(other.x-car.x,other.z-car.z)>20))return null;
-  const across=(other.x-car.x)*Math.cos(heading)-(other.z-car.z)*Math.sin(heading);
+  if(!overlapping&&!established&&(Math.abs(curvature)<.003||Math.hypot(other.x-car.x,other.z-car.z)>20))return null;
   const closing=((car.vx-other.vx)*Math.cos(heading)-(car.vz-other.vz)*Math.sin(heading))*Math.sign(across);
-  if(!overlapping&&closing<=1)return null;
+  if(!overlapping&&!established&&closing<=1)return null;
   // Extend only a measured lateral closing motion. An ordinary pullout is
   // moving away from the rival; predicting its new steering for too long
   // would price useful acceleration out of an otherwise clear pass.
   const window=!overlapping&&closing>1?[0,.08,.16,.24,.32,.4]:[0,.06,.12,.18,.24];
   for(const t of window){
-    if(bodyClearance(immediatePose(car,t,controls.steer),immediatePose(other,t))<.12)return 'closing';
+    if(bodyClearance(immediatePose(car,t,controls.steer,origin),immediatePose(other,t))<.12)return 'closing';
   }
-  return overlapping?'clear':null;
+  return overlapping||established?'clear':null;
+}
+
+function preserveOverlap(car,cars,track,k,previous){
+  if(!Number.isFinite(previous)||Math.abs(k.steer-previous)<.002||car.speed<8)return false;
+  const h=car.speed>2?Math.atan2(car.vx,car.vz):car.yaw;
+  const near=cars.filter(other=>{
+    if(other.id===car.id||car.ghost&&other.ghost)return false;
+    const dx=other.x-car.x,dz=other.z-car.z;
+    return Math.hypot(dx,dz)<18&&Math.abs(dx*Math.sin(h)+dz*Math.cos(h))
+      <car.spec.halfLength+other.spec.halfLength+2;
+  });
+  if(!near.length)return false;
+  const clear=steer=>{
+    for(const t of [.06,.12,.18,.24]){
+      const self=immediatePose(car,t,steer,previous);
+      for(const other of near)if(bodyClearance(self,immediatePose(other,t))<.18)return false;
+    }
+    return true;
+  };
+  if(clear(k.steer)||!clear(previous))return false;
+  // Preserve the established course only if it also stays on the road. A
+  // traffic correction cannot buy separation by abandoning the road bend.
+  const onRoad=steer=>[.12,.24].every(t=>{
+    const self=immediatePose(car,t,steer,previous),q=track.nearest(self.x,self.z);
+    return Math.abs(q.lateral)+bodyHalf(self,q.heading).width
+      <=track.halfWidth+(track.curbWidth??0)-.08;
+  });
+  if(!onRoad(previous))return false;
+  let lo=0,hi=1;
+  for(let i=0;i<7;i++){
+    const mix=(lo+hi)*.5;
+    if(clear(previous+(k.steer-previous)*mix))lo=mix;else hi=mix;
+  }
+  const steer=previous+(k.steer-previous)*lo;
+  if(!onRoad(steer))return false;
+  k.steer=steer;return true;
 }
 
 // Cheap guard also runs on the host between asynchronous answers. It responds
@@ -96,6 +138,8 @@ export function guardControls(car,cars,track,nominal,{route=null,age=0}={}) {
   if(![k.throttle,k.brake,k.steer].every(Number.isFinite))return {controls:{throttle:0,brake:.6,steer:0},reason:'invalid'};
   const p=track.nearest(car.x,car.z), own=bodyHalf(car,p.heading);
   let cap=Infinity, reason=null, gap=Infinity;
+  const origin=feedbackGuardOrigin(car)??car.controls?.steer;
+  if(route?.retainLane!==false&&preserveOverlap(car,cars,track,k,origin))reason='hold-overlap-lane';
   for(const other of cars) {
     if(other.id===car.id||car.ghost&&other.ghost)continue;
     const q=track.nearest(other.x,other.z), d=distance(q.s,p.s,track.length);
@@ -104,7 +148,7 @@ export function guardControls(car,cars,track,nominal,{route=null,age=0}={}) {
     // nominal route's eventual return used to demand following-speed braking
     // here even while both cars could drive in parallel. Replans still check
     // the complete passing course; this guard checks the immediate swept space.
-    const overlap=alongsideClearance(car,other,k,p.curvature??track.at(p.s).curvature);
+    const overlap=alongsideClearance(car,other,k,p.curvature??track.at(p.s).curvature,origin);
     if(overlap==='clear')continue;
     const body=bodyHalf(other,q.heading),long=own.length+body.length+.8;
     const space=Math.max(0,d-long);
@@ -129,5 +173,6 @@ export function guardControls(car,cars,track,nominal,{route=null,age=0}={}) {
   // protects a missed answer without treating ordinary worker latency as fear.
   if(age>.22){k.throttle=Math.min(k.throttle,.35);k.brake=Math.max(k.brake,age>.5?.35:0);reason='stale-answer';}
   if(k.brake>.01)k.throttle=0;
+  acceptGuardControls(car,k);
   return {controls:k,reason,cap,gap};
 }

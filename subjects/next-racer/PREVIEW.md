@@ -1,8 +1,9 @@
 # SPEARHEAD development preview
 
 The current pursuit and defense candidate is based on `graphics-aaa` at
-`6ae62cc`. See [PURSUIT.md](PURSUIT.md) for its changes, controlled encounter
-results and unresolved race-traffic losses. It remains a development candidate.
+`6ae62cc`. See [COMBAT-MOMENTUM.md](COMBAT-MOMENTUM.md) for its latest changes,
+verification and remaining failures, and [PURSUIT.md](PURSUIT.md) for the earlier
+pursuit baseline. It remains a development candidate.
 
 ## Previous alongside and endurance candidate
 

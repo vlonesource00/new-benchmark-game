@@ -100,7 +100,8 @@ export function validatePrefix(car,obs,route,control,resources,horizon=1.25) {
   const track=control.track,environment=new PredictionTrack(track),self=shadowOf(car);
   const roadLimit=roadExcess;
   const executor=control instanceof ForceControl?new ForceControl(environment,control.path,control.o):control;
-  const traces=[], dt=1/120, startWear=self.wheels.map(w=>w.tyre.wear);
+  const traces=[], dt=resources.predictionStep===1/60?1/60:1/120, startWear=self.wheels.map(w=>w.tyre.wear);
+  const nativeStep=1/120;
   let minClearance=Infinity,off=0,maxBeta=0,progress=0,lastS=obs.projection.s,k=null,nextControl=0,elapsed=0,conflict=null;
   let steeringTravel=0,firstSteerChange=0,brakingSeconds=0,lastSteer=car.controls.steer,first=true;
   const measure=(self,other,padding,t,branch)=>{
@@ -119,7 +120,7 @@ export function validatePrefix(car,obs,route,control,resources,horizon=1.25) {
   const trafficHorizon=Math.min(horizon,resources.trafficHorizon??1.15);
   const predicted=rivalPrefixes(car,obs,control,horizon,period,resources.defending);
   const othersAt=t=>obs.rivals.map(r=>{
-    const native=predicted.get(r.id)?.[Math.round(t/dt)];if(native)return native;
+    const native=predicted.get(r.id)?.[Math.round(t/nativeStep)];if(native)return native;
     const f=forecast(track,r,t);
     return {...f,id:r.id,classId:r.classId,yaw:f.heading,ax:r.accel,
       vx:Math.sin(f.heading)*f.speed,vz:Math.cos(f.heading)*f.speed,
@@ -127,7 +128,7 @@ export function validatePrefix(car,obs,route,control,resources,horizon=1.25) {
   });
   for(let t=0;t<horizon-1e-7;t+=dt) {
     const p=environment.nearest(self.x,self.z);
-    const step=Math.round(t/dt);
+    const step=Math.round((t+dt)/nativeStep);
     const others=othersAt(t);
     let guard={route};
     if(t<lag-1e-8){
@@ -159,9 +160,12 @@ export function validatePrefix(car,obs,route,control,resources,horizon=1.25) {
     for(let i=0;i<others.length;i++){
       const r=obs.rivals[i];
       const merging=['free','join'].includes(route.kind)&&r.gap<0&&Math.abs(r.dq)>1.2;
-      const occupiedHorizon=merging?trafficHorizon:Math.min(trafficHorizon,1.15);
+      // A rear pursuer's changing lateral speed does not turn an established
+      // defense into a speculative merge. Keep its measured reaction window;
+      // longer possible catches still rank the full maneuver in search.
+      const occupiedHorizon=merging&&!resources.defending?trafficHorizon:Math.min(trafficHorizon,1.15);
       if(t>=occupiedHorizon)continue;
-      const native=predicted.get(r.id)?.[step+1];
+      const native=predicted.get(r.id)?.[step];
       if(native){
         const behind=(native.x-self.x)*Math.sin(self.yaw)+(native.z-self.z)*Math.cos(self.yaw)<0;
         const established=resources.defending&&r.stableLane&&route.kind==='free'&&behind;
@@ -192,7 +196,7 @@ export function validatePrefix(car,obs,route,control,resources,horizon=1.25) {
     if(off>.001||minClearance<.04||maxBeta>Math.max(.45,initialBeta+.05))break;
   }
   const feasible=off<=.001&&minClearance>=.04&&maxBeta<=Math.max(.45,initialBeta+.05)&&Number.isFinite(progress);
-  return {feasible,observedAt:obs.time,progress,speed:self.speed,endS:lastS,elapsed,off,
+  return {feasible,observedAt:obs.time,integrationStep:dt,progress,speed:self.speed,endS:lastS,elapsed,off,
     firstSteerChange,steeringTravel,brakingSeconds,
     minClearance:Number.isFinite(minClearance)?minClearance:null,maxBeta,conflict,
     wear:self.wheels.map((w,i)=>w.tyre.wear-startWear[i]),hybrid:self.hybrid?.energy??null,traces,

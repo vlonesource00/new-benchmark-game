@@ -5,7 +5,7 @@ export function sourceStamp(){
     'src/road.js','src/course.js','src/line-optimizer.js','src/corridor.js','src/safety.js','src/observation.js','src/episode.js','src/resources.js',
     'src/pit.js','src/strategy.js','config.json','data/lines.json','tools/combat.mjs','tools/attribution.mjs',
     'tools/campaign.mjs','tools/race.mjs','tools/opportunity.mjs','tools/regressions.mjs','tools/compare.mjs','tools/bake.mjs','tools/refine.mjs',
-    'tools/check.mjs','tools/worker-probe.mjs','tools/replay.mjs','tools/incident.mjs','tools/alongside.mjs','tools/worker-duel.mjs','tools/pursuit.mjs',
+    'tools/check.mjs','tools/worker-probe.mjs','tools/replay.mjs','tools/incident.mjs','tools/alongside.mjs','tools/worker-duel.mjs','tools/pursuit.mjs','tools/planning-profile.mjs',
     'game/bridges/next-racer-bridge.js','game/bridges/next-racer-state.js','game/bridges/revolution-bridge.js',
     'subjects/claude-revolution/src/driver.js','subjects/claude-revolution/src/line.js',
     'subjects/claude-revolution/src/model.js','subjects/claude-revolution/src/racecraft.js',

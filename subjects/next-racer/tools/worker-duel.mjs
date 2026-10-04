@@ -16,6 +16,8 @@ const ids=get('drivers','next-racer,claude-revolution').split(','),classId=get('
 const realtime=args.includes('--realtime'),laps=Number(get('laps',2)),limit=Number(get('seconds',0));
 const endurance=args.includes('--endurance'),weather=get('weather','clear'),seed=Number(get('seed',7));
 const strategyCalibration=args.includes('--strategy-calibration');
+const checkIds=get('assert-clean','').split(',').filter(Boolean);
+if(checkIds.some(id=>!ids.includes(id)))throw new Error('Clean-check driver must be in the race');
 const responses=[],sourceHashes=sourceStamp();let workers=0,liveRace=null;
 globalThis.Worker=class {
   constructor(target){
@@ -88,7 +90,7 @@ try{
             target:d.targetSpeed,plan:d.plan,stage:d.stage,safety:d.safety,control:d.control,
             intent:d.intent,targetId:d.target,side:d.side,
             timing:d.stats&&{observer:d.stats.observerMs,envelope:d.stats.envelopeMs,
-              search:d.stats.searchMs,total:d.stats.latencyMs},
+              search:d.stats.searchMs,routes:d.stats.routesMs,admission:d.stats.admissionMs,total:d.stats.latencyMs},
             rivals:race.cars.filter(other=>other.id!==c.id).map(other=>({id:other.id,
               gap:other.race.progress-c.race.progress,q:other.lateral,v:other.speed})),
             compound:c.wheels[0].tyre.compound,wear:c.wheels.map(w=>w.tyre.wear),
@@ -123,4 +125,8 @@ try{
     rows:result.rows.map(r=>({id:r.id,best:r.best,finish:r.finish,incidents:r.incidents,
       errors:r.errors,damage:r.damage,replies:r.replies,delayP95:r.delayP95,latencyP95:r.latencyP95,
       lapTimes:r.laps.map(l=>l.time)}))}));
+  // A pace report alone must not make an incident-bearing race look passed.
+  // Contact count is fleet-wide; incidents/errors/damage belong to named seats.
+  if(checkIds.length&&(result.contacts||result.rows.some(r=>checkIds.includes(r.id)
+    &&(r.incidents||r.errors||r.damage>1e-6))))process.exitCode=1;
 }finally{seats.dispose();delete globalThis.Worker;}
