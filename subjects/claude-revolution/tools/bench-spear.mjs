@@ -30,7 +30,7 @@ const cars = race.cars, crvI = ids.indexOf('claude-revolution'), crv = cars[crvI
 if (seats) seats.wantDebug = true;
 const dbg = () => { const b = race.entries[crvI]?.bridges[0]; return (seats ? b?.lastDebug : b?.debug?.()) ?? {}; };
 const splits = cars.map(() => []);
-const ev = { spin: 0, fear: 0, fearT: 0, alongside: 0, passes: [], states: {} };
+const ev = { follow: 0, capped: 0, gapSum: 0, close: 0, spin: 0, fear: 0, fearT: 0, alongside: 0, passes: [], states: {} };
 let order = cars.length > 1 ? Math.sign(cars[0].race.progress - cars[1].race.progress) : 0, spinning = false, fearOn = false;
 const wall = Date.now(), dump = { b: -1, rows: [], t0: undefined };
 while (race.phase !== 'finished' && race.time < 110 * Number(laps) + 60) {
@@ -39,12 +39,19 @@ while (race.phase !== 'finished' && race.time < 110 * Number(laps) + 60) {
   if (race.formation) continue;
   cars.forEach((c, k) => { const r = c.race; if (r.sectors.length > splits[k].length * 0 && r.secCur) splits[k].last = r.secCur.slice(); if (r.sectors.length % 3 === 0 && r.sectors.length && splits[k].n !== r.sectors.length) { splits[k].n = r.sectors.length; splits[k].push([...r.secCur, r.valid]); } });
   if (process.env.DUMP && splits[0].length === 1) { const c = cars[0], b = Math.floor(c.s / 50); if (b !== dump.b) { dump.b = b; dump.rows.push(`${b * 50}:${(race.time - dump.t0 || 0).toFixed(2)}(${c.speed.toFixed(0)})`); dump.t0 ??= race.time; } }
+  // STRACE=a-b: lap-2 trace of car 0 between track metres a and b.
+  if (process.env.STRACE && splits[0].length === 1 && Math.round(race.time * 120) % 12 === 0) {
+    const [a, b] = process.env.STRACE.split('-').map(Number), c = cars[0];
+    if (c.s > a && c.s < b) { const g = crvI === 0 ? dbg() : {}; console.log(`s${c.s.toFixed(0)} v${c.speed.toFixed(1)} tv${g.targetSpeed?.toFixed(1)} line${g.lineSpeed?.toFixed?.(1)} T${c.controls.throttle.toFixed(2)} B${c.controls.brake.toFixed(2)} S${c.controls.steer.toFixed(2)} stab${g.stability?.toFixed?.(2)} b${Math.atan2(c.v, Math.max(2, c.u)).toFixed(3)} lat${c.lateral.toFixed(1)} ${g.intent ?? ''}`); }
+  }
   if (!other || crvI < 0) continue;
   const g = dbg();
   const beta = Math.atan2(crv.v, Math.max(2, crv.u));
   if (Math.abs(beta) > 0.3 && crv.speed > 8) { if (!spinning) { ev.spin++; spinning = true; if (process.env.EV) console.log(`SPIN t${race.time.toFixed(1)} s${crv.s.toFixed(0)} β${beta.toFixed(2)} ${g.combat}/${g.lane} ds${(other.race.progress - crv.race.progress).toFixed(1)}`); } } else if (Math.abs(beta) < 0.12) spinning = false;
   const fwd = other.race.progress - crv.race.progress, beside = Math.abs(fwd) < 6 && Math.abs(other.lateral - crv.lateral) < 4.5;
   if (beside) ev.alongside += FIXED_DT;
+  // Pursuit: a car ahead within 80 m. Capped = the guard holds us under what our lane would run.
+  if (fwd > 6 && fwd < 80) { ev.follow += FIXED_DT; ev.gapSum += fwd * FIXED_DT; if (fwd < 20) ev.close += FIXED_DT; if ((g.cap ?? Infinity) < (g.targetSpeed ?? 0) - 0.5 || (g.cap ?? Infinity) < crv.speed + 0.5) ev.capped += FIXED_DT; }
   if (process.env.TRACE && race.time - (race.greenAt ?? 0) < Number(process.env.TRACE) && Math.round(race.time * 120) % 30 === 0) console.log(`T${(race.time - race.greenAt).toFixed(1)} s${crv.s.toFixed(0)} fwd${fwd.toFixed(1)} v${crv.speed.toFixed(1)}/${other.speed.toFixed(1)} lat${crv.lateral.toFixed(1)}/${other.lateral.toFixed(1)} ${g.combat}/${g.lane} tv${g.targetSpeed?.toFixed(1)} line${g.lineSpeed?.toFixed?.(1)} cap${g.cap?.toFixed?.(1)} rfx${g.reflexCap?.toFixed?.(1)} T${crv.controls.throttle.toFixed(2)} B${crv.controls.brake.toFixed(2)} stab${g.stability?.toFixed?.(2)} wake${(crv.aero?.wake ?? 0).toFixed(2)}${process.env.CANDS ? ` [${g.cands}]` : ""}`);
   // Braking beside a rival where our own line would not brake: fear.
   const lineV = g.lineSpeed ?? 0, fear = beside && crv.controls.brake > 0.15 && lineV > crv.speed + 2;
@@ -64,7 +71,7 @@ if (mode === 'solo') {
   const res = race.classification();
   const sec = (k) => splits[k].map((x) => x.slice(0, 3).map(fmt).join('/')).join(' ');
   console.log(`${name(ids[0])} (pole) vs ${name(ids[1])} · ${cls} ${trackName} ${laps}L · winner ${teams.find((t) => t.id === res[0].team).short} by ${res[1].gap?.toFixed(2)} s · passes ${ev.passes.join(' ') || '-'}`);
-  console.log(`  CRV spins ${ev.spin} · fear-brakes ${ev.fear} (${ev.fearT.toFixed(1)} s) · alongside ${ev.alongside.toFixed(1)} s · moves ${dbg().moves ?? 0} aborts ${dbg().aborts ?? 0} · states ${Object.entries(ev.states).map(([k, v]) => `${k}${v.toFixed(0)}`).join(' ')}`);
+  console.log(`  CRV spins ${ev.spin} · fear-brakes ${ev.fear} (${ev.fearT.toFixed(1)} s) · alongside ${ev.alongside.toFixed(1)} s · follow ${ev.follow.toFixed(0)} s (gap ${(ev.gapSum / Math.max(1e-9, ev.follow)).toFixed(0)} m, <20 m ${ev.close.toFixed(0)} s, capped ${ev.capped.toFixed(0)} s) · moves ${dbg().moves ?? 0} aborts ${dbg().aborts ?? 0} · states ${Object.entries(ev.states).map(([k, v]) => `${k}${v.toFixed(0)}`).join(' ')}`);
   console.log(`  inc ${name(ids[0])} ${inc(race.entries[0])} · ${name(ids[1])} ${inc(race.entries[1])} · ${((Date.now() - wall) / 1000).toFixed(0)} s`);
   console.log(`  sectors ${name(ids[0])} ${sec(0)} | ${name(ids[1])} ${sec(1)}`);
 }

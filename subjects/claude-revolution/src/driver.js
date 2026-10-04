@@ -178,6 +178,9 @@ export class RevolutionDriver {
     let throttle = 0, brake = 0;
     const err = vt - v;
     if (err > 0.4 || (err > -0.2 && aProf > -1)) throttle = clamp(0.4 + err * 0.9 + aProf * 0.1, 0, 1);
+    // A little over a gently falling profile: lift. A car at the limit sheds speed on its
+    // own scrub, and a stab of brake mid-corner only unsettles the rear.
+    else if (-err < (o.coastBand ?? 2) && -aProf < (o.coastDecel ?? 3)) throttle = 0;
     else {
       const need = Math.max(0, -aProf) / model.brake(v);
       brake = clamp(need + (v - vt) * 0.18, 0, 1);
