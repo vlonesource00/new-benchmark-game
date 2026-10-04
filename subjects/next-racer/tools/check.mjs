@@ -455,4 +455,29 @@ test('additional rear rotation requires heat and wear on the same wheel',()=>{
   c.wheels[2].tyre.wear=.2;
   assert(bridge.driver.resources.update(c,obs).rotation>0);
 });
+test('dry GTP rear rotation enters gradually and reaches its limit only with heat and wear',()=>{
+  const c=carAt(track,0,'lmdh',500,0,40),r=new Resources(track);
+  const obs={fresh:false,elapsed:0,projection:track.nearest(c.x,c.z)};
+  const get=()=>r.update(c,obs,{weather:'clear',totalLaps:20}).rotation;
+  const tyre=c.wheels[3].tyre;
+  tyre.core=tyre.optimum+14;tyre.wear=.12;assert.equal(get(),0);
+  tyre.wear=.121;assert(get()>0&&get()<.0001);
+  tyre.wear=.3;tyre.core=tyre.optimum+4;assert.equal(get(),0);
+  tyre.core+=.001;assert(get()>0&&get()<.0001);
+  tyre.core=tyre.optimum+9;tyre.wear=.2;
+  const partial=get();assert(partial>0&&partial<.12);
+  tyre.core=tyre.optimum+14;tyre.wear=.3;
+  assert(Math.abs(get()-.12)<1e-9);assert(get()>partial);
+});
+test('dry GT3 hards bound extra rear rotation and preserve the wet policy',()=>{
+  const c=carAt(track,0,'gt',500,0,40),r=new Resources(track);
+  const obs={fresh:false,elapsed:0,projection:track.nearest(c.x,c.z)};
+  for(const w of c.wheels){w.tyre.compound='hard';w.tyre.core=w.tyre.optimum+10;w.tyre.wear=.2;}
+  assert.equal(r.update(c,obs,{weather:'clear'}).rotation,.06);
+  assert.equal(r.update(c,obs,{weather:'changeable'}).rotation,.12);
+  for(const w of c.wheels)w.tyre.wear=.12;
+  assert.equal(r.update(c,obs,{weather:'clear'}).rotation,0);
+  for(const w of c.wheels){w.tyre.wear=.2;w.tyre.core=w.tyre.optimum+4;}
+  assert.equal(r.update(c,obs,{weather:'clear'}).rotation,0);
+});
 console.log(JSON.stringify({passed:checks.length,checks}));

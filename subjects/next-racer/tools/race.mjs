@@ -138,6 +138,7 @@ while(race.phase!=='finished'&&race.time<limit&&(!stopAfter||race.cars[0].race.l
     const inc=race.stewards.of(e).inc;
     if(inc>p.inc){
       const d=e.bridges[e.active].debug?.();
+      if(captureContacts)contactWindows.push({kind:'incident',id:c.id,t:race.time,rows:structuredClone(recent)});
       incidentRows.push({t:race.time,id:c.id,s:c.s,q:c.lateral,v:c.speed,wear:c.wheels.map(w=>w.tyre.wear),
         k:{...c.controls},pit:e.pit?.phase??null,plan:d?.plan,safety:d?.safety,checks:d?.checks});
       p.inc=inc;

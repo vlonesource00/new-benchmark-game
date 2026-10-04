@@ -33,7 +33,18 @@ export class Resources {
     // constrain the envelope and every admitted control prefix.
     const physicalPace=config.physicsPace&&this.track.id==='harbor-ring'&&state.weather==='clear';
     const factor=physicalPace?1:threatened?clamp(1-(Math.max(...remaining)-.80)*.055,.97,1):1;
-    const rotation=car.wheels.slice(2).some(w=>w.tyre.core>w.tyre.optimum+4&&w.tyre.wear>.12)? .12:0;
+    const rear=car.wheels.slice(2);
+    const rotation=physicalPace?Math.max(...rear.map(w=>{
+      // GT3 hards need less extra yaw than softs. Native endurance probes
+      // exposed a warm-set run-wide with the full additional slip request.
+      if(car.classId==='gt')return w.tyre.core>w.tyre.optimum+4&&w.tyre.wear>.12
+        ?w.tyre.compound==='hard'?.06:.12:0;
+      const heat=clamp((w.tyre.core-w.tyre.optimum-4)/10,0,1);
+      const wear=clamp((w.tyre.wear-.12)/.18,0,1);
+      // Build rear rotation progressively; just crossing either threshold
+      // must not request the full worn-tyre slip angle in one update.
+      return .12*heat*heat*(3-2*heat)*wear*wear*(3-2*wear);
+    })):rear.some(w=>w.tyre.core>w.tyre.optimum+4&&w.tyre.wear>.12)? .12:0;
     this.status={plannedLaps:planned,forecastWear:remaining,over,lapFuel,rotation,factor,push,
       saveFuel:!push&&lapFuel>0&&car.fuel/lapFuel<planned-.15};
     return this.status;

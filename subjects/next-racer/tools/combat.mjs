@@ -58,15 +58,18 @@ export function scenarios(classId) {
 export function runEncounter(setup,{classId='gt',hz=30,seconds=16,free=false,trace=false,maneuvers=true,
   prescribed=null,delayFrames=0,burstMs=0,options={}}={}) {
   const track=new Track('harbor-ring'),seed=fixture(track,0,classId,setup.s,0,setup.speed,setup.worn);
-  const bridge=createNextRacerBridge({hostTrack:track,options:{...options,maneuvers:prescribed?false:maneuvers}});bridge.reset({cars:[seed]});
-  const road=bridge.driver.road,self=fixture(track,0,classId,setup.s,road.at(setup.s).offset,setup.speed,setup.worn);
+  const recorded=setup.initialState&&Object.assign(new Vehicle(setup.initialState.id,'recorded','#ddd',classId),
+    structuredClone(setup.initialState));
+  const bridge=createNextRacerBridge({hostTrack:track,options:{...options,maneuvers:prescribed?false:maneuvers}});bridge.reset({cars:[recorded??seed]});
+  const road=bridge.driver.road,self=recorded??fixture(track,0,classId,setup.s,road.at(setup.s).offset,setup.speed,setup.worn);
   let latestObservation=null;
   if(trace){
     const observe=bridge.driver.observer.observe.bind(bridge.driver.observer);
     bridge.driver.observer.observe=(...args)=>(latestObservation=observe(...args));
   }
-  const initial=road.at(setup.s);self.yaw=initial.heading;self.vx=Math.sin(initial.heading)*setup.speed;
-  self.vz=Math.cos(initial.heading)*setup.speed;self.yawRate=setup.speed*initial.curvature;
+  const initial=road.at(setup.s);
+  if(!recorded){self.yaw=initial.heading;self.vx=Math.sin(initial.heading)*setup.speed;
+    self.vz=Math.cos(initial.heading)*setup.speed;self.yawRate=setup.speed*initial.curvature;}
   const lane=setup.lane??road.at(setup.s+setup.gap).offset;
   const rival=fixture(track,1,setup.rivalClass??classId,setup.s+setup.gap,lane,setup.rivalSpeed,setup.rivalWorn);
   if(setup.hotline){
@@ -95,8 +98,8 @@ export function runEncounter(setup,{classId='gt',hz=30,seconds=16,free=false,tra
   let lastPosted=null,exitAt=null,exitSpeedAtGate=null,bodyExcursion=0,wheelExcursion=0;
   const post=(bot,car,time,projections)=>{
     const previous={...car.controls},elapsed=lastPosted==null?1/hz:time-lastPosted;
-    bot.update(car,cars,elapsed,{time,projections,totalLaps:12,controlDelay:delays.get(car.id)??delayFrames/hz,
-      feedbackPeriod:1/120,state:{session:'race',weather:'clear',totalLaps:12,fuelLaps:8}});
+    bot.update(car,cars,elapsed,{time,projections,totalLaps:setup.totalLaps??12,controlDelay:delays.get(car.id)??delayFrames/hz,
+      feedbackPeriod:1/120,state:{session:'race',weather:'clear',totalLaps:setup.totalLaps??12,fuelLaps:setup.fuelLaps??8}});
     const extra=burstMs&&time%6>=3&&time%6<3.3?burstMs/1000:0;
     pending.set(car.id,{applyAt:time+delayFrames/hz+extra,k:{...car.controls},
       preview:structuredClone(bot.controlPreview()),time});
@@ -152,7 +155,7 @@ export function runEncounter(setup,{classId='gt',hz=30,seconds=16,free=false,tra
       if(c.id===self.id)liveGuard={reason:guarded.reason,cap:guarded.cap,nominal};
       c.controls=guarded.controls;
     }
-    for(const c of cars)updateHybrid(c,cars,track,DT,{totalLaps:12});
+    for(const c of cars)updateHybrid(c,cars,track,DT,{totalLaps:setup.totalLaps??12});
     const air=wakes(cars);cars.forEach((c,i)=>c.step(DT,track,air[i]));
     const diagnostic={pairs:[]},hits=collisions(cars,diagnostic);
     selfContactSteps+=diagnostic.pairs.filter(([a,b])=>a===self.id||b===self.id).length;
