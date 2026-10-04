@@ -31,7 +31,7 @@ if (seats) seats.wantDebug = true;
 const dbg = () => { const b = race.entries[crvI]?.bridges[0]; return (seats ? b?.lastDebug : b?.debug?.()) ?? {}; };
 const splits = cars.map(() => []);
 const ev = { follow: 0, capped: 0, gapSum: 0, close: 0, spin: 0, fear: 0, fearT: 0, alongside: 0, passes: [], states: {} };
-let order = cars.length > 1 ? Math.sign(cars[0].race.progress - cars[1].race.progress) : 0, spinning = false, fearOn = false;
+let slide = null, order = cars.length > 1 ? Math.sign(cars[0].race.progress - cars[1].race.progress) : 0, spinning = false, fearOn = false;
 const wall = Date.now(), dump = { b: -1, rows: [], t0: undefined };
 while (race.phase !== 'finished' && race.time < 110 * Number(laps) + 60) {
   race.step(FIXED_DT);
@@ -40,10 +40,14 @@ while (race.phase !== 'finished' && race.time < 110 * Number(laps) + 60) {
   cars.forEach((c, k) => { const r = c.race; if (r.sectors.length > splits[k].length * 0 && r.secCur) splits[k].last = r.secCur.slice(); if (r.sectors.length % 3 === 0 && r.sectors.length && splits[k].n !== r.sectors.length) { splits[k].n = r.sectors.length; splits[k].push([...r.secCur, r.valid]); } });
   if (process.env.DUMP && splits[0].length === 1) { const c = cars[0], b = Math.floor(c.s / 50); if (b !== dump.b) { dump.b = b; dump.rows.push(`${b * 50}:${(race.time - dump.t0 || 0).toFixed(2)}(${c.speed.toFixed(0)})`); dump.t0 ??= race.time; } }
   // STRACE=a-b: lap-2 trace of car 0 between track metres a and b.
-  if (process.env.STRACE && splits[0].length === 1 && Math.round(race.time * 120) % 12 === 0) {
+  if (process.env.STRACE && splits[0].length === Number(process.env.SLAP ?? 1) && Math.round(race.time * 120) % 12 === 0) {
     const [a, b] = process.env.STRACE.split('-').map(Number), c = cars[0];
-    if (c.s > a && c.s < b) { const g = crvI === 0 ? dbg() : {}; console.log(`s${c.s.toFixed(0)} v${c.speed.toFixed(1)} tv${g.targetSpeed?.toFixed(1)} line${g.lineSpeed?.toFixed?.(1)} T${c.controls.throttle.toFixed(2)} B${c.controls.brake.toFixed(2)} S${c.controls.steer.toFixed(2)} stab${g.stability?.toFixed?.(2)} b${Math.atan2(c.v, Math.max(2, c.u)).toFixed(3)} lat${c.lateral.toFixed(1)} ${g.intent ?? ''}`); }
+    if (c.s > a && c.s < b) { const g = crvI === 0 ? dbg() : {}; console.log(`s${c.s.toFixed(0)} v${c.speed.toFixed(1)} tv${g.targetSpeed?.toFixed(1)} line${g.lineSpeed?.toFixed?.(1)} T${c.controls.throttle.toFixed(2)} B${c.controls.brake.toFixed(2)} S${c.controls.steer.toFixed(2)} stab${g.stability?.toFixed?.(2)} b${Math.atan2(c.v, Math.max(2, c.u)).toFixed(3)} lat${c.lateral.toFixed(1)} tc${c.wheels.map((w) => w.tyre.core.toFixed(0)).join("/")} ${g.lane ?? ""} ${g.intent ?? ''} ${race.entries[0].pit?.phase ?? ''} pt${race.entries[0].pit?.track ? race.entries[0].pit.targetSpeed(c.s, c).toFixed(1) : ''}`); }
   }
+  // SLIDE=1: every slide of car 0 past 0.22 rad, with its peak and what the driver was doing.
+  if (process.env.SLIDE) { const c = cars[0], b = Math.atan2(c.v, Math.max(2, c.u)); slide ??= null;
+    if (Math.abs(b) > 0.22 && c.speed > 8) { const g = crvI === 0 ? dbg() : {}; if (!slide) slide = { lap: c.race.lap, s: c.s, peak: 0 }; if (Math.abs(b) > slide.peak) Object.assign(slide, { peak: Math.abs(b), at: c.s, v: c.speed, T: c.controls.throttle, B: c.controls.brake, S: c.controls.steer, mode: g.intent ?? '', lane: g.lane ?? '' }); }
+    else if (slide && Math.abs(b) < 0.1) { console.log(`SLIDE L${slide.lap} s${slide.s.toFixed(0)}-${c.s.toFixed(0)} peak${slide.peak.toFixed(2)}@${slide.at.toFixed(0)} v${slide.v.toFixed(0)} T${slide.T.toFixed(2)} B${slide.B.toFixed(2)} S${slide.S.toFixed(2)} ${slide.mode} ${slide.lane}`); slide = null; } }
   if (!other || crvI < 0) continue;
   const g = dbg();
   const beta = Math.atan2(crv.v, Math.max(2, crv.u));

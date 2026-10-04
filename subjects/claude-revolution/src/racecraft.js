@@ -265,7 +265,8 @@ export class Racecraft {
     if (this.move && !this.moveStep(car, i)) this.endMove();
     if (!near.length) {
       if (this.move) this.endMove();
-      if (Math.abs(o0) > 0.05 && this.kind !== 'return') { this.lane = line.lane(this.profile(i, o0, 0, 0)); this.lane.speeds(d.model, d.lambda); this.kind = 'return'; }
+      // The way back is ramped for the speed the car carries, so its profile never asks for a brake stab mid-corner.
+      if (Math.abs(o0) > 0.05 && this.kind !== 'return') { this.lane = line.lane(this.profile(i, o0, 0, 0, 90, Math.max(40, car.speed), false, 0, 2)); this.lane.speeds(d.model, d.lambda); this.kind = 'return'; }
       if (this.lane && Math.abs(o0) < 0.05) { this.lane = null; this.kind = 'line'; }
       this.state = 'FREE'; this.nudge *= Math.exp(-3 * dt);
       return Infinity;

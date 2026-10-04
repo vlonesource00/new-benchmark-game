@@ -1,7 +1,7 @@
 import { CarModel } from './model.js';
 import { Line } from './line.js';
 import { Racecraft } from './racecraft.js';
-import { PitLane } from '../../../game/core/pit.js';
+import { PitLane, PitAutopilot } from '../../../game/core/pit.js';
 
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
 const wrapAngle = (a) => Math.atan2(Math.sin(a), Math.cos(a));
@@ -59,14 +59,25 @@ export class RevolutionDriver {
    */
   pitApproach(car, cars, i) {
     const rc = this.racecraft;
-    const planned = Boolean(this.teamState?.(car)?.pitPlan || car.race?.pitLap);
+    const planned = Boolean(this.teamState?.(car)?.pitPlan || car.race?.pitLap || car.race?.boxThisLap);
     if (!this.pitLane) {
       const t = this.track;
       this.pitLane = new PitLane({ id: t.id, scenario: t.scenario, length: t.length, halfWidth: t.halfWidth, curbWidth: t.curbWidth, finishS: t.finishS, setPitLane() {} }, Math.max(1, cars.length + 1));
     }
     const lane = this.pitLane, toEntry = lane.d(car.s, lane.entry), decel = 0.8 * lane.approachDecel;
-    const vAt = (d) => Math.sqrt(lane.entryV ** 2 + 2 * decel * Math.max(0, d - 2));
     if (!planned || toEntry > 400 || toEntry < 0.3) { if (rc.kind === 'pit') { rc.lane = null; rc.kind = 'line'; } rc.pit = false; return Infinity; }
+    // The host governs the approach to its autopilot's speeds (and at Harbor the autopilot
+    // takes the wheel at the approach point, on the racing line): meeting them here, with
+    // room to brake in a straight line, hands over a settled car instead of one braked mid-turn.
+    const span = lane.d(lane.approach, lane.entry), early = lane.cross >= span;
+    if (!this.pitTable && this.hostLine) {
+      const ap = new PitAutopilot(lane, lane.entry, this.hostLine); ap.track = this.track;
+      this.pitTable = []; for (let q = 0; q <= span; q += 5) this.pitTable.push([q, ap.targetSpeed(lane.approach + q, car)]);
+    }
+    const toAp = toEntry - span, aRun = 5;
+    let hostV = Infinity; for (const [q, v] of this.pitTable ?? []) if (q >= -toAp) hostV = Math.min(hostV, Math.sqrt(v * v + 2 * aRun * Math.max(0, toAp + q - 3)));
+    const vAt = (d) => Math.min(hostV - 0.5, Math.sqrt(lane.entryV ** 2 + 2 * decel * Math.max(0, d - 2)));
+    if (early) { rc.pit = false; return vAt(toEntry); }
     // The peel starts where a cosine move to the edge at the approach speed fits.
     if (this.peelAt === undefined) {
       const delta = Math.abs(lane.edgeLat - this.line.lat[rc.stationOfS(lane.entry)]);

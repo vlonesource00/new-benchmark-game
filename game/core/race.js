@@ -201,6 +201,8 @@ export class EnduranceRace {
         if (penalty) { e.pitPlan = { litres: 0, tyres: false, swap: false, compound: c.wheels[0].tyre.compound, penalty: penalty.type }; this.log('strategy', e, `${e.team.short} · BOX THIS LAP · SERVE ${penalty.type.toUpperCase()}`); }
         else if (!e.pitPlan && (c.damage ?? 0) >= MEATBALL_DAMAGE) { e.pitPlan = e.strategist.servicePlan(c, this.lapsLeft(c)); this.log('strategy', e, `${e.team.short} · BOX THIS LAP · DAMAGE REPAIR`); }
       }
+      // The box call rides on the car, so drivers in seat workers can line up the stop too.
+      c.race.boxThisLap = Boolean(e.pitPlan);
       if (!e.pit && e.pitPlan && c.race.finishTime === null && lane.inWindow(s, lane.approach, lane.entry)) {
         e.pit = new PitAutopilot(lane, e.box, this.lineFor(c)); e.pit.calledOnLap = c.race.lap; c.race.pitLap = true;
       }

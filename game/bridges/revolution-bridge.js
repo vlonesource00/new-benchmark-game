@@ -23,6 +23,7 @@ export function createRevolutionBridge({ hostTrack, index = 0, options = {}, tea
     reset(state) {
       driver ??= make();
       if (state?.cars?.[index]) driver.prepare(state.cars[index]);
+      if (state?.line) driver.hostLine = state.line;
       driver.reset(); this.errors = 0; this.lastError = null;
     },
     debug() { return { architecture: 'CLAUDE REVOLUTION', intent: driver?.mode ?? 'INIT', targetSpeed: driver?.targetSpeed ?? 0, lapEstimate: driver?.lapEstimate ?? null, combat: driver?.racecraft?.state ?? null, lane: driver?.racecraft?.kind ?? null,
