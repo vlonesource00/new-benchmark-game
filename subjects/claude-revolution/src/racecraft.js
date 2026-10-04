@@ -308,7 +308,7 @@ export class Racecraft {
     // corner a tighter, slower arc than the line's that slides the car. It ends where the braking does.
     if (corner && corner.brakeAt * line.ds < 160) { const bD = Math.max(20, corner.brakeAt * line.ds); add('hold', this.absLat(i, o0), bD, true, 60, false); }
     else add('hold', this.absLat(i, o0), 160, true);
-    if (this.lane && !this.offLane) cands.push({ kind: this.kind, lane: this.lane, keep: true });
+    if (this.lane && !this.offLane && (this.kind !== 'tow' || this.draft)) cands.push({ kind: this.kind, lane: this.lane, keep: true });
     add('line', 0, 0);
     // Offset lanes only matter with someone close; in clean air the line is the answer.
     const engaged = near.some((r) => r.fwd > -12 && r.fwd < 70);
@@ -327,7 +327,8 @@ export class Racecraft {
     }
     // In a same-class car's tow on a straight: its line, a car's length behind, is the lane that
     // closes the gap (the wake cuts drag) and sets up the pull-out of the move.
-    if (this.draft && lead.fwd < 45 && Math.abs(lead.lateral - car.lateral) > 0.8) add('tow', lead.lateral, 160, true);
+    // The tow is a straight-line lane: back on the line by the braking point, never through the corner.
+    if (this.draft && lead.fwd < 45 && Math.abs(lead.lateral - car.lateral) > 0.8) add('tow', lead.lateral, Math.min(160, db - 60), true, 50, false);
     // How far a lane strays from the current plan over the next 60 m: a different kind of lane
     // that runs within a metre of it is no move at all (no weave to forbid, nothing to hold to).
     const cur = this.lane, n = Math.round(60 / line.ds);
@@ -547,7 +548,7 @@ export class Racecraft {
       }
       if (r.id !== this.blocker && !held && sep > margin && !converging) continue;
       // Drafting a same-class car on a straight: close up into the tow (the stop cap below keeps it safe).
-      const gap = r.fwd - LEN, want = this.draft ? 0.8 + 0.015 * car.speed : 2 + 0.08 * car.speed;
+      const gap = r.fwd - LEN, want = this.draft ? 0.8 + 0.015 * car.speed : (this.followA ?? 1.5) + (this.followB ?? 0.05) * car.speed;
       const vNext = this.rivals.profV(r, r.s + r.speed * 0.6);
       const vr = Math.min(r.speed, Number.isFinite(vNext) ? vNext + 2 : r.speed);
       // Never close faster than we could stop in the gap that is left.
@@ -561,9 +562,11 @@ export class Racecraft {
         const pv = vAt(x);
         if (!Number.isFinite(pv) || pv >= car.speed) continue;
         const dist = gap - want + x, n = Math.max(1, Math.round(dist / path.ds));
-        let u = 0;
-        for (let k = 0; k <= n; k += 2) u = Math.max(u, Math.abs(path.ks[path.idx(i + k)]) * car.speed * car.speed / d.model.lat(car.speed));
-        const aB = d.model.brake(car.speed) * Math.sqrt(Math.max(0.1, 1 - Math.min(1, u) ** 2)) * 0.9;
+        // The braking left after cornering, averaged over the way there at the speeds driven
+        // there (a hairpin at the far end does not take the grip of the straight before it).
+        let g = 0, m = 0;
+        for (let k = 0; k <= n; k += 2) { const j = path.idx(i + k), vj = Math.min(car.speed, path.v[j]), u = Math.abs(path.ks[j]) * vj * vj / d.model.lat(vj); g += Math.sqrt(Math.max(0.1, 1 - Math.min(1, u) ** 2)); m++; }
+        const aB = d.model.brake(car.speed) * (g / m) * 0.9;
         c = Math.min(c, Math.sqrt(pv * pv + 2 * aB * Math.max(0, dist)));
       }
       if (c < car.speed - 2) this.guardMem = { id: r.id, until: this.t + 1 };
