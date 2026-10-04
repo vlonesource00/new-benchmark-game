@@ -18,7 +18,8 @@ export function outcome(road,car,obs,route,episode,resources,prefix=null) {
     // sample as an immediate collision. Re-observation happens before the
     // uncertain merge; otherwise a clear committed pass loses to a return
     // that needs braking right now.
-    riskCost+=episode.role==='attack'&&t>1.15?200*dt/(1+4*(t-1.15))**2:200;
+    riskCost+=(episode.role==='attack'||resources.forecastRiskDecay!==false&&episode.role==='defend')&&t>1.15
+      ?200*dt/(1+4*(t-1.15))**2:200;
   };
   for(let t=prefix?.elapsed??0;t<horizon;t+=dt) {
     const p=route.at(s),next=route.at(s+20);
@@ -64,6 +65,7 @@ export function outcome(road,car,obs,route,episode,resources,prefix=null) {
 }
 
 export function choosePlan(road,car,obs,routes,episode,resources,validator,options={}) {
+  resources={...resources,forecastRiskDecay:options.forecastRiskDecay??true};
   const validationResources={...resources,defending:episode.role==='defend',trafficHorizon:options.trafficHorizon};
   let nominalNative=null;
   if(episode.role==='defend') {
@@ -121,7 +123,17 @@ export function choosePlan(road,car,obs,routes,episode,resources,validator,optio
     entry.verifiedOutcome=outcome(road,car,obs,entry.route,episode,resources,native);
     if(options.stableMoves)entry.verifiedOutcome.score-=native.firstSteerChange*18+native.steeringTravel*5;
   }
-  const feasible=shortlist.filter(x=>x.native?.feasible);
+  let feasible=shortlist.filter(x=>x.native?.feasible);
+  const approachBudget=options.maneuverPaceBudget??.03;
+  if(approachBudget>0&&['attack','defend'].includes(episode.role)
+    &&!['Alongside','Clear'].includes(episode.stage)&&nominal?.native?.feasible){
+    // A long forecast cannot purchase a speculative pass with a slow native
+    // approach or cover. Compare actual progress and exit momentum against
+    // the guarded fast line. Once overlapping, corridor ownership wins.
+    const pace=nominal.native.progress+nominal.native.speed*.8;
+    feasible=feasible.filter(entry=>entry===nominal
+      ||entry.native.progress+entry.native.speed*.8>=pace*(1-approachBudget));
+  }
   if(episode.role==='attack'||options.stableMoves)feasible.sort((a,b)=>b.verifiedOutcome.score-a.verifiedOutcome.score
     ||a.route.key.localeCompare(b.route.key));
   if(!feasible.length)for(const entry of evaluated.filter(e=>!shortlist.includes(e)).slice(0,3)){

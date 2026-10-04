@@ -66,7 +66,7 @@ export class SpearheadDriver {
     }
     const forbidden=lifecycle==='FINISHED'||state.formation||state.phase==='countdown'||state.session==='qualifying'
       ||state.flag==='yellow'||state.flag==='red'||state.flag==='blue';
-    const episode=this.episodes.update(car,obs,forbidden);
+    const episode=this.episodes.update(car,obs,forbidden,{road:this.road,factor:resource.factor});
     const application=actuationState(car,obs,this.control);
     const pit=this.pitGuide.update(application.car,application.projection,state);
     if(lifecycle==='PRIME'||lifecycle==='FORMATION_PREVIEW'){

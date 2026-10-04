@@ -20,10 +20,10 @@ import { sourceStamp } from './source.mjs';
 
 const DT=1/120;
 export const sourceHashes=sourceStamp();
-export function fixture(track,id,classId,s,q,speed,worn=false) {
+export function fixture(track,id,classId,s,q,speed,worn=false,compoundId='hard') {
   const car=new Vehicle(id,'encounter '+id,'#ddd',classId);car.place(track,s,q,speed);
   car.race={lap:1,progress:0,finishTime:null,offtrack:0,valid:true};
-  const compound=COMPOUNDS.hard;
+  const compound=COMPOUNDS[compoundId];
   for(const [i,w]of car.wheels.entries())Object.assign(w.tyre,{compound:compound.id,
     gripScale:compound.grip,optimum:compound.optimum,heat:compound.heat,
     wearScale:compound.wear,core:compound.optimum+7,surface:compound.optimum+10,
@@ -56,12 +56,12 @@ export function scenarios(classId) {
   ];
 }
 export function runEncounter(setup,{classId='gt',hz=30,seconds=16,free=false,trace=false,maneuvers=true,
-  prescribed=null,delayFrames=0,burstMs=0,options={}}={}) {
-  const track=new Track('harbor-ring'),seed=fixture(track,0,classId,setup.s,0,setup.speed,setup.worn);
+  prescribed=null,delayFrames=0,burstMs=0,options={},rivalFactory=null}={}) {
+  const track=new Track('harbor-ring'),seed=fixture(track,0,classId,setup.s,0,setup.speed,setup.worn,setup.compound);
   const recorded=setup.initialState&&Object.assign(new Vehicle(setup.initialState.id,'recorded','#ddd',classId),
     structuredClone(setup.initialState));
   const bridge=createNextRacerBridge({hostTrack:track,options:{...options,maneuvers:prescribed?false:maneuvers}});bridge.reset({cars:[recorded??seed]});
-  const road=bridge.driver.road,self=recorded??fixture(track,0,classId,setup.s,road.at(setup.s).offset,setup.speed,setup.worn);
+  const road=bridge.driver.road,self=recorded??fixture(track,0,classId,setup.s,road.at(setup.s).offset,setup.speed,setup.worn,setup.compound);
   let latestObservation=null;
   if(trace){
     const observe=bridge.driver.observer.observe.bind(bridge.driver.observer);
@@ -71,7 +71,7 @@ export function runEncounter(setup,{classId='gt',hz=30,seconds=16,free=false,tra
   if(!recorded){self.yaw=initial.heading;self.vx=Math.sin(initial.heading)*setup.speed;
     self.vz=Math.cos(initial.heading)*setup.speed;self.yawRate=setup.speed*initial.curvature;}
   const lane=setup.lane??road.at(setup.s+setup.gap).offset;
-  const rival=fixture(track,1,setup.rivalClass??classId,setup.s+setup.gap,lane,setup.rivalSpeed,setup.rivalWorn);
+  const rival=fixture(track,1,setup.rivalClass??classId,setup.s+setup.gap,lane,setup.rivalSpeed,setup.rivalWorn,setup.compound);
   if(setup.hotline){
     const on=road.at(setup.s+setup.gap);rival.x=on.x;rival.z=on.z;rival.yaw=on.heading;
     rival.vx=Math.sin(on.heading)*setup.rivalSpeed;rival.vz=Math.cos(on.heading)*setup.rivalSpeed;
@@ -86,7 +86,7 @@ export function runEncounter(setup,{classId='gt',hz=30,seconds=16,free=false,tra
   const rivalRoad=new Road(track,{car:rival});rivalRoad.rebuildEnvelope(rival,.88);
   const policy=new ForceControl(track,setup.hotline?road:rivalRoad,
     setup.hotline?{...bridge.driver.control.o}:{courseForceLimit:.90,actualBrakeReserve:true});
-  const adaptive=setup.adaptive?createNextRacerBridge({hostTrack:track,index:1,options}):null;
+  const adaptive=setup.adaptive?(rivalFactory?.(track)??createNextRacerBridge({hostTrack:track,index:1,options})):null;
   let progress=0,last=setup.s,next=0,contactSteps=0,contactEpisodes=0,contact=false;
   let off=0,minimumSpeed=Infinity,stopped=0,clearSince=null,passedAt=null,passHeld=false,bridgeErrors=0;
   let rivalOfftrackSeconds=0,rivalStoppedSeconds=0;
@@ -102,7 +102,7 @@ export function runEncounter(setup,{classId='gt',hz=30,seconds=16,free=false,tra
       feedbackPeriod:1/120,state:{session:'race',weather:'clear',totalLaps:setup.totalLaps??12,fuelLaps:setup.fuelLaps??8}});
     const extra=burstMs&&time%6>=3&&time%6<3.3?burstMs/1000:0;
     pending.set(car.id,{applyAt:time+delayFrames/hz+extra,k:{...car.controls},
-      preview:structuredClone(bot.controlPreview()),time});
+      preview:structuredClone(bot.controlPreview?.()??null),time});
     car.controls=previous;
   };
   const deliver=time=>{for(const [id,p]of pending)if(time+1e-8>=p.applyAt){
@@ -150,7 +150,7 @@ export function runEncounter(setup,{classId='gt',hz=30,seconds=16,free=false,tra
     // delay gave a different corner-overlap start from the production host.
     for(const c of cars)if(held.has(c.id)){
       const nominal=previewFeedback(c,track,previews.get(c.id),time)??held.get(c.id)??c.controls;
-      const guarded=guardControls(c,cars,track,nominal,
+      const guarded=c.id!==self.id&&rivalFactory?{controls:nominal,reason:null,cap:Infinity}:guardControls(c,cars,track,nominal,
         {route:previewRoute(track,previews.get(c.id),time),age:Math.max(0,time-(stamps.get(c.id)??time))});
       if(c.id===self.id)liveGuard={reason:guarded.reason,cap:guarded.cap,nominal};
       c.controls=guarded.controls;

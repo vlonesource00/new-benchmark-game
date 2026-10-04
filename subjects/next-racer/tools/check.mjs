@@ -167,6 +167,58 @@ test('observer ignores duplicate green timestamp',()=>{
   const o=new Observer(track);o.observe(a,[a,b],{time:1},1/30);b.vx+=1;
   const next=o.observe(a,[a,b],{time:1},1/30);assert.equal(next.fresh,false);assert.equal(o.serial,1);
 });
+test('equal-paced and distant rivals leave the fast line in pace mode',()=>{
+  for(const classId of ['gt','lmdh'])for(const gap of [30,95,350]){
+    const c=carAt(track,0,classId,250,0,45),r=carAt(track,1,classId,250+gap,0,45);
+    const bot=createNextRacerBridge({hostTrack:track});bot.reset({cars:[c,r]});
+    const obs=new Observer(track).observe(c,[c,r],{time:0},1/30,bot.driver.road);
+    const episode=new Episodes(track).update(c,obs,false,{road:bot.driver.road});
+    assert.equal(episode.role,'pace');assert(!episode.target);
+  }
+});
+test('measured closure still arms a reachable pass',()=>{
+  const c=carAt(track,0,'gt',250,0,45),r=carAt(track,1,'gt',275,0,32);
+  const obs=new Observer(track).observe(c,[c,r],{time:0},1/30);
+  const episode=new Episodes(track).update(c,obs);
+  assert.equal(episode.role,'attack');assert.equal(episode.target.id,r.id);
+});
+test('a receding rival releases a stale commitment before the old timeout',()=>{
+  const c=carAt(track,0,'gt',250,0,45),r=carAt(track,1,'gt',275,0,32),observer=new Observer(track);
+  const episodes=new Episodes(track),initial=observer.observe(c,[c,r],{time:0},1/30);
+  episodes.update(c,initial);episodes.accept({kind:'world-pass',side:1},initial);
+  const receding=carAt(track,1,'gt',325,0,55);
+  episodes.update(c,observer.observe(c,[c,receding],{time:1},1/30));
+  const released=episodes.update(c,observer.observe(c,[c,receding],{time:1.6},1/30));
+  assert.equal(released.role,'pace');assert(!released.target);
+});
+test('physical overlap retains its corridor when relative speed changes',()=>{
+  const c=carAt(track,0,'gt',250,0,45),r=carAt(track,1,'gt',275,0,32),observer=new Observer(track);
+  const episodes=new Episodes(track),initial=observer.observe(c,[c,r],{time:0},1/30);
+  episodes.update(c,initial);episodes.accept({kind:'world-pass',side:1},initial);
+  const beside=carAt(track,1,'gt',253,4,55);
+  const overlap=episodes.update(c,observer.observe(c,[c,beside],{time:1},1/30));
+  assert.equal(overlap.stage,'Alongside');assert.equal(overlap.target.id,beside.id);
+  assert.equal(overlap.side,-1);
+});
+test('a distant mildly closing pursuer does not move the defender off its line',()=>{
+  const c=carAt(track,0,'gt',250,0,45),r=carAt(track,1,'gt',215,0,46);
+  const obs=new Observer(track).observe(c,[c,r],{time:0},1/30);
+  assert.equal(new Episodes(track).update(c,obs).role,'pace');
+});
+test('a retreating pursuer releases a stale defense',()=>{
+  const c=carAt(track,0,'gt',250,0,45),r=carAt(track,1,'gt',235,0,55),observer=new Observer(track);
+  const episodes=new Episodes(track),initial=observer.observe(c,[c,r],{time:0},1/30);
+  assert.equal(episodes.update(c,initial).role,'defend');
+  episodes.accept({kind:'cover',side:1},initial);
+  const retreating=carAt(track,1,'gt',220,0,42);
+  episodes.update(c,observer.observe(c,[c,retreating],{time:1},1/30));
+  assert.equal(episodes.update(c,observer.observe(c,[c,retreating],{time:1.6},1/30)).role,'pace');
+});
+test('an overlapping pursuer retains defense despite a lower instantaneous speed',()=>{
+  const c=carAt(track,0,'gt',250,0,45),r=carAt(track,1,'gt',247,4,40);
+  const obs=new Observer(track).observe(c,[c,r],{time:0},1/30),episode=new Episodes(track).update(c,obs);
+  assert.equal(episode.role,'defend');assert.equal(episode.stage,'Alongside');
+});
 test('planner includes both pullout sides and actual initial course',()=>{
   const o=new Observer(track),obs=o.observe(a,[a,b],{time:0},1/30),e=new Episodes(track).update(a,obs);
   const routes=generateRoutes(bridge.driver.road,a,obs,e);

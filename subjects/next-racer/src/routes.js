@@ -198,7 +198,7 @@ export function generateRoutes(road,car,obs,episode,options={}) {
     world:true,knots:[{d:join,q:0},{d:length,q:0}]}));
   if(!r)return candidates;
   const catching=Math.max(1,car.speed-r.speed),approach=(r.gap-car.spec.halfLength-r.halfLength)/catching;
-  if(options.approachSeconds&&episode.role==='attack'&&episode.stage==='Prepare'
+  if(options.reachableApproach===false&&options.approachSeconds&&episode.role==='attack'&&episode.stage==='Prepare'
     &&r.gap>35&&approach>options.approachSeconds)return candidates;
   if(episode.role==='defend')for(const delta of [7,10]){
     // If staying outside would destroy the corner exit, briefly let a much

@@ -79,6 +79,11 @@ try{
           const d=seats.hosts[i]?.seats[race.entries[i].active]?.debug()??{};
           stats[i].samples.push({t:race.time,lap:c.race.lap,s:c.s,q:c.lateral,v:c.speed,k:{...c.controls},
             target:d.targetSpeed,plan:d.plan,stage:d.stage,safety:d.safety,control:d.control,
+            intent:d.intent,targetId:d.target,side:d.side,
+            timing:d.stats&&{observer:d.stats.observerMs,envelope:d.stats.envelopeMs,
+              search:d.stats.searchMs,total:d.stats.latencyMs},
+            rivals:race.cars.filter(other=>other.id!==c.id).map(other=>({id:other.id,
+              gap:other.race.progress-c.race.progress,q:other.lateral,v:other.speed})),
             compound:c.wheels[0].tyre.compound,wear:c.wheels.map(w=>w.tyre.wear),
             core:c.wheels.map(w=>w.tyre.core),pit:race.entries[i].pit?.phase??null,
             checks:d.checks?.map(x=>({kind:x.kind,side:x.side,feasible:x.feasible,reason:x.reason,
