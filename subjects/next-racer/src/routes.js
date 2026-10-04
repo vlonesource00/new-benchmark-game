@@ -3,6 +3,7 @@ import { clamp, angle, distance, wrap } from './math.js';
 import { forecast } from './observation.js';
 import { projectCourse,advanceCourse,geometryCourse } from './course.js';
 import { fairCorridor } from './corridor.js';
+import { bodyHalf } from './safety.js';
 
 const smooth = t => { t = clamp(t,0,1); return t*t*t*(10 + t*(-15 + 6*t)); };
 function smoothBound(x,bound,width){
@@ -210,11 +211,18 @@ export function generateRoutes(road,car,obs,episode,options={}) {
   }
   // Keep the nominal continuation available. Body validation decides when
   // it is safe to return; overlap does not mandate a slow side corridor.
-  const separation=car.spec.halfWidth+r.halfWidth+(options.passMargin??.55);
+  const alongside=episode.stage==='Alongside'||episode.stage==='Clear';
+  // Approach with room to pull out. Once overlap is established, a second
+  // wide pullout tightens the inside radius and spends the available drive
+  // force on steering. Offer a closer corridor using both rotated bodies;
+  // every course still passes the native traffic and road admission checks.
+  const occupiedWidth=bodyHalf(car,p.heading).width+bodyHalf({yaw:r.yaw,
+    spec:{halfWidth:r.halfWidth,halfLength:r.halfLength}},p.heading).width;
+  const separation=episode.role==='attack'&&alongside&&options.alongsideMargin!=null
+    ?occupiedWidth+options.alongsideMargin:car.spec.halfWidth+r.halfWidth+(options.passMargin??.55);
   const closing=Math.max(2,car.speed-r.speed);
   const ttc=Math.max(0,(r.gap-car.spec.halfLength-r.halfLength)/closing);
   const predicted=forecast(road.track,r,Math.min(2,ttc));
-  const alongside=episode.stage==='Alongside'||episode.stage==='Clear';
   const transfer=alongside?clamp(car.speed*.45,12,24):clamp(Math.max(32,car.speed*.9),32,100);
   const holdTo=Math.max(gate.exit,Math.max(70,r.gap+car.speed*2.5));
   // Reserve the side lane until the rear bumper can clear. A short candidate

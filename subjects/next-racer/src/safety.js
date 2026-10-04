@@ -10,16 +10,17 @@ export function bodyHalf(car, heading) {
 // alone cannot certify two rotated bodies near Harbor's tight geometry.
 export function bodyClearance(a,b) {
   const dx=b.x-a.x,dz=b.z-a.z;
-  let clearance=-Infinity;
-  for(const heading of [a.yaw,b.yaw])for(const perpendicular of [false,true]){
-    const h=heading+(perpendicular?Math.PI/2:0),nx=Math.sin(h),nz=Math.cos(h);
-    const radius=c=>{
-      const d=angle(c.yaw-h),l=Math.max(2.28,c.spec?.halfLength??2.3),w=Math.max(.98,c.spec?.halfWidth??.99);
-      return l*Math.abs(Math.cos(d))+w*Math.abs(Math.sin(d));
-    };
-    clearance=Math.max(clearance,Math.abs(dx*nx+dz*nz)-radius(a)-radius(b));
-  }
-  return clearance;
+  const sa=Math.sin(a.yaw),ca=Math.cos(a.yaw),sb=Math.sin(b.yaw),cb=Math.cos(b.yaw);
+  const cosine=Math.abs(ca*cb+sa*sb),sine=Math.abs(sa*cb-ca*sb);
+  const al=Math.max(2.28,a.spec?.halfLength??2.3),aw=Math.max(.98,a.spec?.halfWidth??.99),
+    bl=Math.max(2.28,b.spec?.halfLength??2.3),bw=Math.max(.98,b.spec?.halfWidth??.99);
+  // The same four separating axes, with shared orientation terms. This is
+  // also used inside every native rollout; repeated per-axis trigonometry
+  // increased reply time when the host needed the extra overlap sweeps.
+  return Math.max(Math.abs(dx*sa+dz*ca)-al-bl*cosine-bw*sine,
+    Math.abs(dx*ca-dz*sa)-aw-bl*sine-bw*cosine,
+    Math.abs(dx*sb+dz*cb)-bl-al*cosine-aw*sine,
+    Math.abs(dx*cb-dz*sb)-bw-al*sine-aw*cosine);
 }
 
 export function reverseSpace(car,cars) {
@@ -49,6 +50,32 @@ export function previewRoute(track,preview,time) {
   }};
 }
 
+function immediatePose(car,t,steer=null) {
+  const speed=car.speed,rate=car.yawRate??0;
+  // Public measured motion over the next reply window. For our own car also
+  // reserve the rotation requested by this command, rather than certifying a
+  // straight sweep and then steering across the other car's nose.
+  const previous=car.controls?.steer??steer;
+  const requested=steer==null?rate:rate+speed/Math.max(2,car.spec.wheelbase)
+    *(Math.tan(steer*car.spec.steeringLock)-Math.tan(previous*car.spec.steeringLock));
+  const turn=rate+clamp(requested-rate,-6*t,6*t)*.5,delta=turn*t;
+  const vx=car.vx??Math.sin(car.yaw)*speed,vz=car.vz??Math.cos(car.yaw)*speed;
+  const sine=Math.abs(delta)<1e-6?1:Math.sin(delta)/delta;
+  const cosine=Math.abs(delta)<1e-6?delta*.5:(1-Math.cos(delta))/delta;
+  return {x:car.x+t*(vx*sine+vz*cosine),z:car.z+t*(vz*sine-vx*cosine),
+    yaw:car.yaw+delta,spec:car.spec};
+}
+
+function alongsideClearance(car,other,controls) {
+  const heading=car.speed>2?Math.atan2(car.vx,car.vz):car.yaw;
+  const along=(other.x-car.x)*Math.sin(heading)+(other.z-car.z)*Math.cos(heading);
+  if(Math.abs(along)>(car.spec?.halfLength??2.3)+(other.spec?.halfLength??2.3)+.5)return null;
+  for(const t of [0,.06,.12,.18,.24]){
+    if(bodyClearance(immediatePose(car,t,controls.steer),immediatePose(other,t))<.12)return 'closing';
+  }
+  return 'clear';
+}
+
 // Cheap guard also runs on the host between asynchronous answers. It responds
 // to a physically occupied forward corridor, never to a car merely nearby.
 export function guardControls(car,cars,track,nominal,{route=null,age=0}={}) {
@@ -61,6 +88,12 @@ export function guardControls(car,cars,track,nominal,{route=null,age=0}={}) {
     if(other.id===car.id||car.ghost&&other.ghost)continue;
     const q=track.nearest(other.x,other.z), d=distance(q.s,p.s,track.length);
     if(d<=0||d>Math.max(45,car.speed*1.5))continue;
+    // An overlapping but physically separate car is not a lead car. A
+    // nominal route's eventual return used to demand following-speed braking
+    // here even while both cars could drive in parallel. Replans still check
+    // the complete passing course; this guard checks the immediate swept space.
+    const overlap=alongsideClearance(car,other,k);
+    if(overlap==='clear')continue;
     const body=bodyHalf(other,q.heading),long=own.length+body.length+.8;
     const space=Math.max(0,d-long);
     const closing=Math.max(0,car.speed-other.speed);
@@ -69,8 +102,8 @@ export function guardControls(car,cars,track,nominal,{route=null,age=0}={}) {
     // name or a hopeful steer command cannot waive braking.
     const futureQ=route?.at(p.s+car.speed*Math.min(1.3,catchTime)).offset??p.lateral;
     const lateral=Math.min(Math.abs(q.lateral-p.lateral),Math.abs(q.lateral-futureQ));
-    if(Math.abs(q.lateral-futureQ)>own.width+body.width+.3 && catchTime>.28 && space>3)continue;
-    if(lateral>own.width+body.width+.2)continue;
+    if(overlap!=='closing'&&Math.abs(q.lateral-futureQ)>own.width+body.width+.3 && catchTime>.28 && space>3)continue;
+    if(overlap!=='closing'&&lateral>own.width+body.width+.2)continue;
     const leadSpeed=Math.max(0,other.speed+Math.min(0,other.ax??0)*.25);
     const safe=Math.max(0,Math.min(Math.sqrt(Math.max(0,leadSpeed**2+2*9*space)),
       leadSpeed+.9*(space-3)));

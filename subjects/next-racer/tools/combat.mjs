@@ -140,9 +140,14 @@ export function runEncounter(setup,{classId='gt',hz=30,seconds=16,free=false,tra
     deliver(time);
     if(!adaptive)for(const other of cars.slice(1))other.controls=policy.control(other,projections.get(other.id),
       {...(setup.hotline?{}:{hold:setup.blockers?(other.id===1?-3.6:3.6):lane}),forceGuard:1},setup.rivalSpeed);
-    for(const c of cars)if(held.has(c.id))c.controls=guardControls(c,cars,track,
-      previewFeedback(c,track,previews.get(c.id),time)??held.get(c.id),
-      {route:previewRoute(track,previews.get(c.id),time),age:Math.max(0,time-stamps.get(c.id))}).controls;
+    let liveGuard=null;
+    for(const c of cars)if(held.has(c.id)){
+      const nominal=previewFeedback(c,track,previews.get(c.id),time)??held.get(c.id);
+      const guarded=guardControls(c,cars,track,nominal,
+        {route:previewRoute(track,previews.get(c.id),time),age:Math.max(0,time-stamps.get(c.id))});
+      if(c.id===self.id)liveGuard={reason:guarded.reason,cap:guarded.cap,nominal};
+      c.controls=guarded.controls;
+    }
     for(const c of cars)updateHybrid(c,cars,track,DT,{totalLaps:12});
     const air=wakes(cars);cars.forEach((c,i)=>c.step(DT,track,air[i]));
     const diagnostic={pairs:[]},hits=collisions(cars,diagnostic);
@@ -191,6 +196,7 @@ export function runEncounter(setup,{classId='gt',hz=30,seconds=16,free=false,tra
     if(trace&&Math.floor((time+DT)*4)>Math.floor(time*4))samples.push({t:time,s:p.s,q:p.lateral,gap,
       rivalQ:q.lateral,v:self.speed,target:d.targetSpeed,k:{...self.controls},plan:d.plan,stage:d.stage,safety:d.safety,
       checks:d.checks,departure,physicalGap,contact:hits,intent:d.intent,
+      control:d.control,liveGuard,clearance:bodyClearance(self,rival),
       observedRival:latestObservation?.rivals.map(r=>({id:r.id,q:r.q,dq:r.dq,stableLane:r.stableLane,
         followsRoad:r.followsRoad,alignment:angle(r.course-track.at(r.s).heading),turn:r.turn,accel:r.accel})),
       motion:{x:self.x,z:self.z,yaw:self.yaw,vx:self.vx,vz:self.vz,

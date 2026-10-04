@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import { Track } from '../../../game/engine/sim/track.js';
-import { Vehicle,wakes } from '../../../game/engine/sim/vehicle.js';
+import { Vehicle,wakes,collisions } from '../../../game/engine/sim/vehicle.js';
 import { fitHybrid,hybridStep,aiDeployMode } from '../../../game/core/hybrid.js';
 import { shadowOf,PredictionTrack,updateHybrid,actuationState,slipBeta,validatePrefix } from '../src/plant.js';
 import { createNextRacerBridge } from '../../../game/bridges/next-racer-bridge.js';
 import { Observer,forecast } from '../src/observation.js';
 import { Episodes } from '../src/episode.js';
 import { generateRoutes } from '../src/routes.js';
-import { guardControls,previewRoute,reverseSpace } from '../src/safety.js';
+import { guardControls,previewRoute,reverseSpace,bodyClearance } from '../src/safety.js';
 import { COMPOUNDS } from '../../../game/core/rules.js';
 import { PitLane } from '../../../game/core/pit.js';
 import { drivingTrack } from '../src/pit.js';
@@ -171,6 +171,43 @@ test('a car behind does not create a defense braking cap',()=>{
 test('blocked forward corridor has braking authority',()=>{
   const close=carAt(track,3,'lmdh',260,0,15);
   const safe=guardControls(a,[a,close],track,{throttle:1,brake:0,steer:0});
+  assert.equal(safe.controls.throttle,0);assert(safe.controls.brake>0);
+});
+test('a clear physical overlap retains drive despite a nominal return line',()=>{
+  for(const side of [-1,1]){
+    const own=carAt(track,20,'lmdh',250,side*3,45),other=carAt(track,21,'lmdh',252,0,44);
+    const drive={throttle:1,brake:0,steer:0},route={at:()=>({offset:0})};
+    assert.deepEqual(guardControls(own,[own,other],track,drive,{route}).controls,drive);
+  }
+});
+test('rotated-body clearance agrees with native contacts in both classes',()=>{
+  let seed=1729;
+  const random=()=>((seed=(Math.imul(seed,1664525)+1013904223)>>>0)/2**32);
+  for(const classId of ['gt','lmdh'])for(let i=0;i<300;i++){
+    const own=carAt(track,20,classId,250,0,20),other=carAt(track,21,classId,250,0,20);
+    own.yaw=random()*Math.PI*2;other.yaw=random()*Math.PI*2;
+    other.x=own.x+(random()-.5)*14;other.z=own.z+(random()-.5)*14;
+    // Native contacts use a fixed 0.98 x 2.28 m half-hull; the planner's
+    // larger class footprint is deliberately conservative. Contact count
+    // only increments for closing velocity, so inspect native separation.
+    const hull=c=>({...c,spec:{...c.spec,halfWidth:.98,halfLength:2.28}});
+    const clearance=bodyClearance(hull(own),hull(other)),x=own.x,z=own.z;
+    assert(bodyClearance(own,other)<=clearance+1e-12);
+    assert(Math.abs(clearance-bodyClearance(hull(other),hull(own)))<1e-12);
+    collisions([own,other]);
+    assert.equal(own.x!==x||own.z!==z,clearance<0);
+  }
+});
+test('an immediate cut-in still has braking authority during overlap',()=>{
+  const own=carAt(track,20,'lmdh',250,3,45),other=carAt(track,21,'lmdh',252,0,44);
+  const heading=track.at(252).heading;
+  other.vx+=8*Math.cos(heading);other.vz-=8*Math.sin(heading);
+  const safe=guardControls(own,[own,other],track,{throttle:1,brake:0,steer:0},{route:{at:()=>({offset:0})}});
+  assert.equal(safe.controls.throttle,0);assert(safe.controls.brake>0);
+});
+test('a command steering across an overlapping car cannot waive the guard',()=>{
+  const own=carAt(track,20,'lmdh',250,3,45),other=carAt(track,21,'lmdh',252,0,44);
+  const safe=guardControls(own,[own,other],track,{throttle:1,brake:0,steer:-.9},{route:{at:()=>({offset:0})}});
   assert.equal(safe.controls.throttle,0);assert(safe.controls.brake>0);
 });
 test('recovery cannot reverse into an approaching car',()=>{
