@@ -10,6 +10,7 @@
   "spaceTimeRoutes": true,
   "clearanceHorizon": true,
   "passMargin": 0.9,
+  "alongsideMargin": 0.32,
   "fairCorridors": true,
   "diversePrefixes": true,
   "maneuverHorizon": { "gt": 2.4, "lmdh": 4 },
