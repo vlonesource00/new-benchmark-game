@@ -70,7 +70,7 @@ export class Rivals {
     // frame folds at kinks, so the world-frame guess carries the first half-second.
     let kx = r.x, kz = r.z, kh = Math.atan2(r.vx ?? 0, r.vz ?? 0); const kv = Math.hypot(r.vx ?? 0, r.vz ?? 0);
     for (let k = 1; k < n; k++) {
-      const t = k * step, ratio = 1 + (ratio0 - 1) * Math.exp(-t / 1.5);
+      const t = k * step, ratio = 1 + (ratio0 - 1) * Math.exp(-t / (this.ratioTau ?? 3));
       // A rival accelerates no faster than a car of its kind can.
       vp = hazard ? r.speed * Math.exp(-t / 1.5) : Math.min(own(x) * ratio, acc ? vp + acc(vp) * step : Infinity);
       x += vp * step; s[k] = x;
