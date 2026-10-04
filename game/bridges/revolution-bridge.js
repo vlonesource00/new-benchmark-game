@@ -25,7 +25,9 @@ export function createRevolutionBridge({ hostTrack, index = 0, options = {}, tea
       if (state?.cars?.[index]) driver.prepare(state.cars[index]);
       driver.reset(); this.errors = 0; this.lastError = null;
     },
-    debug() { return { architecture: 'CLAUDE REVOLUTION', intent: driver?.mode ?? 'INIT', targetSpeed: driver?.targetSpeed ?? 0, lapEstimate: driver?.lapEstimate ?? null, combat: driver?.racecraft?.state ?? null, lane: driver?.racecraft?.kind ?? null }; },
+    debug() { return { architecture: 'CLAUDE REVOLUTION', intent: driver?.mode ?? 'INIT', targetSpeed: driver?.targetSpeed ?? 0, lapEstimate: driver?.lapEstimate ?? null, combat: driver?.racecraft?.state ?? null, lane: driver?.racecraft?.kind ?? null,
+      lineSpeed: driver?.line?.v?.[driver.cursor] ?? null, cap: driver?.racecraft?.cap ?? null, reflexCap: driver?.racecraft?.reflexCap ?? null, stability: driver?.stability ?? null,
+      nudge: driver?.racecraft?.nudge ?? 0, moves: driver?.racecraft?.moves ?? 0, aborts: driver?.racecraft?.aborts ?? 0, passes: driver?.racecraft?.passes ?? 0, blocker: driver?.racecraft?.blocker ?? null, cands: driver?.racecraft?.cands ?? null }; },
     visualDebug() { return null; },
     dispose() { driver = null; }
   };

@@ -58,7 +58,15 @@ export class Line {
       L.px[i] = this.px[i] + Math.cos(h) * shift[i]; L.pz[i] = this.pz[i] - Math.sin(h) * shift[i];
       L.lat[i] = this.lat[i] + shift[i];
     }
-    L.geometry(L.px, L.pz, false); L.shape();
+    L.geometry(L.px, L.pz, false);
+    // The shift adds curvature that the three-point stencil reads with station-scale noise
+    // (clamps, ramps meeting holds): a spike there is a braking point the car never feels.
+    // The added curvature is smoothed; with no shift the lane is the line exactly.
+    const dk = new Float64Array(N);
+    for (let i = 0; i < N; i++) dk[i] = L.k[i] - this.k[i];
+    for (let pass = 0; pass < 2; pass++) { const b = dk.slice(); for (let i = 0; i < N; i++) { let t = 0; for (let q = -2; q <= 2; q++) t += (3 - Math.abs(q)) * b[this.idx(i + q)]; dk[i] = t / 9; } }
+    for (let i = 0; i < N; i++) L.k[i] = this.k[i] + dk[i];
+    L.shape();
     return L;
   }
   /** Moves (x, z) back inside the corridor if needed. */

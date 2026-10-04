@@ -22,13 +22,14 @@ export class RevolutionDriver {
     if (this.line && this.classId === car.classId) return;
     this.classId = car.classId;
     // Corner usage per class: GT3 is rear-limited on power, so it keeps more margin.
-    this.lambda = this.options.lambda ?? (car.classId === 'gt' ? 0.92 : 0.95);
+    this.lambda = this.options.lambda ?? (car.classId === 'gt' ? 0.94 : 0.95);
     this.model = new CarModel(car.classId);
     this.model.latScale = this.options.latScale ?? 1;
+    this.model.brakeScale = this.options.brakeScale ?? 1;
     const baked = this.options.lines?.[this.track.id]?.[car.classId];
     this.line = new Line(this.track, { ds: baked?.ds ?? 4, margin: this.options.margin ?? 0.6 });
     // Braking/cornering trade: GT3 trail-brakes on a rounder envelope than the GTP's diamond.
-    this.line.brakeExp = this.options.brakeExp ?? baked?.brakeExp ?? (car.classId === 'gt' ? 2 : 1);
+    this.line.brakeExp = this.options.brakeExp ?? baked?.brakeExp ?? 2;
     if (baked?.px?.length === this.line.N) { this.line.px.set(baked.px); this.line.pz.set(baked.pz); this.line.geometry(); }
     else { this.line.minCurvature(this.options.quickSweeps ?? 800); this.line.minTime(this.model, 1, this.options.quickIterations ?? 3000); }
     this.cursor = -1; this.time = 0;
@@ -102,8 +103,31 @@ export class RevolutionDriver {
       this.refresh(car, true);
     }
   }
-  update(car, cars, dt, context) {
-    this.prepare(car);
+  /**
+   * Where the car will be when these controls land. In a seat worker the
+   * answer reaches the car a frame after the state it was computed from (`dt`
+   * then spans the frame, not one physics step); steering the car as it was
+   * that long ago lags every correction, which is how a slide grows into a
+   * spin. The pose and body velocities are carried forward over that delay.
+   */
+  predict(car, dt) {
+    const delay = this.options.delay ?? (dt > 0.0125 ? Math.min(0.05, dt) : 0);
+    const r0 = car.yawRate, dr = this.lastR === undefined ? 0 : clamp((r0 - this.lastR) / Math.max(1e-3, this.lastDt ?? dt), -6, 6);
+    this.lastR = r0; this.lastDt = dt;
+    if (!(delay > 0)) return car;
+    const yaw0 = car.yaw, s0 = Math.sin(yaw0), c0 = Math.cos(yaw0);
+    // Body accelerations (ax forward, ay right) into the world frame.
+    const vx = car.vx + (car.ax * s0 + car.ay * c0) * delay, vz = car.vz + (car.ax * c0 - car.ay * s0) * delay;
+    const yawRate = clamp(r0 + dr * delay, -3, 3), yaw = yaw0 + 0.5 * (r0 + yawRate) * delay, s = Math.sin(yaw), c = Math.cos(yaw);
+    const u = vx * s + vz * c, v = vx * c - vz * s;
+    return Object.create(car, {
+      x: { value: car.x + 0.5 * (car.vx + vx) * delay }, z: { value: car.z + 0.5 * (car.vz + vz) * delay },
+      yaw: { value: yaw }, yawRate: { value: yawRate }, vx: { value: vx }, vz: { value: vz }, u: { value: u }, v: { value: v }, speed: { value: Math.hypot(u, v) }
+    });
+  }
+  update(real, cars, dt, context) {
+    this.prepare(real);
+    const car = this.predict(real, dt);
     // Someone else drove the last step (the formation pilot during the handover second):
     // plans must start from where the car really is, not from our own lane.
     this.passive = this.sent !== null && this.sent !== undefined && car.controls?.steer !== this.sent;
@@ -177,6 +201,6 @@ export class RevolutionDriver {
     if (this.options.learn !== false) this.learn(car, i, beta, dt);
     if (throttle > 0.99 && Math.abs(car.steering) < 0.03 && car.gear > 0 && !car.shiftTimer) model.observeDrive(v, car.ax);
     this.mode = brake > 0 ? 'BRAKE' : throttle > 0.95 ? 'PUSH' : 'CORNER';
-    car.controls = { throttle, brake, steer: this.steer }; this.sent = this.steer;
+    real.controls = { throttle, brake, steer: this.steer }; this.sent = this.steer;
   }
 }

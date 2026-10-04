@@ -20,13 +20,13 @@ export function table(t, v) {
 export class CarModel {
   constructor(classId) {
     this.g = GGV[classId] ?? GGV.gt;
-    this.grip = 1; this.latScale = 1;
+    this.grip = 1; this.latScale = 1; this.brakeScale = 1;
     // Aerodynamic drag deceleration per v² (½ρ·A·cd / m from the class spec, ~half tank).
     this.dragK = classId === 'gt' ? 5.6e-4 : 7.6e-4;
     this.learnt = new Float64Array(20).fill(NaN);
   }
   lat(v) { return table(this.g.lateral, v) * this.grip * this.latScale; }
-  brake(v) { return table(this.g.brake, v) * (0.15 + 0.85 * this.grip); }
+  brake(v) { return table(this.g.brake, v) * (0.15 + 0.85 * this.grip) * this.brakeScale; }
   drive(v) {
     const bin = Math.min(19, Math.max(0, Math.round(v / 5)));
     const base = v > this.g.drive.at(-1)[0] ? Math.max(0, this.g.drive.at(-1)[1] * (1 - (v - this.g.drive.at(-1)[0]) / 10)) : table(this.g.drive, v) * 0.94;

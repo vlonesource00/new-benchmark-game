@@ -102,8 +102,12 @@ export class Racecraft {
    * position stays put where the line itself sweeps across the track.
    */
   profile(i, o0, target, holdTo, back = 90, v = 40, abs = false, rampMin = 0, aLat = 4) {
-    const line = this.d.line, N = line.N, shift = new Float64Array(N), B = line.track.halfWidth - 1.15;
-    const T = (j) => (abs ? target - line.lat[j] : target), Tr = T(line.idx(i + Math.round(holdTo / line.ds)));
+    const line = this.d.line, N = line.N, shift = new Float64Array(N), { left, right } = this.room(), hw = line.track.halfWidth;
+    // Track laterals and the edges come from the room along the line's own normals: where the
+    // centreline folds (a kink) its lateral jumps metres between stations, and a lane built
+    // on it swings across the road there, a kink no car can take at speed.
+    const lo = (j) => Math.min(0, 1.15 - left[j]), hi = (j) => Math.max(0, right[j] - 1.15);
+    const T = (j) => (abs ? (target + hw) * (left[j] + right[j]) / (2 * hw) - left[j] : target), Tr = T(line.idx(i + Math.round(holdTo / line.ds)));
     // Cosine ramp sized so the extra lateral acceleration stays under aLat (~4 m/s²).
     // The start slope s0 adds a Hermite term (slope s0 at the car, gone by the end of the
     // ramp); its peak curvature 4·s0/ramp is held to ~2·aLat as well.
@@ -122,7 +126,7 @@ export class Racecraft {
       else if (d < holdTo) x = T(j);
       else x = Tr * (1 - smooth((d - Math.max(ramp, holdTo)) / back));
       if (d > Math.max(ramp, holdTo) + back) x = 0;
-      shift[j] = clamp(line.lat[j] + x, Math.min(-B, line.lat[j]), Math.max(B, line.lat[j])) - line.lat[j];
+      shift[j] = clamp(x, lo(j), hi(j));
     }
     // The edge clamp is per station: where the line runs along the edge it leaves kinks
     // that would make the lane slow. Smooth it out (1-2-3-2-1 kernel, three passes).
@@ -133,9 +137,37 @@ export class Racecraft {
         for (let k = -K - 6; k <= end + 6; k++) { let a = 0; for (let q = -2; q <= 2; q++) a += (3 - Math.abs(q)) * shift[line.idx(i + k + q)]; tmp[k + K + 6] = a / 9; }
         for (let k = -K - 6; k <= end + 6; k++) shift[line.idx(i + k)] = tmp[k + K + 6];
       }
-      for (let k = -K - 6; k <= end + 6; k++) { const j = line.idx(i + k); shift[j] = clamp(line.lat[j] + shift[j], Math.min(-B, line.lat[j]), Math.max(B, line.lat[j])) - line.lat[j]; }
+      for (let k = -K - 6; k <= end + 6; k++) { const j = line.idx(i + k); shift[j] = clamp(shift[j], lo(j), hi(j)); }
     }
     return shift;
+  }
+  /** Track lateral (in the room's frame, see profile) of offset x from the line at station j. */
+  absLat(j, x) { const { left, right } = this.room(), hw = this.d.line.track.halfWidth; return -hw + (x + left[j]) * 2 * hw / Math.max(1, left[j] + right[j]); }
+  /** Room from each line point to the track edges along its normals (left, right), m. */
+  room() {
+    const line = this.d.line;
+    if (this.rooms?.line === line) return this.rooms;
+    const N = line.N, left = new Float64Array(N), right = new Float64Array(N), tr = line.track, hw = tr.halfWidth;
+    for (let j = 0; j < N; j++) {
+      const c = Math.cos(line.h[j]), s = Math.sin(line.h[j]);
+      for (const [side, out] of [[1, right], [-1, left]]) {
+        let x = 0;
+        while (x < 2.5 * hw && Math.abs(tr.nearest(line.px[j] + c * side * (x + 0.25), line.pz[j] - s * side * (x + 0.25)).lateral) <= hw) x += 0.25;
+        out[j] = x;
+      }
+    }
+    // A fold can make a point beside the line look outside for a station or two: the room
+    // never changes faster than the road can, so take the neighbours' where it dips alone.
+    for (const a of [left, right]) { const b = a.slice(); for (let j = 0; j < N; j++) a[j] = Math.max(b[j], Math.min(b[line.idx(j - 1)], b[line.idx(j + 1)])); }
+    // At a fold the corridor's edge has corners (its wedge on the outside of the kink): a lane
+    // held against it would have them too. The room used is the lower envelope that widens
+    // no faster than 1 m in 20, then smoothed, so a lane along an edge stays drivable.
+    const m = 0.05 * line.ds;
+    for (const a of [left, right]) {
+      for (let r = 0; r < 2; r++) { for (let j = 0; j < N; j++) a[j] = Math.min(a[j], a[line.idx(j - 1)] + m); for (let j = N - 1; j >= 0; j--) a[j] = Math.min(a[j], a[line.idx(j + 1)] + m); }
+      for (let pass = 0; pass < 4; pass++) { const b = a.slice(); for (let j = 0; j < N; j++) { let t = 0; for (let q = -2; q <= 2; q++) t += (3 - Math.abs(q)) * b[line.idx(j + q)]; a[j] = t / 9; } }
+    }
+    return (this.rooms = { line, left, right });
   }
 
   /** Next corner ahead: braking start, apex station, apex direction (+1 right). */
@@ -179,12 +211,12 @@ export class Racecraft {
         const k = Math.min(p.s.length - 1, Math.round(st.t / p.step));
         const dx = p.px[k] - lane.px[st.j], dz = p.pz[k] - lane.pz[st.j];
         const ds = dx * sh + dz * ch, dl = Math.abs(dx * ch - dz * sh);
-        const zone = WID + 0.9 + (p.alongside ? 0 : 0.04 * Math.abs(st.v - p.r.speed));
+        const zone = WID + (p.alongside ? 0.4 : 0.9 + 0.04 * Math.abs(st.v - p.r.speed));
         if (Math.abs(ds) < LEN + 0.6 && dl < zone) {
           const depth = zone - dl, w = Math.max(0.05, steps.length > 1 ? steps[1].t : 0.1);
           if (ds > 1.5 && !p.alongside) { if (dl < WID + 0.3 && st.t < blockedAt) { blockedAt = st.t; info.blocker = p.r.id; blockP = p; } }   // its gearbox: follow instead
           else if (ds < -2.5 && !p.alongside) penalty += 20 * depth * w;   // a car behind must avoid us (iRacing: the overtaker's job)
-          else penalty += 260 * depth * w * (dl < WID + 0.2 ? 3 : 1);   // alongside: graded, worse when actually touching
+          else penalty += 110 * depth * w * (dl < WID ? 3 : 1);   // alongside: graded, worse when actually touching (a rub is racing)
         }
       }
       progress = wrapS(sj - s0, L);
@@ -268,11 +300,11 @@ export class Racecraft {
     const side = near.some((r) => Math.abs(r.fwd) < LEN + 3);
     const add = (kind, target, holdTo, abs = false) => cands.push({ kind, target, lane: line.lane(this.profile(i, o0, target, side ? Math.max(holdTo, 140) : holdTo, 90, Math.max(20, car.speed), abs)) });
     add('stay', o0, 200);
-    add('hold', line.lat[i] + o0, 160, true);
+    add('hold', this.absLat(i, o0), 160, true);
     if (this.lane && !this.offLane) cands.push({ kind: this.kind, lane: this.lane, keep: true });
     add('line', 0, 0);
     // Offset lanes only matter with someone close; in clean air the line is the answer.
-    const engaged = near.some((r) => r.fwd > -40 && r.fwd < 70);
+    const engaged = near.some((r) => r.fwd > -12 && r.fwd < 70);
     if ((!lapped && engaged) || hazard) {
       for (const t of [-4.5, -2.4, 2.4, 4.5]) add(t < 0 ? 'left' : 'right', t, 160);
       if (corner) {
@@ -360,7 +392,7 @@ export class Racecraft {
     // Overlap at the apex: our arrival along the move lane against the rival's on its learnt profile.
     const apexJ = line.idx(i + corner.apexAt), tUs = this.arrive(lane, i, corner.apexAt, car.speed, car.aero?.wake ?? 0, ramp), tR = this.arriveRival(lead, line.st[apexJ]);
     const behindAtApex = (tUs - tR) * corner.vApex;
-    if (!(behindAtApex < LEN * 0.6)) return false;
+    if (!(behindAtApex < LEN * 0.9)) return false;
     this.lane = lane; this.kind = 'move'; this.state = 'ATTACK'; this.blocker = null; this.draft = false; this.moveApex = apexId;
     this.move = { id: lead.id, apex: apexJ, until: this.t + tUs + 2, side: dir === inDir ? 'inside' : 'outside', target, dir, fwd0: lead.fwd, brakeJ: line.idx(i + corner.brakeAt), apexAt: corner.apexAt - corner.brakeAt };
     this.moves = (this.moves ?? 0) + 1;
@@ -419,7 +451,7 @@ export class Racecraft {
     for (const r of near) {
       const b = this.body(car, r);
       if (Math.abs(b.lon) > LEN + 2) continue;
-      const sep = b.lat, need = 3.0 - Math.abs(sep);
+      const sep = b.lat, need = 2.4 - Math.abs(sep);
       if (need > 0) want += -Math.sign(sep || 1) * need;
     }
     // Reflex: 1.5 s look-ahead, us along our own path, them by velocity and yaw
@@ -437,7 +469,7 @@ export class Racecraft {
         if (r.fwd > LEN + 1) {
           const room = Math.max(0, r.fwd - LEN - 2);
           this.reflexCap = Math.min(this.reflexCap, Math.sqrt(vr * vr + 2 * brake * 0.75 * room));
-        } else if (t < 0.8) { want += -Math.sign(lat || -b0(car, r)) * (WID + 1.0 - Math.abs(lat)); rate = 6; }
+        } else if (t < 0.6) { want += -Math.sign(lat || -b0(car, r)) * (WID + 0.3 - Math.abs(lat)); rate = 5; }
         break;
       }
     }
