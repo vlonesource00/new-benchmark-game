@@ -4,6 +4,8 @@
   "shortlist": 3,
   "horizon": 2.4,
   "stableMoves": true,
+  "physicsPace": true,
+  "nativeStrategy": true,
   "trafficHorizon": 2,
   "commitSeconds": 0,
   "approachSeconds": 3,

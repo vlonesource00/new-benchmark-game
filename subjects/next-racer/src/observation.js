@@ -65,6 +65,12 @@ export class Observer {
       const followsRoad=Boolean(physicalRoad&&(prior?.followsRoad
         ?lineError<2.4&&courseError<.3
         :varied&&lineError<1.1&&courseError<.14));
+      const dx=other.x-car.x,dz=other.z-car.z;
+      const alongside=Math.hypot(dx,dz)<20
+        &&Math.abs(dx*Math.sin(projection.heading)+dz*Math.cos(projection.heading))
+          <car.spec.halfLength+(other.spec?.halfLength??2.3)+4
+        &&Math.abs(dx*Math.cos(projection.heading)-dz*Math.sin(projection.heading))
+          >(car.spec.halfWidth+(other.spec?.halfWidth??.99))*.7;
       const r = Object.freeze({
         id: other.id, classId: other.classId, s: p.s, q: p.lateral,
         speed: roadSpeed, worldSpeed:other.speed, course,
@@ -76,7 +82,7 @@ export class Observer {
         halfLength: Math.max(2.28, other.spec?.halfLength ?? 2.3),
         ghost: Boolean(other.ghost && car.ghost),
         finished: other.race?.finishTime != null, pit: Boolean(other.race?.pitLap),
-        road:physicalRoad,stableLane,followsRoad,
+        road:physicalRoad,stableLane,followsRoad,alongside,
         envelope:physicalRoad?physicalRoad.laneEnvelope(p.lateral):null,
         classFactor:physicalRoad!==road||other.classId===car.classId?1:other.classId==='gt'?.84:1.16,
         physical:publicSnapshot(other),
@@ -203,7 +209,10 @@ function predict(track, rival, t, branch = 0) {
 }
 
 function followingMotion(track,rival,t,branch,velocity,accel){
-  const road=rival.road,follower=rival.followsRoad&&road;
+  // An overlapping rival has an occupied corridor of its own. Its class
+  // prior is a useful speed estimate, but is not permission to invent a
+  // return to our line. Measured lateral motion still carries into that lane.
+  const road=rival.road,follower=rival.followsRoad&&!rival.alongside&&road;
   const initialBase=follower?road.at(rival.s).offset:rival.q;
   const initialSlope=follower?(road.at(rival.s+1).offset-road.at(rival.s-1).offset)*.5:0;
   const initialMetric=Math.max(.35,1-track.at(rival.s).curvature*rival.q);

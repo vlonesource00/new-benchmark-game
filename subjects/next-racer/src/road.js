@@ -219,9 +219,13 @@ function dynamicsTable(track, car, driveSlip = .18) {
         const br = Math.sqrt(Math.max(0, rearCapacity * rearCapacity - fyr * fyr));
         const bfLimit = Math.min(2 * s.brakeTorque * model.bias / s.radius, bf * .96);
         const brLimit = Math.min(2 * s.brakeTorque * (1 - model.bias) / s.radius, br * .96);
-        // Independent wheel ABS can reduce pressure on one axle while the
-        // other still brakes. Both axle limits nevertheless remain explicit.
-        const nextB = (bfLimit + brLimit + Math.max(r.resistance, oppositeBrake.resistance)) / m;
+        // Our executor issues one brake pedal and caps it at the weaker
+        // axle's reserve with the selected bias. Adding both independent
+        // axle peaks promised braking that this policy could never deliver,
+        // particularly while the rear was already busy turning. Solve the
+        // same linked pressure before propagating the entry-speed envelope.
+        const pressure = Math.min(bfLimit / model.bias, brLimit / (1 - model.bias));
+        const nextB = (pressure + Math.max(r.resistance, oppositeBrake.resistance)) / m;
         a = .5 * a + .5 * nextA; b = .5 * b + .5 * nextB;
       }
       accel[i * na + j] = a;
@@ -363,7 +367,7 @@ export class Road {
     this.step = this.length / this.n;
     const spec = options.spec ?? options.car?.spec ?? carSpecFor(options.classId);
     const settings = {
-      modelVersion: options.lineModel==='flow'?3:2,
+      modelVersion: options.lineModel==='flow'?4:3,
       margin: Math.max(1.15, options.margin ?? 1.2), wing: options.wing ?? options.car?.setup?.wing ?? 6,
       // false reproduces the former peak-ellipse model for bounded ablations.
       // .18 lies near peak drive force in the upgraded game tyre model.

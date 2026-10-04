@@ -3,7 +3,7 @@
 export function nextRacerState(race,car) {
   const e=race.entryOf?.(car);
   if(!e)return race.nextRacerState??null;
-  return {session:race.session,phase:race.phase,formation:Boolean(race.formation),
+  return {session:race.session,weather:race.weather?.id,phase:race.phase,formation:Boolean(race.formation),
     greenAt:race.greenAt,totalLaps:race.laps,ambient:race.track.ambient,
     fuelLaps:race.cal?.fuelLaps,tyreLaps:race.cal?.tyreLaps,
     fuelPerLap:e.strategist.fuelPerLap,stintLaps:e.strategist.stintLaps,

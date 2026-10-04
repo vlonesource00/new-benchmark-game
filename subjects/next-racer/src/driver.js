@@ -191,7 +191,7 @@ export class SpearheadDriver {
     return {architecture:'SPEARHEAD',intent:this.lifecycle==='RACE'?this.episodes.role.toUpperCase():this.lifecycle,
       stage:this.episodes.stage,target:this.episodes.target,side:this.episodes.side,
       targetSpeed:this.targetSpeed,plan:this.selected,epoch:this.epoch,
-      control:this.control?.lastSignal??null,
+      control:(this.selected?.kind==='pit'?this.pitGuide?.control:this.control)?.lastSignal??null,
       trackingPoint:this.trackingPoint?{x:this.trackingPoint.x,z:this.trackingPoint.z}:null,
       latency:this.stats.latencyMs,stats:{...this.stats},safety:this.safetyReason,
       resources:this.resources.status,checks:this.checks,evaluated:this.evaluated};

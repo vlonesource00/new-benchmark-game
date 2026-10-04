@@ -5,6 +5,7 @@
 import { createSeatBridge } from './field.js';
 import { plain } from '../bridges/remote-sync.js';
 import { nextRacerState } from '../bridges/next-racer-state.js';
+import { installNativeStrategy } from '../../subjects/next-racer/src/strategy.js';
 import { guardControls,previewRoute } from '../../subjects/next-racer/src/safety.js';
 import { previewFeedback,feedbackDebug,resetFeedback } from '../../subjects/next-racer/src/feedback.js';
 
@@ -32,6 +33,7 @@ export class AsyncSeats {
   factory() {
     return (driver, index, race) => {
       if (driver.kind === 'human') return createSeatBridge(driver, index, race);
+      if (driver.id === 'next-racer') installNativeStrategy(race,race.cars[index]);
       return this.seat(driver, index, race);
     };
   }

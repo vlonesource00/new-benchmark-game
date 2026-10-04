@@ -8,14 +8,95 @@ import { Observer,forecast } from '../src/observation.js';
 import { Episodes } from '../src/episode.js';
 import { generateRoutes } from '../src/routes.js';
 import { guardControls,previewRoute,reverseSpace,bodyClearance } from '../src/safety.js';
-import { COMPOUNDS } from '../../../game/core/rules.js';
+import { COMPOUNDS,calibrate,FORMATS,serviceTime } from '../../../game/core/rules.js';
+import { TeamStrategist } from '../../../game/core/strategy.js';
+import { EnduranceRace } from '../../../game/core/race.js';
+import { AsyncSeats } from '../../../game/core/async-seats.js';
 import { PitLane } from '../../../game/core/pit.js';
 import { drivingTrack } from '../src/pit.js';
 import { angle } from '../src/math.js';
 import { previewFeedback,feedbackDebug,resetFeedback } from '../src/feedback.js';
 import { ForceControl } from '../src/control.js';
+import { Resources } from '../src/resources.js';
+import { installNativeStrategy,SpearheadStrategist } from '../src/strategy.js';
 
 const checks=[];
+function strategyFixture() {
+  const team={id:'team',drivers:[{id:'next-racer',kind:'ai'},{id:'next-racer',kind:'ai'}]};
+  const cal=calibrate(new Track('harbor-ring'),20);
+  const e={team,strategist:new TeamStrategist(team,cal,{...FORMATS.classic,laps:20},7,1)};
+  return {car:{classId:'gt'},e,race:{entryOf:()=>e,session:'race',difficulty:1,
+    weather:{id:'clear'},track:{id:'harbor-ring'},format:e.strategist.format}};
+}
+test('own endurance planner preserves native requests and physical stop costs',()=>{
+  const {car,e,race}=strategyFixture(),old=e.strategist;
+  old.request={compound:'soft',swap:false};
+  const expectedStyle=structuredClone(old.style),expectedWear={...old.wearPerLap};
+  assert(installNativeStrategy(race,car,{enabled:true}));
+  assert(e.strategist instanceof TeamStrategist);
+  assert.deepEqual(e.strategist.style,expectedStyle);
+  assert.equal(e.strategist.request,old.request);assert.deepEqual(old.wearPerLap,expectedWear);
+  assert(e.strategist.stopLoss>old.stopLoss/old.style.patience);
+  const lane=old.stopLoss/old.style.patience-old.cal.baseStopS-old.cal.tyreChangeS;
+  assert.equal(e.strategist.stopLoss,lane+serviceTime(old.cal,{tyres:true,swap:true}));
+  assert(!installNativeStrategy(race,car,{enabled:true}));
+  assert.equal(e.strategist.decide,TeamStrategist.prototype.decide);
+  assert.equal(e.strategist.servicePlan,TeamStrategist.prototype.servicePlan);
+});
+test('planner installation leaves human teams, other drivers and weather untouched',()=>{
+  for(const change of [
+    f=>f.e.team.drivers[1].kind='human',f=>f.e.team.drivers[0].id='solstice',
+    f=>f.race.weather.id='changeable',f=>f.race.weather.id='rain',
+    f=>f.race.difficulty=.8,f=>f.race.format.mandatoryStops=0,
+    f=>f.race.session='qualifying',f=>f.race.track.id='solenne',
+    f=>f.e.strategist.stintLaps=1,f=>f.e.strategist.stops=1
+  ]){
+    const f=strategyFixture(),old=f.e.strategist;change(f);
+    assert(!installNativeStrategy(f.race,f.car,{enabled:true}));assert.equal(f.e.strategist,old);
+  }
+});
+test('measured wear permits a final lap while fuel and worn tyres still force a stop',()=>{
+  const {e}=strategyFixture(),s=new SpearheadStrategist(e.strategist,'gt');
+  const car={fuel:30,wheels:Array.from({length:4},()=>({tyre:{wear:.5,compound:'soft'}}))};
+  s.stintLaps=2;assert.equal(s.planStint(car,1,0).laps,1);
+  for(const w of car.wheels)w.tyre.wear=.76;
+  assert.equal(s.planStint(car,1,0).laps,0);
+  for(const w of car.wheels)w.tyre.wear=.1;car.fuel=.1;
+  assert(s.decide(car,3));assert(s.reason.includes('FUEL'));
+  car.fuel=30;for(const w of car.wheels)w.tyre.wear=.76;
+  assert(s.decide(car,3));assert(s.reason.includes('TYRES'));
+});
+test('dry Harbor uses physical tyre limits without changing the wet resource policy',()=>{
+  const track=new Track('harbor-ring'),c=carAt(track,0,'gt',500,0,40),r=new Resources(track);
+  r.wearRates=[.0001,.0001,.0001,.0001];
+  const obs={fresh:false,projection:track.nearest(c.x,c.z),elapsed:0};
+  assert.equal(r.update(c,obs,{weather:'clear',totalLaps:20}).factor,1);
+  assert(r.update(c,obs,{weather:'changeable',totalLaps:20}).factor<1);
+  for(const w of c.wheels)assert.equal(w.tyre.wear,.05);
+});
+test('native synchronous and worker factories install the planner before fitting starting tyres',()=>{
+  const savedWorker=globalThis.Worker;
+  // Constructor-only stand-in. Actual message delivery and native physics
+  // are exercised separately by worker-duel.mjs.
+  globalThis.Worker=class {postMessage(){} terminate(){}};
+  try{
+  for(const classId of ['gt','lmdh'])for(const offload of [false,true]){
+    const teams=['next-racer','claude-revolution'].map((id,index)=>({id:'t'+index,name:id,color:'#ddd',
+      index,grid:index,classId,raceClass:classId==='gt'?'gt3':'gtp',
+      drivers:[{id,kind:'ai'},{id,kind:'ai'}]}));
+    const seats=offload?new AsyncSeats('harbor-ring'):null;
+    const race=new EnduranceRace({track:new Track('harbor-ring'),teams,classId,laps:20,
+      weather:'clear',difficulty:1,format:FORMATS.classic,
+      ...(seats?{makeBridge:seats.factory()}:{} )});
+    assert(race.entries[0].strategist instanceof SpearheadStrategist);
+    assert(!(race.entries[1].strategist instanceof SpearheadStrategist));
+    for(const e of race.entries)assert.equal(e.car.wheels[0].tyre.compound,e.strategist.startCompound());
+    race.start();assert(race.entries[0].strategist instanceof SpearheadStrategist);
+  }
+  }finally{
+    if(savedWorker===undefined)delete globalThis.Worker;else globalThis.Worker=savedWorker;
+  }
+});
 function test(name,fn){fn();checks.push(name);}
 function carAt(track,id,classId,s,q,v) {
   const c=new Vehicle(id,'test','#eee',classId);c.place(track,s,q,v);
@@ -58,6 +139,7 @@ test('prediction cannot deposit live rubber',()=>{
   for(let i=0;i<100;i++)s.step(1/120,new PredictionTrack(track));
   assert.deepEqual(track.rubber,before);
 });
+
 test('worker pit surface matches the native host without changing its shared track',()=>{
   const replica=new Track('harbor-ring'),host=new Track('harbor-ring'),native=new PitLane(host,2);
   const view=drivingTrack(replica,2).track;
@@ -89,6 +171,30 @@ test('braking observation moves the forecast body less than coasting',()=>{
   const r=o.observe(a,[a,c],{time:0},1/30,bridge.driver.road).rivals[0];
   const slow=forecast(track,r,.4),coast=forecast(track,{...r,accel:0},.4);
   assert(Math.hypot(slow.x-r.x,slow.z-r.z)<Math.hypot(coast.x-r.x,coast.z-r.z)-.5);
+});
+
+test('an overlapping rival owns its measured lane instead of our class prior',()=>{
+  const c=carAt(track,0,'gt',430,2,50),r=carAt(track,1,'gt',433,-1.5,48);
+  const observed=new Observer(track).observe(c,[c,r],{time:0},1/30).rivals[0];
+  assert(observed.alongside);
+  const prior={at:s=>({...track.at(s),offset:(s-433)*.03}),sample:()=>70,speed:[]};
+  const input={...observed,road:prior,followsRoad:true,envelope:[],dq:0};
+  const held=forecast(track,input,.8);
+  assert(Math.abs(held.q-observed.q)<.01,'a class prior cannot invent an overlapping merge');
+  const moving=forecast(track,{...input,dq:3},.3);
+  assert(moving.q>held.q+.5,'an observed cut-in must remain in the forecast');
+});
+test('pit approach lookahead continues through the entry without a racing-line jump',()=>{
+  for(const id of ['harbor-ring','solenne']){
+    const env=new Track(id),c=carAt(env,0,'gt',250,0,30),bot=createNextRacerBridge({hostTrack:env});
+    bot.reset({cars:[c]});const guide=bot.driver.pitGuide,lane=guide.lane;
+    guide.pilot.phase='approach';
+    for(let d=-10;d<20;d+=.5){
+      const a=guide.point(lane.entry+d),b=guide.point(lane.entry+d+.5);
+      assert(Math.hypot(a.x-b.x,a.z-b.z)<1.2,'continuous pit entry '+id+' '+d);
+    }
+    assert(Math.abs(guide.point(lane.entry+10).offset-lane.laneAt(lane.entry+10))<1e-8);
+  }
 });
 test('a previously observed bend line is a separate public-motion hypothesis',()=>{
   const o=new Observer(track),r=o.observe(a,[a,b],{time:0},1/30,bridge.driver.road).rivals[0];

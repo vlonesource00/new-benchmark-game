@@ -12,7 +12,7 @@ import { distance,angle } from '../src/math.js';
 import { cornerGate,Route } from '../src/routes.js';
 import { Observer,forecast } from '../src/observation.js';
 import { bodyHalf,bodyClearance,guardControls,previewRoute } from '../src/safety.js';
-import { previewFeedback } from '../src/feedback.js';
+import { previewFeedback,feedbackDebug } from '../src/feedback.js';
 import { writeFileSync,mkdirSync,readFileSync } from 'node:fs';
 import { dirname,resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -79,6 +79,7 @@ export function runEncounter(setup,{classId='gt',hz=30,seconds=16,free=false,tra
     rival.place(track,setup.s+setup.gap,-3.6,setup.rivalSpeed);
     cars.push(fixture(track,2,classId,setup.s+setup.gap,3.6,setup.rivalSpeed));
   }
+  const initialClearance=bodyClearance(self,rival);
   const rivalRoad=new Road(track,{car:rival});rivalRoad.rebuildEnvelope(rival,.88);
   const policy=new ForceControl(track,setup.hotline?road:rivalRoad,
     setup.hotline?{...bridge.driver.control.o}:{courseForceLimit:.90,actualBrakeReserve:true});
@@ -95,7 +96,7 @@ export function runEncounter(setup,{classId='gt',hz=30,seconds=16,free=false,tra
   const post=(bot,car,time,projections)=>{
     const previous={...car.controls},elapsed=lastPosted==null?1/hz:time-lastPosted;
     bot.update(car,cars,elapsed,{time,projections,totalLaps:12,controlDelay:delays.get(car.id)??delayFrames/hz,
-      feedbackPeriod:1/120});
+      feedbackPeriod:1/120,state:{session:'race',weather:'clear',totalLaps:12,fuelLaps:8}});
     const extra=burstMs&&time%6>=3&&time%6<3.3?burstMs/1000:0;
     pending.set(car.id,{applyAt:time+delayFrames/hz+extra,k:{...car.controls},
       preview:structuredClone(bot.controlPreview()),time});
@@ -141,10 +142,13 @@ export function runEncounter(setup,{classId='gt',hz=30,seconds=16,free=false,tra
     if(!adaptive)for(const other of cars.slice(1))other.controls=policy.control(other,projections.get(other.id),
       {...(setup.hotline?{}:{hold:setup.blockers?(other.id===1?-3.6:3.6):lane}),forceGuard:1},setup.rivalSpeed);
     let liveGuard=null;
+    // AsyncSeats guards the initial fallback too, before a first worker
+    // response arrives. Letting the fixture coast unguarded through that
+    // delay gave a different corner-overlap start from the production host.
     for(const c of cars)if(held.has(c.id)){
-      const nominal=previewFeedback(c,track,previews.get(c.id),time)??held.get(c.id);
+      const nominal=previewFeedback(c,track,previews.get(c.id),time)??held.get(c.id)??c.controls;
       const guarded=guardControls(c,cars,track,nominal,
-        {route:previewRoute(track,previews.get(c.id),time),age:Math.max(0,time-stamps.get(c.id))});
+        {route:previewRoute(track,previews.get(c.id),time),age:Math.max(0,time-(stamps.get(c.id)??time))});
       if(c.id===self.id)liveGuard={reason:guarded.reason,cap:guarded.cap,nominal};
       c.controls=guarded.controls;
     }
@@ -196,7 +200,11 @@ export function runEncounter(setup,{classId='gt',hz=30,seconds=16,free=false,tra
     if(trace&&Math.floor((time+DT)*4)>Math.floor(time*4))samples.push({t:time,s:p.s,q:p.lateral,gap,
       rivalQ:q.lateral,v:self.speed,target:d.targetSpeed,k:{...self.controls},plan:d.plan,stage:d.stage,safety:d.safety,
       checks:d.checks,departure,physicalGap,contact:hits,intent:d.intent,
-      control:d.control,liveGuard,clearance:bodyClearance(self,rival),
+      control:feedbackDebug(self)?.control??d.control,liveGuard,clearance:bodyClearance(self,rival),
+      ay:self.ay,tyres:self.wheels.map(w=>({wear:w.tyre.wear,core:w.tyre.core,alpha:w.tyre.alpha,
+        kappa:w.tyre.kappa,load:w.load})),
+      course:[0,20,40,80,120,180].map(m=>{const a=bridge.driver.plan?.route.at(p.s+m)??road.at(p.s+m);
+        return {m,q:a.offset,k:a.curvature,v:a.speed};}),
       observedRival:latestObservation?.rivals.map(r=>({id:r.id,q:r.q,dq:r.dq,stableLane:r.stableLane,
         followsRoad:r.followsRoad,alignment:angle(r.course-track.at(r.s).heading),turn:r.turn,accel:r.accel})),
       motion:{x:self.x,z:self.z,yaw:self.yaw,vx:self.vx,vz:self.vz,
@@ -206,7 +214,7 @@ export function runEncounter(setup,{classId='gt',hz=30,seconds=16,free=false,tra
       }))});
   }
   latencies.sort((a,b)=>a-b);bridgeErrors=bridge.errors+(adaptive?.errors??0);
-  return {name:setup.name,classId,hz,free,maneuvers,delayFrames,burstMs,progress,
+  return {name:setup.name,classId,hz,free,maneuvers,delayFrames,burstMs,initialClearance,progress,
     exitAt,exitSpeedAtGate,bodyExcursion,wheelExcursion,exitSpeed:self.speed,minimumSpeed,stopped,
     finalGap:distance(track.nearest(rival.x,rival.z).s,track.nearest(self.x,self.z).s,track.length),
     passedAt,passHeld,contactSteps,contactEpisodes,offtrackSeconds:off,damage:self.damage,bridgeErrors,

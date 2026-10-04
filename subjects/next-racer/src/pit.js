@@ -16,14 +16,19 @@ export class PitGuide {
     this.track=track;this.road=road;
     this.lane=lane;this.line=new RacingLine(track,car.spec);
     this.pilot=new PitAutopilot(this.lane,this.lane.boxes[Math.min(car.id,count-1)],this.line);
-    this.control=new ForceControl(track,road,{...policy,execution:'force-yaw',
-      lookahead:.55,minLook:6,maxLook:18,brakeFloor:6,axleBrake:false,
+    this.control=new ForceControl(track,road,{...policy,execution:'force',
+      lookahead:.7,minLook:9,maxLook:26,brakeFloor:6,axleBrake:false,
+      courseProjection:false,arcLook:false,
       warmForceTransition:false,warmCornerGripUse:null});
     this.control.point=s=>this.point(s);
   }
   point(s) {
     const qAt=s=>{
       const l=this.lane,g=this.pilot,d=l.d(s,l.entry),a=l.d(l.approach,l.entry);
+      // A lookahead can already be inside the lane while the car is still
+      // approaching. Wrapped distance there is almost a full lap; treating
+      // it as the pre-approach blends the path back onto the racing line.
+      if(g.phase==='approach'&&l.inLane(s))return l.laneAt(s);
       if(g.phase==='approach'&&d>a){
         const u=clamp((a+120-d)/120,0,1),blend=u*u*(3-2*u);
         return this.road.at(s).offset*(1-blend)+this.line.offsetAt(s)*blend;
@@ -43,6 +48,8 @@ export class PitGuide {
     if(!release&&!window)return null;
     if(!release&&!state.pitPlan&&!state.pit)return null;
     this.pilot.phase=release?'release':'approach';this.pilot.track=this.track;
-    return this.control.control(car,p,{forceGuard:1},this.pilot.targetSpeed(p.s,car)*.92);
+    const speed=this.pilot.targetSpeed(p.s,car);
+    const factor=this.track.id==='harbor-ring'&&state.weather==='clear'?1:.92;
+    return this.control.control(car,p,{forceGuard:1},speed*factor);
   }
 }

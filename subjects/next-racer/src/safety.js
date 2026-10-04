@@ -66,14 +66,26 @@ function immediatePose(car,t,steer=null) {
     yaw:car.yaw+delta,spec:car.spec};
 }
 
-function alongsideClearance(car,other,controls) {
+function alongsideClearance(car,other,controls,curvature) {
   const heading=car.speed>2?Math.atan2(car.vx,car.vz):car.yaw;
   const along=(other.x-car.x)*Math.sin(heading)+(other.z-car.z)*Math.cos(heading);
-  if(Math.abs(along)>(car.spec?.halfLength??2.3)+(other.spec?.halfLength??2.3)+.5)return null;
-  for(const t of [0,.06,.12,.18,.24]){
+  const overlapping=Math.abs(along)<=(car.spec?.halfLength??2.3)+(other.spec?.halfLength??2.3)+.5;
+  // In a bend a lateral closing motion can sweep into a front quarter before
+  // the station projections count as overlap. On straights the lane/catch
+  // check below remains authoritative. A clear sweep waives following-speed
+  // braking only for cars actually alongside.
+  if(!overlapping&&(Math.abs(curvature)<.003||Math.hypot(other.x-car.x,other.z-car.z)>20))return null;
+  const across=(other.x-car.x)*Math.cos(heading)-(other.z-car.z)*Math.sin(heading);
+  const closing=((car.vx-other.vx)*Math.cos(heading)-(car.vz-other.vz)*Math.sin(heading))*Math.sign(across);
+  if(!overlapping&&closing<=1)return null;
+  // Extend only a measured lateral closing motion. An ordinary pullout is
+  // moving away from the rival; predicting its new steering for too long
+  // would price useful acceleration out of an otherwise clear pass.
+  const window=!overlapping&&closing>1?[0,.08,.16,.24,.32,.4]:[0,.06,.12,.18,.24];
+  for(const t of window){
     if(bodyClearance(immediatePose(car,t,controls.steer),immediatePose(other,t))<.12)return 'closing';
   }
-  return 'clear';
+  return overlapping?'clear':null;
 }
 
 // Cheap guard also runs on the host between asynchronous answers. It responds
@@ -92,7 +104,7 @@ export function guardControls(car,cars,track,nominal,{route=null,age=0}={}) {
     // nominal route's eventual return used to demand following-speed braking
     // here even while both cars could drive in parallel. Replans still check
     // the complete passing course; this guard checks the immediate swept space.
-    const overlap=alongsideClearance(car,other,k);
+    const overlap=alongsideClearance(car,other,k,p.curvature??track.at(p.s).curvature);
     if(overlap==='clear')continue;
     const body=bodyHalf(other,q.heading),long=own.length+body.length+.8;
     const space=Math.max(0,d-long);

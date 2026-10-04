@@ -19,7 +19,8 @@ import { pathToFileURL } from 'node:url';
 const bootHashes=sourceStamp();
 
 export function compare({drivers=['next-racer','claude-revolution'],classId='gt',
-  trackId='harbor-ring',compound='soft',laps=2,hz=30,seed=7,options={},seconds=0,includeGeometry=false}={}){
+  trackId='harbor-ring',compound='soft',laps=2,hz=30,seed=7,options={},seconds=0,includeGeometry=false,
+  initialTyres=null}={}){
   const sourceHashes=bootHashes,track=new Track(trackId);
   const teams=drivers.map((id,i)=>({id:'probe'+i,name:id,short:'T'+i,color:i?'#aaa':'#f90',
     index:i,grid:i,starter:0,classId,raceClass:classId==='lmdh'?'gtp':'gt3',
@@ -58,6 +59,22 @@ export function compare({drivers=['next-racer','claude-revolution'],classId='gt'
     samples:[],laps:[],flicks:[],lastSign:null,lastSteer:0,lastS:null,lastMode:null,lastLap:1}));
   let sampleAt=0,greenAt=null,order=null;const passes=[];
   const wall=performance.now();race.start();
+  // Explicit time-zero research fixture, before any driving step. Used to
+  // refine immutable geometry against an observed worn stint; normal Duel
+  // comparisons always keep the game's native starting tyres.
+  if(initialTyres)for(const c of race.cars){
+    if(initialTyres.compound)race.fitTyres(c,initialTyres.compound);
+    for(const [i,w]of c.wheels.entries()){
+    for(const field of ['wear','core','surface']){
+      if(initialTyres[field]==null)continue;
+      const value=initialTyres[field]?.[i];
+      if(!Number.isFinite(value))throw new Error('Invalid tyre fixture '+field);
+      if(field==='wear'&&(value<0||value>1))throw new Error('Invalid fixture wear');
+      w.tyre[field]=value;
+    }
+    }
+  }
+  const startingCompounds=race.cars.map(c=>c.wheels[0].tyre.compound);
   while(race.phase!=='finished'&&race.time<Math.max(220,laps*100+90)){
     race.step(FIXED_DT);if(race.formation||race.phase==='countdown')continue;
     greenAt??=race.time;if(seconds&&race.time-greenAt>seconds)break;
@@ -103,7 +120,7 @@ export function compare({drivers=['next-racer','claude-revolution'],classId='gt'
       sampleAt=race.time+1/30;
     }
   }
-  return {classId,trackId,compound,drivers,laps,hz,seed,options,seconds,sourceHashes,
+  return {classId,trackId,compound,startingCompounds,drivers,laps,hz,seed,options,seconds,initialTyres,sourceHashes,
     wallSeconds:(performance.now()-wall)/1000,simTime:race.time,phase:race.phase,
     contacts:race.contacts,passes,rows:race.entries.map((e,i)=>({id:drivers[i],best:e.car.race.bestLap,
       ...(includeGeometry&&bridges[i].driver?.road?{geometry:{key:bridges[i].driver.road.geometryKey,
@@ -114,6 +131,13 @@ export function compare({drivers=['next-racer','claude-revolution'],classId='gt'
 if(process.argv[1]&&pathToFileURL(resolve(process.argv[1])).href===import.meta.url){
   const a=process.argv.slice(2),get=(k,d)=>a.find(x=>x.startsWith('--'+k+'='))?.slice(k.length+3)??d;
   const file=get('options-file',null),options=file?JSON.parse(readFileSync(file,'utf8')):{};
+  const lineFile=get('line-file',null);
+  if(lineFile){
+    const id=get('class','gt'),trackId=get('track','harbor-ring');
+    const line=JSON.parse(readFileSync(lineFile,'utf8')).lines.find(l=>l.key.startsWith(trackId+':')&&l.key.includes(':'+id+':'));
+    if(!line)throw new Error('No matching class/circuit in line bake');
+    options.path={...options.path,offsets:line.offsets};
+  }
   if(get('front-slip',null)!=null)options.policy={...options.policy,frontSteeringSlip:Number(get('front-slip',1))};
   if(get('corner-use',null)!=null)options.physical={...options.physical,cornerGripUse:Number(get('corner-use',.91)),
     warmCornerGripUse:Number(get('warm-corner-use',.90))};

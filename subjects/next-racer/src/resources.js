@@ -1,4 +1,5 @@
 import { clamp, distance } from './math.js';
+import config from '../config.json' with {type:'json'};
 
 export class Resources {
   constructor(track){this.track=track;this.reset();}
@@ -26,9 +27,12 @@ export class Resources {
     const remaining=this.wearRates.map((r,i)=>car.wheels[i].tyre.wear+r*planned*this.track.length);
     const over=Math.max(...car.wheels.map(w=>w.tyre.core-(w.tyre.optimum??90)));
     const threatened=!push&&Math.max(...remaining)>.80;
-    // Cap stress through the whole native controller; never mask fade with
-    // a tyre change or change the host's planned stops.
-    const factor=threatened?clamp(1-(Math.max(...remaining)-.80)*.055,.97,1):1;
+    // Harbor's measured race plan already bounds the tyre stint. Its fuel
+    // range is longer than a soft stint; using it as a wear horizon imposed
+    // a blanket speed cut without saving a stop. Actual tyre forces still
+    // constrain the envelope and every admitted control prefix.
+    const physicalPace=config.physicsPace&&this.track.id==='harbor-ring'&&state.weather==='clear';
+    const factor=physicalPace?1:threatened?clamp(1-(Math.max(...remaining)-.80)*.055,.97,1):1;
     const rotation=car.wheels.slice(2).some(w=>w.tyre.core>w.tyre.optimum+4&&w.tyre.wear>.12)? .12:0;
     this.status={plannedLaps:planned,forecastWear:remaining,over,lapFuel,rotation,factor,push,
       saveFuel:!push&&lapFuel>0&&car.fuel/lapFuel<planned-.15};
