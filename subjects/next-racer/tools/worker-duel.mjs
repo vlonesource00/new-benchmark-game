@@ -41,7 +41,8 @@ const race=new EnduranceRace({track,teams,laps:endurance?laps:12,startCompound:g
   format:endurance?{...FORMATS.classic,laps}:{...FORMATS.custom,mandatoryStops:0,mandatorySwap:false}});
 race.laps=laps;seats.wantDebug=true;liveRace=race;
 const stats=ids.map(id=>({id,laps:[],samples:[],sectorTimes:[],lastLap:1,lastSector:0}));
-const pitRows=[],weatherRows=[],pitPhases=ids.map(()=>null);let weatherAt=0,startingCompounds=[];
+const pitRows=[],weatherRows=[],contactRows=[],pitPhases=ids.map(()=>null);
+let weatherAt=0,startingCompounds=[],lastContacts=0;
 async function answers(){
   const deadline=performance.now()+10000;
   while(seats.hosts.some(h=>h.seats.some(s=>s.inFlight))&&performance.now()<deadline)await sleep(1);
@@ -54,6 +55,12 @@ try{
   while(race.phase!=='finished'&&race.time<laps*160+200){
     for(let step=0;step<4;step++){
       race.step(FIXED_DT);
+      if(race.contacts>lastContacts){
+        contactRows.push({t:race.time,count:race.contacts-lastContacts,
+          cars:race.cars.map(c=>({id:c.id,s:c.s,q:c.lateral,v:c.speed,x:c.x,z:c.z,yaw:c.yaw,
+            controls:{...c.controls}}))});
+        lastContacts=race.contacts;
+      }
       if(race.formation||race.phase==='countdown')continue;
       for(const [i,c]of race.cars.entries()){
         const r=c.race,s=stats[i];
@@ -103,7 +110,7 @@ try{
   const quantile=(values,p)=>values.sort((a,b)=>a-b)[Math.min(values.length-1,Math.floor(values.length*p))]??null;
   const result={sourceHashes,classId,trackId:track.id,ids,laps,realtime,endurance,weather,seed,startingCompounds,strategyCalibration,
     wallSeconds:(performance.now()-started)/1000,classification:race.classification(),events:race.events,pitRows,weatherRows,
-    phase:race.phase,contacts:race.contacts,rows:stats.map((s,i)=>({...s,best:race.cars[i].race.bestLap,
+    phase:race.phase,contacts:race.contacts,contactRows,rows:stats.map((s,i)=>({...s,best:race.cars[i].race.bestLap,
       finish:race.cars[i].race.finishTime,incidents:race.stewards.of(race.entries[i]).inc,
       errors:race.entries[i].bridges.reduce((n,b)=>n+(b.errors??0),0),damage:race.cars[i].damage,
       replies:responses.filter(r=>r.index===i).length,
@@ -112,7 +119,7 @@ try{
     responses:responses.length};
   const out=get('out','subjects/next-racer/results/worker-duel.json');
   mkdirSync(dirname(resolve(out)),{recursive:true});writeFileSync(out,JSON.stringify(result,null,2)+'\n');
-  console.log(JSON.stringify({...result,sourceHashes:undefined,events:undefined,pitRows:undefined,weatherRows:undefined,
+  console.log(JSON.stringify({...result,sourceHashes:undefined,events:undefined,pitRows:undefined,weatherRows:undefined,contactRows:undefined,
     rows:result.rows.map(r=>({id:r.id,best:r.best,finish:r.finish,incidents:r.incidents,
       errors:r.errors,damage:r.damage,replies:r.replies,delayP95:r.delayP95,latencyP95:r.latencyP95,
       lapTimes:r.laps.map(l=>l.time)}))}));

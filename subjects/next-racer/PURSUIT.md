@@ -23,7 +23,11 @@ the candidate has not established consistent race wins over CRV.
 Physics, the independent lines, tyre management, the endurance planner, host
 integration and the other drivers are unchanged by this candidate.
 
-## Evidence before the upstream CRV update
+## Controlled encounters, rechecked on `6ae62cc`
+
+All eight CRV attack/defense encounters were rerun after rebasing onto the
+upstream pit-entry and rejoin update. The candidate and ablation results were
+unchanged. Comparisons to the old tactical behavior were recorded on `d86e9d1`.
 
 All controlled encounters below used Harbor Ring, warm softs, native physics,
 30 Hz observation and a 16-second window. They are not cold race-start tests.
@@ -63,6 +67,14 @@ delivery delays, with zero contacts, off-tracks or stops. The check suite passed
   3.78 s to CRV. There was one light contact; SPEARHEAD had no off-tracks.
   SOLSTICE incurred seven incidents and did not provide a useful GTP pace
   comparison. SPEARHEAD's 95th percentile worker latency was 23.44 ms.
+- After rebasing onto `6ae62cc`, the same setup recorded a 52.13 s SPEARHEAD
+  best versus CRV's 52.74 s, but SPEARHEAD still finished 4.00 s behind.
+  Lap one's first sector lost 4.19 s to CRV. The recorded window had zero
+  contacts, zero SPEARHEAD incidents and 21.68 ms 95th percentile worker
+  latency. Both front cars completed two laps; the run stopped after 125 s
+  of green running while SOLSTICE was still unfinished with seven incidents.
+  The upstream change and real-time scheduling differ between these runs;
+  their finish-gap difference is not attributed to this candidate alone.
 - Earlier tight-overlap, other-circuit and Changeable-weather limitations
   remain open. This candidate does not retune them or establish endurance
   results for the new combat rules.
@@ -81,3 +93,4 @@ npm run game:build
 `pursuit.mjs` also supports `--opponent=solstice`, equal-paced adaptive twins,
 `--filter=close-twin`, `--hz`, and an options file for controlled ablations.
 Results include source hashes and full traces in the ignored results folder.
+The worker race also records native contact times and car poses in `contactRows`.

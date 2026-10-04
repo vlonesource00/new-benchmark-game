@@ -1,7 +1,14 @@
 # SPEARHEAD development preview
 
-Based on `graphics-aaa` at `26f4880`. This is a tested development candidate;
-consistent GT3 endurance wins and very tight corner overlaps remain unfinished.
+The current pursuit and defense candidate is based on `graphics-aaa` at
+`6ae62cc`. See [PURSUIT.md](PURSUIT.md) for its changes, controlled encounter
+results and unresolved race-traffic losses. It remains a development candidate.
+
+## Previous alongside and endurance candidate
+
+The measurements below describe the earlier `d86e9d1` candidate, based on
+`graphics-aaa` at `26f4880`. They are retained as a baseline, rather than a
+claim that the new combat rules have achieved the same endurance results.
 
 The independent Harbor GT3/GTP lines now use the same linked front/rear brake
 pressure constraint as the executor. The observer preserves a physically
