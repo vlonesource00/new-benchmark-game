@@ -4,6 +4,8 @@
 // AI just sent, its debug() summary (relayed while the panel is open, see
 // AsyncSeats.wantDebug), the car's own state and the class racing line.
 import { esc } from './format.js';
+import { lensModel, toneColor } from './lens-model.js';
+import { AI_DRIVERS } from '../core/teams.js';
 
 const W = 300, H = 452, TRACE = 12; // seconds of speed trace
 const kmh = (v) => Math.round(v * 3.6);
@@ -25,9 +27,17 @@ export class AiDebugPanel {
     this.ctx = this.canvas.getContext('2d'); this.ctx.scale(2, 2);
     this.trace = []; this.gg = []; this.focus = null;
     parent.append(this.el);
+    // Architecture panel: what this AI says it is thinking, in its own terms.
+    this.mind = document.createElement('div');
+    this.mind.className = 'aimind'; this.mind.hidden = true;
+    this.mind.innerHTML = '<div class="mh"></div><canvas></canvas><div class="mb"></div>';
+    [this.mindHead, this.timeline, this.mindBody] = this.mind.children;
+    this.timeline.width = 560; this.timeline.height = 64;
+    this.intents = []; this.model = null; this.tagName = ''; this.mindAt = 0;
+    parent.append(this.mind);
   }
   get open() { return !this.el.hidden; }
-  toggle(on = !this.open) { this.el.hidden = !on; return on; }
+  toggle(on = !this.open) { this.el.hidden = !on; if (!on) this.mind.hidden = true; return on; }
 
   update(race, focusId, teamsById) {
     if (!this.open || !race) return;
@@ -39,7 +49,12 @@ export class AiDebugPanel {
     const c = car.controls ?? {};
     const line = race.lineFor(car), plan = line.at(car.s);
     const target = Number.isFinite(dbg.targetSpeed) ? dbg.targetSpeed : null;
-    if (this.focus !== focusId) { this.focus = focusId; this.trace = []; this.gg = []; }
+    if (this.focus !== focusId) { this.focus = focusId; this.trace = []; this.gg = []; this.intents = []; }
+    let vis = null;
+    try { vis = bridge?.visualDebug?.() ?? null; } catch { vis = null; }
+    const ai = AI_DRIVERS.find((d) => d.id === driver?.id);
+    this.model = driver?.kind === 'human' ? null : lensModel(race, focusId, driver?.id, dbg, vis);
+    this.tagName = `${ai?.short ?? driver?.short ?? 'AI'} · ${team.short}`;
     const t = race.time ?? 0;
     if (this.trace.length && t < this.trace.at(-1).t) this.trace = [];
     this.trace.push({ t, v: car.speed, plan: plan.speed, target, thr: c.throttle ?? 0, brk: c.brake ?? 0 });
@@ -64,6 +79,55 @@ export class AiDebugPanel {
       chip('error', dbg.error ?? null, 'bad')
     ].join('');
     this.draw(car, c, plan, target, gov, color);
+    if (this.model) {
+      const m = this.model, last = this.intents.at(-1);
+      if (last && t < last.t) this.intents = [];
+      const prev = this.intents.at(-1);
+      if (!prev || prev.intent !== m.intent || prev.focus !== (m.focus?.kind ?? null)) this.intents.push({ t, intent: m.intent, tone: m.tone, focus: m.focus?.kind ?? null });
+      while (this.intents.length > 1 && t - this.intents[1].t > TRACE) this.intents.shift();
+      const now = performance.now();
+      if (now - this.mindAt > 100) { this.mindAt = now; this.drawMind(race, m, t); }
+    }
+    this.mind.hidden = !this.model;
+  }
+
+  drawMind(race, m, t) {
+    const theme = m.theme?.color ?? '#fff';
+    this.mind.style.setProperty('--arch', theme);
+    this.mind.style.setProperty('--tone', toneColor(m.tone));
+    const f = m.focus, fe = f && f.index >= 0 ? race.entries[f.index] : null;
+    const fwd = fe ? (race.cars[f.index].race?.progress ?? 0) - (race.cars[this.focus].race?.progress ?? 0) : 0;
+    const word = { attack: 'ATTACKING', follow: 'CHASING', defend: 'COVERING', alongside: 'SIDE BY SIDE WITH' }[f?.kind] ?? 'WATCHING';
+    this.mindHead.innerHTML = `<small>AI MIND · ${esc(this.tagName)}</small><p>${esc(m.theme?.mind ?? '')}</p>`
+      + `<div class="mi"><b>${esc(String(m.intent ?? '—').toUpperCase())}</b>${m.sub ? `<span>${esc(m.sub)}</span>` : ''}</div>`
+      + (fe ? `<div class="mf${f.declared ? '' : ' inf'}" style="--fc:${toneColor(f.kind)}">${word} <b>${esc(fe.team.short)}</b> ${fwd >= 0 ? '+' : ''}${fwd.toFixed(0)} m${f.declared ? '' : ' · inferred'}${m.side ? ` · side ${m.side > 0 ? '+' : '−'}` : ''}</div>` : '<div class="mf inf">FREE AIR</div>')
+      + (m.tags?.length ? `<div class="mt">${m.tags.map((x) => `<i>${esc(x)}</i>`).join('')}</div>` : '');
+    // Intent timeline: the last seconds coloured by what the AI was doing (focus kind underneath).
+    const g = this.timeline.getContext('2d'), W = 560, H = 64, X = (tt) => W * (1 - (t - tt) / TRACE);
+    g.clearRect(0, 0, W, H);
+    g.fillStyle = 'rgba(255,255,255,.05)'; g.fillRect(0, 18, W, 30);
+    g.font = '600 18px "JetBrains Mono", monospace'; g.textBaseline = 'middle'; g.textAlign = 'left';
+    this.intents.forEach((p, k) => {
+      const x0 = Math.max(0, X(p.t)), x1 = k + 1 < this.intents.length ? X(this.intents[k + 1].t) : W;
+      g.globalAlpha = .85; g.fillStyle = toneColor(p.tone); g.fillRect(x0, 18, Math.max(1, x1 - x0 - 1), 30);
+      if (p.focus) { g.fillStyle = toneColor(p.focus); g.fillRect(x0, 52, Math.max(1, x1 - x0 - 1), 8); }
+      g.globalAlpha = 1;
+      if (x1 - x0 > 60) { g.fillStyle = '#000'; g.fillText(String(p.intent ?? '').toUpperCase().slice(0, Math.floor((x1 - x0 - 8) / 11)), x0 + 6, 34); }
+    });
+    g.fillStyle = 'rgba(255,255,255,.45)'; g.fillText(`INTENT · LAST ${TRACE} s`, 0, 8);
+    // Options, controller internals and counters.
+    const parts = [];
+    const cands = (m.cands ?? []).filter((c) => Number.isFinite(c.score));
+    if (cands.length) {
+      const sc = cands.map((c) => c.score), lo = Math.min(...sc), hi = Math.max(...sc);
+      parts.push(`<h6>OPTIONS · ${esc(m.candNote ?? 'scored')}</h6><div class="mc">${cands.map((c) => {
+        const q = hi > lo ? (c.score - lo) / (hi - lo) : 1;
+        return `<div class="${c.chosen ? 'on' : ''}"><span>${esc(c.label)}</span><i><b style="width:${(6 + 94 * q).toFixed(0)}%"></b></i><em>${esc(c.note || c.score.toFixed(0))}</em></div>`;
+      }).join('')}</div>`);
+    }
+    if (m.gauges?.length) parts.push(`<h6>INSIDE THE CONTROLLER</h6><div class="mg">${m.gauges.map((x) => `<div><span>${esc(x.label)}</span><i><b style="width:${(x.value * 100).toFixed(0)}%;${x.color ? `background:${x.color}` : ''}"></b></i><em>${esc(x.text ?? '')}</em></div>`).join('')}</div>`);
+    if (m.counters?.length) parts.push(`<div class="mn">${m.counters.map((x) => `<span><small>${esc(x.label)}</small>${esc(String(x.value))}</span>`).join('')}</div>`);
+    this.mindBody.innerHTML = parts.join('');
   }
 
   draw(car, c, plan, target, gov, color) {

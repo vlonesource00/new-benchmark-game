@@ -92,7 +92,7 @@ export class Racecraft {
     this.lane = null; this.clock = 0; this.state = 'FREE'; this.kind = 'line'; this.hold = 0;
     this.coverUsed = false; this.lastApex = -1; this.nudge = 0;
   }
-  reset() { this.lane = null; this.clock = 0; this.state = 'FREE'; this.kind = 'line'; this.coverUsed = false; this.nudge = 0; this.blocker = null; this.move = null; this.draft = false; }
+  reset() { this.lane = null; this.clock = 0; this.state = 'FREE'; this.kind = 'line'; this.coverUsed = false; this.nudge = 0; this.blocker = null; this.move = null; this.draft = false; this.focus = this.threat = null; this.lastCands = null; }
 
   /** Our track lateral offset from the base line right now. */
   offsetNow(i) { return this.lane ? this.lane.shift[i] : 0; }
@@ -268,7 +268,7 @@ export class Racecraft {
       // The way back is ramped for the speed the car carries, so its profile never asks for a brake stab mid-corner.
       if (Math.abs(o0) > 0.05 && this.kind !== 'return') { this.lane = line.lane(this.profile(i, o0, 0, 0, 90, Math.max(40, car.speed), false, 0, 2)); this.lane.speeds(d.model, d.lambda); this.kind = 'return'; }
       if (this.lane && Math.abs(o0) < 0.05) { this.lane = null; this.kind = 'line'; }
-      this.state = 'FREE'; this.nudge *= Math.exp(-3 * dt);
+      this.state = 'FREE'; this.nudge *= Math.exp(-3 * dt); this.focus = this.threat = null; this.lastCands = null;
       return Infinity;
     }
     if (this.move) { this.state = 'ATTACK'; this.draft = false; }
@@ -289,6 +289,8 @@ export class Racecraft {
     const behind = near.filter((r) => r.fwd < -3 && r.fwd > -20 && r.classId === car.classId && r.speed > car.speed - 1);
     const ahead = near.filter((r) => r.fwd > 3 && r.fwd < 60);
     const lead = ahead.sort((a, b) => a.ds - b.ds)[0];
+    // Who the plan is about, for the debugger: the car we chase and the one we cover.
+    this.focus = lead?.id ?? null; this.threat = [...behind].sort((a, b) => b.fwd - a.fwd)[0]?.id ?? null;
     // Being lapped by a faster class: hold a predictable line.
     const lapped = near.some((r) => r.fwd < 0 && r.fwd > -60 && r.classId !== car.classId && r.classId === 'lmdh');
     // A new corner ahead re-arms the single defensive move.

@@ -78,6 +78,7 @@ export class AsyncSeats {
           this.controlDelay=Math.max(0,Math.min(.2,race.time-data.time));}
         this.lastLatency = performance.now() - this.sentAt;
         if (data.debug) this.lastDebug = data.debug;
+        if (data.visual !== undefined) this.lastVisual = data.visual;
       },
       update(car, cars, dt, context) {
         if (host.failed) {
@@ -107,7 +108,9 @@ export class AsyncSeats {
           rubber: this.seq % RUBBER_EVERY === 1 ? race.track.rubber : undefined,
           ...(driver.id==='next-racer'?{state:nextRacerState(race,race.cars[index]),
             ambient:race.track.ambient,epoch:this.epoch,controlDelay:this.controlDelay,feedbackPeriod:1/120}:{}),
-          debug: seats.wantDebug || undefined
+          debug: seats.wantDebug || undefined,
+          // The 3D lens draws only the focused car: its plan geometry, a few times a second.
+          visual: (seats.wantDebug && seats.lensIndex === index && (this.lensTick = (this.lensTick ?? 0) + 1) % 4 === 0) || undefined
         });
         this.pendingDt = 0;
       },
@@ -121,7 +124,8 @@ export class AsyncSeats {
       debug() { return local?.debug?.() ?? (driver.id==='next-racer'&&this.lastDebug?
         {...this.lastDebug,...feedbackDebug(race.cars[index])}:this.lastDebug) ?? { architecture: driver.arch ?? driver.id }; },
       visualDebug() { const point=driver.id==='next-racer'?feedbackDebug(race.cars[index])?.trackingPoint:null;
-        return local?.visualDebug?.() ?? (point?{trackingPoint:point}:this.lastDebug?.trackingPoint ? { trackingPoint: this.lastDebug.trackingPoint } : null); }
+        const relayed = this.lastVisual ?? (this.lastDebug?.trackingPoint ? { trackingPoint: this.lastDebug.trackingPoint } : null);
+        return local?.visualDebug?.() ?? (point ? { ...relayed, trackingPoint: point } : relayed); }
     };
     host.seats.push(seat);
     return seat;

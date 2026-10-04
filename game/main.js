@@ -305,6 +305,7 @@ function publishSnapshot() {
   onSnapshot();
   if (pitOpen && !(lastSnapPit = (lastSnapPit + 1) % 5)) drawPit();
   if (overlay === 'telemetry') drawTelemetry();
+  if (seats) seats.lensIndex = focusId;
   aiDebug.update(race, focusId, teamsById);
 }
 
@@ -581,7 +582,7 @@ function frame(ms, pumped = false) {
       world.setCarLights?.(cars, car);
       if (!replay) world.crews?.update(snap, cars, paused ? 0 : delta, camera.position);
       const lensEntry = race?.entries[focusId];
-      aiLens.update(race, focusId, aiDebug.open && !replay && raceActive, lensEntry?.bridges[lensEntry.active]);
+      aiLens.update(race, focusId, aiDebug.open && !replay && raceActive, lensEntry?.bridges[lensEntry.active], aiDebug.model, aiDebug.tagName);
       effects.update(cars, paused ? 0 : delta, track, innerHeight);
       const cam = Math.hypot(camera.position.x - car.x, camera.position.y - (car.y ?? 0) - 0.6, camera.position.z - car.z);
       const pit = snap?.cars.find((c) => c.id === car.id)?.pit, pitLane = Boolean(pit) && pit !== 'service';

@@ -28,8 +28,19 @@ export function createRevolutionBridge({ hostTrack, index = 0, options = {}, tea
     },
     debug() { return { architecture: 'CLAUDE REVOLUTION', intent: driver?.mode ?? 'INIT', targetSpeed: driver?.targetSpeed ?? 0, lapEstimate: driver?.lapEstimate ?? null, combat: driver?.racecraft?.state ?? null, lane: driver?.racecraft?.kind ?? null,
       lineSpeed: driver?.line?.v?.[driver.cursor] ?? null, cap: driver?.racecraft?.cap ?? null, reflexCap: driver?.racecraft?.reflexCap ?? null, stability: driver?.stability ?? null,
-      nudge: driver?.racecraft?.nudge ?? 0, moves: driver?.racecraft?.moves ?? 0, aborts: driver?.racecraft?.aborts ?? 0, passes: driver?.racecraft?.passes ?? 0, blocker: driver?.racecraft?.blocker ?? null, cands: driver?.racecraft?.cands ?? null }; },
-    visualDebug() { return null; },
+      nudge: driver?.racecraft?.nudge ?? 0, moves: driver?.racecraft?.moves ?? 0, aborts: driver?.racecraft?.aborts ?? 0, passes: driver?.racecraft?.passes ?? 0, blocker: driver?.racecraft?.blocker ?? null, cands: driver?.racecraft?.cands ?? null,
+      focus: driver?.racecraft?.focus ?? null, threat: driver?.racecraft?.threat ?? null, moveSide: driver?.racecraft?.move?.side ?? null, draft: driver?.racecraft?.draft ?? false }; },
+    // The lane being driven and every lane the racecraft scored this plan, as world polylines.
+    visualDebug() {
+      const rc = driver?.racecraft, line = driver?.line, i = driver?.cursor ?? -1;
+      if (!line || i < 0) return null;
+      const poly = (lane, ahead, step) => { const out = []; for (let d = 0; d <= ahead; d += step) { const j = line.idx(i + Math.round(d / line.ds)); out.push({ x: lane.px[j], z: lane.pz[j], v: lane.v?.[j] ?? line.v[j] }); } return out; };
+      const path = rc?.lane ?? line;
+      return {
+        selectedTrajectory: { points: poly(path, 140, 6), color: '#d97757', mode: rc?.kind ?? 'line' },
+        candidates: (rc?.lastCands ?? []).filter((c) => c.lane && Number.isFinite(c.score)).map((c) => ({ kind: c.kind, score: c.score, chosen: c.lane === rc.lane || (c.kind === 'line' && !rc.lane), points: poly(c.lane, 90, 10) }))
+      };
+    },
     dispose() { driver = null; }
   };
 }

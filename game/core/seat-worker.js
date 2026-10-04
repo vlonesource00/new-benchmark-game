@@ -13,6 +13,15 @@ import { createSeatBridge } from './field.js';
 let track = null, cars = [], bridges = [], index = 0, race = null;
 const lines = new Map();
 
+// The debugger's 3D lens: planned paths and candidates, thinned so the message stays small.
+const thin = (pts, n) => { if (!Array.isArray(pts) || pts.length <= n) return pts; const k = (pts.length - 1) / (n - 1); return Array.from({ length: n }, (_, i) => pts[Math.round(i * k)]); };
+function thinVisual(v) {
+  if (!v || typeof v !== 'object') return null;
+  if (v.selectedTrajectory?.points) v.selectedTrajectory.points = thin(v.selectedTrajectory.points, 40);
+  if (Array.isArray(v.candidates)) v.candidates = v.candidates.slice(0, 16).map((c) => (c?.points ? { ...c, points: thin(c.points, 16) } : c));
+  return v;
+}
+
 function replica(snap) {
   while (cars.length < snap.length) {
     const s = snap[cars.length];
@@ -66,7 +75,9 @@ self.onmessage = ({ data }) => {
     bridge.update(car, cars, data.dt, context);
     let debug;
     if (data.debug) { try { debug = plain(bridge.debug?.()); } catch { debug = undefined; } }
-    self.postMessage({ type: 'controls', seq: data.seq, controls: plain(car.controls), errors: bridge.errors ?? 0, debug,
+    let visual;
+    if (data.visual) { try { visual = thinVisual(plain(bridge.visualDebug?.() ?? null)); } catch { visual = null; } }
+    self.postMessage({ type: 'controls', seq: data.seq, controls: plain(car.controls), errors: bridge.errors ?? 0, debug, visual,
       ...(data.epoch!==undefined?{epoch:data.epoch,time:data.time,preview:bridge.controlPreview?.()??null}: {}) });
   } catch (error) {
     self.postMessage({ type: 'fatal', message: String(error?.stack ?? error) });

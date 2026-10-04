@@ -354,6 +354,30 @@ body.replaying #replay-bug { display: flex; animation: fade-in .3s ease both; }
 .aidebug .dchips span { background: rgba(255,255,255,.06); padding: 2px 6px; font-family: 'JetBrains Mono', monospace; font-size: 11px; }
 .aidebug .dchips small { color: var(--faint); margin-right: 5px; font-family: inherit; letter-spacing: .08em; text-transform: uppercase; font-size: 9px; }
 .aidebug .dchips .hi { color: #ffd166; } .aidebug .dchips .warn { color: #ffb02e; } .aidebug .dchips .bad { color: var(--bad); }
+/* AI MIND: the architecture's own view, beside the debugger */
+.aimind { position: absolute; right: 360px; top: 200px; width: 300px; background: var(--glass-hi); border-left: 3px solid var(--arch, var(--accent)); padding: 10px 12px; font-size: 12px; pointer-events: none; }
+.aimind .mh small { display: block; color: var(--arch); letter-spacing: .16em; font-weight: 800; font-size: 10px; }
+.aimind .mh p { margin: 2px 0 6px; color: var(--dim); font-size: 11px; line-height: 1.35; }
+.aimind .mi b { display: block; font-size: 24px; font-weight: 900; font-style: italic; color: var(--tone); line-height: 1.05; }
+.aimind .mi span { color: rgba(255,255,255,.75); font-family: 'JetBrains Mono', monospace; font-size: 11px; }
+.aimind .mf { margin-top: 6px; padding: 3px 7px; border-left: 3px solid var(--fc, var(--faint)); background: rgba(255,255,255,.05); letter-spacing: .08em; font-size: 11px; }
+.aimind .mf b { color: var(--fc, #fff); }
+.aimind .mf.inf { border-left-style: dashed; color: var(--dim); }
+.aimind .mt { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 5px; }
+.aimind .mt i { font-style: normal; font-size: 10px; letter-spacing: .1em; padding: 1px 6px; border: 1px solid var(--tone); color: var(--tone); text-transform: uppercase; }
+.aimind canvas { display: block; width: 280px; height: 32px; margin-top: 8px; }
+.aimind h6 { margin: 8px 0 3px; font-size: 9px; letter-spacing: .16em; color: var(--faint); font-weight: 700; }
+.aimind .mc > div, .aimind .mg > div { display: grid; grid-template-columns: 82px 1fr auto; align-items: center; gap: 6px; font-family: 'JetBrains Mono', monospace; font-size: 10px; height: 15px; color: var(--dim); }
+.aimind .mc span, .aimind .mg span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.aimind .mc i, .aimind .mg i { display: block; height: 6px; background: rgba(255,255,255,.08); }
+.aimind .mc b, .aimind .mg b { display: block; height: 100%; background: color-mix(in srgb, var(--arch) 55%, transparent); }
+.aimind .mg b { background: #4fd1e8; }
+.aimind .mc .on { color: #fff; } .aimind .mc .on b { background: var(--arch); box-shadow: 0 0 6px var(--arch); }
+.aimind .mc .on span::before { content: '▶ '; color: var(--arch); }
+.aimind em { font-style: normal; color: rgba(255,255,255,.7); max-width: 120px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.aimind .mn { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+.aimind .mn span { background: rgba(255,255,255,.06); padding: 2px 6px; font-family: 'JetBrains Mono', monospace; font-size: 11px; }
+.aimind .mn small { color: var(--faint); margin-right: 5px; letter-spacing: .08em; text-transform: uppercase; font-size: 9px; }
 .aidebug .dfoot { margin-top: 6px; color: var(--faint); letter-spacing: .1em; font-size: 10px; }
 
 /* Sector splits under the lap box */
