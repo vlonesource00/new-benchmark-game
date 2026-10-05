@@ -23,7 +23,7 @@
   "alongsideMargin": 0.32,
   "fairCorridors": true,
   "diversePrefixes": true,
-  "maneuverHorizon": { "gt": 2.4, "lmdh": 4 },
+  "maneuverHorizon": { "gt": 2.4, "lmdh": 2.8 },
   "freeAirHz": 2,
   "physical": { "previewBrake": 16, "cornerGripUse": 0.94, "warmCornerGripUse": 0.91 },
   "path": {

@@ -24,6 +24,11 @@ export function bodyClearance(a,b) {
     Math.abs(dx*cb-dz*sb)-bw-al*sine-aw*cosine);
 }
 
+// Threshold braking measured on the native plant with warm tyres, m/s².
+export function brakingCapacity(car,speed){
+  return car.classId==='lmdh'||car.spec?.key==='lmdh'?9.6+.33*speed:9.2+.2*speed;
+}
+
 export function reverseSpace(car,cars) {
   for(const other of cars){
     if(other.id===car.id||car.ghost&&other.ghost)continue;
@@ -160,18 +165,23 @@ export function guardControls(car,cars,track,nominal,{route=null,age=0}={}) {
     const lateral=Math.min(Math.abs(q.lateral-p.lateral),Math.abs(q.lateral-futureQ));
     if(overlap!=='closing'&&Math.abs(q.lateral-futureQ)>own.width+body.width+.3 && catchTime>.28 && space>3)continue;
     if(overlap!=='closing'&&lateral>own.width+body.width+.2)continue;
-    const leadSpeed=Math.max(0,other.speed+Math.min(0,other.ax??0)*.25);
-    const safe=Math.max(0,Math.min(Math.sqrt(Math.max(0,leadSpeed**2+2*9*space)),
-      leadSpeed+.9*(space-3)));
+    // Close on a car at the braking this car actually has: 60 % of the
+    // measured threshold deceleration (GTP 18-33, GT3 15-23 m/s²). A flat
+    // 9 m/s² allowed only ~4 m/s of closure at 20 m, so a faster car could not
+    // catch a slower one before the braking zone where it has to pass.
+    const decel=brakingCapacity(car,car.speed)*.6;
+    const leadSpeed=Math.max(0,other.speed+Math.min(0,other.ax??0)*.35);
+    const safe=Math.max(0,Math.min(Math.sqrt(Math.max(0,leadSpeed**2+2*decel*Math.max(0,space-1.5))),
+      leadSpeed+1.6*(space-3)));
     if(safe<cap){cap=safe;gap=space;}
   }
   if(cap<car.speed-.1) {
     k.throttle=0; k.brake=Math.max(k.brake,clamp((car.speed-cap)*.11,0,.8));
     reason='occupied-forward-corridor';
   }
-  // Stale controls keep their steering only briefly. A bounded coast/brake
-  // protects a missed answer without treating ordinary worker latency as fear.
-  if(age>.22){k.throttle=Math.min(k.throttle,.35);k.brake=Math.max(k.brake,age>.5?.35:0);reason='stale-answer';}
+  // The host keeps tracking the stamped route for .4 s (feedback.js) with this
+  // guard watching traffic, so a late worker reply is not a reason to lift.
+  if(age>.4){k.throttle=Math.min(k.throttle,.35);k.brake=Math.max(k.brake,age>.7?.35:0);reason='stale-answer';}
   if(k.brake>.01)k.throttle=0;
   acceptGuardControls(car,k);
   return {controls:k,reason,cap,gap};
