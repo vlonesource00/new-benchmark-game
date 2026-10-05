@@ -18,7 +18,9 @@ const PER_THEME = {
   'harbor-ring': { lots: 6, camps: 1, fan: 1, clumps: 46, fields: 4, road: true, offices: 26 },
   solenne: { lots: 4, camps: 2, fan: 1, clumps: 60, fields: 26, road: true, offices: 0 },
   desert: { lots: 4, camps: 2, fan: 1, clumps: 0, fields: 8, road: true, offices: 0 },
-  alpine: { lots: 3, camps: 1, fan: 1, clumps: 0, fields: 6, road: true, offices: 0 }
+  alpine: { lots: 3, camps: 1, fan: 1, clumps: 0, fields: 6, road: true, offices: 0 },
+  // The Eifel brings its own forest, villages and fan camps (render/eifel.js).
+  nurburgring: { lots: 6, camps: 3, fan: 1, clumps: 0, fields: 0, road: false, offices: 0 }
 };
 
 function canvasTexture(w, h, draw) {

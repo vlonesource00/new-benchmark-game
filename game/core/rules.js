@@ -1,5 +1,5 @@
 // Endurance rules: tyre compounds, race formats and the per-race calibration
-// that turns a 5–20 lap race into a genuine fuel / tyre / stint problem.
+// that turns a race of any length into a genuine fuel / tyre / stint problem.
 
 export const COMPOUNDS = Object.freeze({
   // optimum = core °C of peak grip; heat = how fast slip warms the tread.
@@ -31,10 +31,11 @@ export const FORMATS = Object.freeze({
  * every circuit and race length produces a real strategy decision.
  */
 export function calibrate(track, laps) {
-  laps = Math.max(3, Math.min(30, Math.round(laps)));
+  laps = Math.max(1, Math.round(laps));
   // A tank covers about two thirds of the race, so the one-stop window spans
-  // several laps and teams can undercut or run long.
-  const fuelLaps = clampInt(Math.round(laps * 0.68), 3, 9);
+  // several laps and teams can undercut or run long. Very short races still get
+  // a three-lap tank; long ones stop every nine laps.
+  const fuelLaps = clampInt(Math.round(Math.max(3, Math.min(30, laps)) * 0.68), 3, 9);
   const tyreLaps = Math.max(3, fuelLaps * 1.25);
   const lapFuelBase = BASELINE.fuelPerM * track.length;
   const lapWearBase = BASELINE.wearPerM * track.length;

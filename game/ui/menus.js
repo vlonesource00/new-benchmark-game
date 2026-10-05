@@ -61,7 +61,10 @@ function aiHint(s) {
 function seg(name, options, value) {
   return `<div class="seg" data-seg="${name}">${options.map(([v, label]) => `<button data-v="${esc(v)}" class="${String(v) === String(value) ? 'on' : ''}">${esc(label)}</button>`).join('')}</div>`;
 }
+// No race-length cap beyond keeping the number sane; strategy and fuel calibrate to any length.
+const MAX_LAPS = 999, clampLaps = (n) => Math.max(1, Math.min(MAX_LAPS, Math.round(n)));
 function stepper(name, value, suffix = '') {
+  if (name === 'laps') return `<div class="stepper" data-step="${name}"><button data-d="-1">−</button><input type="number" min="1" max="${MAX_LAPS}" step="1" value="${value}" data-laps aria-label="Laps"><button data-d="1">+</button></div>`;
   return `<div class="stepper" data-step="${name}"><button data-d="-1">−</button><output>${value}${suffix}</output><button data-d="1">+</button></div>`;
 }
 
@@ -89,7 +92,7 @@ export function renderSetup(el, s, teams, outlines, act, career = null) {
             <div class="row"><label>Qualifying<span class="hint">${(s.qualifying ?? true) ? 'Lone qualifying: out lap + 2 timed laps, ghosted · best lap sets the grid in each class' : 'Grid from the draw'}</span></label>${seg('qualifying', [[true, 'On'], [false, 'Off']], s.qualifying ?? true)}</div>
             <div class="row"><label>Format<span class="hint">${fmt.mandatoryStops} mandatory stop${fmt.mandatoryStops > 1 ? 's' : ''}${fmt.mandatorySwap ? ' · driver swap required' : ''}</span></label>
               ${seg('formatId', Object.values(FORMATS).map((f) => [f.id, f.label]), s.formatId)}</div>
-            <div class="row"><label>Laps<span class="hint">5–20 laps; fuel and tyres scale with distance</span></label>${stepper('laps', s.laps)}</div>
+            <div class="row"><label>Laps<span class="hint">Type any number of laps (1–${MAX_LAPS}); fuel and tyres scale with distance</span></label>${stepper('laps', s.laps)}</div>
             <div class="row"><label>Teams<span class="hint">Two drivers per car</span></label>${stepper('teamCount', s.teamCount)}</div>
             <div class="row"><label>AI difficulty<span class="hint">${official ? `Official field matched to your iRating: ${esc(difficultyById(matched).label)}` : esc(aiHint(s))}</span></label>${seg('difficulty', DIFFICULTIES.map((d) => [d.id, d.label]), official ? matched : difficultyById(s.difficulty).id)}</div>
             <div class="row"><label>Start time<span class="hint">Circuit picks its usual hour</span></label>${seg('startTime', [['track', 'Circuit'], ['morning', 'Morning'], ['afternoon', 'Afternoon'], ['sunset', 'Sunset'], ['night', 'Night']], s.startTime ?? 'track')}</div>
@@ -135,9 +138,10 @@ export function renderSetup(el, s, teams, outlines, act, career = null) {
   })));
   $$(el, '[data-step]').forEach((g) => $$(g, 'button').forEach((b) => b.addEventListener('click', () => {
     const key = g.dataset.step, d = Number(b.dataset.d);
-    if (key === 'laps') act.set({ laps: Math.max(5, Math.min(20, s.laps + d)), formatId: 'custom' });
+    if (key === 'laps') act.set({ laps: clampLaps(s.laps + d), formatId: 'custom' });
     else act.set({ teamCount: Math.max(4, Math.min(8, s.teamCount + d)) });
   })));
+  $(el, '[data-laps]')?.addEventListener('change', (e) => act.set({ laps: clampLaps(Number(e.target.value) || s.laps), formatId: 'custom' }));
   $(el, '[data-name]').addEventListener('change', (e) => act.set({ playerName: e.target.value.trim().toUpperCase() || 'YOU' }, true));
 }
 

@@ -81,6 +81,8 @@ button { font-family: var(--display); color: inherit; cursor: pointer; }
 .stepper button { width: 34px; height: 34px; border: 0; background: transparent; font-size: 20px; color: var(--dim); }
 .stepper button:hover { color: var(--ink); background: rgba(255,255,255,.06); }
 .stepper output { min-width: 54px; text-align: center; font-family: var(--mono); font-size: 16px; }
+.stepper input { width: 64px; height: 34px; border: 0; background: transparent; color: var(--ink); text-align: center; font-family: var(--mono); font-size: 16px; -moz-appearance: textfield; appearance: textfield; }
+.stepper input::-webkit-inner-spin-button, .stepper input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
 input[type=text] { font-family: var(--display); font-size: 18px; background: rgba(255,255,255,.05); border: 1px solid var(--line); color: var(--ink); padding: 6px 10px; width: 180px; text-transform: uppercase; }
 input[type=range] { accent-color: var(--accent); width: 180px; }
 .cta { border: 0; background: var(--accent); color: #fff; font-size: 26px; font-weight: 900; font-style: italic; text-transform: uppercase; padding: 14px 34px; letter-spacing: .04em; clip-path: polygon(12px 0, 100% 0, calc(100% - 12px) 100%, 0 100%); transition: filter .15s, transform .15s; }

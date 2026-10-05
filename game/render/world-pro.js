@@ -8,6 +8,7 @@ import { buildFill } from './fill.js';
 import { buildTrackWear } from './trackwear.js';
 import { batchStatic, protectedRefs } from './batch.js';
 import { GrassField } from './grass.js';
+import { buildEifel } from './eifel.js';
 import { LIGHTING, wetSurface } from '../engine/render/surfaces.js';
 import { ribbon } from '../engine/render/world.js';
 import {
@@ -144,8 +145,17 @@ export const THEMES = {
   alpine: { lighting: 'night', hour: 21.5, ground: 'alpine', palms: 0, trees: 0, pines: 2600, stars: true, blimp: 'ALPENRING', banner: 'ALPENRING  ·  NACHTRENNEN',
     hills: { colors: ['#2a343c', '#3a4650', '#56626c'], height: 3.6, snow: true, jagged: true } },
   desert: { lighting: 'dusk', hour: 18.6, ground: 'sand', palms: 70, trees: 0, blades: false, rocks: true, blimp: 'MIRAGE', banner: 'MIRAGE 1000  ·  DESERT GRAND PRIX',
-    hills: { colors: ['#a8603a', '#b97a52', '#caa07c'], height: 1.3, mesa: true } }
+    hills: { colors: ['#a8603a', '#b97a52', '#caa07c'], height: 1.3, mesa: true } },
+  // The Eifel landscape (render/eifel.js) replaces the horizon ranges and the scattered trees.
+  // `gp` is the GP-Strecke as lap fractions (wrapping past the line): floodlights, walls,
+  // fences and boards stay there; the Nordschleife gets armco, banks and forest.
+  // `stands` adds grandstands at lap fractions after the main one opposite the pits.
+  nurburgring: { lighting: 'golden', hour: 17.2, eifel: true, palms: 0, trees: 0, haze: 1.3, birds: '#3b332c', gp: [.972, .186],
+    stands: [[.0328, 0, 90], [.0808, 0, 80], [.1665, 0, 70]], blimp: 'NÜRBURGRING', banner: '24H NÜRBURGRING  ·  GRÜNE HÖLLE',
+    hills: { colors: ['#3f5a3c', '#566f52', '#7b8f80'], height: 1 } }
 };
+// world-pro helpers lent to the per-circuit landscape modules.
+const KIT = { std, add, box, decal, sway, mipAlpha, canvasTexture, sweep };
 
 // Sun height (the y of the light direction) at each lighting preset; the day
 // cycle blends neighbouring presets. Theme start hours sit on their preset.
@@ -239,13 +249,18 @@ export class World {
     const lane = this.lane, gapFrom = lane ? wrap(lane.boxStart - 34, track.length) : 0, gapTo = lane ? wrap(lane.boxEnd + 34, track.length) : 0;
     // The garages open straight onto the lane: no barrier on the pit side there.
     this.pitGap = (s, side) => !!lane && side === lane.side && lane.inWindow(wrap(s, track.length), gapFrom, gapTo);
+    // Long layouts keep the ribbon and sweep segments as short as on a ~4 km circuit.
+    this.res = (steps) => track.length > 8000 ? Math.ceil(steps * track.length / 4200) : steps;
+    const gp = this.theme.gp;
+    this.inGP = gp ? (s) => { const f = wrap(s, track.length) / track.length; return f >= gp[0] || f <= gp[1]; } : () => true;
     this.buildTrack(); this.buildGround(); this.buildTrackside(); buildTrackWear(this); this.buildPitLane(); this.buildPaddock(); this.buildStands();
     if (this.theme.harbor) this.buildHarbor();
     this.buildCity();
     // Landscape fill; its objects are kept so a lower quality setting can hide them.
     const r0 = this.root.children.length, l0 = this.live.children.length; this.glows.push(...buildFill(this).glows);
     this.fillObjects = [...this.root.children.slice(r0), ...this.live.children.slice(l0)];
-    this.buildHills(); this.buildNature(); this.buildSkyLife();
+    if (this.theme.eifel) this.eifel = buildEifel(this, KIT); else this.buildHills();
+    this.buildNature(); this.buildSkyLife();
     if (this.theme.rocks) this.buildDesert();
     this.buildStars();
     this.root.traverse((o) => { o.updateMatrix(); o.matrixAutoUpdate = false; });
@@ -312,7 +327,7 @@ export class World {
     this.sun.color.set(p.sun); this.hemi.color.set(p.sky); this.hemi.groundColor.set(p.ground);
     this.dark = mode === 'night' ? 1 : 0; FLOOD.value = this.dark;
     this.daySun = { dir: this.sunDirection.clone(), intensity: this.sun.intensity, color: this.sun.color.clone(), shadow: mode === 'overcast' ? .35 : 1 };
-    this.scene.fog.color.set(p.fog); this.scene.fog.density = p.density * .8; this.renderer.toneMappingExposure = p.exposure * .95;
+    this.scene.fog.color.set(p.fog); this.scene.fog.density = p.density * .8 * (this.theme.haze ?? 1); this.renderer.toneMappingExposure = p.exposure * .95;
     const cu = this.clouds.material.uniforms;
     cu.uSun.value.copy(this.sunDirection); cu.uCover.value = { golden: .5, day: .56, overcast: .26, dusk: .6, night: .72 }[mode] ?? .5;
     if (this.mastHeads) this.mastHeads.material.emissiveIntensity = mode === 'night' ? 7 : .6;
@@ -350,7 +365,7 @@ export class World {
     col('sun', this.sun.color); col('sky', this.hemi.color); col('ground', this.hemi.groundColor);
     // The night preset's own "sun" is replaced by the moon and floodlights in updateLight().
     if (dark > 0) this.hemi.color.lerp(MOON.color, .35 * dark);
-    col('fog', this.scene.fog.color); this.scene.fog.density = mix('density') * .8 * (1 + .5 * cloud + 2.5 * rain); this.renderer.toneMappingExposure = mix('exposure') * .95 * (1 - .1 * cloud);
+    col('fog', this.scene.fog.color); this.scene.fog.density = mix('density') * .8 * (this.theme.haze ?? 1) * (1 + .5 * cloud + 2.5 * rain); this.renderer.toneMappingExposure = mix('exposure') * .95 * (1 - .1 * cloud);
     // Overcast light is grey: wash the sun, sky and haze towards their own luminance.
     for (const c of [this.sun.color, this.hemi.color, this.scene.fog.color]) { const l = c.r * .3 + c.g * .59 + c.b * .11; c.lerp(GREY.setScalar(l * 1.05), .65 * cloud); }
     // Shadows fade as the sun sinks into the haze and under cloud.
@@ -419,7 +434,8 @@ export class World {
         // Floodlight pools: masts every 135 m from s=40, alternating sides; no real lights.
         if(uFlood>0.){float fs=vRoad.y*4.-40.,fm=mod(fs,135.),fd=min(fm,135.-fm);
           float fside=mod(floor((fs+67.5)/135.),2.)>.5?1.:-1.,flt=vRoad.x*4.-${t.halfWidth.toFixed(2)};
-          float pool=(.45+.55*exp(-fd*fd/2450.))*(1.+.3*fside*flt/${t.halfWidth.toFixed(2)});
+          float pool=(.45+.55*exp(-fd*fd/2450.))*(1.+.3*fside*flt/${t.halfWidth.toFixed(2)});${this.theme.gp ? `
+          float gpf=vRoad.y*4./${t.length.toFixed(1)};pool*=step(${this.theme.gp[0]},gpf)+step(gpf,${this.theme.gp[1]});` : ''}
           outgoingLight+=diffuseColor.rgb*vec3(1.,.95,.84)*uFlood*pool*.55;}
         #include <opaque_fragment>`).replace('#include <color_fragment>', `#include <color_fragment>
         float lat=vRoad.x*4.-${t.halfWidth.toFixed(2)};
@@ -429,12 +445,15 @@ export class World {
         diffuseColor.rgb*=1.-.1*exp(-lat*lat*.08);
         diffuseColor.rgb*=1.+.08*smoothstep(${(t.halfWidth - 1.4).toFixed(2)},${t.halfWidth.toFixed(2)},abs(lat));`);
     };
-    this.road = add(this.root, ribbon(t, -t.halfWidth, t.halfWidth, .018, 1400), this.roadMaterial, 0, 0, 0, false);
+    const res = this.res, eifel = this.theme.eifel;
+    this.road = add(this.root, ribbon(t, -t.halfWidth, t.halfWidth, .018, res(1400)), this.roadMaterial, 0, 0, 0, false);
     const gravel = repeatMaps(gravelMaps(), .6, .6), lineMat = std('#ecebe2', .55, 0, decal(2));
     for (const side of [-1, 1]) {
-      add(this.root, ribbon(t, side * (t.halfWidth + t.curbWidth), side * (t.halfWidth + t.curbWidth + t.runoffWidth - 1), .005, 900),
-        new THREE.MeshStandardMaterial({ ...gravel, roughness: 1, normalScale: new THREE.Vector2(1.4, 1.4), side: THREE.DoubleSide }), 0, 0, 0, false);
-      add(this.root, ribbon(t, side * (t.halfWidth - .24), side * (t.halfWidth - .1), .026, 1400), lineMat, 0, 0, 0, false);
+      // The Nordschleife has grass verges: a narrow paved shoulder past the kerb, then the ground.
+      const verge = eifel ? new THREE.MeshStandardMaterial({ ...repeatMaps(asphaltMaps(), 1, 1), color: '#a19e96', roughness: 1, side: THREE.DoubleSide })
+        : new THREE.MeshStandardMaterial({ ...gravel, roughness: 1, normalScale: new THREE.Vector2(1.4, 1.4), side: THREE.DoubleSide });
+      add(this.root, ribbon(t, side * (t.halfWidth + t.curbWidth), side * (t.halfWidth + t.curbWidth + (eifel ? 1.3 : t.runoffWidth - 1)), .005, res(900)), verge, 0, 0, 0, false);
+      add(this.root, ribbon(t, side * (t.halfWidth - .24), side * (t.halfWidth - .1), .026, res(1400)), lineMat, 0, 0, 0, false);
     }
     // Profiled kerbs: raised sausage with 2.5 m red/white paint and wear.
     const stripe = canvasTexture(64, 256, (c) => {
@@ -443,7 +462,10 @@ export class World {
     });
     const kerbMat = new THREE.MeshStandardMaterial({ map: stripe, roughness: .62, normalMap: asphalt.normalMap, normalScale: new THREE.Vector2(.25, .25) });
     const w = t.curbWidth, kerbProfile = [[-.02, .02], [.12, .06], [.35, .075], [w - .35, .075], [w - .1, .05], [w, .02]];
-    for (const side of [-1, 1]) add(this.root, sweep(t, kerbProfile, t.halfWidth, side, 1400, 5), kerbMat, 0, 0, 0, false);
+    // Nordschleife kerbs only where the road bends; the straights end in a painted line.
+    const bend = eifel ? Array.from({ length: Math.ceil(t.length / 5) }, (_, i) => Math.abs(t.at(i * 5).curvature) > .0055) : null;
+    const plain = bend ? (s) => { const i = Math.round(s / 5); for (let k = -6; k <= 6; k++) if (bend[wrap(i + k, bend.length)]) return false; return true; } : null;
+    for (const side of [-1, 1]) add(this.root, sweep(t, kerbProfile, t.halfWidth, side, res(1400), 5, { skip: plain }), kerbMat, 0, 0, 0, false);
 
     // Rubber build-up mesh, identical lane layout to the host.
     const positions = [], colors = [];
@@ -503,31 +525,35 @@ export class World {
     // Jersey barriers with a painted top band.
     const barrierMat = new THREE.MeshStandardMaterial({ ...repeatMaps(concrete, .5, .5), color: '#d8d6cc', roughness: .9 });
     const jersey = [[0, 0], [.06, .25], [.2, .55], [.24, .95], [.5, .95], [.54, .55], [.68, .25], [.74, 0]];
-    for (const side of [-1, 1]) add(this.root, sweep(t, jersey, t.barrierOffset + .7, side, 1500, 3, { skip: (s) => this.pitGap(s, side) }), barrierMat);
+    // Off the GP-Strecke (Nürburgring) the walls, fences, boards and tyre stacks give way to the
+    // Nordschleife's armco, built with the rest of the landscape in render/eifel.js.
+    const gp = this.inGP, res = this.res;
+    for (const side of [-1, 1]) add(this.root, sweep(t, jersey, t.barrierOffset + .7, side, res(1500), 3, { skip: (s) => this.pitGap(s, side) || !gp(s) }), barrierMat);
     // Catch fence with posts; sponsor boards mounted in front.
     const fmap = fenceTexture().clone(); fmap.needsUpdate = true;
     const fenceMat = new THREE.MeshStandardMaterial({ map: fmap, alphaTest: .35, side: THREE.DoubleSide, roughness: .5, metalness: .6, color: '#b9bfbf' });
     for (const side of [-1, 1]) {
-      const pos = [], uv = [], ix = [], n = 900;
-      for (let i = 0; i <= n; i++) { const s = i / n * t.length, p = t.at(s, side * (t.barrierOffset + 1.35)); pos.push(p.x, .95, p.z, p.x, 4.2, p.z); uv.push(s * 1.6, 0, s * 1.6, 5.2); if (i < n && !this.pitGap(s + t.length / n / 2, side)) { const a = i * 2; ix.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); } }
+      const pos = [], uv = [], ix = [], n = res(900);
+      for (let i = 0; i <= n; i++) { const s = i / n * t.length, p = t.at(s, side * (t.barrierOffset + 1.35)); pos.push(p.x, .95, p.z, p.x, 4.2, p.z); uv.push(s * 1.6, 0, s * 1.6, 5.2); if (i < n && !this.pitGap(s + t.length / n / 2, side) && gp(s + t.length / n / 2)) { const a = i * 2; ix.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); } }
       const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2)); g.setIndex(ix); g.computeVertexNormals();
       add(this.root, g, fenceMat, 0, 0, 0, false);
     }
     const postCount = Math.ceil(t.length / 5) * 2, posts = new THREE.InstancedMesh(new THREE.CylinderGeometry(.05, .06, 4.4, 6), std('#6f7674', .45, .7), postCount); let k = 0;
-    for (const side of [-1, 1]) for (let s = 0; s < t.length; s += 5) { if (this.pitGap(s, side)) continue; const p = t.at(s, side * (t.barrierOffset + 1.4)); d.position.set(p.x, 2.2, p.z); d.rotation.set(0, 0, 0); d.scale.set(1, 1, 1); d.updateMatrix(); posts.setMatrixAt(k++, d.matrix); }
+    for (const side of [-1, 1]) for (let s = 0; s < t.length; s += 5) { if (this.pitGap(s, side) || !gp(s)) continue; const p = t.at(s, side * (t.barrierOffset + 1.4)); d.position.set(p.x, 2.2, p.z); d.rotation.set(0, 0, 0); d.scale.set(1, 1, 1); d.updateMatrix(); posts.setMatrixAt(k++, d.matrix); }
     posts.count = k; posts.castShadow = true; this.root.add(posts);
     const boardGeo = new THREE.PlaneGeometry(7.6, 1.1), boards = SPONSORS.map((_, i) => { const m = new THREE.InstancedMesh(boardGeo, new THREE.MeshStandardMaterial({ map: sponsorTexture(i), roughness: .55 }), 200); m.count = 0; m.castShadow = true; this.root.add(m); return m; });
     let b = 0;
     for (const side of [-1, 1]) for (let s = 3; s < t.length - 8; s += 8.4) {
-      if (this.pitGap(s - 4, side) || this.pitGap(s + 4, side)) continue;
+      if (this.pitGap(s - 4, side) || this.pitGap(s + 4, side) || !gp(s - 4) || !gp(s + 4)) continue;
       const a = t.at(s, side * (t.barrierOffset + 1.28)); const mesh = boards[(b++ * 7 + (side > 0 ? 3 : 0)) % boards.length];
+      if (mesh.count >= 200) continue;
       d.position.set(a.x, 1.72, a.z); d.rotation.set(0, a.heading - side * Math.PI / 2, 0); d.updateMatrix(); mesh.setMatrixAt(mesh.count++, d.matrix);
     }
     // Tyre walls on the outside of the fast corners.
     const tyres = new THREE.InstancedMesh(new THREE.CylinderGeometry(.34, .34, .95, 14, 1, true), std('#1a1b1c', .9), 1400); tyres.count = 0;
     const belt = std('#1d5fa8', .6); const beltGeo = [];
     for (let s = 0; s < t.length; s += 4) {
-      const p = t.at(s); if (Math.abs(p.curvature) < .009) continue;
+      const p = t.at(s); if (Math.abs(p.curvature) < .009 || !gp(s)) continue;
       const side = -Math.sign(p.curvature);
       for (const row of [0, 1]) { const q = t.at(s + row * 2, side * (t.barrierOffset + .25)); d.position.set(q.x, .47, q.z); d.rotation.set(0, 0, 0); d.updateMatrix(); if (tyres.count < 1400) tyres.setMatrixAt(tyres.count++, d.matrix); }
       const q = t.at(s + 1, side * (t.barrierOffset - .15)); const g = new THREE.BoxGeometry(.04, 1, 4.05); g.rotateY(q.heading); g.translate(q.x, .5, q.z); beltGeo.push(g);
@@ -545,7 +571,7 @@ export class World {
     const mastGeo = new THREE.CylinderGeometry(.18, .32, 26, 8), headGeo = new THREE.BoxGeometry(3.4, 1.6, .5);
     const masts = new THREE.InstancedMesh(mastGeo, std('#8c9392', .4, .8), 80), heads = this.mastHeads = new THREE.InstancedMesh(headGeo, std('#dfe6ee', .3, .2, { emissive: '#fff4dc', emissiveIntensity: this.lightMode === 'night' ? 7 : .6 }), 80); masts.count = heads.count = 0;
     for (let s = 40, i = 0; s < t.length; s += 135, i++) {
-      const side = i % 2 ? 1 : -1, p = t.at(s, side * (t.barrierOffset + 7)); if (!this.clearOf(p.x, p.z, 1)) continue;
+      const side = i % 2 ? 1 : -1, p = t.at(s, side * (t.barrierOffset + 7)); if (!gp(s) || masts.count >= 80 || !this.clearOf(p.x, p.z, 1)) continue;
       d.position.set(p.x, 13, p.z); d.rotation.set(0, p.heading, 0); d.updateMatrix(); masts.setMatrixAt(masts.count++, d.matrix);
       d.position.y = 26.5; d.rotation.set(-.35 * side, p.heading + Math.PI / 2, 0); d.updateMatrix(); heads.setMatrixAt(heads.count++, d.matrix);
       const aim = t.at(s + 12, -side * 2); this.masts.push({ x: p.x, y: 26, z: p.z, ax: aim.x, az: aim.z });
@@ -737,7 +763,8 @@ export class World {
     const flashPos = [], flashPhase = [];
     const L = t.length, mid = this.lane ? (this.lane.boxStart + this.lane.boxEnd) / 2 : t.finishS;
     const spots = this.theme.harbor ? [[165, 1, 110], [1330, 0, 80], [2240, 0, 90], [1030, 0, 70]]
-      : [[wrap(mid - 45, L), 1, 110], [L * .45, 0, 80], [L * .76, 0, 90], [L * .35, 0, 70]];
+      : this.theme.stands ? [[wrap(mid - 45, L), 1, 110], ...this.theme.stands.map(([f, prefer, length]) => [f * L, prefer, length])]
+        : [[wrap(mid - 45, L), 1, 110], [L * .45, 0, 80], [L * .76, 0, 90], [L * .35, 0, 70]];
     // A stand is a straight box, so test its real rotated footprint (roof
     // overhang included) against the track instead of sampling along the
     // curved centreline; slide, flip or shorten it until nothing overhangs.
@@ -1170,7 +1197,7 @@ export class World {
     // Gull flocks: instanced with wing flap in the vertex shader.
     const wing = new THREE.BufferGeometry();
     wing.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, .35, 0, 0, -.25, -.9, .05, 0, 0, 0, .35, .9, .05, 0, 0, 0, -.25, 0, 0, .45, 0, .08, -.3, 0, -.08, -.3], 3)); wing.computeVertexNormals();
-    const gullMat = new THREE.MeshStandardMaterial({ color: '#f3f3ef', roughness: .8, side: THREE.DoubleSide });
+    const gullMat = new THREE.MeshStandardMaterial({ color: this.theme.birds ?? '#f3f3ef', roughness: .8, side: THREE.DoubleSide });
     gullMat.onBeforeCompile = (s) => { s.uniforms.uTime = TIME; s.vertexShader = 'uniform float uTime;\n' + s.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\ntransformed.y+=abs(position.x)*sin(uTime*9.+float(gl_InstanceID)*1.7)*.7;'); };
     gullMat.customProgramCacheKey = () => 'gull';
     this.gulls = new THREE.InstancedMesh(wing, gullMat, 48); this.gulls.frustumCulled = false; this.live.add(this.gulls);
@@ -1251,11 +1278,22 @@ export class World {
       this.roadMaterial.roughness = s.roughness; this.roadMaterial.clearcoat = s.clearcoat; this.roadMaterial.color.setScalar(s.darken); this.visualWetness = wet;
     }
     this.startLights.forEach((l) => { const i = Math.floor(this.startLights.indexOf(l) / 2), on = countdown > 0 && countdown < 4 - i * .45; l.material.color.set(on ? '#ff2a12' : '#2a1412'); if (l.material.userData.glow) l.material.userData.glow.material.opacity = on ? .9 : 0; });
+    // Rubber shading: rewrite and upload only the lane cells whose value moved.
     if (Math.floor(time * 2) !== this.rubberTick) {
-      this.rubberTick = Math.floor(time * 2); const color = this.rubberMesh.geometry.attributes.color;
-      for (let i = 0; i < this.track.rubber.length; i++) { const v = 1 - this.track.rubber[i] * .86; for (let j = 0; j < 6; j++) color.setXYZ(i * 6 + j, v, v, v); }
-      color.needsUpdate = true;
+      this.rubberTick = Math.floor(time * 2); const color = this.rubberMesh.geometry.attributes.color, arr = color.array, rubber = this.track.rubber;
+      const seen = this.rubberSeen ??= new Float32Array(rubber.length).fill(-1);
+      let from = -1, to = -1;
+      const flush = () => { if (from >= 0) color.addUpdateRange(from * 18, (to - from + 1) * 18); from = -1; };
+      for (let i = 0; i < rubber.length; i++) {
+        if (rubber[i] === seen[i]) continue;
+        seen[i] = rubber[i]; arr.fill(1 - rubber[i] * .86, i * 18, i * 18 + 18);
+        if (from >= 0 && i - to > 64) flush();
+        if (from < 0) from = i; to = i;
+      }
+      flush();
+      if (color.updateRanges.length) color.needsUpdate = true;
     }
+    this.eifel?.update(car);
     for (const a of this.animators) a(now);
     for (const st of this.stands) { const dist = st.centre.distanceTo(this.centre.set(car.x, 0, car.z)); const target = countdown > 0 ? .9 : clamp(1.4 - dist / 120, .25, 1); st.excite.value += (target - st.excite.value) * Math.min(1, dt * 2); }
     if (Math.floor(now * 5) !== this.screenTick) { this.screenTick = Math.floor(now * 5); this.drawScreen(car, now); }

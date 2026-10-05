@@ -16,6 +16,8 @@ const AMBIENCE = {
   solenne: { crowd: .75, sea: 0, seaHz: 380, gulls: false, horn: false },
   alpine: { crowd: .32, sea: .28, seaHz: 900, gulls: false, horn: false },
   desert: { crowd: .4, sea: .22, seaHz: 650, gulls: false, horn: false },
+  // Wind in the Eifel forest; the crowd is spread along the Nordschleife banks.
+  nurburgring: { crowd: .45, sea: .2, seaHz: 720, gulls: false, horn: false },
 };
 
 function wave(c, amps, phaseJitter = 0) {

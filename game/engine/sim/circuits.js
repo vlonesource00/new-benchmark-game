@@ -3,6 +3,7 @@
  * harbor-ring.js; every layout is flat (physics has no elevation) and was
  * checked with scripts/track-metrics.mjs for corner radius and clearance.
  */
+import { NURBURGRING_POINTS, NURBURGRING_CORNERS } from './nurburgring.js';
 // Long straights are split so Catmull-Rom segments stay short and even.
 const pts = (list, split = true) => {
   const out = [];
@@ -70,4 +71,18 @@ export const MIRAGE = circuit({
   pit: { entryFraction: 0.9925, limiterFraction: 0.01, boxStartFraction: 0.0597, boxEndFraction: 0.1095, exitFraction: 0.1493 }
 });
 
-export const CIRCUITS = Object.freeze({ solenne: SOLENNE, alpine: ALPENRING, desert: MIRAGE });
+// The 25.3 km 24h layout: GP-Strecke (no Mercedes-Arena) into the Nordschleife.
+// Points are already ~10 m apart, so they are not split further. The pit lane
+// runs on the left of the GP straight, entered after Hohenrain as in the race;
+// it sits a little closer to the track so the garages stay inside the barrier.
+export const NURBURGRING = circuit({
+  id: 'nurburgring', name: 'Nürburgring 24h', seed: 24624,
+  description: 'The 24 hours layout: the GP-Strecke and the full Nordschleife, 25.3 km through the Eifel forest.',
+  controlPoints: pts(NURBURGRING_POINTS, false),
+  roadHalfWidth: 6, curbWidth: 1, runoffWidth: 11.5, sampleDensity: 3,
+  sectors: Object.freeze([]), landmarks: Object.freeze(NURBURGRING_CORNERS),
+  start: { finishFraction: 0.01186, gridFraction: 0.01126 },
+  pit: { lateralM: -12.8, entryFraction: 0.99565, limiterFraction: 0.99842, boxStartFraction: 0.00474, boxEndFraction: 0.01423, exitFraction: 0.02371 }
+});
+
+export const CIRCUITS = Object.freeze({ solenne: SOLENNE, alpine: ALPENRING, desert: MIRAGE, nurburgring: NURBURGRING });

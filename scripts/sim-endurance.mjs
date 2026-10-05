@@ -44,7 +44,7 @@ if (args.includes('--profile')) {
     const race = new EnduranceRace({ track, teams, format: { ...FORMATS.custom, mandatoryStops: 0, mandatorySwap: false }, laps: 30 });
     race.start();
     const car = race.cars[0]; let bins = null, lap = 0;
-    while (car.race.lap <= 3 && race.time < 600) {
+    while (car.race.lap <= 3 && race.time < Math.max(600, track.length / 10)) {
       race.step(FIXED_DT);
       if (car.race.lap !== lap) {
         if (bins && car.race.lastLap && (!best || car.race.lastLap < best.time) && bins.every((b) => b > 0)) best = { time: car.race.lastLap, v: bins, who: d.name };
