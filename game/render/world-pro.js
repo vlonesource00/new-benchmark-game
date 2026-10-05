@@ -156,6 +156,42 @@ const SKY_STOPS = [[-.12, 'night'], [0, 'twilight'], [.2, 'dusk'], [.42, 'golden
   return { y, p, mode, rayleigh: { night: .3, twilight: 2, dusk: 2.4 }[mode] ?? 1.6, cover: { golden: .5, day: .56, dusk: .6, twilight: .66, night: .72 }[mode],
     sun: new THREE.Color(p.sun), sky: new THREE.Color(p.sky), ground: new THREE.Color(p.ground), fog: new THREE.Color(p.fog) };
 });
+// Chimney smoke as one draw: camera-facing quads placed per puff, shaded like
+// SpriteMaterial (colour x map x opacity, then fog). The puffs share one colour
+// and a white texture, so drawing them unsorted blends the same as sorted sprites.
+function smokePlume(parent, puffs) {
+  const n = puffs.length, cx = puffs.reduce((a, p) => a + p.x, 0) / n + 30, cz = puffs.reduce((a, p) => a + p.z, 0) / n - 12;
+  const geo = new THREE.InstancedBufferGeometry().copy(new THREE.PlaneGeometry(1, 1)); geo.instanceCount = n;
+  const offset = new THREE.InstancedBufferAttribute(new Float32Array(n * 3), 3).setUsage(THREE.DynamicDrawUsage);
+  const puff = new THREE.InstancedBufferAttribute(new Float32Array(n * 2), 2).setUsage(THREE.DynamicDrawUsage);
+  geo.setAttribute('offset', offset); geo.setAttribute('puff', puff);
+  geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 90);
+  const material = new THREE.ShaderMaterial({
+    uniforms: THREE.UniformsUtils.merge([THREE.UniformsLib.fog, { diffuse: { value: new THREE.Color('#d9d6cf') }, map: { value: smokeTexture() } }]),
+    vertexShader: `#include <common>
+      #include <fog_pars_vertex>
+      attribute vec3 offset; attribute vec2 puff; varying vec2 vUv; varying float vAlpha;
+      void main(){
+        vUv=uv; vAlpha=puff.y;
+        vec4 mvPosition=modelViewMatrix*vec4(offset,1.); mvPosition.xy+=position.xy*puff.x;
+        gl_Position=projectionMatrix*mvPosition;
+        #include <fog_vertex>
+      }`,
+    fragmentShader: `#include <common>
+      #include <fog_pars_fragment>
+      uniform vec3 diffuse; uniform sampler2D map; varying vec2 vUv; varying float vAlpha;
+      void main(){
+        gl_FragColor=vec4(diffuse,vAlpha)*texture2D(map,vUv);
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
+        #include <fog_fragment>
+      }`,
+    transparent: true, depthWrite: false, fog: true
+  });
+  const mesh = new THREE.Mesh(geo, material); mesh.position.set(cx, 72, cz); parent.add(mesh);
+  return { mesh, offset, puff };
+}
+
 const sunHeight = (hour) => Math.sin(Math.PI * (hour - 6.5) / 13);
 // Night light: a dim, cool moon that barely casts shadows, and the floodlights.
 // The masts nearest the focused car get real spot lights; the shader pools light
@@ -855,8 +891,8 @@ export class World {
     for (const [x, z] of stacks) for (let k = 0; k < 7; k++) add(this.root, new THREE.CylinderGeometry(2.2 - k * .1, 2.4 - k * .1, 7, 16), std(k % 2 ? '#c2322a' : '#ecebe4', .6), x, 3.5 + k * 7, z);
     if (stacks.length) box(this.root, std('#8d8f88', .7, .2), 569, 9, 440, 50, 18, 30);
     this.smoke = [];
-    const smokeMat = new THREE.SpriteMaterial({ map: smokeTexture(), color: '#d9d6cf', transparent: true, depthWrite: false, opacity: .5, fog: true });
-    for (const [x, z] of stacks) for (let i = 0; i < 26; i++) { const s = new THREE.Sprite(smokeMat.clone()); s.userData = { x, z, age: i / 26 * 14, life: 14 }; this.live.add(s); this.smoke.push(s); }
+    for (const [x, z] of stacks) for (let i = 0; i < 26; i++) this.smoke.push({ x, z, age: i / 26 * 14, life: 14 });
+    if (stacks.length) this.smokePlume = smokePlume(this.live, this.smoke);
 
     // Moving boats with wakes.
     const wakeMat = new THREE.MeshBasicMaterial({ map: radialTexture([[0, 'rgba(255,255,255,.7)'], [.5, 'rgba(230,240,240,.25)'], [1, 'rgba(255,255,255,0)']]), transparent: true, depthWrite: false });
@@ -1223,9 +1259,15 @@ export class World {
     for (const a of this.animators) a(now);
     for (const st of this.stands) { const dist = st.centre.distanceTo(this.centre.set(car.x, 0, car.z)); const target = countdown > 0 ? .9 : clamp(1.4 - dist / 120, .25, 1); st.excite.value += (target - st.excite.value) * Math.min(1, dt * 2); }
     if (Math.floor(now * 5) !== this.screenTick) { this.screenTick = Math.floor(now * 5); this.drawScreen(car, now); }
-    for (const s of this.smoke) {
-      const u = s.userData; u.age += dt; if (u.age > u.life) u.age -= u.life;
-      const k = u.age / u.life; s.position.set(u.x + k * 60 + Math.sin(u.age * .7) * 2, 50 + k * 45, u.z - k * 25); s.scale.setScalar(4 + k * 26); s.material.opacity = (1 - k) * .45 * Math.min(1, u.age * 2);
+    if (this.smokePlume) {
+      const { mesh, offset, puff } = this.smokePlume, o = mesh.position;
+      this.smoke.forEach((u, i) => {
+        u.age += dt; if (u.age > u.life) u.age -= u.life;
+        const k = u.age / u.life;
+        offset.setXYZ(i, u.x + k * 60 + Math.sin(u.age * .7) * 2 - o.x, 50 + k * 45 - o.y, u.z - k * 25 - o.z);
+        puff.setXY(i, 4 + k * 26, (1 - k) * .45 * Math.min(1, u.age * 2));
+      });
+      offset.needsUpdate = puff.needsUpdate = true;
     }
     // Gulls wheel above the harbor side; each flock drifts along its own orbit.
     // Elsewhere the same flocks become birds circling over the infield.

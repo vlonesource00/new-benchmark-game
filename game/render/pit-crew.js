@@ -86,7 +86,9 @@ class Mechanic {
     BONES.forEach(([, p], i) => { if (p >= 0) bones[p].add(bones[i]); });
     this.mesh = new THREE.SkinnedMesh(geometry, material);
     this.mesh.add(bones[0]); this.mesh.bind(new THREE.Skeleton(bones));
-    this.mesh.castShadow = true; this.mesh.frustumCulled = false;
+    // A fixed sphere that holds every pose stands in for the skinned bounds,
+    // so crews off screen (or outside the sun's shadow box) are not drawn.
+    this.mesh.castShadow = true; this.mesh.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, .9, 0), 1.6);
     this.bones = bones; this.role = role; this.wheel = wheel;
     this.pose = { ...POSES.stand }; this.walk = 0; this.phase = Math.random() * 6; this.placed = false;
     this.pos = new THREE.Vector3(); this.yaw = 0;
