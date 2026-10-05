@@ -75,7 +75,7 @@ export class Route {
         else if(d<0&&d>-90)offset=this.knots[0].q*smooth((d+90)/90);
         let x=p.x+Math.cos(h)*offset+Math.sin(h)*lead,
           z=p.z-Math.sin(h)*offset+Math.cos(h)*lead;
-        const near=road.track.nearest(x,z),edge=road.track.halfWidth-car.spec.halfWidth-.4;
+        const near=road.track.nearest(x,z),edge=description.edge??road.track.halfWidth-car.spec.halfWidth-.4;
         const rounding=(description.roundWorld??0)*smooth(Math.max(0,d)/35);
         if(Math.abs(near.lateral)>edge-rounding){
           const legal=road.track.at(near.s,smoothBound(near.lateral,edge,rounding));x=legal.x;z=legal.z;
@@ -171,7 +171,11 @@ export function refugeRoutes(road,car,obs,nominal) {
 }
 
 export function generateRoutes(road,car,obs,episode,options={}) {
-  const p=obs.projection,r=episode.target,edge=road.track.halfWidth-car.spec.halfWidth-.4;
+  const p=obs.projection,r=episode.target;
+  // An attacker may put the outside wheels on the kerb to find open space
+  // beside the rival. Native admission still vetoes any body beyond it.
+  const edge=road.track.halfWidth-car.spec.halfWidth+(episode.role==='attack'&&r
+    ?Math.min(options.kerbAttack??-.4,Math.max(0,(road.track.curbWidth??0)-.3)):-.4);
   const length=clamp(car.speed*7+60,240,500),gate=cornerGate(road.track,p.s,length-70);
   const candidates=[];
   const add=(kind,side,lane,transfer,holdTo,extra={})=>{
@@ -267,7 +271,7 @@ export function generateRoutes(road,car,obs,episode,options={}) {
     for(const reach of options.worldRoutes===false?[]:worldReach){
       const change=transferLength(road,car,worldLane-ownWorld,ownBase.curvature,alongside?12:28);
       candidates.push(new Route(road,car,obs,{kind:episode.role==='defend'?'world-carry':'world-pass',
-        side,lane:worldLane,length:reach,gate,world:true,roundWorld:options.roundWorld,knots:[
+        side,lane:worldLane,length:reach,gate,world:true,roundWorld:options.roundWorld,edge,knots:[
           {d:change,q:worldLane},{d:reach-70,q:worldLane},{d:reach,q:0}
         ]}));
     }

@@ -9,7 +9,7 @@ import { longitudinal } from './road.js';
 // by the driver so imagined alternatives cannot change execution feedback.
 export function outcome(road,car,obs,route,episode,resources,prefix=null) {
   let s=prefix?.endS??obs.projection.s,v=Math.max(2,prefix?.speed??car.speed),travel=prefix?.progress??0,
-    conflicts=0,riskCost=0,minimum=Infinity,passed=0,work=0,exitTime=null,gateSpeed=null;
+    conflicts=0,riskCost=0,minimum=Infinity,passed=0,pressure=0,work=0,exitTime=null,gateSpeed=null;
   const dt=.15,horizon=6.6,target=episode.target;
   const conflictAt=t=>{
     conflicts++;
@@ -41,6 +41,10 @@ export function outcome(road,car,obs,route,episode,resources,prefix=null) {
         }
       }
       if(target?.id===r.id&&gap<-(car.spec.halfLength+r.halfLength+2))passed+=dt;
+      // Our nose ahead of theirs in clear space owns the next corner, even
+      // if the pass does not complete inside the forecast. Merely sitting
+      // alongside on the outside is not rewarded: it loses the exit.
+      else if(target?.id===r.id&&gap<0&&lateral>=width)pressure+=dt;
     }
     const lateral=v*v*Math.abs(p.curvature),mass=road.table.model.mass;
     const motor=car.hybrid&&car.hybrid.energy>0?Math.min(95000,car.hybrid.energy/horizon)/Math.max(14,v)/mass:0;
@@ -53,7 +57,7 @@ export function outcome(road,car,obs,route,episode,resources,prefix=null) {
     work+=Math.max(0,v*v*Math.abs(p.curvature)-18)*dt;
   }
   let score=travel+v*1.2-riskCost-work*.08;
-  if(episode.role==='attack')score+=Math.min(passed,2)*14;
+  if(episode.role==='attack')score+=Math.min(passed,2)*14+Math.min(pressure,3)*(resources.pressureBonus??0);
   if(episode.role==='defend'&&target){
     const end=forecast(road.track,target,horizon);
     score+=clamp(-distance(end.s,s,road.length),-20,20)*.4;
@@ -64,14 +68,20 @@ export function outcome(road,car,obs,route,episode,resources,prefix=null) {
   return {score,travel,exitSpeed:v,exitTime,gateSpeed,passed,conflicts,riskCost,minimum:Number.isFinite(minimum)?minimum:null};
 }
 
+const clock=()=>globalThis.performance?.now?.()??Date.now();
 export function choosePlan(road,car,obs,routes,episode,resources,validator,options={}) {
-  resources={...resources,forecastRiskDecay:options.forecastRiskDecay??true};
+  // The browser race never waits for a reply. Past this budget the search
+  // stops exploring alternatives once a course is admitted; vetoes, the
+  // final 120 Hz admission and the fallbacks themselves are never skipped.
+  const started=clock(),budget=options.planBudgetMs??Infinity,late=()=>clock()-started>budget;
+  resources={...resources,forecastRiskDecay:options.forecastRiskDecay??true,pressureBonus:options.pressureBonus};
   const validationResources={...resources,defending:episode.role==='defend',trafficHorizon:options.trafficHorizon};
   const horizon=options.horizon??1.15;
   const tactical=routes.some(r=>r.side&&!r.kind.startsWith('emergency-'));
   const requestedStep=typeof options.rankingStep==='number'?options.rankingStep:options.rankingStep?.[car.classId];
   const rankingStep=tactical&&requestedStep===1/60?1/60:1/120;
   const rankingResources={...validationResources,predictionStep:rankingStep};
+  const fallbackStep=requestedStep===1/60?1/60:1/120;
   let nominalNative=null;
   if(episode.role==='defend') {
     const free=routes.find(r=>r.kind==='free');
@@ -110,6 +120,7 @@ export function choosePlan(road,car,obs,routes,episode,resources,validator,optio
     }
   }
   for(const entry of shortlist) {
+    if(late()&&shortlist.some(e=>e.native?.feasible))break;
     let native=entry.route.kind==='free'&&nominalNative?nominalNative:
       validatePrefix(car,obs,entry.route,validator,rankingResources,horizon);
     checks.push({kind:entry.route.kind,side:entry.route.side,...entry.outcome,...native,traces:undefined});
@@ -129,7 +140,12 @@ export function choosePlan(road,car,obs,routes,episode,resources,validator,optio
     if(options.stableMoves)entry.verifiedOutcome.score-=native.firstSteerChange*18+native.steeringTravel*5;
   }
   let feasible=shortlist.filter(x=>x.native?.feasible);
-  const approachBudget=options.maneuverPaceBudget??.03;
+  // Within striking range an attacker accepts a slightly slower native
+  // prefix to get its nose into open space beside the rival.
+  const striking=episode.role==='attack'&&episode.target
+    &&episode.target.gap<Math.max(18,car.speed*(options.strikeSeconds??0));
+  const approachBudget=striking?Math.max(options.maneuverPaceBudget??.03,options.attackPaceBudget??0)
+    :options.maneuverPaceBudget??.03;
   if(approachBudget>0&&['attack','defend'].includes(episode.role)
     &&!['Alongside','Clear'].includes(episode.stage)&&nominal?.native?.feasible){
     // A long forecast cannot purchase a speculative pass with a slow native
@@ -160,7 +176,7 @@ export function choosePlan(road,car,obs,routes,episode,resources,validator,optio
     }
     feasible=admitted?[admitted]:[];
   }
-  if(!feasible.length)for(const entry of evaluated.filter(e=>!shortlist.includes(e)).slice(0,3)){
+  if(!feasible.length)for(const entry of evaluated.filter(e=>!shortlist.includes(e)).slice(0,late()?1:3)){
     const native=validatePrefix(car,obs,entry.route,validator,validationResources,horizon);
     checks.push({kind:entry.route.kind,side:entry.route.side,...entry.outcome,...native,traces:undefined});
     if(native.feasible){entry.native=native;
@@ -172,8 +188,14 @@ export function choosePlan(road,car,obs,routes,episode,resources,validator,optio
   let winner=feasible[0]??null,controlFactor=1,brakeAction=false;
   if(!winner)for(const factor of [1,.94,.86,.74]) {
     const entry=evaluated.find(e=>e.route.kind==='free')??evaluated[0];
-    const native=validatePrefix(car,obs,entry.route,validator,{...validationResources,
-      factor:resources.factor*factor,brakeAction:true},horizon);
+    const fallback={...validationResources,factor:resources.factor*factor,brakeAction:true};
+    // Screen each slower factor at the coarse ranking rate; only a passing
+    // screen pays for the full-rate admission that the live car executes.
+    if(fallbackStep>1/120){
+      const screen=validatePrefix(car,obs,entry.route,validator,{...fallback,predictionStep:fallbackStep},horizon);
+      if(!screen.feasible){checks.push({kind:entry.route.kind,side:entry.route.side,factor,...screen,traces:undefined});continue;}
+    }
+    const native=validatePrefix(car,obs,entry.route,validator,fallback,horizon);
     checks.push({kind:entry.route.kind,side:entry.route.side,factor,...native,traces:undefined});
     if(native.feasible){winner={...entry,native};controlFactor=factor;brakeAction=true;break;}
   }

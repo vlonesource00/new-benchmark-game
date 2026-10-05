@@ -208,6 +208,7 @@ function predict(track, rival, t, branch = 0) {
   return { ...p, q,speed: vFuture, uncertainty: .14 + Math.min(.7, t * .08) };
 }
 
+const motionPaths=new WeakMap();
 function followingMotion(track,rival,t,branch,velocity,accel){
   // An overlapping rival has an occupied corridor of its own. Its class
   // prior is a useful speed estimate, but is not permission to invent a
@@ -217,16 +218,27 @@ function followingMotion(track,rival,t,branch,velocity,accel){
   const initialSlope=follower?(road.at(rival.s+1).offset-road.at(rival.s-1).offset)*.5:0;
   const initialMetric=Math.max(.35,1-track.at(rival.s).curvature*rival.q);
   const drift=rival.dq-initialSlope*rival.speed/initialMetric;
-  let s=rival.s,v=rival.speed,q=rival.q;
-  for(let u=0;u<t-1e-8;u+=.1){
-    const dt=Math.min(.1,t-u),desired=road?Math.min(velocity(u+dt),
+  const advance=(state,dt)=>{
+    let {s,v,q,u}=state;
+    const desired=road?Math.min(velocity(u+dt),
       Math.sqrt((road.sample(follower?road.speed:rival.envelope,s+25)*rival.classFactor)**2+2*10*25)):velocity(u+dt);
     v=Math.max(0,v+clamp(desired-v,-Math.max(12,-accel)*dt,Math.max(4,accel)*dt));
     const a=track.at(s-.5,q),b=track.at(s+.5,q);
     s+=v*dt/Math.max(.35,Math.hypot(b.x-a.x,b.z-a.z));
     q=clamp((follower?road.at(s).offset:rival.q)+rival.q-initialBase+drift*.6*(1-Math.exp(-(u+dt)/.6)),
       -track.halfWidth+rival.halfWidth,track.halfWidth-rival.halfWidth);
+    return {s,v,q,u:u+.1};
+  };
+  // Every query integrates the same 0.1 s steps from the observation. Keep
+  // the full steps per rival; only the final partial step depends on t.
+  let path=motionPaths.get(rival);
+  if(!path||path.track!==track){path={track,states:[{s:rival.s,v:rival.speed,q:rival.q,u:0}]};motionPaths.set(rival,path);}
+  let state=path.states[0];
+  for(let k=0;state.u<t-1e-8;k++){
+    if(t-state.u<.1){state=advance(state,t-state.u);break;}
+    state=path.states[k+1]??=advance(state,.1);
   }
+  let {s,v,q}=state;
   const bin=Math.floor(wrapStation(s,track.length)/20),current=Math.floor(rival.s/20),
     remembered=rival.laneMap.get(bin),previous=rival.laneMap.get(bin?bin-1:Math.floor((track.length-1e-6)/20));
   const relative=angle(rival.yaw-(rival.course??rival.yaw))*Math.exp(-t*2);

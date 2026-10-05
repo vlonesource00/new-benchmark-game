@@ -2,6 +2,7 @@ import { Road } from './road.js';
 import { ForceControl } from './control.js';
 import { Observer } from './observation.js';
 import { Episodes } from './episode.js';
+import { Combat } from './combat.js';
 import { Resources } from './resources.js';
 import { generateRoutes,refugeRoutes } from './routes.js';
 import { choosePlan } from './search.js';
@@ -14,7 +15,7 @@ const clock=()=>globalThis.performance?.now?.()??Date.now();
 export class SpearheadDriver {
   constructor(track,options={}) {
     this.track=track;this.o=options;
-    this.observer=new Observer(track);this.episodes=new Episodes(track,options);this.resources=new Resources(track);
+    this.observer=new Observer(track);this.episodes=options.combat==='engine'?new Combat(track,options):new Episodes(track,options);this.resources=new Resources(track);
     this.stats={updates:0,plans:0,rollouts:0,latencyMs:0,maxLatencyMs:0,emergencies:0,passes:0};
     this.epoch=0;this.reset();
   }
@@ -106,7 +107,20 @@ export class SpearheadDriver {
           // Carry an admitted pullout through the next snapshots. It is
           // checked afresh with current forces and traffic; alternative
           // generation resumes on a veto or after this short commitment.
-          if(this.o.commitSeconds&&episode.role==='attack'&&episode.locked&&previous
+          if(this.o.combat==='engine'&&episode.target&&this.o.maneuvers!==false){
+            const routesStart=clock();
+            const free=generateRoutes(this.road,car,obs,{role:'pace',target:null},this.o)[0];
+            this.stats.routesMs=clock()-routesStart;
+            const engine=this.episodes.plan(this.road,car,obs,episode,resource,this.validator,settings,free,
+              this.plan?.target===episode.target.id&&this.plan.episode===episode.id?previous:null);
+            if(engine?.route){result=engine;this.checks=engine.checks;this.evaluated=engine.evaluated??[];
+              this.stats.plans++;this.stats.rollouts+=engine.checks.length;
+              this.plan={route:engine.route,target:episode.target.id,role:episode.role,episode:episode.id,
+                created:obs.time,epoch:this.epoch,native:engine.native,validUntil:obs.time+.5,factor:1,brakeAction:false};
+              this.selected={kind:engine.route.kind,side:engine.route.side};this.episodes.accept(engine.route,obs);
+              result.engine=true;}
+          }
+          if(!result&&this.o.commitSeconds&&episode.role==='attack'&&episode.locked&&previous
             &&!['free','follow','join'].includes(previous.kind)&&!previous.kind.startsWith('emergency-')
             &&this.plan.target===episode.target?.id&&this.plan.episode===episode.id
             &&obs.time-previous.created<this.o.commitSeconds){
@@ -117,8 +131,8 @@ export class SpearheadDriver {
           }
           if(!result){
           const routesStart=clock();
-          const routes=generateRoutes(this.road,car,obs,this.o.maneuvers===false?{role:'pace',target:null}:episode,this.o);
-          if(this.o.maneuvers!==false&&previous&&previous.kind!=='free'&&previous.kind!=='follow'
+          const routes=generateRoutes(this.road,car,obs,this.o.maneuvers===false||this.o.combat==='engine'?{role:'pace',target:null}:episode,this.o);
+          if(this.o.maneuvers!==false&&this.o.combat!=='engine'&&previous&&previous.kind!=='free'&&previous.kind!=='follow'
             &&this.plan.target===episode.target?.id&&episode.target&&this.plan.role===episode.role
             &&this.plan.episode===episode.id
             &&(episode.stage!=='Alongside'||previous.side===episode.side)
@@ -134,7 +148,7 @@ export class SpearheadDriver {
           this.stats.routesMs=clock()-routesStart;
           const admissionStart=clock();
           result=this.o.nativeAdmission===false?{route:routes[0],checks:[],evaluated:[]}:
-            choosePlan(this.road,car,obs,routes,episode,resource,this.validator,settings);
+            choosePlan(this.road,car,obs,routes,this.o.combat==='engine'?{...episode,role:'pace',target:null,side:0}:episode,resource,this.validator,settings);
           this.stats.admissionMs=clock()-admissionStart;
           this.checks=result.checks;this.evaluated=result.evaluated??[];
           this.stats.plans++;this.stats.rollouts+=result.checks.length;
@@ -151,7 +165,7 @@ export class SpearheadDriver {
               route.retainLane=this.o.retainOverlapLane!==false;
               const escape=escapePrefix(car,obs,this.validator,{...resource,defending:episode.role==='defend'},route);
               escapes.push({route,escape});
-              if(escape.feasible&&escape.action.factor===1)break;
+              if(escape.feasible&&(escape.action.factor===1||clock()-searchStart>(this.o.planBudgetMs??Infinity)))break;
             }
             escapes.sort((a,b)=>Number(b.escape.feasible)-Number(a.escape.feasible)
               ||b.escape.score-a.escape.score);
@@ -162,7 +176,7 @@ export class SpearheadDriver {
             this.selected={kind:refuge.kind==='emergency-hold'?'emergency-hold':'emergency-join',side:refuge.side};
             this.stats.emergencies++;
           }
-          }else{
+          }else if(!result.engine){
             this.plan.native=result.native;this.checks=result.checks;this.evaluated=[];
             this.stats.plans++;this.stats.rollouts++;
           }
@@ -196,7 +210,7 @@ export class SpearheadDriver {
   }
   debug() {
     return {architecture:'SPEARHEAD',intent:this.lifecycle==='RACE'?this.episodes.role.toUpperCase():this.lifecycle,
-      stage:this.episodes.stage,target:this.episodes.target,side:this.episodes.side,
+      stage:this.episodes.stage,target:this.episodes.target,side:this.episodes.side,reason:this.episodes.reason,
       targetSpeed:this.targetSpeed,plan:this.selected,planFactor:this.plan?.factor??1,epoch:this.epoch,
       control:(this.selected?.kind==='pit'?this.pitGuide?.control:this.control)?.lastSignal??null,
       trackingPoint:this.trackingPoint?{x:this.trackingPoint.x,z:this.trackingPoint.z}:null,

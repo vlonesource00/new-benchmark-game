@@ -36,26 +36,74 @@ export function shadowOf(car) {
   dst.spec=car.spec;
   return dst;
 }
+// Exact, allocation-light view of the native track for rollouts. The native
+// lookups format string grid keys and binary-search every station; a rollout
+// asks for the same few metres thousands of times. Results are identical:
+// the same nearest node over the same 3x3 grid cells, then the same segment.
+const fastViews=new WeakMap();
+export function fastTrack(track){
+  let view=fastViews.get(track);if(view)return view;
+  const nodes=track.nodes;
+  if(!nodes?.length||typeof track.nearest!=='function')return track;
+  const n=nodes.length,grid=new Map(),cell=(gx,gz)=>gx*1048576+gz;
+  nodes.forEach((p,i)=>{const k=cell(Math.floor(p.x/30),Math.floor(p.z/30));
+    let list=grid.get(k);if(!list)grid.set(k,list=[]);list.push(i);});
+  const lerp=(a,b,t)=>a+(b-a)*t;let hint=0;
+  view=Object.create(track);
+  view.at=function(s,offset=0){
+    const length=this.length;s=((s%length)+length)%length;
+    let lo=hint;
+    if(!(nodes[lo].s<=s&&(lo===n-1||nodes[lo+1].s>s))){
+      lo=0;let hi=n-1;
+      while(lo<hi){const mid=Math.ceil((lo+hi)/2);if(nodes[mid].s<=s)lo=mid;else hi=mid-1;}
+      hint=lo;
+    }
+    const a=nodes[lo],b=nodes[(lo+1)%n];
+    const ds=(lo===n-1?length:b.s)-a.s;
+    const t=Math.min(1,Math.max(0,(s-a.s)/ds));
+    const tx=lerp(a.tx,b.tx,t),tz=lerp(a.tz,b.tz,t),mag=Math.hypot(tx,tz);
+    const nx=tz/mag,nz=-tx/mag;
+    return {x:lerp(a.x,b.x,t)+nx*offset,z:lerp(a.z,b.z,t)+nz*offset,y:0,tx:tx/mag,tz:tz/mag,nx,nz,
+      heading:Math.atan2(tx,tz),curvature:lerp(a.curvature,b.curvature,t),s,index:lo};
+  };
+  view.nearest=function(x,z){
+    const gx=Math.floor(x/30),gz=Math.floor(z/30);
+    let best=Infinity,index=0;
+    for(let dx=-1;dx<=1;dx++)for(let dz=-1;dz<=1;dz++){
+      const list=grid.get(cell(gx+dx,gz+dz));if(!list)continue;
+      for(const i of list){const p=nodes[i],d=(p.x-x)**2+(p.z-z)**2;if(d<best){best=d;index=i;}}
+    }
+    if(best===Infinity)for(let i=0;i<n;i++){const p=nodes[i],d=(p.x-x)**2+(p.z-z)**2;if(d<best){best=d;index=i;}}
+    const node=nodes[index];
+    const along=(x-node.x)*node.tx+(z-node.z)*node.tz;
+    const p=this.at(node.s+along);
+    p.lateral=(x-p.x)*p.nx+(z-p.z)*p.nz;
+    return p;
+  };
+  fastViews.set(track,view);return view;
+}
 export class PredictionTrack {
-  constructor(track){this.track=track;this.surfaces=new Map();this.projections=new Map();}
+  constructor(track){this.track=fastTrack(track);this.recent=[];}
   get length(){return this.track.length;} get halfWidth(){return this.track.halfWidth;}
   get curbWidth(){return this.track.curbWidth;} get barrierOffset(){return this.track.barrierOffset;}
   get pitWall(){return this.track.pitWall;} get ambient(){return this.track.ambient;}
   get wetness(){return this.track.wetness;}
   at(s,q=0){return this.track.at(s,q);}
+  // A vehicle step queries its centre surface; the rollout then projects the
+  // same centre. Keep the last few exact points instead of string-keyed maps.
+  lookup(x,z){for(const e of this.recent)if(e.x===x&&e.z===z)return e;return null;}
+  remember(x,z,value,surface){
+    const e={x,z,value,surface};this.recent.unshift(e);if(this.recent.length>12)this.recent.pop();return e;
+  }
   nearest(x,z){
-    const key=x+','+z;
-    if(!this.projections.has(key))this.projections.set(key,this.track.nearest(x,z));
-    return this.projections.get(key);
+    const e=this.lookup(x,z);if(e)return e.value;
+    return this.remember(x,z,this.track.nearest(x,z),null).value;
   }
   surface(x,z){
-    const key=x+','+z;
-    if(!this.surfaces.has(key)){
-      if(this.surfaces.size>256){this.surfaces.clear();this.projections.clear();}
-      const surface=this.track.surface(x,z);this.surfaces.set(key,surface);
-      this.projections.set(key,surface);
-    }
-    return this.surfaces.get(key);
+    const e=this.lookup(x,z);if(e?.surface)return e.surface;
+    const surface=this.track.surface(x,z);
+    if(e){e.surface=surface;e.value=surface;}else this.remember(x,z,surface,surface);
+    return surface;
   }
   deposit(){}
 }
@@ -173,7 +221,7 @@ export function validatePrefix(car,obs,route,control,resources,horizon=1.25) {
         // instead of following the damped mean. Reserve that uncertainty
         // before entering overlap; do not charge a steady rear pursuer for it.
         const laneUncertainty=resources.defending?0:Math.min(.4,Math.abs(r.dq)*t*.12);
-        measure(self,native,established?.10:.22+Math.min(.25,t*.12)+laneUncertainty,t+dt,'motion');
+        measure(self,native,(established?.10:.22+Math.min(.25,t*.12)+laneUncertainty)*(resources.contactScale??1),t+dt,'motion');
       }
       // A defender owns its established lane. Keep the full observed-motion
       // veto, but re-observe a pursuer's hypothetical lane response after the
@@ -189,7 +237,7 @@ export function validatePrefix(car,obs,route,control,resources,horizon=1.25) {
         const f=forecast(track,r,t+dt,branch);
         if(native&&branch===1&&!f.learned)continue;
         measure(self,{...f,id:r.id,yaw:f.heading,
-          spec:{halfWidth:r.halfWidth,halfLength:r.halfLength}},Math.min(.3,f.uncertainty),t+dt,branch);
+          spec:{halfWidth:r.halfWidth,halfLength:r.halfLength}},Math.min(.3,f.uncertainty)*(resources.contactScale??1),t+dt,branch);
       }
     }
     if(Math.floor((t+dt)*10)>Math.floor(t*10))traces.push({t:t+dt,s:next.s,q:next.lateral,v:self.speed});
