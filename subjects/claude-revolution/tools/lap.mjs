@@ -19,7 +19,7 @@ const c = race.cars[0], e = race.entries[0], drv = () => e.bridges[0].driver;
 const spins = [], hist = []; let spinning = false;
 let esc = 0, lap = 1, maxE = 0, maxBeta = 0, offs = 0; const rows = []; const sp = { brake: 0, drive: 0, coast: 0, front: 0, rear: 0 };
 const wall = Date.now();
-while (race.phase !== 'finished' && c.race.lap <= Number(laps) && race.time < 200 * Number(laps)) {
+while (race.phase !== 'finished' && c.race.lap <= Number(laps) && race.time < Math.max(200, track.length / 20) * Number(laps)) {
   race.step(FIXED_DT);
   const d = drv(); if (d?.line) { maxE = Math.max(maxE, Math.abs(d.line.closest(c.x, c.z, d.cursor).e)); maxBeta = Math.max(maxBeta, Math.abs(Math.atan2(c.v, Math.max(2, c.u)))); }
   { const d0 = drv(); hist.push([c.s, c.speed, Math.atan2(c.v, Math.max(2, c.u)), c.yawRate, d0?.rDes, d0?.e, c.controls.throttle, c.controls.brake, c.controls.steer, c.wheels[2].tyre.kappa, c.wheels[3].tyre.kappa, c.wheels[3].tyre.alpha, d0?.targetSpeed, d0?.racecraft?.lane?.lat?.[d0.cursor]].map((x) => +(x ?? 0).toFixed(2))); if (hist.length > 200) hist.shift(); }

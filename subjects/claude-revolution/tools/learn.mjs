@@ -19,7 +19,7 @@ const makeBridge = (d, i, race) => createRevolutionBridge({ hostTrack: race.trac
 const race = new EnduranceRace({ track, teams, format: { ...FORMATS.custom, mandatoryStops: 0, mandatorySwap: false }, laps: 12, startCompound: 'medium', makeBridge });
 race.start(); race.fitTyres(race.cars[0], 'medium');
 const c = race.cars[0], times = [];
-while (c.race.lap <= Number(laps) && race.time < 200 * Number(laps)) { const lap = c.race.lap; race.step(FIXED_DT); if (c.race.lap !== lap) times.push(c.race.lastLap.toFixed(2)); }
+while (c.race.lap <= Number(laps) && race.time < Math.max(200, track.length / 20) * Number(laps)) { const lap = c.race.lap; race.step(FIXED_DT); if (c.race.lap !== lap) times.push(c.race.lastLap.toFixed(2)); }
 const d = race.entries[0].bridges[0].driver, trim = Array.from(d.line.trim, (x) => Math.round(x * 1000) / 1000);
 const out = flag('out') ? {} : lines;
 (out[id] ??= {})[cls] = { ...(lines[id]?.[cls] ?? {}), trim };

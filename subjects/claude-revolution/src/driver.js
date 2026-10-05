@@ -114,6 +114,12 @@ export class RevolutionDriver {
       this.refresh(car, true);
     }
   }
+  /** Driven-wheel slip budget from tyre heat: off inside the window, 0 = unlimited. */
+  thermalBudget(a, b) {
+    const o = this.options, over = Math.max(a.core - (a.optimum ?? 85), b.core - (b.optimum ?? 85)) - (o.heatOnset ?? 20);
+    if (over <= 0) { if (over < -3) this.tcCap = 1; return 0; }
+    return clamp(1.6 - (o.heatSlope ?? 0.04) * over, o.heatFloor ?? 0.8, 1.6);
+  }
   /**
    * Where the car will be when these controls land. In a seat worker the
    * answer reaches the car a frame after the state it was computed from (`dt`
@@ -203,9 +209,11 @@ export class RevolutionDriver {
     // Tyre budget on exits: force grows as tanh(slip) but wear as force × slip,
     // so driven-wheel combined slip above the budget buys little drive for a
     // lot of heat. An integrating cap holds it near `slipBudget`.
-    const budget = this.options.slipBudget ?? 0;
+    // Unset, the budget is thermal: it engages once the driven tyres run well past their
+    // window (long laps cook the rears within one lap) and tightens as they heat further.
+    const d = car.spec?.drive === 'front' ? 0 : 2;
+    const budget = this.options.slipBudget ?? this.thermalBudget(car.wheels[d].tyre, car.wheels[d + 1].tyre);
     if (budget > 0) {
-      const d = car.spec?.drive === 'front' ? 0 : 2;
       const sl = (t) => (t.kappa > 0 ? Math.hypot(t.kappa * 10.5, Math.tan(Math.min(1.2, Math.abs(t.alpha))) * 8.6) : 0);
       const rs = Math.max(sl(car.wheels[d].tyre), sl(car.wheels[d + 1].tyre));
       this.tcCap = clamp((this.tcCap ?? 1) + dt * (rs > budget ? -12 * (rs - budget) - 1 : 1.5), 0.15, 1);
