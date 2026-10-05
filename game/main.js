@@ -293,6 +293,10 @@ async function startRace({ session = (cfg().qualifying ?? true) ? 'qualifying' :
   spectator.setTarget(cars[focusId], 'chase');
   race.start(); finishedSeen = false; publishSnapshot();
   setLoading($('#screen-loading'), 1, 'Lights in a moment…');
+  // Car bodies load asynchronously; their materials must be in the scene to be warmed.
+  await Promise.all(models.map((m) => m.ready?.catch(() => {})));
+  if (token !== raceToken) return;
+  finish.warm();
   setTimeout(() => {
     if (token !== raceToken) return;
     show('race'); raceActive = true;
