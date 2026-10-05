@@ -25,6 +25,7 @@ function interpolate(a,b,d) {
   return a.q + m*t + (10*v-6*m-4*n)*t**3 + (-15*v+8*m+7*n)*t**4 + (6*v-3*m-3*n)*t**5;
 }
 
+const BEHIND=300;
 export class Route {
   constructor(road, car, obs, description) {
     Object.assign(this,description);
@@ -38,7 +39,18 @@ export class Route {
       this.corridorSlope=(this.preferred(road.sample(road.q,this.start+1))
         -this.preferred(road.sample(road.q,this.start-1)))*.5;
     }
-    if((description.kind==='free'&&!description.world)||description.nominal){
+    // Well off the racing line (just after a pass or a lane hold) the free
+    // route's return is real geometry: the line's own envelope asked for
+    // 240 km/h four metres inside a braking zone and the car ran off.
+    const offLine=description.kind==='free'&&!description.world&&!description.field
+      &&Math.abs(obs.projection.lateral-road.sample(road.q,this.start))>1.5
+      &&(obs.rivals??[]).some(r=>Math.abs(r.gap)<80);
+    if(offLine){
+      const delta=Math.abs(obs.projection.lateral-road.sample(road.q,this.start));
+      description.field=d=>road.sample(road.q,this.start+d);
+      description.transfer=clamp(Math.sqrt(5.8*delta*car.speed**2/14),40,200);
+    }
+    if(((description.kind==='free'&&!description.world)||description.nominal)&&!offLine){
       this.geometry=road.geometry;this.speed=road.speed;
       this.key=description.kind+':'+(description.yieldSpeed??0);return;
     }
@@ -47,7 +59,11 @@ export class Route {
       const transfer=description.transfer;
       for(let i=0;i<road.n;i++){
         const d=distance(i*road.step,this.start,road.length);
-        if(d<0&&d>-90)this.q[i]+= (obs.projection.lateral-road.q[i])*smooth((d+90)/90);
+        // The lane behind the car only seeds the envelope's acceleration
+        // pass. Blended over 90 m, a car held 9 m off the line got a
+        // phantom 200 km/h S-bend behind it, and every lane-hold, cover or
+        // pass route then started 40 km/h under the car's own speed.
+        if(d<0&&d>-BEHIND)this.q[i]+= (obs.projection.lateral-road.q[i])*smooth((d+BEHIND)/BEHIND);
         if(d<0||d>this.length)continue;
         const t=clamp(d/transfer,0,1),position=1-10*t**3+15*t**4-6*t**5,
           velocity=t-6*t**3+8*t**4-3*t**5;
@@ -69,10 +85,10 @@ export class Route {
       const longitudinal=dx*Math.sin(f.heading)+dz*Math.cos(f.heading);
       const points=road.points.map((p,i)=>{
         const d=distance(i*road.step,this.start,road.length),h=p.heading;
-        if(d>this.length||d<=-90)return {x:p.x,z:p.z,nx:0,nz:0};
+        if(d>this.length||d<=-BEHIND)return {x:p.x,z:p.z,nx:0,nz:0};
         let offset=0,lead=0;
         if(d>=0&&d<=this.length){offset=this.offset(d);lead=longitudinal*(1-smooth(d/60));}
-        else if(d<0&&d>-90)offset=this.knots[0].q*smooth((d+90)/90);
+        else if(d<0&&d>-BEHIND)offset=this.knots[0].q*smooth((d+BEHIND)/BEHIND);
         let x=p.x+Math.cos(h)*offset+Math.sin(h)*lead,
           z=p.z-Math.sin(h)*offset+Math.cos(h)*lead;
         const near=road.track.nearest(x,z),edge=description.edge??road.track.halfWidth-car.spec.halfWidth-.4;
@@ -95,7 +111,7 @@ export class Route {
         ? road.q[i]
         : description.corridor ? this.corridorOffset(d,road.q[i])
         : this.offset(d);
-      else if(description.kind!=='free' && d<0 && d>-90) this.q[i]=road.q[i]+(obs.projection.lateral-road.q[i])*smooth((d+90)/90);
+      else if(description.kind!=='free' && d<0 && d>-BEHIND) this.q[i]=road.q[i]+(obs.projection.lateral-road.q[i])*smooth((d+BEHIND)/BEHIND);
     }
     this.geometry=geometry(road.base,this.q,road.curvatureSpan);
     this.speed=speedEnvelope(this.geometry,road.table,road.gripUse,

@@ -135,6 +135,17 @@ function preserveOverlap(car,cars,track,k,previous){
   k.steer=steer;return true;
 }
 
+function timeSpaceClear(car,other,p,q,route,width,long,length){
+  const brake=Math.max(5,-(other.ax??0));
+  for(let t=0;t<=1.4;t+=.1){
+    const own=p.s+car.speed*t,lead=q.s+Math.max(0,other.speed*t-.5*brake*t*t);
+    const ds=distance(lead,own,length);
+    if(ds<-long)return true;
+    if(Math.abs(ds)<long&&Math.abs(route.at(own).offset-q.lateral)<width)return false;
+  }
+  return true;
+}
+
 // Cheap guard also runs on the host between asynchronous answers. It responds
 // to a physically occupied forward corridor, never to a car merely nearby.
 export function guardControls(car,cars,track,nominal,{route=null,age=0}={}) {
@@ -165,6 +176,11 @@ export function guardControls(car,cars,track,nominal,{route=null,age=0}={}) {
     const lateral=Math.min(Math.abs(q.lateral-p.lateral),Math.abs(q.lateral-futureQ));
     if(overlap!=='closing'&&Math.abs(q.lateral-futureQ)>own.width+body.width+.3 && catchTime>.28 && space>3)continue;
     if(overlap!=='closing'&&lateral>own.width+body.width+.2)continue;
+    // Time-space check: compare our route with where the rival will be at the
+    // same moment (with a firm braking allowance), not with its current spot.
+    // Pitting a lane far ahead against a car standing still braked attackers
+    // that were metres apart laterally.
+    if(overlap!=='closing'&&route&&space>1.5&&timeSpaceClear(car,other,p,q,route,own.width+body.width+.3,long+1.5,track.length))continue;
     // Close on a car at the braking this car actually has: 60 % of the
     // measured threshold deceleration (GTP 18-33, GT3 15-23 m/s²). A flat
     // 9 m/s² allowed only ~4 m/s of closure at 20 m, so a faster car could not

@@ -148,7 +148,7 @@ export function validatePrefix(car,obs,route,control,resources,horizon=1.25) {
   const track=control.track,environment=new PredictionTrack(track),self=shadowOf(car);
   const roadLimit=roadExcess;
   const executor=control instanceof ForceControl?new ForceControl(environment,control.path,control.o):control;
-  const traces=[], dt=resources.predictionStep===1/60?1/60:1/120, startWear=self.wheels.map(w=>w.tyre.wear);
+  const traces=[], dt=resources.predictionStep===1/60?1/60:1/120, startWear=self.wheels.map(w=>w.tyre.wear),startSpeed=self.speed;
   const nativeStep=1/120;
   let minClearance=Infinity,off=0,maxBeta=0,progress=0,lastS=obs.projection.s,k=null,nextControl=0,elapsed=0,conflict=null;
   let steeringTravel=0,firstSteerChange=0,brakingSeconds=0,lastSteer=car.controls.steer,first=true;
@@ -215,7 +215,13 @@ export function validatePrefix(car,obs,route,control,resources,horizon=1.25) {
       if(t>=occupiedHorizon)continue;
       const native=predicted.get(r.id)?.[step];
       if(native){
-        const behind=(native.x-self.x)*Math.sin(self.yaw)+(native.z-self.z)*Math.cos(self.yaw)<0;
+        const along=(native.x-self.x)*Math.sin(self.yaw)+(native.z-self.z)*Math.cos(self.yaw),behind=along<0;
+        // A pursuer running into our tail while we hold our speed is its
+        // conflict, not ours: braking for it only made the hit and the lost
+        // place certain. Lateral moves into its nose stay checked.
+        const across=Math.abs((native.x-self.x)*Math.cos(self.yaw)-(native.z-self.z)*Math.sin(self.yaw));
+        if(behind&&-along>(car.spec.halfLength+r.halfLength)*.85&&across<(car.spec.halfWidth+r.halfWidth)*.6
+          &&self.speed>=startSpeed-.3)continue;
         const established=resources.defending&&r.stableLane&&route.kind==='free'&&behind;
         // A rival already transferring laterally can continue its turn-in
         // instead of following the damped mean. Reserve that uncertainty

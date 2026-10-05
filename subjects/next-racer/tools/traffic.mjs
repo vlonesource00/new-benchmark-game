@@ -32,7 +32,7 @@ const st = { stuck: 0, stuckBy: {}, safety: {}, intent: {}, plan: {}, lat: [], m
 const tally = (o, k, dt) => { o[k] = (o[k] ?? 0) + dt; };
 let sub = 0, frames = 0; const wall0 = Date.now();
 let order = cars.map((c) => c.race.progress);
-const lapSeen = cars.map((c) => c.race.lap), lapLog = cars.map(() => []);
+const lapSeen = cars.map((c) => c.race.lap), lapLog = cars.map(() => []), vmax = cars.map(() => 0);
 while (race.phase !== 'finished' && race.time < 120 * laps + 90) {
   race.step(FIXED_DT);
   if (++sub % 2 === 0) {
@@ -42,6 +42,7 @@ while (race.phase !== 'finished' && race.time < 120 * laps + 90) {
   }
   cars.forEach((c, i) => { if (c.race.lap !== lapSeen[i]) { lapSeen[i] = c.race.lap; if (c.race.lastLap && !race.formation) lapLog[i].push(c.race.lastLap); } });
   if (race.formation || race.phase !== 'racing') continue;
+  cars.forEach((c, i) => { vmax[i] = Math.max(vmax[i], c.speed); });
   const fp = track.nearest(fc.x, fc.z);
   // Stuck: a car 0..35 m ahead within a car width, and we are not faster than it.
   let blocker = null;
@@ -52,7 +53,7 @@ while (race.phase !== 'finished' && race.time < 120 * laps + 90) {
   }
   const dbg = race.entries[focus].bridges[0]?.lastDebug ?? {};
   const near = blocker ?? (args.includes('--traceall') ? cars.filter((o) => o !== fc).map((o) => { const q = track.nearest(o.x, o.z); let d = q.s - fp.s; if (d < -L / 2) d += L; if (d > L / 2) d -= L; return { d, o }; }).filter((x) => Math.abs(x.d) < 40).sort((a, b) => Math.abs(a.d) - Math.abs(b.d))[0] : null);
-  if (near && (args.includes('--trace') || args.includes('--traceall')) && Math.round(race.time * 120) % 30 === 0) { const blocker = near; const bq = track.nearest(blocker.o.x, blocker.o.z); console.log(`t${race.time.toFixed(1)} s${fp.s.toFixed(0)} d${blocker.d.toFixed(1)} q${fp.lateral.toFixed(2)} bq${bq.lateral.toFixed(2)} v${(fc.speed*3.6).toFixed(0)}/${(blocker.o.speed*3.6).toFixed(0)} thr${fc.controls.throttle.toFixed(2)} brk${fc.controls.brake.toFixed(2)} st${fc.controls.steer.toFixed(2)} ${dbg.intent}/${dbg.stage}>${dbg.target ?? '-'} side${dbg.side} ${dbg.plan?.kind} ${dbg.reason ?? ''} saf ${dbg.safety} k${track.at(fp.s).curvature.toFixed(4)} chk ${(dbg.checks ?? []).map((c) => `${c.kind}${c.side}${c.brakeAction ? "b" : ""}${c.finalAdmission ? "F" : ""}:${c.reason ?? "ok"}${c.score!=null?"="+c.score.toFixed(0):""}${c.progress!=null?"p"+c.progress.toFixed(0)+"/"+(c.speed??0).toFixed(0):""}${c.conflict ? "@" + c.conflict.t.toFixed(2) + "/" + c.conflict.branch : ""}`).join(" ")}`); }
+  if (near && (args.includes('--trace') || args.includes('--traceall')) && Math.round(race.time * 120) % Number(get("tracestep", 30)) === 0) { const blocker = near; const bq = track.nearest(blocker.o.x, blocker.o.z); console.log(`t${race.time.toFixed(1)} s${fp.s.toFixed(0)} d${blocker.d.toFixed(1)} q${fp.lateral.toFixed(2)} bq${bq.lateral.toFixed(2)} v${(fc.speed*3.6).toFixed(0)}/${(blocker.o.speed*3.6).toFixed(0)} thr${fc.controls.throttle.toFixed(2)} brk${fc.controls.brake.toFixed(2)} st${fc.controls.steer.toFixed(2)} ${dbg.intent}/${dbg.stage}>${dbg.target ?? '-'} side${dbg.side} ${dbg.plan?.kind} ${dbg.reason ?? ''} ts${((dbg.targetSpeed ?? 0) * 3.6).toFixed(0)} saf ${dbg.safety} k${track.at(fp.s).curvature.toFixed(4)} chk ${(dbg.checks ?? []).map((c) => `${c.kind}${c.side}${c.brakeAction ? "b" : ""}${c.finalAdmission ? "F" : ""}:${c.reason ?? "ok"}${c.score!=null?"="+c.score.toFixed(0):""}${c.progress!=null?"p"+c.progress.toFixed(0)+"/"+(c.speed??0).toFixed(0):""}${c.conflict ? "@" + c.conflict.t.toFixed(2) + "/" + c.conflict.branch : ""}`).join(" ")}`); }
   if (blocker) { st.stuck += FIXED_DT; tally(st.stuckBy, `${short(field[blocker.o.id]?.id ?? '?')}:${blocker.o.classId}`, FIXED_DT); if (fc.controls.brake > .05) st.brakeStuck += FIXED_DT; }
   if (sub % 2 === 0) {
     tally(st.safety, dbg.safety ?? 'none', FIXED_DT * 2); tally(st.intent, `${dbg.intent}/${dbg.stage}`, FIXED_DT * 2); tally(st.plan, dbg.plan?.kind ?? '-', FIXED_DT * 2); if ((dbg.planFactor ?? 1) < 1) tally(st.safety, 'factor' + dbg.planFactor, FIXED_DT * 2);
@@ -76,6 +77,7 @@ for (let i = 0; i < cars.length; i++) {
 }
 console.log(`focus ${focus} ${short(field[focus].id)} ${field[focus].cls}: stuck ${st.stuck.toFixed(1)} s (braking ${st.brakeStuck.toFixed(1)} s) by ${fmt(st.stuckBy)}`);
 console.log(`  passes ${st.passes.join(' ') || '-'} · lost ${st.lost.join(' ') || '-'}`);
+console.log(`  vmax ${vmax.map((v, i) => short(field[i].id) + i + " " + (v * 3.6).toFixed(1)).join(" | ")}`);
 console.log(`  latency p50 ${pct(.5)} p90 ${pct(.9)} p99 ${pct(.99)} max ${st.maxLat.toFixed(1)} ms`);
 console.log(`  slow ${Object.entries(st.slow).map(([k, v]) => k + ' ' + v).join(', ')} | ${st.slowMs.slice(0, Number(get('slown', 12))).join(' ')}`);
 console.log(`  intent ${fmt(st.intent)}`);
