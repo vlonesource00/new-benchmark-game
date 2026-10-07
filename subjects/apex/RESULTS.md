@@ -40,6 +40,20 @@ Registration is opt-in and inert for every other driver (see ARCHITECTURE.md sec
 `createSeatBridge` case, `apexState` (P3), `car.intent` in `hybridStep` (P2), strategist install hook (P1, stub).
 APEX loads and drives through `EnduranceRace` (`tools/solo.mjs`, `tools/lap.mjs`); the seat-worker path is exercised
 from M1 onwards.
+
+## M1: pace core
+
+What is built: a g-g-v model identified on the real `Vehicle` per class (`tools/identify.mjs`), a minimum-time line per
+track and class on a free-form corridor with a lateral-jerk limit (`tools/bake.mjs`, `data/lines.json`), a quasi-steady-state
+speed profile that follows live tyre grip, a curvature-preview tracker with steady-state-sideslip countersteer, a friction-circle
+pedal law, a traction governor, a tyre-slip protective layer, one-frame-delay pose prediction for seat workers and in-lap pit
+guidance. Run time per update (`tools/cost.mjs`): median 4 µs on Harbor and 1.5 µs on the Nürburgring, p99 40 µs and 14 µs;
+the only spikes are the speed-profile rebuilds when tyre grip moves (max 5 ms Harbor, 19 ms Nürburgring).
+
+### Solo pace, same protocol as M0 (6 laps, Nürburgring 3)
+
+Command: `node --import ./scripts/json-loader.mjs subjects/apex/tools/baseline.mjs --ais apex`. Best / mean of the flying laps, seconds.
+
 | Track | Class | SPH best / mean | SLC best / mean | CRV best / mean | APX best / mean |
 |---|---|---|---|---|---|
 | Harbor Ring | GTP | 53.83 / 56.80 | 54.76 / 57.41 | 54.41 / 57.00 | 53.16 / 56.30 |
@@ -55,20 +69,20 @@ from M1 onwards.
 
 APEX has the best flying lap on all ten rows (0.5 to 2.7 % under the best reference on the short circuits, 1.3 % on the
 Nürburgring GTP and 1.2 % on the GT3) and the best mean on all ten, with zero incident points. The Nürburgring uses
-\`margin 0.8\` (see below); every other circuit runs the default \`margin 0.97\`.
+`margin 0.8` (see below); every other circuit runs the default `margin 0.97`.
 
-### Robustness (fitness tool \`tools/score.mjs\`, 4 circuits × 2 classes, 4 laps, SPH best from M0 = 1.000)
+### Robustness (fitness tool `tools/score.mjs`, 4 circuits × 2 classes, 4 laps, SPH best from M0 = 1.000)
 
 | Condition | best / SPH | mean / SPH | incident points | dirty runs |
 |---|---|---|---|---|
 | nominal tyres | 0.9850 | 0.9531 | 0 | 0 / 8 |
 | rear tyres 8 % weaker (stint wear and heat make the rear the weak axle) | 1.0180 | 0.9860 | 0 | 0 / 8 |
 
-Real-time seat-worker conditions (\`tools/worker.mjs --realtime --burst-ms=75\`: the game's \`AsyncSeats\` and \`seat-worker.js\` in
+Real-time seat-worker conditions (`tools/worker.mjs --realtime --burst-ms=75`: the game's `AsyncSeats` and `seat-worker.js` in
 worker threads, 30 fps frames, replies one frame late, 75 ms delivery bursts): Harbor GTP standing start 52.41 / 53.45 / 55.31 s,
 Alpine GT3 rolling start 71.77 / 72.32 / 77.81 s, both with zero contacts and zero incident points.
 
-### What moved the numbers (each change measured with \`tools/score.mjs\`)
+### What moved the numbers (each change measured with `tools/score.mjs`)
 
 | Change | Effect |
 |---|---|
@@ -79,14 +93,14 @@ Alpine GT3 rolling start 71.77 / 72.32 / 77.81 s, both with zero contacts and ze
 
 ### What did not pay (kept out, tools kept)
 
-- **Per-corner trims from the on-simulator tuner** (\`tools/tune.mjs\`: lateral and braking trim per corner, clean lap time as objective,
+- **Per-corner trims from the on-simulator tuner** (`tools/tune.mjs`: lateral and braking trim per corner, clean lap time as objective,
   stress cases with weak grip and weak rear). Pinned-tyre laps improved by 1–2 % but real stints got worse (12 incident points over 8 runs
-  versus 0): the trims sit on the edge of the tracker's stability and wear and heat move that edge. Default is \`useTrim: false\`.
-- **Thermal throttling of the push level** (\`thermalK\`): 6-lap Harbor mean got worse (59.7 → 62.8 s at lap 6) because the tyre core has a
+  versus 0): the trims sit on the edge of the tracker's stability and wear and heat move that edge. Default is `useTrim: false`.
+- **Thermal throttling of the push level** (`thermalK`): 6-lap Harbor mean got worse (59.7 → 62.8 s at lap 6) because the tyre core has a
   4-minute time constant and the loss from slowing is immediate. The push level is a planning decision, not a reflex: M3.
 - **Kerb use** (line bound from −0.9 to +0.3 m of the asphalt edge): all within ±0.1 %, so the kerb is not a lever for lap time with this
   tyre model (kerb grip 0.88 plus bump). Default −0.5.
-- **Traction slip limit** (\`tractionSlip\`): lap time and wear per lap move together (1.2 → +2.6 % lap, −26 % wear), no free lunch: planner input.
+- **Traction slip limit** (`tractionSlip`): lap time and wear per lap move together (1.2 → +2.6 % lap, −26 % wear), no free lunch: planner input.
 
 ### Findings that feed M2 and M3
 
