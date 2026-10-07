@@ -359,7 +359,9 @@ export class EnduranceRace {
     if (Math.abs(delta) < 20) r.progress += delta;
     if (previousProgress < 0 && r.progress >= 0) { r.lapStart = r.secMark = this.time; r.valid = r.secValid = true; }
     // Kerbs count as track: a lap is lost only with the car centre beyond the kerb.
-    if (!e.pit && !halfCarInside(c.lateral, track.halfWidth + (track.curbWidth ?? 0))) { r.valid = r.secValid = false; r.offtrack += 1 / 120; }
+    // Track limits as in DTM/GT racing: the lap stands while at least one wheel is on the track or kerb
+    // (inner wheels' contact patch at most the kerb's outer edge); all four beyond it invalidates the lap.
+    if (!e.pit && !halfCarInside(Math.abs(c.lateral) - (c.spec?.track ?? 1.72) / 2, track.halfWidth + (track.curbWidth ?? 0))) { r.valid = r.secValid = false; r.offtrack += 1 / 120; }
     const totalSectors = Math.floor(Math.max(0, r.progress) / (track.length / 3));
     if (totalSectors > r.sector) {
       r.sectors.push(this.time); r.sector = totalSectors;

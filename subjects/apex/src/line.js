@@ -45,21 +45,28 @@ export class Line {
     return out;
   }
   /** Quasi-steady-state lap on this line for `model`; fills this.v and returns the lap time. */
-  speeds(model, o = {}) {
-    const N = this.N, ks = this.ks, len = this.len, vmax = this.vmax, v = o.out ?? this.v, trim = this.trim, btrim = this.btrim, dk = this.dk, J = o.jerk ?? model.jerk;
+  speeds(model, o = {}) { const g = this.speedsGen(model, o); let r = g.next(); while (!r.done) r = g.next(); return r.value; }
+  /**
+   * `speeds` as a generator that yields every ~1000 stations of work, so a rebuild can be spread over several frames
+   * (`sliced`): a full lap of the Nordschleife is several milliseconds, more than a frame's share of a seat worker.
+   */
+  *speedsGen(model, o = {}) {
+    const self = this, N = this.N, ks = this.ks, len = this.len, vmax = this.vmax, v = o.out ?? this.v, trim = this.trim, btrim = this.btrim, dk = this.dk, J = o.jerk ?? model.jerk;
     const pb = o.brakeExp ?? 2, pd = o.driveExp ?? 2, top = o.top ?? 95, m0 = model.margin;
     const lat = (s, i) => { model.margin = m0 * trim[i]; const a = model.lat(s); model.margin = m0; return a; };
+    let work = 0; const tick = (n) => (work += n) >= 1000 ? ((work = 0), true) : false;
     for (let i = 0; i < N; i++) {
       const ak = Math.abs(ks[i]); let s = top;
       if (ak > 1e-6) { s = Math.min(top, Math.sqrt(lat(40, i) / ak)); for (let it = 0; it < 5; it++) s = Math.min(top, Math.sqrt(lat(s, i) / ak)); }
       if (J > 0 && dk[i] > 1e-7) s = Math.min(s, Math.cbrt(J / dk[i]));
       vmax[i] = s;
+      if (tick(ak > 1e-6 ? 3 : 1)) yield;
     }
     const util = (i, s) => Math.min(1, s * s * Math.abs(ks[i]) / lat(s, i));
     const gearOn = model.gearAware && o.gears !== false, useNotch = gearOn && !o.out && o.notch !== false;
     // gearbox notches decided at the last rebuild stay in force; they are re-decided below on this rebuild's profile
     if (useNotch) { this.vfree.set(vmax); this.applyNotches(); }
-    const run = () => {
+    const run = function* () {
       let start = 0; for (let i = 1; i < N; i++) if (vmax[i] < vmax[start]) start = i;
       v.set(vmax);
       for (let pass = 0; pass < 2; pass++) {
@@ -68,27 +75,30 @@ export class Line {
           const a = model.drive(s, o.mass) * Math.pow(1 - Math.pow(r, pd), 1 / pd);
           const t = Math.sqrt(s * s + 2 * len[i] * Math.max(0, a));
           if (t < v[nx]) v[nx] = t;
+          if (tick(1)) yield;
         }
         for (let j = 0; j < N; j++) {
           const i = ((start - j) % N + N) % N, pv = i === 0 ? N - 1 : i - 1, s = v[i], r = util(i, s);
           model.margin = m0 * btrim[i]; const b = model.brake(s) * Math.pow(1 - Math.pow(r, pb), 1 / pb); model.margin = m0;
           const t = Math.sqrt(s * s + 2 * len[pv] * Math.max(0.5, b));
           if (t < v[pv]) v[pv] = t;
+          if (tick(1)) yield;
         }
       }
       // braking envelope alone (no forward acceleration limit): what a car with more thrust than the table may still carry
-      const vb = this.vbrk; vb.set(vmax);
+      const vb = self.vbrk; vb.set(vmax);
       for (let pass = 0; pass < 2; pass++) for (let j = 0; j < N; j++) {
         const i = ((start - j) % N + N) % N, pv = i === 0 ? N - 1 : i - 1, sp = vb[i], r = util(i, sp);
         model.margin = m0 * btrim[i]; const b = model.brake(sp) * Math.pow(1 - Math.pow(r, pb), 1 / pb); model.margin = m0;
         const t = Math.sqrt(sp * sp + 2 * len[pv] * Math.max(0.5, b));
         if (t < vb[pv]) vb[pv] = t;
+        if (tick(1)) yield;
       }
     };
-    run();
+    yield* run();
     // The profile is an upper bound for the tracker (the acceleration table is the best gear), never a limit the car cannot meet.
     // The automatic box only drops a gear below 3450 rpm: a corner taken just above that speed leaves the car a gear too tall for the whole exit.
-    if (useNotch && this.gearNotches(model, o, util)) { this.applyNotches(); run(); }
+    if (useNotch && this.gearNotches(model, o, util)) { this.applyNotches(); yield* run(); }
     let T = 0; for (let i = 0; i < N; i++) T += len[i] / Math.max(1, 0.5 * (v[i] + v[i + 1 === N ? 0 : i + 1]));
     return T;
   }

@@ -80,6 +80,12 @@ export class Combat {
       if (r.off && !(Math.sign(r.vl) === -Math.sign(r.lat) && Math.abs(r.vl) > 0.5)) { if ((mem.get(r.id) ?? -1) > now) set.add(r.id); else mem.delete(r.id); continue; }
       if (r.ds > CAR_LEN && r.ds < (o.escapeRange ?? 260) && v - r.v >= (o.escapeClosing ?? 8)) {
         const ii = line.idx(c.i + Math.round(r.ds / line.ds));
+        // a car on the road at close to the line's speed where it is is braking for the corner as we will: following handles it.
+        // Well under it (a spinner, a stopped car) it counts at once; in between (it braked early, it is nursing a wounded car)
+        // only once it has stayed that slow for a while
+        const frac = r.v / Math.max(1, line.v[ii]), slowAt = (this.hzSlow ??= new Map());
+        if (frac > (o.hazardFrac ?? 0.75)) slowAt.delete(r.id); else if (!slowAt.has(r.id)) slowAt.set(r.id, now);
+        if (frac > (o.hazardFrac ?? 0.75) || (frac > 0.45 && now - slowAt.get(r.id) < (o.hazardHold ?? 0.8))) { if ((mem.get(r.id) ?? -1) > now) set.add(r.id); continue; }
         // in our way now or within 1.5 s at its lateral speed; a slow car beside the road (a spinner in the run-off) may be coming back on, so it counts from further out
         const vl = clamp(r.vl, -4, 4), reach = CAR_WID + 1.5, ref = [field.me.lat, line.lat[ii]];
         // a car that has stopped is put back on the centreline by the marshals within seconds, so a stopped car counts as being on the road
@@ -187,7 +193,9 @@ export class Combat {
     this.relList = rel;
     const hz = o.escape === false ? new Set() : this.hazards(now, v, c, field); this.hz = hz;
     const dOff = field.me.lat - line.sample(line.lat, c.i, c.f, 0);
-    if (hz.size || (this.escaping && Math.abs(dOff) > 0.8)) { this.escaping = true; return this.decide(now, car, c, v, field, rel, rel.filter((r) => r.ds > 0).sort((a, b) => a.ds - b.ds)[0]); }
+    if (hz.size) this.hzLast = now;
+    // after the hazard the planner keeps the car until it is back near the line, for a second at most (then the lanes that ramp back take over)
+    if (hz.size || (this.escaping && Math.abs(dOff) > 0.8 && now - (this.hzLast ?? -9) < (o.escapeTail ?? 1.0))) { this.stats.escFrames = (this.stats.escFrames ?? 0) + 1; this.escaping = true; return this.decide(now, car, c, v, field, rel, rel.filter((r) => r.ds > 0).sort((a, b) => a.ds - b.ds)[0]); }
     this.escaping = false;
     const capMode = (o.combatMode ?? 'pass') !== 'pass';
     this.run = this.straightRun(c, v);
@@ -197,7 +205,11 @@ export class Combat {
     this.state = lead && lead.ds < 80 ? 'FOLLOW' : 'FREE';
     this.focus = lead ? { id: lead.id, kind: 'follow', ds: lead.ds } : null;
     // a car we are lapping, one on its in-lap or one far slower: pull out and go by on a wide lane, whatever the combat mode
-    this.slowMode = Boolean(lead && lead.ds < 160 && (lead.box || (v - lead.v > (o.slowPass ?? 5) && lead.v < (o.slowFrac ?? 0.8) * line.sample(line.v, line.idx(c.i + Math.round(lead.ds / line.ds)), 0, 0))));
+    // (a car braking earlier than the racing line is not slow: it has to stay well under line speed for a while first)
+    const slowNow = Boolean(lead && lead.ds < 160 && v - lead.v > (o.slowPass ?? 5) && lead.v < (o.slowFrac ?? 0.8) * line.sample(line.v, line.idx(c.i + Math.round(lead.ds / line.ds)), 0, 0));
+    if (!slowNow) this.slowSeen = null; else if (this.slowSeen?.id !== lead.id) this.slowSeen = { id: lead.id, since: now };
+    this.slowMode = Boolean(lead && lead.ds < 160 && (lead.box || (slowNow && now - this.slowSeen.since >= (o.slowHold ?? 1.0))));
+    if (this.slowMode) this.stats.slowFrames = (this.stats.slowFrames ?? 0) + 1;
     if (this.slowMode) return this.decide(now, car, c, v, field, rel.length ? rel : [lead], lead);
     if ((o.combatMode ?? 'pass') !== 'pass') {
       // control: rear-end cap and alongside guard only
@@ -373,6 +385,7 @@ export class Combat {
     const live = this.atk && this.atk.id === lead?.id && now < this.atk.until;
     if (!lead || lead.ds > (o.pullRange ?? 45) || lead.ds < CAR_LEN * 0.5 || this.hz?.has(lead.id) || lead.box || lead.off) { this.atk = null; return null; }
     const settled = d.state?.greenAt == null || now - d.state.greenAt > (o.pullAfter ?? 3);
+    let fresh = null;
     if (!live) {
       const lu = Math.abs(d.ayReq ?? 0) / Math.max(1, d.latCap ?? 1);
       // held up: the cap binds (or the tow will carry us past), and we are off the limit
@@ -382,39 +395,61 @@ export class Combat {
       // on a straight the tail is worth more than the outside lane: stay in the tow until the braking zone is near
       // (then pull out to be alongside into it) or until the cap would make us lift behind it (slingshot)
       const run = this.run;
-      if (o.towFollow !== false && o.towDefer !== false && this.towId === lead.id && run.straight && v > (o.towMinV ?? 40)) {
+      // (in its wake counts too when the tow lane was never started: we are behind it already)
+      if (o.towFollow !== false && o.towDefer !== false && (this.towId === lead.id || (d.wake ?? 0) > (o.slingWake ?? 0.15)) && run.straight && v > (o.towMinV ?? 40)) {
         const brakeNear = run.brakeIn < lead.ds + Math.max(60, (o.pullLead ?? 1.6) * v);
-        const sling = lead.ds < (o.slingGap ?? 14) && Number.isFinite(this.cap) && this.cap < v + 1;
+        // slingshot: pull out only once the wake has carried us right onto its gearbox and the cap is about to make us lift
+        const sling = lead.ds < (o.slingGap ?? 10) && Number.isFinite(this.cap) && this.cap < v + (o.slingSlack ?? 0.3);
         if (!brakeNear && !sling) return null;
       }
       // inside of the next corner: the racing line's offset where it curves hardest over the next 40..200 m
       let kMax = 0, inside = 0; for (let m = 40; m <= 200; m += 6) { const ii = line.idx(c.i + Math.round((lead.ds + m) / line.ds)), k = Math.abs(line.ks[ii]); if (k > kMax) { kMax = k; inside = Math.sign(line.lat[ii]) || 1; } }
       const W = o.pullGap ?? 2.45, room = (sg) => Math.abs(lead.lat + sg * W) <= line.bound - 0.2;
-      let side = kMax > 0.004 ? inside : Math.sign(me - lead.lat) || 1;
-      if (!room(side)) side = -side; if (!room(side)) return null;
-      this.atk = { id: lead.id, side, W, until: now + (o.pullHold ?? 4) }; this.stats.pulls = (this.stats.pulls ?? 0) + 1; this.lastAttack = now;
+      // both sides are built and the one that keeps more speed through what follows is taken (the inside of the next corner
+      // wins a tie): around the outside of a corner whose exit leads into one the other way, the outside is the next inside
+      const pref = kMax > 0.004 ? inside : Math.sign(me - lead.lat) || 1, latAt = this.latAtFn(lead, this.predict(lead, 4, 0.1, false));
+      let pick = null;
+      for (const sd of o.pullOutside === false ? [pref] : [pref, -pref]) {
+        if (!room(sd)) continue;
+        const cand = this.pullLane(car, c, v, me, latAt, sd, W, pick ? 1 : 0), score = cand.loss - (sd === pref ? (o.insideBias ?? 1) : 0);
+        if (!pick || score < pick.score) pick = { side: sd, score, ...cand };
+      }
+      if (!pick) return null;
+      if (pick.loss > (o.pullLoss ?? 3)) { this.pullWait = now + 1.5; return null; }
+      this.atk = { id: lead.id, side: pick.side, W, until: now + (o.pullHold ?? 4) }; this.stats.pulls = (this.stats.pulls ?? 0) + 1; this.lastAttack = now;
+      if (pick.side !== pref) this.stats.outside = (this.stats.outside ?? 0) + 1;
+      fresh = pick;
     }
-    const { side, W } = this.atk, i0 = c.i, f0 = c.f, n = clamp(Math.round(4.5 * v / line.ds), 50, 160);
-    const latAt = this.latAtFn(lead, this.predict(lead, 4, 0.1, false)), d0 = me - line.sample(line.lat, i0, f0, 0), rin = Math.max(40, (o.pullRamp ?? 1.0) * v) / line.ds;
-    const shift = new Float64Array(n + 1);
+    const { side, W } = this.atk, i0 = c.i, n = clamp(Math.round(4.5 * v / line.ds), 50, 160);
+    const { lane, loss } = fresh ?? this.pullLane(car, c, v, me, this.latAtFn(lead, this.predict(lead, 4, 0.1, false)), side, W);
+    // a lane that turns into a losing move once committed (the rival moved over, the corner tightened): drop it
+    if (loss > (o.pullLoss ?? 3) + 1) { this.atk = null; this.pullWait = now + 1.5; this.stats.pullDrops = (this.stats.pullDrops ?? 0) + 1; return null; }
+    this.plan = { lane, path: lane, side, A: 0, W, tag: 'pull', until: now + 0.2 }; this.state = 'ATTACK';
+    this.focus = { id: lead.id, kind: 'attack', ds: lead.ds }; this.contact = null;
+    this.visCands = [{ kind: `pull ${side > 0 ? 'L' : 'R'}`, score: 0, chosen: true, points: this.lanePoints(lane, i0, Math.min(n, 70)) }];
+    return lane;
+  }
+
+  /**
+   * A pull-out lane at rubbing distance `W` on side `side` of the rival's predicted line, ramped from where we are, and how
+   * much slower than the racing line it is over the next 2.5 s (compared at the corner minimums: we start below the line's
+   * speed because we are held up, which is not the lane's fault). `alt` picks the spare buffer when two sides are compared.
+   */
+  pullLane(car, c, v, me, latAt, side, W, alt = 0) {
+    const d = this.d, o = d.options, line = d.line, i0 = c.i, n = clamp(Math.round(4.5 * v / line.ds), 50, 160);
+    const d0 = me - line.sample(line.lat, i0, c.f, 0), rin = Math.max(40, (o.pullRamp ?? 1.0) * v) / line.ds, shift = new Float64Array(n + 1);
     for (let j = 0; j <= n; j++) {
       const ii = line.idx(i0 + j), tgt = latAt(line.st[ii]) + side * W - line.lat[ii], u = smooth(j / rin);
       shift[j] = d0 * (1 - u) + tgt * u;
       const l = line.lat[ii] + shift[j]; if (Math.abs(l) > line.bound) shift[j] = Math.sign(l) * line.bound - line.lat[ii];
     }
     for (let pass = 0; pass < 3; pass++) { let prev = shift[0]; for (let j = 1; j < n; j++) { const cur = shift[j]; shift[j] = 0.25 * prev + 0.5 * cur + 0.25 * shift[j + 1]; prev = cur; } }
-    const bufs = (this.pullBufs ??= [line.blankLane(), line.blankLane()]), k = this.plan?.path === bufs[0] ? 1 : 0;
+    const bufs = (this.pullBufs ??= [line.blankLane(), line.blankLane(), line.blankLane()]), live = bufs.indexOf(this.plan?.path);
+    const k = [0, 1, 2].filter((q) => q !== live)[alt];
     const lane = line.laneWindow(shift, i0, n, bufs[k]);
     lane.speedsWindow(d.model, i0, n, v, line.v[line.idx(i0 + n)], { mass: car.spec.mass + car.fuel * 0.75 });
-    // a lane that is much slower than the racing line over the next 2.5 s is a losing move: drop it (and do not start it)
-    // (compare corner minimums: we start below the line's speed because we are held up, which is not the lane's fault)
     let minL = v, minP = Infinity; const m = Math.min(n, Math.round(2.5 * v / line.ds)); for (let j = 0; j <= m; j++) { const ii = line.idx(i0 + j); minL = Math.min(minL, line.v[ii]); minP = Math.min(minP, lane.v[ii]); }
-    const loss = minL - minP;
-    if (loss > (o.pullLoss ?? 3)) { this.atk = null; this.pullWait = now + 1.5; this.stats.pullDrops = (this.stats.pullDrops ?? 0) + 1; return null; }
-    this.plan = { lane, path: lane, side, A: 0, W, tag: 'pull', until: now + 0.2 }; this.state = 'ATTACK';
-    this.focus = { id: lead.id, kind: 'attack', ds: lead.ds }; this.contact = null;
-    this.visCands = [{ kind: `pull ${side > 0 ? 'L' : 'R'}`, score: 0, chosen: true, points: this.lanePoints(lane, i0, Math.min(n, 70)) }];
-    return lane;
+    return { lane, loss: minL - minP };
   }
 
   /**

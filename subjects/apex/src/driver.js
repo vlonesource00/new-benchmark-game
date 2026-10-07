@@ -97,11 +97,27 @@ export class ApexDriver {
     let hot = 0; for (const w of car.wheels) hot = Math.max(hot, w.tyre.core - (w.tyre.optimum ?? 90));
     const target = clamp(1 - (o.thermalK ?? 0) * Math.max(0, hot - (o.thermalHot ?? 10)), o.pushMin ?? 0.8, 1);
     this.push += (target - this.push) * 0.2; this.hot = hot;
+    if (this.rebuild) return;                          // the last rebuild is still being spread over frames
     if (!this.forceRefresh && Math.abs(g - this.model.grip) < 0.004 && Math.abs(this.push - this.pushApplied) < 0.004) return;
     this.forceRefresh = false;
     this.pushApplied = this.push; this.model.margin = (o.margin ?? 1) * this.push;
     this.model.grip = g;
-    this.lapEstimate = this.line.speeds(this.model, { ...this.sopt, mass: car.spec.mass + car.fuel * 0.75 });
+    const opts = { ...this.sopt, mass: car.spec.mass + car.fuel * 0.75 };
+    if (o.slicedRefresh === false) { this.lapEstimate = this.line.speeds(this.model, opts); return; }
+    // the new profile is built on a copy a few slices per frame and swapped in when complete, so no frame pays for a whole lap
+    const L = this.line, sh = Object.create(L);
+    Object.assign(sh, { v: L.v.slice(), vmax: L.vmax.slice(), vbrk: L.vbrk.slice(), vfree: L.vfree.slice(), cap: L.cap.slice(), kept: L.kept, notches: L.notches });
+    this.rebuild = { sh, gen: sh.speedsGen(this.model, opts) };
+    this.stepRebuild();
+  }
+  stepRebuild() {
+    const R = this.rebuild;
+    for (let k = 0; k < (this.options.rebuildSlices ?? 3); k++) {
+      const r = R.gen.next(); if (!r.done) continue;
+      const L = this.line, sh = R.sh;
+      L.v.set(sh.v); L.vmax.set(sh.vmax); L.vbrk.set(sh.vbrk); L.vfree.set(sh.vfree); L.cap.set(sh.cap); L.kept = sh.kept; L.notches = sh.notches;
+      this.lapEstimate = r.value; this.rebuild = null; return;
+    }
   }
   /**
    * In a seat worker the answer reaches the car about 1.5 snapshot intervals after the state it was computed
@@ -128,6 +144,7 @@ export class ApexDriver {
     const track = this.track, line = this.line, model = this.model, o = this.options;
     const v = Math.max(0.5, car.speed);
     this.refreshClock = (this.refreshClock ?? 99) + dt;
+    if (this.rebuild) this.stepRebuild();
     if (this.refreshClock > 0.25) { this.refreshClock = 0; this.refresh(car); }
     let c = line.closest(car.x, car.z, this.cursor);
     if (c.d2 > 400) c = line.closest(car.x, car.z, -1);
@@ -150,6 +167,7 @@ export class ApexDriver {
       path = r.path; combatCap = r.cap;
       if (path !== line) c = path.closest(car.x, car.z, c.i);
     }
+    if (path !== this.path) this.switchAt = context?.time ?? 0;
     this.path = path;
     const { i, f, e } = c; this.e = e; this.cur = { i, x: real.x, z: real.z, v };
     // ---- lateral ----
@@ -167,13 +185,33 @@ export class ApexDriver {
       const drift = nb.dir * v * Math.sin(psi);
       if (drift > nb.rate) { const pt = nb.dir * Math.asin(clamp(nb.rate / v, -0.35, 0.35)), fbSafe = 0.8 * model.lat(v) / (v * v); corr = clamp(-2 * (psi - pt) / Lp, -fbSafe, fbSafe); this.nbHeld = true; } else this.nbHeld = false;
     } else this.nbHeld = false;
-    const kc = kp + corr;
+    // The steering target moves at a bounded lateral jerk: a path switch (racing line, tow, pull, guard lanes) changes the
+    // curvature asked for in one frame, which snapped the wheel and rocked the car. The line itself never needs more.
+    let kc = kp + corr; const J = o.steerJerk ?? 90;
+    if (J && Number.isFinite(this.kcF) && dt > 0) { const dk = J * dt / (v * v); kc = this.kcF + clamp(kc - this.kcF, -dk, dk); }
+    this.kcF = kc;
     this.ayReq = v * v * kp; this.latCap = model.lat(v);
     const ff = model.steerFor(v * v * kc, v), rDes = v * kc, rErr = rDes - car.yawRate;
     const dBeta = this.dBeta = beta - model.betaFor(v * v * kc, v), slide = Math.sign(dBeta) * Math.max(0, Math.abs(dBeta) - (o.slideBand ?? 0.04));
     this.steer = clamp(ff + (o.yawGain ?? 0.45) * rErr + (o.slideGain ?? 2.2) * slide, -1, 1);
-    const over = Math.sign(car.yawRate) === Math.sign(rDes) ? Math.max(0, Math.abs(car.yawRate) - Math.abs(rDes)) : Math.abs(car.yawRate);
-    this.stability = clamp(1 - 2.5 * Math.max(0, over - 0.08) - 4 * Math.max(0, Math.abs(dBeta) - (o.betaLimit ?? 0.06)), 0, 1);
+    // Stability is a property of the car, not of the path: a lane switch moves the reference (rDes, the expected slip angle)
+    // in one frame while the car is perfectly settled. Yaw and slip angle that the car's own lateral acceleration accounts
+    // for are not a slide, so the reference is whichever of the two (path or measured force) explains the car better.
+    const rK = car.ay / v, rRef = o.stateStability !== false && Math.sign(rK) === Math.sign(car.yawRate) && Math.abs(rK) > Math.abs(rDes) ? rK : rDes;
+    const over = Math.sign(car.yawRate) === Math.sign(rRef) ? Math.max(0, Math.abs(car.yawRate) - Math.abs(rRef)) : Math.abs(car.yawRate);
+    const dBetaS = o.stateStability === false ? dBeta : Math.min(Math.abs(dBeta), Math.abs(beta - model.betaFor(car.ay, v)));
+    this.stability = clamp(1 - 2.5 * Math.max(0, over - 0.08) - 4 * Math.max(0, dBetaS - (o.betaLimit ?? 0.06)), 0, 1);
+    if (this.stability < 0.3 && !(this.lastStab < 0.3) && this.combat?.stats) this.combat.stats.recovers = (this.combat.stats.recovers ?? 0) + 1;
+    this.lastStab = this.stability;
+    // Slide learning: a slide on the racing line is the profile asking for more than this car holds there (typically
+    // trail-braking into a fast corner with the rear going light). The braking zone before it brakes a little earlier and
+    // the corner entry is taken a little slower from the next refresh on, so the same corner does not bite every lap.
+    if (o.slideLearn !== false && path === line && this.stability < 0.5 && !((context?.time ?? 0) < (this.slideAt ?? -9) + 1.5)) {
+      this.slideAt = context?.time ?? 0; const back = Math.round((o.slideBack ?? 60) / line.ds), fwd = Math.round(12 / line.ds);
+      for (let j = -back; j <= fwd; j++) { const k = line.idx(i + j); line.btrim[k] = Math.max(o.slideFloor ?? 0.85, line.btrim[k] * (1 - (o.slideBrake ?? 0.03))); }
+      for (let j = -fwd; j <= 2 * fwd; j++) { const k = line.idx(i + j); line.trim[k] = Math.max(o.slideFloor ?? 0.85, line.trim[k] * (1 - (o.slideCorner ?? 0.015))); }
+      this.forceRefresh = true; this.slides = (this.slides ?? 0) + 1; if (this.combat?.stats) this.combat.stats.slideLearns = this.slides;
+    }
     // ---- longitudinal ----
     const look = v * 0.1, d2 = Math.max(4, v * 0.25);
     // target: the braking envelope when the car may use all the thrust it really has (hybrid, tow), else the table profile
