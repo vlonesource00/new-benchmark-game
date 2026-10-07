@@ -1,6 +1,6 @@
 # APEX: a pace-model racer with offline-precomputed racecraft
 
-Status: **approved by the owner with the decisions in section 0; M0 to M2 done, M3a (strategist) built; see RESULTS.md.**
+Status: **approved by the owner with the decisions in section 0; M0 to M3 done (pace, combat, strategist, stint model), M4 tuning partly done; see RESULTS.md for the numbers and the open items.**
 Registered id (planned): `apex`, short `APX`. Built under `subjects/apex/`, a bridge
 in `game/bridges/apex-bridge.js` and the minimal registration listed in section 9.
 Written after reading `subjects/BRIEF-next-ai.md`, `game/engine/sim/{vehicle,tyre,track}.js`,

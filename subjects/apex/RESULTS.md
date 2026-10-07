@@ -267,3 +267,55 @@ In the seat-worker harness with SPH alongside (Solenne GTP, 12 laps, classic for
 - **Hybrid deploy** (an opt-in `hyb` policy that spends the battery below a speed window, `Driver.energy`): lap times within +-0.3 s of the host's balanced mode; the car recovers about 0.4 MJ a lap, which is 4 s of full deploy,
   and either policy spends it. Not enabled by default.
 - **Pit lane.** A stop is 13.7 s of service (2.2 s + driver swap 6 s in parallel with fuel + tyres 5.5 s) plus a transit of 21 to 36 s that the host's limiter fixes (the lane is 565 m at 16.7 m/s); the car loses nothing to the approach beyond that.
+
+### Nürburgring strategy (6 laps, GTP and GT3, seed 7, `tools/stratcamp.mjs --tracks nurburgring --formats sprint:6`)
+
+| Class | Default (stops) | APEX (stops) | Gain |
+|---|---|---|---|
+| GTP | 3011.4 (2) | 2953.5 (1) | 57.9 s |
+| GT3 | 3370.2 (2) | 3345.0 (1) | 25.2 s |
+
+No incident points. The stint tables for this track cover five laps per compound (cold and warm); a lap there is 480 to 550 s, so the 12-lap classic race exceeds the lab's 4000 s cap (both strategies print 9999) and was not
+measured. Longer races use the last measured wear ratio, which is the weakest part of the Nürburgring model.
+
+## Duel campaign against SPH (`tools/duelcamp.mjs`, seat workers, 12 laps, rolling start, both strategists live, seed 7)
+
+Four short circuits, both classes, both pole orders (16 duels, APEX against `next-racer`).
+
+| Track | Class | APEX pole: margin, APEX/SPH inc., contacts | APEX second: margin, inc., contacts |
+|---|---|---|---|
+| Harbor Ring | GTP | 28.7 s, 0/0, 0 | 35.0 s, 0/0, 1 |
+| Harbor Ring | GT3 | 40.2 s, 0/0, 0 | 43.1 s, 0/0, 2 |
+| Solenne | GTP | 55.7 s, 0/0, 0 | 55.2 s, 0/0, 0 |
+| Solenne | GT3 | 41.0 s, 4/8, 1 | 77.3 s, 0/6, 0 |
+| Alpine | GTP | 38.3 s, 5/4, 23 | 31.3 s, 0/0, 15 |
+| Alpine | GT3 | 62.7 s, 0/0, 0 | 15.7 s, 0/0, 0 |
+| Desert | GTP | 31.2 s, 0/0, 47 | 70.1 s, 0/0, 0 |
+| Desert | GT3 | 13.2 s, 0/0, 0 | 83.7 s, 0/0, 0 |
+
+**APEX wins 16 of 16, mean margin 45.2 s, APEX incident points 9 in total (largest 5, Alpine GTP from pole).** APEX makes one stop in every duel; SPH makes two to four. The fastest laps are equal to within a second on the
+short tracks, so the margin is the stint plan plus a clean race, not a pace gap. (Harbor Ring GT3 was 11 incident points per duel before the per-class yaw gain below: 26 points over the first eight duels, 0 after.)
+
+Caveats, stated plainly:
+
+- The contact column counts raw collision-pair events from the host's collision statistics, which include low-speed rubbing. Three duels carry almost all of them (Alpine GTP 23 and 15, Desert GTP 47); the other thirteen have 2 or fewer.
+  A rerun of the Desert GTP pole duel produced a single contact (closing 2.9 m/s, in a corner at lap 11), so the 47 did not reproduce: SPH's wall-clock budgets make it non-deterministic. The cause of the three clusters is not established.
+  No heavy-contact or penalty count is reported by the campaign; the stewards' incident points are the only measure above.
+- One seed, two pole orders. The result says APEX is faster and cleaner than SPH in these 16 races, not how large the margin is across seeds.
+- Harbor Ring is the one track where SPH uses its own strategy (a one-stop plan equal to APEX's); the win there is pace and cleanliness only.
+
+### Per-class option overrides
+
+A single `yawGain` that fixed the Harbor Ring GT3 lap-1 chicane excursions in the seat-worker harness slowed GTP by 10 to 25 %, so `config.json` now carries `perClass` overrides applied in `Driver.prepare()`:
+`tracks["harbor-ring"].perClass.gt.yawGain = 0.8`. GTP at Harbor Ring and both classes elsewhere are unchanged.
+
+### Eight-car races (earlier runs, not repeated in the final campaign)
+
+Cap mode (default): first by about 11 s with 4 to 12 incident points. Planner mode (`combatMode:"pass"`): six heavy APEX contacts in the same melee against about 0 to 1 in cap mode, so it stays opt-in.
+
+## Not done
+
+- Collision veto for spinning or stopped cars and lap-1 melee handling (no layer beyond the cap and the alongside guard).
+- Rival-aware pit calls (undercut, overcut, reaction to rival stops, local yellows).
+- The three contact clusters above, the Solenne soft-compound gap (0.16 to 0.3 %), a multi-seed final battery, 8-car multiclass re-run.
+- The hybrid manager (`hyb`) stays opt-in: it moved a race by 1 to 4 s.
