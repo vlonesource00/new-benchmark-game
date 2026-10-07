@@ -40,9 +40,13 @@ if (flags.contacts) {
 }
 const cars = race.cars; const drivers = race.entries.map((e) => e.bridges[0].driver); const lapT = cars.map(() => []), lapSeen = cars.map(() => 1); let lastOrder = null, passes = 0; const passLog = [], t0 = Date.now(); let minGap = Infinity; const takeovers = []; let aheadOf = null; const hist = [];
 const contactSteps = cars.map(() => 0);
+// --audit: how well the planner's rival predictions hold (lateral and along-track error at 0.5/1/2/3 s)
+const audit = flags.audit ? [] : null, hist2 = cars.map(() => new Map()), absS = (c) => (c.race.lap - 1) * track.length + c.s;
+if (audit) for (const dr of drivers) if (dr?.combat) { const orig = dr.combat.predict.bind(dr.combat); dr.combat.predict = (r, T, dt, commit = true) => { const p = orig(r, T, dt, commit); if (commit && Math.abs(r.ds) < 80 && T >= 3) audit.push({ t: race.time, id: r.id, ds: r.ds, s0: absS(race.cars.find((x) => x.id === r.id)), lat0: r.lat, p, dt }); return p; }; }
 while ((flags.until == null || race.time < Number(flags.until)) && cars.some((c) => c.race.lap <= n) && race.time < 90 * n * Math.max(1, track.length / 3000) + 120) {
   race.step(FIXED_DT);
   if (race.formation) continue;
+  if (audit) { const k = Math.round(race.time * 120); cars.forEach((cc, i) => hist2[i].set(k, { s: absS(cc), lat: cc.lateral, v: cc.speed })); }
   const order = race.order().map((c) => c.id).join();
   if (lastOrder && order !== lastOrder) { passes++; passLog.push(`${race.time.toFixed(0)}s:${order}`); }
   lastOrder = order;
@@ -75,6 +79,11 @@ while ((flags.until == null || race.time < Number(flags.until)) && cars.some((c)
 }
 const ord = race.order(), lead = ord[0];
 const rows = ord.map((c, k) => { const e = race.entryOf(c), st = race.stewards.of(e); return `${k + 1}. ${e.team.short} ${c.classId} ${(c.race.progress - lead.race.progress).toFixed(0)}m best ${c.race.bestLap?.toFixed(2)} inc ${st.inc}x[${[...new Set(st.log.map((l) => l.kind))].join(',')}] dmg ${(c.damage * 100).toFixed(0)}% laps ${lapT[c.id].join(' ')}`; });
+if (audit) {
+  const rows = {}; for (const rec of audit) { const ci = race.cars.findIndex((x) => x.id === rec.id); for (const tau of [0.5, 1, 2, 3]) { const j = Math.round(tau / rec.dt), h = hist2[ci].get(Math.round((rec.t + tau) * 120)); if (!h || j >= rec.p.s.length) continue; (rows[tau] ??= []).push({ lat: h.lat - rec.p.lat[j], s: h.s - (rec.s0 + rec.p.s[j]), v: h.v - rec.p.v[j] }); } }
+  const q = (a, p) => { const b = a.slice().sort((x, y) => x - y); return b[Math.min(b.length - 1, Math.floor(p * b.length))]; };
+  for (const [tau, a] of Object.entries(rows)) console.log('AUDIT tau', tau, 'n', a.length, 'lat |mean|', (a.reduce((x, y) => x + Math.abs(y.lat), 0) / a.length).toFixed(2), 'p90', q(a.map((y) => Math.abs(y.lat)), 0.9).toFixed(2), '| along |mean|', (a.reduce((x, y) => x + Math.abs(y.s), 0) / a.length).toFixed(2), 'p90', q(a.map((y) => Math.abs(y.s)), 0.9).toFixed(2), 'bias', (a.reduce((x, y) => x + y.s, 0) / a.length).toFixed(2), '| speed |mean|', (a.reduce((x, y) => x + Math.abs(y.v), 0) / a.length).toFixed(2));
+}
 if (flags.json) { const finalAhead = Object.fromEntries(Object.entries(globalThis.__pw ?? {}).map(([j, s]) => [ids[j] + j, s.ahead])); console.log(JSON.stringify({ takeovers, finalAhead, combat: drivers.map((d) => (d?.combat ? { stats: d.combat.stats, events: d.combat.events, cost: d.combat.cost } : null)), ids, cls, track: trackName, laps: n, contacts: race.contacts, severe: race.collisionStats.severeContacts, peakClosing: +race.collisionStats.peakClosing.toFixed(1), minDist: +minGap.toFixed(1), changes: passes, rows: ord.map((c) => { const e = race.entryOf(c), st = race.stewards.of(e); return { name: e.team.short, ai: e.team.drivers[0].id, cls: c.classId, gap: +(c.race.progress - lead.race.progress).toFixed(0), best: c.race.bestLap, inc: st.inc, kinds: [...new Set(st.log.map((l) => l.kind))], dmg: +c.damage.toFixed(3), laps: lapT[c.id], pen: st.issued }; }), wall: +((Date.now() - t0) / 1000).toFixed(0) })); process.exit(0); }
 console.log(`${ids.map(short).join(' v ')} ${cls} ${trackName} ${n}L | contacts ${race.contacts} severe ${race.collisionStats.severeContacts} peakClosing ${race.collisionStats.peakClosing.toFixed(1)} minDist ${minGap.toFixed(1)} | order changes ${passes} | ${((Date.now() - t0) / 1000).toFixed(0)}s\n  ` + rows.join('\n  '));
 for (const e of race.entries) { const cb = e.bridges[0].driver?.combat; if (cb?.cost) console.error(`PLANCOST ${e.team.short} plans ${cb.cost.n} avg ${(cb.cost.total / cb.cost.n).toFixed(2)} ms max ${cb.cost.max.toFixed(1)} ms`); }

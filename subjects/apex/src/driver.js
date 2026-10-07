@@ -1,4 +1,5 @@
 import { CarModel, liveGrip } from './model.js';
+import { RivalLine } from './rival.js';
 import { Line } from './line.js';
 import { clamp, angle } from './math.js';
 import { PitGuide } from './pit.js';
@@ -29,7 +30,7 @@ export class ApexDriver {
     this.line.speeds(this.model);
     this.cursor = -1;
     this.pitGuide = new PitGuide(this.track);
-    this.field = new Field(this.track); this.combat = new Combat(this); this.shadows = new Map();
+    this.field = new Field(this.track); this.combat = new Combat(this); this.shadows = new Map(); this.rivalLines = new Map();
     this.slipPeak = new Float32Array(this.line.N); this.lapClean = true; this.lastStation = -1; this.learned = 0; this.lapCount = 0;
   }
   reset() { this.steer = 0; this.cursor = -1; this.sent = null; this.pitGuide?.reset(); this.path = null; this.field?.reset(); this.combat?.reset(); }
@@ -40,6 +41,13 @@ export class ApexDriver {
     const baked = this.options.lines?.[this.track.id]?.[cls]; let sh = null;
     if (baked) { sh = new Line(this.track, { ds: baked.ds }); if (sh.load(baked)) { const m = new CarModel(cls); m.margin = this.options.margin ?? 1; m.jerk = this.options.jerk ?? 0; m.grip = 0.9; sh.speeds(m); } else sh = null; }
     this.shadows.set(cls, sh); return sh;
+  }
+  /** The measured line of the architecture driving this rival (public on the timing screen), or null when none was baked for this track and class. */
+  rivalLine(r) {
+    const arch = this.state?.rivals?.find((o) => o.id === r.id)?.driver; if (!arch) return null;
+    const key = arch + "|" + r.cls;
+    if (!this.rivalLines.has(key)) { const d = this.options.rivals?.[this.track.id]?.[r.cls]?.[arch]; this.rivalLines.set(key, d ? new RivalLine(d) : null); }
+    return this.rivalLines.get(key);
   }
   /** What the debugger shows: intent and the numbers behind it. Cheap: reads what the last update left behind. */
   debug() {

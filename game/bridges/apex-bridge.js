@@ -1,6 +1,7 @@
 import { ApexDriver } from '../../subjects/apex/src/driver.js';
 import config from '../../subjects/apex/config.json' with { type: 'json' };
 import lines from '../../subjects/apex/data/lines.json' with { type: 'json' };
+import rivals from '../../subjects/apex/data/rivals.json' with { type: 'json' };
 import { apexState } from './apex-state.js';
 
 export const APEX_CANDIDATE = Object.freeze({ id: 'apex', label: 'APEX',
@@ -8,7 +9,7 @@ export const APEX_CANDIDATE = Object.freeze({ id: 'apex', label: 'APEX',
 
 export function createApexBridge({ hostTrack, index = 0, options = {}, state = null }) {
   let driver = null;
-  const settings = { ...config, ...(config.tracks?.[hostTrack.id] ?? {}), lines, ...options };
+  const settings = { ...config, ...(config.tracks?.[hostTrack.id] ?? {}), lines, rivals, ...options };
   const make = () => new ApexDriver(hostTrack, settings);
   return {
     ...APEX_CANDIDATE, driverId: 'apex', candidateId: 'apex', native: true, errors: 0,

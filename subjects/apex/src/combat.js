@@ -28,7 +28,7 @@ export class Combat {
 
   /** Rival future on the same road: arrays at t = 0, dt, ... T of track distance travelled, lateral offset and speed. */
   predict(r, T, dt, commit = true) {
-    const d = this.d, ours = d.line, sh = d.shadow(r.cls) ?? ours, n = Math.round(T / dt), s = new Float64Array(n + 1), lat = new Float64Array(n + 1), v = new Float64Array(n + 1);
+    const d = this.d, ours = d.line, sh = (d.options.rivalLines === false ? null : d.rivalLine(r)) ?? d.shadow(r.cls) ?? ours, n = Math.round(T / dt), s = new Float64Array(n + 1), lat = new Float64Array(n + 1), v = new Float64Array(n + 1);
     const x0 = sh.stationOf(r.s), vl = sh.sample(sh.v, Math.floor(x0) % sh.N, x0 % 1, 0);
     let k = this.k.get(r.id) ?? 1; if (commit) { k += (clamp(r.v / Math.max(5, vl), 0.75, 1.2) - k) * 0.15; this.k.set(r.id, k); }
     const lat0 = sh.sample(sh.lat, Math.floor(x0) % sh.N, x0 % 1, 0), dev = r.lat - lat0;
