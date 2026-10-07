@@ -6,6 +6,7 @@ export const AI_DRIVERS = Object.freeze([
   { id: 'solstice',          name: 'SOLSTICE',      short: 'SLC', arch: 'Whole-lap line · live axle forces',    anyTrack: true, manage: false, governor: false },
   { id: 'claude-revolution', name: 'CLAUDE REV',    short: 'CRV', arch: 'Min-time line · tyre budget · racecraft', anyTrack: true, manage: false, governor: false },
   { id: 'next-racer',        name: 'SPEARHEAD',     short: 'SPH', arch: 'Maneuver outcomes · committed exits', anyTrack: true, manage: false, governor: false },
+  { id: 'apex',              name: 'APEX',          short: 'APX', arch: 'Identified g-g-v · baked line · resource planner', anyTrack: true, manage: false, governor: false },
   { id: 'phantom',           name: 'PHANTOM',      short: 'PHM', arch: 'Ghost imitation · plant model',        anyTrack: true },
   { id: 'phantom-v2',        name: 'PHANTOM v2',   short: 'PH2', arch: 'Ghost v2 · adaptive plant',            anyTrack: true },
   { id: 'solinator-6.1',     name: 'SOLINATOR 6.1', short: 'SL6', arch: 'Gate arrivals · physical transfers',  anyTrack: true }

@@ -78,6 +78,7 @@ self.onmessage = ({ data }) => {
     let visual;
     if (data.visual) { try { visual = thinVisual(plain(bridge.visualDebug?.() ?? null)); } catch { visual = null; } }
     self.postMessage({ type: 'controls', seq: data.seq, controls: plain(car.controls), errors: bridge.errors ?? 0, debug, visual,
+      ...(car.intent ? { intent: plain(car.intent) } : {}),
       ...(data.epoch!==undefined?{epoch:data.epoch,time:data.time,preview:bridge.controlPreview?.()??null}: {}) });
   } catch (error) {
     self.postMessage({ type: 'fatal', message: String(error?.stack ?? error) });

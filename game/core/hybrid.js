@@ -23,6 +23,20 @@ export const DEPLOY_MODES = Object.freeze({
 });
 export const MODE_ORDER = Object.freeze(['build', 'balanced', 'attack', 'qual']);
 
+// Opt-in driver intent (APEX): car.intent = { deploy, harvest, ttl }. `deploy` 0..1 scales the
+// ATTACK deploy power, `harvest` 0..1 sets lift-off regen between the ATTACK and BUILD figures, `ttl` is
+// the seconds the request stays valid without being refreshed. Cars that never set it are unchanged,
+// and every energy rule (throttle > 0.8, minimum speed, store limits) still applies.
+const INTENT_MAX_KW = DEPLOY_MODES.attack.kw, INTENT_LIFT_KW = [DEPLOY_MODES.attack.lift, DEPLOY_MODES.build.lift];
+function intentMode(car, dt) {
+  const i = car.intent;
+  if (!i || !Number.isFinite(i.deploy)) return null;
+  i.ttl = (i.ttl ?? 0.5) - dt;
+  if (i.ttl <= 0) return null;
+  const harvest = clamp01(i.harvest ?? 0.5);
+  return { kw: INTENT_MAX_KW * clamp01(i.deploy), from: DEPLOY_MODES.attack.from, lift: INTENT_LIFT_KW[0] + (INTENT_LIFT_KW[1] - INTENT_LIFT_KW[0]) * harvest, level: false };
+}
+
 export const hasHybrid = (car) => car.spec?.key === 'lmdh';
 const clamp01 = (x) => Math.max(0, Math.min(1, x));
 
@@ -35,7 +49,7 @@ export function fitHybrid(car, charge = 0.6) {
 /** One physics step of the hybrid: sets car.hybridForce and moves the energy store. */
 export function hybridStep(car, dt) {
   const h = car.hybrid; if (!h) return;
-  const m = DEPLOY_MODES[h.mode] ?? DEPLOY_MODES.balanced, k = car.controls, v = Math.max(0, car.u);
+  const m = intentMode(car, dt) ?? DEPLOY_MODES[h.mode] ?? DEPLOY_MODES.balanced, k = car.controls, v = Math.max(0, car.u);
   const throttle = k.throttle ?? 0, brake = k.brake ?? 0, soc = h.energy / HYBRID.capacity;
   let deploy = 0, regen = 0, lift = 0;
   if (!k.reverse && throttle > 0.8 && v > m.from && car.gear >= 2 && h.energy > 0) {

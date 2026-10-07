@@ -1,11 +1,37 @@
 # APEX: a pace-model racer with offline-precomputed racecraft
 
-Status: **design proposal, awaiting owner approval. No driver code exists yet.**
+Status: **approved by the owner with the decisions in section 0; M0 and M1 in progress.**
 Registered id (planned): `apex`, short `APX`. Built under `subjects/apex/`, a bridge
 in `game/bridges/apex-bridge.js` and the minimal registration listed in section 9.
 Written after reading `subjects/BRIEF-next-ai.md`, `game/engine/sim/{vehicle,tyre,track}.js`,
 `game/core/{stewards,hybrid,race,strategy,pit,rules,difficulty,field,seat-worker,async-seats}.js`,
 and the architecture documents and drivers of SPEARHEAD (`next-racer`), SOLSTICE and CLAUDE REVOLUTION.
+
+## 0. Owner decisions (approved) and their effect on the design
+
+| Decision | Effect |
+|---|---|
+| P3 approved: read-only `state` in seat workers | `game/bridges/apex-state.js` builds it; `AsyncSeats` posts it only for `apex` seats; the lockstep bridge gets the same builder. |
+| P1 approved in full: APEX may bypass the default strategist | `subjects/apex/src/strategy.js` installs an `ApexStrategist` (a `TeamStrategist` subclass, the mechanism SPH already uses) on the entry. It owns box/stay, compound, fuel, undercut/overcut, reaction to rivals' stops and local yellows. If it makes no call, the parent class (default strategist) runs. The host still enforces tank size, legal compounds, pit-lane limiter and procedure, and the mandatory stop/swap rules fall back to the default call whenever APEX's plan would miss them. |
+| P2 approved: `car.intent = { deploy }` plus a real-time energy manager | `hybrid.js` honours an opt-in intent (below). The energy manager plans deploy and harvest per lap and per corner exit and saves energy for attack, defence and slipstream straights. |
+| Unified resource planner | One planner (section 7) jointly optimises fuel, tyres (core temperature, pressure, wear), battery energy and the incident/damage budget over the whole race and re-plans live. It is the single owner of the push level, the pit call and the hybrid intent. |
+| Minimal, opt-in, off-by-default host changes | Every host change below is inert unless the `apex` driver is in the seat or sets the new field. Other AIs behave exactly as before. |
+| Branch | `claude/apex-ai-driver-8me8r0` (unchanged). |
+| Incident budget | Keep a safety margin under the 3.5 m/s heavy-contact threshold (planning limit about 2 m/s closing at predicted contact, not the exact rule value), and price damage and tyre loss from contact into every decision. The steward numbers are used as a floor for safety, not as a target to optimise against. |
+| Nürburgring baseline | Flying laps measured with the stop disabled inside the measured laps (`tools/solo.mjs`). |
+
+### Host changes (complete list, each opt-in)
+
+| File | Change | Inert unless |
+|---|---|---|
+| `game/core/teams.js` | `apex` added to `AI_DRIVERS` (`manage:false`, `governor:false` like SPH/SOLSTICE) | Seeded random team draws now include one more candidate, so the seeded field of an unchanged seed differs from before; this is the registration the brief requires |
+| `game/core/classes.js` | `'apex'` added to the GTP pool | An `apex` seat is drawn |
+| `game/core/field.js` | `case 'apex'` in `createSeatBridge`: installs the strategist and creates the bridge | Driver id is `apex` |
+| `game/bridges/apex-bridge.js`, `apex-state.js` | New files | Imported by the apex seat only |
+| `game/core/async-seats.js` | For `apex` seats only: install the strategist, post `apexState`, relay the worker's `intent` onto the car | `driver.id === 'apex'` |
+| `game/core/seat-worker.js` | Reply carries `intent` when the car has one | `car.intent` set |
+| `game/core/hybrid.js` | `hybridStep` reads `car.intent = { deploy, harvest, ttl }`: `deploy` 0..1 scales the ATTACK deploy power (95 kW), `harvest` 0..1 sets lift-off regen between the ATTACK and BUILD figures, `ttl` seconds of validity without refresh. All energy rules (throttle above 0.8, minimum speed, store limits) still apply, and a car without `intent` is unchanged | `car.intent` set with a finite `deploy` |
+
 
 ## 1. What the repo and the physics tell us
 
@@ -235,6 +261,9 @@ The emergency fallback is counted as a metric (SPH: 90+ per Harbor race; APEX ta
 
 ## 7. Stint, resources and strategy (M3)
 
+### 7.0 One resource planner (`src/planner.js`)
+Fuel, tyres (core temperature, pressure, wear per wheel), battery energy and the incident/damage account are one coupled problem: pushing harder buys time but spends tyre, fuel and energy, a pit stop resets some of them at a time cost, and a contact spends the incident account, damage and tyre life together. The planner holds a single race-length model of all of them (laps remaining, stops owed, rivals' predicted stops) and chooses, jointly: the push level per lap, the pit lap, compound and fuel load, the hybrid deploy/harvest schedule per lap and per corner exit, and the risk appetite for combat. It re-plans every lap and on any event (a rival's stop, a local yellow, damage, weather change, a position lost or gained), starting from the measured state, so forecast errors never accumulate. Section 7.1 to 7.3 describe its parts: the stint model, the energy manager and the strategy layer.
+
 ### 7.1 Stint plan (`src/stint.js`)
 - **State model:** the tyre equations of `tyre.js` for surface, core, pressure and wear per wheel, driven by slip power estimated from the lap model
   (front/rear split, braking, cornering and traction contributions per station), plus fuel mass and hybrid charge.
@@ -247,8 +276,7 @@ The emergency fallback is counted as a metric (SPH: 90+ per Harbor race; APEX ta
   deliberately pushed in the right places) and decays pace smoothly rather than holding full push until the cliff.
 - **Fuel:** weight at 0.75 kg/L is about 3 % of GT3 mass at a full 60 L tank; the model lowers speed targets automatically as fuel burns, so lap times *fall* along a clean stint
   until tyre fade overtakes the fuel gain. Lift-and-coast is available when the host asks the team to save fuel.
-- **Hybrid (GTP):** deploy and regen are in the lap model (mode and charge observed from `car.hybrid`). Without new host API the lever is where to lift and brake; with approved
-  P2 the driver chooses the deploy mode per station.
+- **Hybrid energy manager (GTP, P2 approved):** the lap model includes deploy and regen. The manager writes `car.intent = { deploy, harvest, ttl }` every update: a per-lap energy budget set by the planner, spent per corner exit where deploy force `P/v` buys the most time, saved for attack, defence and straights where a rival is in the slipstream, and harvested by lift and brake-regen in the zones where lap-time cost is lowest. Charge is held in a band that never leaves the car empty for a defence or empty-handed on the last lap.
 - **Weather and damage:** wetness lowers the g-g-v and re-bases the plan; damage lowers power and raises drag in the model, and the car pits for repair when the host calls the meatball.
 
 ### 7.2 Pit and strategy
@@ -293,15 +321,15 @@ strategist plans from APEX's measured wear and fade, which is already favourable
 
 No other AI, physics, track, rules, stewards or strategy file is changed.
 
-## 10. Proposals that need the owner's approval (nothing is built on them until approved)
+## 10. Proposals (all three approved; see section 0 for the exact changes)
 
 | # | Proposal | Value | If rejected |
 |---|---|---|---|
-| P1 | Let APEX own the pit call/compound/fuel through a strategist subclass (the way `installNativeStrategy` does for SPH) | Pit timing and compound tuned to measured stint model; likely worth one position in a stop race | Host strategist plans from APEX's measured wear and fade |
-| P2 | `car.intent = { deploy }` honoured by `aiDeployMode` within the existing energy rules (same proposal made by CRV) | Deploy where it saves the most time (low-speed exits) and for passes; GTP only | APEX models the host's mode and only controls lifts and throttle |
-| P3 | Extend `AsyncSeats.post` to send a read-only `state` to APEX (flag, penalty, own incident points and limit, fuel/stint, pit plan, roster ids of rivals) via a generalisation of `nextRacerState` | Needed for the incident account, rival identification and pit awareness inside seat workers | APEX infers fuel, stint and pit from the car; rivals are identified only by observed behaviour; no incident account (conservative risk default) |
+| P1 (approved) | Let APEX own the pit call/compound/fuel through a strategist subclass (the way `installNativeStrategy` does for SPH) | Pit timing and compound tuned to measured stint model; likely worth one position in a stop race | Host strategist plans from APEX's measured wear and fade |
+| P2 (approved) | `car.intent = { deploy }` honoured by `aiDeployMode` within the existing energy rules (same proposal made by CRV) | Deploy where it saves the most time (low-speed exits) and for passes; GTP only | APEX models the host's mode and only controls lifts and throttle |
+| P3 (approved) | Extend `AsyncSeats.post` to send a read-only `state` to APEX (flag, penalty, own incident points and limit, fuel/stint, pit plan, roster ids of rivals) via a generalisation of `nextRacerState` | Needed for the incident account, rival identification and pit awareness inside seat workers | APEX infers fuel, stint and pit from the car; rivals are identified only by observed behaviour; no incident account (conservative risk default) |
 
-I recommend approving P3 at least; it is read-only, mirrors an existing mechanism and is what makes the risk model and rival identification work in the real game.
+
 
 ## 11. Milestones
 
