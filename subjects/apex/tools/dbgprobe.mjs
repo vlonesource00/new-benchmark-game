@@ -31,7 +31,7 @@ const walk = (o, path) => { if (typeof o === 'number') { if (!Number.isFinite(o)
 while (race.time < Number(secs)) {
   race.step(FIXED_DT);
   if (probe && race.greenAt != null && Math.round(race.time * 120) % 30 === 0) {
-    const dbg = bridge.debug(), vis = bridge.visualDebug();
+    const t0 = performance.now(), dbg = bridge.debug(), vis = bridge.visualDebug(), dtc = performance.now() - t0; (globalThis.__dc ??= []).push(dtc);
     walk(dbg, 'debug'); walk(vis, 'vis'); samples++;
     const bytes = JSON.stringify(dbg).length + JSON.stringify(vis).length; maxBytes = Math.max(maxBytes, bytes);
     seen[dbg.intent] = (seen[dbg.intent] ?? 0) + 1;
@@ -43,5 +43,6 @@ while (race.time < Number(secs)) {
   }
 }
 const car = race.cars[me];
+{ const a = (globalThis.__dc ?? []).slice().sort((x, y) => x - y); if (a.length) console.error(`DEBUGCOST n ${a.length} median ${a[a.length >> 1].toFixed(2)} ms p95 ${a[Math.floor(a.length * 0.95)].toFixed(2)} max ${a.at(-1).toFixed(2)}`); }
 console.log(JSON.stringify({ lens: lens ? { errors: lensErrors, ...lensMax } : null, probe, samples, bad, maxBytes, intents: seen, focusKinds: kinds, finalS: Math.round(car.race.progress), v: +car.speed.toFixed(3), x: +car.x.toFixed(3), z: +car.z.toFixed(3), laps: car.race.lap, inc: race.stewards.of(e).points ?? null, stats: bridge.driver?.combat?.stats }));
 if (show) console.log('SHOW', JSON.stringify(show, null, 1).slice(0, 6000));
