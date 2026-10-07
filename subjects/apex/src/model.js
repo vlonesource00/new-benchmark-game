@@ -22,6 +22,9 @@ export class CarModel {
     this.grip = 1; this.push = 1; this.brakeMix = 1.6; this.driveMix = 2; this.lateralMix = 1; this.hybrid = 0;
     this.margin = 1;
     const sp = carSpecFor(classId); this.dragK = 0.5 * 1.225 * sp.area * sp.cd / sp.mass;           // clean-air drag deceleration = dragK v²
+    // The host's automatic gearbox (race.js never lets an AI shift by hand): up at 7450 rpm, down below 3450 rpm.
+    this.sp = sp; this.dragN = 0.5 * 1.225 * sp.area * sp.cd; this.ratio = sp.gears.map((g) => g * sp.finalDrive); this.top = sp.gears.length - 1;
+    this.gearAware = true;
     // Lateral-jerk limit (m/s³) the car can follow in a direction change: v³ |dk/ds| <= jerk.
     this.jerk = 0;
   }
@@ -33,6 +36,26 @@ export class CarModel {
   drive(v, mass = 1100) {
     const base = table(this.g.drive, v) * (0.25 + 0.75 * this.grip);
     return base + (this.hybrid > 0 ? this.hybrid * 1000 / (Math.max(v, 12) * mass) : 0);
+  }
+  rpm(v, g) { return v / this.sp.radius * this.ratio[g] * 9.5493; }
+  /** The gear the automatic box is in at speed v when it was in gear g just before (hysteresis: it only moves outside 3450..7450 rpm). */
+  gearAt(v, g = this.top) {
+    while (g < this.top && this.rpm(v, g) > 7450) g++;
+    while (g > 1 && this.rpm(v, g) < 3450) g--;
+    return g;
+  }
+  /** Speed below which the automatic drops out of gear g (3450 rpm). */
+  vDown(g) { return 3450 * this.sp.radius / (9.5493 * this.ratio[g]); }
+  /** Engine force at the wheels (N) in gear g at speed v, full throttle (the game's torque curve). */
+  engine(v, g) {
+    const r = this.rpm(v, g), c = clamp(1 - ((r - 5500) / 6700) ** 2, 0.45, 1);
+    return this.sp.maxTorque * c * this.ratio[g] * 0.91 / this.sp.radius;
+  }
+  /** Full-throttle acceleration in a given gear: the identified table (best gear, traction) capped by what that gear's engine force leaves. */
+  driveG(v, g, mass = 1100) {
+    const base = table(this.g.drive, v) * (0.25 + 0.75 * this.grip);
+    const eng = (this.engine(v, g) - this.dragN * v * v) / mass - 0.13;
+    return Math.min(base, eng) + (this.hybrid > 0 ? this.hybrid * 1000 / (Math.max(v, 12) * mass) : 0);
   }
   /** Extra acceleration from a car's slipstream: the game takes up to 42 % off the drag in its wake. */
   towGain(v, wake) { return 0.42 * wake * this.dragK * v * v; }

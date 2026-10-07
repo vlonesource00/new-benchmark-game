@@ -41,6 +41,7 @@ async function answers() {
 const t0 = performance.now();
 try {
   race.start(); await seats.start(race);
+  const compound0 = race.cars.map((c) => c.wheels[0].tyre.compound + '/' + c.fuel.toFixed(0) + 'L');
   for (const [index, h] of seats.hosts.entries()) for (const s of h.seats) s.prime(race.cars[index], race.cars, { time: 0, totalLaps: laps });
   await answers();
   let frame = 0; const started = performance.now(), lapRows = race.cars.map(() => []), lastLap = race.cars.map(() => 1);
@@ -55,7 +56,7 @@ try {
   delays.sort((a, b) => a - b);
   const ms = (performance.now() - t0) / 1000;
   console.log(JSON.stringify({ drivers: ids, classId, track: trackId, realtime, burstMs, simSeconds: +race.time.toFixed(1), wall: +ms.toFixed(1),
-    laps: lapRows, order: race.order().map((c) => c.team.name + ':' + c.race.progress.toFixed(0)), contacts: race.contacts,
+    laps: lapRows, compound0, compoundEnd: race.cars.map((c) => c.wheels[0].tyre.compound + '/' + c.fuel.toFixed(0) + 'L w' + Math.max(...c.wheels.map((w) => w.tyre.wear)).toFixed(2)), order: race.order().map((c) => c.team.name + ':' + c.race.progress.toFixed(0)), contacts: race.contacts,
     incidents: race.entries.map((e) => race.stewards.of(e).inc), log: race.entries.map((e) => [...new Set(race.stewards.of(e).log.map((l) => l.kind))]),
     delayP50: delays[Math.floor(delays.length * 0.5)]?.toFixed(3), delayP95: delays[Math.floor(delays.length * 0.95)]?.toFixed(3), delayMax: delays.at(-1)?.toFixed(3),
     errors: seats.hosts.map((h) => h?.seats[0]?.errors ?? 0) }));

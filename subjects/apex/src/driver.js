@@ -27,7 +27,9 @@ export class ApexDriver {
     if (o.useTrim === false && baked) { baked.trim = undefined; baked.btrim = undefined; }
     if (!this.line.load(baked)) { this.line.seed(); this.line.optimise(this.model, { iterations: o.quickIterations ?? 4000, seed: 7 }); }
     this.model.margin = o.margin ?? 1; this.model.jerk = o.jerk ?? 0;
-    this.line.speeds(this.model);
+    this.sopt = {}; for (const key of ['gears', 'notch', 'notchBand', 'notchMargin', 'notchGain', 'notchHalf', 'notchProm']) if (o[key] !== undefined) this.sopt[key] = o[key];
+    this.model.gearAware = o.gears !== false;
+    this.line.speeds(this.model, { ...this.sopt, mass: car.spec.mass + car.fuel * 0.75 });
     this.cursor = -1;
     this.pitGuide = new PitGuide(this.track);
     this.field = new Field(this.track); this.combat = new Combat(this); this.shadows = new Map(); this.rivalLines = new Map();
@@ -39,7 +41,7 @@ export class ApexDriver {
     if (cls === this.classId) return this.line;
     if (this.shadows.has(cls)) return this.shadows.get(cls);
     const baked = this.options.lines?.[this.track.id]?.[cls]; let sh = null;
-    if (baked) { sh = new Line(this.track, { ds: baked.ds }); if (sh.load(baked)) { const m = new CarModel(cls); m.margin = this.options.margin ?? 1; m.jerk = this.options.jerk ?? 0; m.grip = 0.9; sh.speeds(m); } else sh = null; }
+    if (baked) { sh = new Line(this.track, { ds: baked.ds }); if (sh.load(baked)) { const m = new CarModel(cls); m.margin = this.options.margin ?? 1; m.jerk = this.options.jerk ?? 0; m.grip = 0.9; sh.speeds(m, { notch: false }); } else sh = null; }
     this.shadows.set(cls, sh); return sh;
   }
   /** The measured line of the architecture driving this rival (public on the timing screen), or null when none was baked for this track and class. */
@@ -93,10 +95,11 @@ export class ApexDriver {
     let hot = 0; for (const w of car.wheels) hot = Math.max(hot, w.tyre.core - (w.tyre.optimum ?? 90));
     const target = clamp(1 - (o.thermalK ?? 0) * Math.max(0, hot - (o.thermalHot ?? 10)), o.pushMin ?? 0.8, 1);
     this.push += (target - this.push) * 0.2; this.hot = hot;
-    if (Math.abs(g - this.model.grip) < 0.004 && Math.abs(this.push - this.pushApplied) < 0.004) return;
+    if (!this.forceRefresh && Math.abs(g - this.model.grip) < 0.004 && Math.abs(this.push - this.pushApplied) < 0.004) return;
+    this.forceRefresh = false;
     this.pushApplied = this.push; this.model.margin = (o.margin ?? 1) * this.push;
     this.model.grip = g;
-    this.lapEstimate = this.line.speeds(this.model, { mass: car.spec.mass + car.fuel * 0.75 });
+    this.lapEstimate = this.line.speeds(this.model, { ...this.sopt, mass: car.spec.mass + car.fuel * 0.75 });
   }
   /**
    * In a seat worker the answer reaches the car about 1.5 snapshot intervals after the state it was computed
@@ -127,6 +130,7 @@ export class ApexDriver {
     let c = line.closest(car.x, car.z, this.cursor);
     if (c.d2 > 400) c = line.closest(car.x, car.z, -1);
     this.cursor = c.i;
+    if (real.gear > 0 && line.cap[c.i] === Infinity) line.gearSeen[c.i] = real.gear;
     // in-lap: peel to the pit-side edge on a lane of our own line, never above the host's braking envelope
     const state = context?.state ?? {}, boxing = Boolean(real.race?.boxThisLap || state.pitPlan) && !state.pit, toPit = boxing ? this.pitGuide.toEntry(real.s ?? 0) : Infinity;
     let path = line, pitCap = Infinity;
@@ -249,8 +253,9 @@ export class ApexDriver {
         if (ws > 0 && w[i]) line.trim[i] = clamp(line.trim[i] * (1 + gain * sum / ws), 0.6, 1.3);
       }
       this.learned++;
-      this.line.speeds(this.model, { mass: 1100 });
+      this.line.speeds(this.model, { ...this.sopt, mass: 1100 });
     }
     this.lapCount ??= 0; this.lapClean = true; this.slipPeak.fill(0);
+    this.forceRefresh = true;                         // the gears seen this lap decide the next profile's notches
   }
 }

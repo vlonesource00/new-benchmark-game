@@ -207,6 +207,12 @@ for M1. **Gate for leaving M1: flying lap ≤ the best baseline in section 1.1 o
 If the identified model shows no headroom over SPH on some circuit, that is reported honestly in `RESULTS.md` and the pace target there is "match"
 while the other levers carry the race.
 
+### 4.5 The gearbox (found in M2, as built)
+The host runs every AI on its automatic box (up at 7450 rpm, down below 3450 rpm, 0.11 s torque cut per shift), so the gear on a corner exit depends on how slow the apex was, not on what is best.
+`CarModel` models the box (`gearAt`, `vDown`, `engine`, `driveG`: the game's torque curve and ratios). The speed profile keeps the optimistic best-gear table (it is a bound for the tracker, never a limit);
+`Line.gearNotches` caps an apex at 0.6 m/s under a down-shift speed when the exit run gains more than 0.15 s over twice the modelled cost, and only where a lap of data (`gearSeen`) shows the car leaving
+that corner in the tall gear. RESULTS.md, "Compound pace and the gearbox", has the measurements. The same model gives realistic lap-time predictions for the stint planner (M3).
+
 ## 5. Awareness and rival models (M2, as built)
 
 The first design (a baked manoeuvre library with probabilistic rival futures) was replaced during M2 by an online rollout planner: it is simpler,
@@ -219,9 +225,13 @@ class, an `alongside` flag (nose-to-tail overlap within a lane and a half), pit 
 public snapshot (`cars`, `state`), never another driver's controls.
 
 ### 5.2 Rival model (`Combat.predict`)
-A rival's future is its own racing line: the baked line of its class (the "shadow" profile, `Driver.shadow(cls)`) ridden at `k` times the speed of
-that line, where `k` is a running estimate of how fast this particular car drives relative to the model (clamped 0.75 to 1.2, updated at 15 % per
-planning cycle). The car's present lateral deviation from the line decays over 70 m. The prediction is a plain `[s, lat, v]` triple at 0.1 s;
+A rival's future is its own racing line, ridden at `k` times the speed of that line, where `k` is a running estimate of how fast this particular car
+drives relative to the model (clamped 0.75 to 1.2, updated at 15 % per planning cycle). Which line: when the rival's architecture is known
+(`apexState` carries `rivals[].driver`) and `data/rivals.json` holds a **measured line** for it (`src/rival.js`, `RivalLine`: mean lateral offset and
+speed per 3 m station of the rival's own solo flying laps, baked by `tools/rivalprofile.mjs` + `tools/rivalbake.mjs`), the prediction rides that;
+otherwise the baked line of its class (the "shadow" profile, `Driver.shadow(cls)`) is the fallback. The measured line matters: against SPH on
+Solenne the median lateral error of the 1 s forecast fell from 1.26 m to 0.25 m (p90 3.2 m to 1.6 m), and the class-line forecast was the cause of
+a 4.6 m/s side contact when SPH turned in on a line APEX did not expect (`tools/duel.mjs --audit=1`, RESULTS.md M2). The car's present lateral deviation from the line decays over 70 m. The prediction is a plain `[s, lat, v]` triple at 0.1 s;
 there is no branching, because a wrong branch is repaired by the next cycle (0.15 s later) and the cost of contact is priced on the worst overlap
 of the rollout. Rivals that react to APEX (yield, defend) show up as a change in `k` and `lat`, which is all the model needs to see.
 
@@ -257,7 +267,9 @@ the model leaves a margin), scaled by an appetite that grows as the incident acc
 One rule, used in the rollouts and in the real-time controller: `capSpeed(gap, vLead, vMe)` is the leader's speed plus what braking at half of what the
 car has still takes out of the gap (less 1 m and a reaction distance that grows with the closing speed). The real-time version (`planCap`) evaluates it
 against the forecast of the leader over the next 3 s, so a car that is about to brake for a corner is respected before it brakes. A car already beside us
-is the lateral logic's business, not the brakes'.
+is the lateral logic's business, not the brakes'. In the rollouts the cap also looks at the lateral overlap forecast now, +0.4 s and +0.8 s (a car that
+will be in our lane in a moment is a car ahead already), and a lane that needs more speed than the cap allows is charged `overCost` per m/s above 1.5 m/s
+(without it, a lane that is "free" only because the rollout ignored the car beside it won the scoring and took the car off the track).
 
 ### 6.3 Lateral discipline (`Combat.neighbor`, tracker override in `driver.js`)
 Whatever the planner wants, the car never drifts toward a car that is, or within a second will be, alongside faster than the clear gap (less 0.35 m) over
@@ -270,6 +282,22 @@ lets the rival's response decide, but it never closes a door by moving across.
 same seed. Every position change is logged with the plan in force, the speed edge and the lateral gap; a pass counts as **made by a move** when the planner
 held an attack lane within 4 s before it, otherwise as **made on pace**. An **attack episode** runs while an ATTACK lane is held and ends 3 s after; it is
 won if a pass landed inside it. The debugger shows the same events live.
+
+### 6.4b How a lane is built (what the first version got wrong)
+A lane is the racing line plus a smooth offset profile toward its target, clamped to the corridor. Three details decide whether the car can follow it:
+the shift is smoothed **after** the corridor clamp (clamp wobble made the speed profile of the lane collapse, 25 against 48 m/s on one corner); the
+ramp starts from the car's own lateral position and **slope** (`shift = sm·target + (1−sm)·(d0 + m0·x·(1−u)²)`, with `m0` measured from the recent
+lateral history) so a new lane never asks for a lateral kink the car is not already making; and `hold` (keep the present offset) exists only while a car
+is beside or just ahead (otherwise it is an absorbing state that cost 1.4 s a lap). A `follow` lane within 1.5 m of the line is the real racing line.
+
+### 6.4c Measured outcome and what remains (details: RESULTS.md M2)
+At matched pace the planner is safe (0 contacts and 0 incident points over 8 duels) and its passes are real moves (6 of 7), but it converts fewer
+duels than the control: mean finishing place 2.13 against 1.25 of three cars. The control's passes are logged as pace passes (lap 1 near station 900 with a
+3.4 to 3.7 m/s speed edge, and a second pass later in the race while the alongside guard is the only combat logic active); the planner's passes are
+moves, but it makes fewer of them, and in the duels it does not convert it never gets the second pass the control gets. Why is not settled: the
+candidate explanations are the speed cap band (2.46 m) against the 2.35 m pass gap, and a lane choice that gives up the tow; lab 7 (gap 2.7 m) did not
+separate them. The control remains the shipping default (`combatMode: "cap"`); the planner is selectable and the debugger shows either. The open work is
+the 8-car melee (contacts with much slower cars in corners, both modes) and defence.
 
 ### 6.5 Not built (and why)
 Defence, yielding and blue-flag behaviour are not implemented yet (APEX is rarely the slower car in the benchmark); the yield model (`yieldOf`, `yieldPrior`,

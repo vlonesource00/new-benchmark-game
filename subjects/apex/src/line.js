@@ -19,6 +19,7 @@ export class Line {
     for (let i = 0; i < N; i++) { const p = track.at(i * this.ds); this.px[i] = p.x; this.pz[i] = p.z; }
     this.trim = new Float64Array(N).fill(1); this.btrim = new Float64Array(N).fill(1);
     this.vmax = new Float64Array(N); this.v = new Float64Array(N); this.vbrk = new Float64Array(N);
+    this.cap = new Float64Array(N).fill(Infinity); this.gearSeen = new Uint8Array(N); this.vfree = new Float64Array(N); this.kept = []; this.notches = 0;
     this.geometry(); this.locate();
   }
   idx(i) { const N = this.N; return ((i % N) + N) % N; }
@@ -54,33 +55,105 @@ export class Line {
       if (J > 0 && dk[i] > 1e-7) s = Math.min(s, Math.cbrt(J / dk[i]));
       vmax[i] = s;
     }
-    let start = 0; for (let i = 1; i < N; i++) if (vmax[i] < vmax[start]) start = i;
-    v.set(vmax);
     const util = (i, s) => Math.min(1, s * s * Math.abs(ks[i]) / lat(s, i));
-    for (let pass = 0; pass < 2; pass++) {
-      for (let j = 0; j < N; j++) {
-        const i = (start + j) % N, nx = i + 1 === N ? 0 : i + 1, s = v[i], r = util(i, s);
-        const a = model.drive(s, o.mass) * Math.pow(1 - Math.pow(r, pd), 1 / pd);
-        const t = Math.sqrt(s * s + 2 * len[i] * Math.max(0, a));
-        if (t < v[nx]) v[nx] = t;
+    const gearOn = model.gearAware && o.gears !== false, useNotch = gearOn && !o.out && o.notch !== false;
+    // gearbox notches decided at the last rebuild stay in force; they are re-decided below on this rebuild's profile
+    if (useNotch) { this.vfree.set(vmax); this.applyNotches(); }
+    const run = () => {
+      let start = 0; for (let i = 1; i < N; i++) if (vmax[i] < vmax[start]) start = i;
+      v.set(vmax);
+      for (let pass = 0; pass < 2; pass++) {
+        for (let j = 0; j < N; j++) {
+          const i = (start + j) % N, nx = i + 1 === N ? 0 : i + 1, s = v[i], r = util(i, s);
+          const a = model.drive(s, o.mass) * Math.pow(1 - Math.pow(r, pd), 1 / pd);
+          const t = Math.sqrt(s * s + 2 * len[i] * Math.max(0, a));
+          if (t < v[nx]) v[nx] = t;
+        }
+        for (let j = 0; j < N; j++) {
+          const i = ((start - j) % N + N) % N, pv = i === 0 ? N - 1 : i - 1, s = v[i], r = util(i, s);
+          model.margin = m0 * btrim[i]; const b = model.brake(s) * Math.pow(1 - Math.pow(r, pb), 1 / pb); model.margin = m0;
+          const t = Math.sqrt(s * s + 2 * len[pv] * Math.max(0.5, b));
+          if (t < v[pv]) v[pv] = t;
+        }
       }
-      for (let j = 0; j < N; j++) {
-        const i = ((start - j) % N + N) % N, pv = i === 0 ? N - 1 : i - 1, s = v[i], r = util(i, s);
-        model.margin = m0 * btrim[i]; const b = model.brake(s) * Math.pow(1 - Math.pow(r, pb), 1 / pb); model.margin = m0;
-        const t = Math.sqrt(s * s + 2 * len[pv] * Math.max(0.5, b));
-        if (t < v[pv]) v[pv] = t;
+      // braking envelope alone (no forward acceleration limit): what a car with more thrust than the table may still carry
+      const vb = this.vbrk; vb.set(vmax);
+      for (let pass = 0; pass < 2; pass++) for (let j = 0; j < N; j++) {
+        const i = ((start - j) % N + N) % N, pv = i === 0 ? N - 1 : i - 1, sp = vb[i], r = util(i, sp);
+        model.margin = m0 * btrim[i]; const b = model.brake(sp) * Math.pow(1 - Math.pow(r, pb), 1 / pb); model.margin = m0;
+        const t = Math.sqrt(sp * sp + 2 * len[pv] * Math.max(0.5, b));
+        if (t < vb[pv]) vb[pv] = t;
       }
-    }
-    // braking envelope alone (no forward acceleration limit): what a car with more thrust than the table may still carry
-    const vb = this.vbrk; vb.set(vmax);
-    for (let pass = 0; pass < 2; pass++) for (let j = 0; j < N; j++) {
-      const i = ((start - j) % N + N) % N, pv = i === 0 ? N - 1 : i - 1, sp = vb[i], r = util(i, sp);
-      model.margin = m0 * btrim[i]; const b = model.brake(sp) * Math.pow(1 - Math.pow(r, pb), 1 / pb); model.margin = m0;
-      const t = Math.sqrt(sp * sp + 2 * len[pv] * Math.max(0.5, b));
-      if (t < vb[pv]) vb[pv] = t;
-    }
+    };
+    run();
+    // The profile is an upper bound for the tracker (the acceleration table is the best gear), never a limit the car cannot meet.
+    // The automatic box only drops a gear below 3450 rpm: a corner taken just above that speed leaves the car a gear too tall for the whole exit.
+    if (useNotch && this.gearNotches(model, o, util)) { this.applyNotches(); run(); }
     let T = 0; for (let i = 0; i < N; i++) T += len[i] / Math.max(1, 0.5 * (v[i] + v[i + 1 === N ? 0 : i + 1]));
     return T;
+  }
+  /**
+   * Gearbox notches. The host's automatic box drops a gear only below 3450 rpm, so a corner taken a little above that speed
+   * is left in a gear too tall for the whole exit (a 25 % thrust loss in the cases measured). Where lowering the apex speed to
+   * just under the threshold buys more on the exit run than it costs in the corner, cap the apex there. Returns whether any cap was set.
+   */
+  applyNotches() {
+    const cap = this.cap, vmax = this.vmax; cap.fill(Infinity);
+    for (const n of this.kept) for (let c = -n.k; c <= n.k; c++) { const i = this.idx(n.p + c); cap[i] = n.vc; if (vmax[i] > n.vc) vmax[i] = n.vc; }
+  }
+  /** Corner apexes of a speed array: minima over +-6 stations that sit at least `prom` m/s under the fastest speed within `reach` stations on both sides. */
+  apexes(arr, prom = 4, reach = 130) {
+    const N = this.N, out = [];
+    for (let i = 0; i < N; i++) {
+      const x = arr[i]; let low = true;
+      for (let d = -6; d <= 6; d++) if (arr[this.idx(i + d)] < x - 1e-9) { low = false; break; }
+      if (!low) continue;
+      let l = x, r = x; for (let d = 1; d <= reach; d++) { l = Math.max(l, arr[this.idx(i - d)]); r = Math.max(r, arr[this.idx(i + d)]); }
+      if (Math.min(l, r) - x >= prom && (!out.length || i - out[out.length - 1] > 6)) out.push(i);
+    }
+    return out;
+  }
+  gearNotches(model, o, util) {
+    const N = this.N, v = this.v, vfree = this.vfree, vbrk = this.vbrk, len = this.len;
+    const band = o.notchBand ?? 3, margin = o.notchMargin ?? 0.6, minGain = o.notchGain ?? 0.15, costK = o.notchCost ?? 2, k = o.notchHalf ?? 5, mass = o.mass ?? 1100, pd = o.driveExp ?? 2;
+    const prev = this.kept, next = [];
+    const apex = this.apexes(v, o.notchProm ?? 4);
+    for (let zi = 0; zi < apex.length; zi++) {
+      const p = apex[zi], va = vfree[p], ga = model.gearAt(va);
+      if (ga <= 1) continue;
+      // The profile says the car leaves this corner in ga; only a car seen there in ga (not already a gear lower because it is slower than the profile) gains from a notch.
+      if (o.notchSeen !== false && !prev.some((q) => Math.abs(q.p - p) <= 6)) {
+        let seen = 0; for (let d = -6; d <= 6; d++) { const g = this.gearSeen[this.idx(p + d)]; if (g && (!seen || g < seen)) seen = g; }
+        if (!seen || seen < ga) continue;
+      }
+      const vd = model.vDown(ga);
+      if (va - vd > band || va < vd) continue;
+      const vc = vd - margin;
+      // the exit run ends at the speed maximum before the next apex
+      let e = p, top = v[p]; const span = ((apex[(zi + 1) % apex.length] - p + N) % N) || N;
+      for (let d = 1; d <= span; d++) { const x = v[this.idx(p + d)]; if (x >= top) { top = x; e = p + d; } }
+      if (e - p < 4) continue;
+      // Time over the exit run with the real gearbox: the car as it will be (stuck in ga) against the car that dropped a gear.
+      const exitTime = (v0, g0) => {
+        let vb = v0, g = g0, T = 0;
+        for (let i = p; i < e; i++) {
+          const ii = this.idx(i), nx = this.idx(i + 1);
+          g = model.gearAt(vb, g);
+          const a = model.driveG(vb, g, mass) * Math.pow(1 - Math.pow(util(ii, vb), pd), 1 / pd);
+          const t = Math.min(Math.sqrt(vb * vb + 2 * len[ii] * Math.max(0, a)), vfree[nx], vbrk[nx]);
+          T += len[ii] / Math.max(1, 0.5 * (vb + t)); vb = t;
+        }
+        return T;
+      };
+      const TA = exitTime(va, ga), TB = exitTime(vc, model.gearAt(vc, ga));
+      const cost = costK * (2 * k + 3) * this.ds * (1 / vc - 1 / va);
+      if (o.notchLog) o.notchLog.push({ s: Math.round(p * this.ds), va: +va.toFixed(1), ga, vc: +vc.toFixed(1), run: Math.round((e - p) * this.ds), TA: +TA.toFixed(3), TB: +TB.toFixed(3), cost: +cost.toFixed(3) });
+      if (TA - TB - cost <= minGain) continue;
+      next.push({ p, vc, k });
+    }
+    const same = next.length === prev.length && next.every((n, j) => n.p === prev[j].p && Math.abs(n.vc - prev[j].vc) < 0.05);
+    this.kept = next; this.notches = next.length;
+    return !same;
   }
   /** Moves point i back inside the corridor the stewards use (|track lateral| <= bound). */
   project(px, pz, i) {
@@ -152,6 +225,7 @@ export class Line {
     const L = Object.create(Line.prototype), N = this.N;
     Object.assign(L, { track: this.track, N, ds: this.ds, edge: this.edge, bound: this.bound, st: this.st, trim: this.trim, btrim: this.btrim, shift });
     for (const key of ['px', 'pz', 'len', 'h', 'k', 'ks', 'dk', 'lat', 'vmax', 'v', 'vbrk']) L[key] = new Float64Array(N);
+    L.cap = this.cap;
     for (let i = 0; i < N; i++) {
       const h = this.h[i];
       L.px[i] = this.px[i] + Math.cos(h) * shift[i]; L.pz[i] = this.pz[i] - Math.sin(h) * shift[i]; L.lat[i] = this.lat[i] + shift[i];
@@ -188,6 +262,7 @@ export class Line {
     const L = Object.create(Line.prototype), N = this.N;
     Object.assign(L, { track: this.track, N, ds: this.ds, edge: this.edge, bound: this.bound, st: this.st, trim: this.trim, btrim: this.btrim });
     for (const key of LANE_KEYS) L[key] = this[key].slice();
+    L.cap = this.cap;
     return L;
   }
   laneWindow(shift, i0, n, into = null) {
@@ -213,6 +288,7 @@ export class Line {
       const i = this.idx(i0 + c), ak = Math.abs(ks[i]); let s = top;
       if (ak > 1e-6) { s = Math.min(top, Math.sqrt(lat(40, i) / ak)); for (let it = 0; it < 4; it++) s = Math.min(top, Math.sqrt(lat(s, i) / ak)); }
       if (J > 0 && dk[i] > 1e-7) s = Math.min(s, Math.cbrt(J / dk[i]));
+      if (this.cap) s = Math.min(s, this.cap[i]);
       vmax[i] = s; v[i] = s;
     }
     const iS = this.idx(i0), iE = this.idx(i0 + n);

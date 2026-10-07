@@ -32,7 +32,7 @@ export class PitGuide {
       const u = back > lane.L / 2 ? 1 : 1 - back / D;
       shift[i] = (lane.edgeLat - line.lat[i]) * smooth(u);
     }
-    this.path = line.lane(shift); this.path.speeds(model, speedOpts); this.key = 'pit';
+    this.path = line.lane(shift); this.path.speeds(model, { ...speedOpts, notch: false }); this.key = 'pit';
     return this.path;
   }
 }
