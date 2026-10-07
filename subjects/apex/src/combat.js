@@ -24,7 +24,7 @@ export class Combat {
   }
   /** A lane buffer from the pool (a window is built into it in O(window)). Buffers of the previous cycle stay untouched. */
   laneBuffer() { const pool = this.pools[this.gen]; return pool[this.used] ?? (pool[this.used] = this.d.line.blankLane()), pool[this.used++]; }
-  reset() { this.plan = null; this.nextAt = -1; this.k.clear(); this.state = 'FREE'; this.cap = Infinity; this.side = 0; this.focus = null; this.contact = null; this.visCands = []; this.rank?.clear(); this.events = []; this.lastAttack = -99; this.epStart = null; }
+  reset() { this.plan = null; this.nextAt = -1; this.k.clear(); this.state = 'FREE'; this.cap = Infinity; this.side = 0; this.focus = null; this.contact = null; this.visCands = []; this.rank?.clear(); this.events = []; this.lastAttack = -99; this.epStart = null; this.hist = null; }
 
   /** Rival future on the same road: arrays at t = 0, dt, ... T of track distance travelled, lateral offset and speed. */
   predict(r, T, dt, commit = true) {
@@ -127,7 +127,7 @@ export class Combat {
   update(now, car, c, v, field, cars) {
     // c: { i, f, e } closest on the racing line; v: our speed
     const d = this.d, o = d.options, line = d.line;
-    this.cap = Infinity; this.now = now; this.i0 = c.i; this.bookkeep(now, field, v); this.episodes(now);
+    this.cap = Infinity; this.now = now; this.i0 = c.i; this.observe(now, field.me.lat); this.bookkeep(now, field, v); this.episodes(now);
     const rivals = field.list.filter((r) => !r.done && !r.ghost && r.ds > -90 && r.ds < 260 && !(r.ds < -CAR_LEN * 1.5 && r.v < v - 3));
     this.ahead = rivals.filter((r) => r.ds > 0 && r.ds < 220);
     // relevant: close ahead or closing on us, alongside, or close behind and not slower
@@ -181,6 +181,18 @@ export class Combat {
     }
   }
 
+  /** Every update: the car's lateral speed over the road, filtered on the snapshot clock. */
+  observe(now, lat) {
+    const h = this.hist;
+    if (!h || now - h.t > 0.5 || now < h.t) this.hist = { t: now, lat, vl: 0 };
+    else if (now - h.t >= 0.03) { const vl = (lat - h.lat) / (now - h.t); this.hist = { t: now, lat, vl: h.vl + (vl - h.vl) * 0.4 }; }
+  }
+  /** Lateral slope of the car relative to the racing line (m per m of travel): its lateral speed over the road less the line's own. */
+  slope(v, i0) {
+    const L = this.d.line, dl = (L.sample(L.lat, L.idx(i0 + 2), 0, 0) - L.sample(L.lat, L.idx(i0 - 2), 0, 0)) / (4 * L.ds);
+    return clamp((this.hist?.vl ?? 0) / Math.max(5, v) - dl, -0.25, 0.25);
+  }
+
   /** One planning cycle, timed (wall clock, kept off `stats` so results stay comparable run to run). */
   decide(now, car, c, v, field, rel, lead) {
     if (this.plan?.lane && now < this.nextAt && this.plan.until > now) return { path: this.plan.path, cap: this.planCap(this.ahead, v, this.plan.lane) };
@@ -201,6 +213,7 @@ export class Combat {
     this.nextAt = now + (o.planEvery ?? 0.15); this.gen ^= 1; this.used = 0;
     const i0 = c.i, f0 = c.f, n = clamp(Math.round((T + 1.5) * v / line.ds), 60, 320);
     const d0 = me - line.sample(line.lat, i0, f0, 0);           // current offset from the racing line
+    const m0 = this.slope(v, i0); this.m0 = m0; this.d0 = d0;            // how fast it is changing, per metre travelled: a new lane leaves along the same heading
     const cands = [];
     const mk = (A, tag, side, W = 0, delay = 0) => {
       const fn = typeof A === 'function', shift = new Float64Array(n + 1);
@@ -210,10 +223,13 @@ export class Combat {
       for (let j = 0; j <= n; j++) {
         // a shadow lane tracks the rival's lateral position; a fixed lane holds its offset; both start from where the car is
         const u = j0 > 0 ? smooth((j - j0) / ramp) : 1, target = (fn ? A(j) : A) * u;
-        shift[j] = j <= rin ? d0 + (target - d0) * smooth(j / rin) : j <= holdEnd ? target : target * (1 - smooth((j - holdEnd) / (n - holdEnd)));
+        if (j <= rin) { const u = j / rin, sm = smooth(u), base = d0 + m0 * j * line.ds * (1 - u) * (1 - u); shift[j] = sm * target + (1 - sm) * base; }
+        else shift[j] = j <= holdEnd ? target : target * (1 - smooth((j - holdEnd) / (n - holdEnd)));
       }
       // keep inside the corridor
       for (let j = 0; j <= n; j++) { const ii = line.idx(i0 + j), lim = line.bound, l = line.lat[ii] + shift[j]; if (Math.abs(l) > lim) shift[j] = Math.sign(l) * lim - line.lat[ii]; }
+      // the corridor edge cuts the shift station by station; smooth it so the lane has no curvature noise (a 0.2 m wobble every 3 m reads as a corner)
+      for (let pass = 0; pass < 3; pass++) { let prev = shift[0]; for (let j = 1; j < n; j++) { const cur = shift[j]; shift[j] = 0.25 * prev + 0.5 * cur + 0.25 * shift[j + 1]; prev = cur; } }
       const lane = line.laneWindow(shift, i0, n, this.laneBuffer());
       lane.speedsWindow(d.model, i0, n, v, line.v[line.idx(i0 + n)], { mass: car.spec.mass + car.fuel * 0.75 });
       cands.push({ lane, A: fn ? 0 : A, tag, side, W, delay, i0, n });
@@ -262,6 +278,7 @@ export class Combat {
     this.contact = null;
     if (chosen.ro.worst.closing > 0.3) { const jj = chosen.ro.worst.j, ii = chosen.lane.idx(i0 + Math.round(chosen.ro.s[jj] / line.ds)); this.contact = { x: +chosen.lane.px[ii].toFixed(1), z: +chosen.lane.pz[ii].toFixed(1), d: +chosen.ro.s[jj].toFixed(0), l: +chosen.lane.lat[ii].toFixed(1), closing: +chosen.ro.worst.closing.toFixed(1), t: chosen.ro.worst.t, id: chosen.ro.worst.id }; }
     if (!this.plan || this.plan.side !== chosen.side || this.plan.tag !== chosen.tag) this.stats.lanes++;
+    { let mn = 0, at = 0; for (let j = 0; j <= chosen.n; j++) { const ii = line.idx(i0 + j), df = chosen.lane.v[ii] - line.v[ii]; if (df < mn) { mn = df; at = j; } } this.dbgLane = { mn: +mn.toFixed(1), at, n: chosen.n, rin: chosen.rin }; }
     const path = chosen.tag === 'follow' && Math.abs(d0) < 1.5 ? line : chosen.lane;
     this.plan = { lane: chosen.lane, path, side: chosen.side, A: chosen.A, W: chosen.W, delay: chosen.delay, until: now + 0.5, tag: chosen.tag };
     this.state = chosen.tag === 'shadow' ? (chosen.delay > 0 ? 'SETUP' : 'ATTACK') : near.length ? 'ALONGSIDE' : lead && lead.ds < 80 ? 'FOLLOW' : 'FREE';
