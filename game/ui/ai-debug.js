@@ -30,8 +30,9 @@ export class AiDebugPanel {
     // Architecture panel: what this AI says it is thinking, in its own terms.
     this.mind = document.createElement('div');
     this.mind.className = 'aimind'; this.mind.hidden = true;
-    this.mind.innerHTML = '<div class="mh"></div><canvas></canvas><div class="mb"></div>';
-    [this.mindHead, this.timeline, this.mindBody] = this.mind.children;
+    this.mind.innerHTML = '<div class="mh"></div><canvas></canvas><canvas class="radar" hidden></canvas><div class="mb"></div>';
+    [this.mindHead, this.timeline, this.radarCv, this.mindBody] = this.mind.children;
+    this.radarCv.width = 560; this.radarCv.height = 420;
     this.timeline.width = 560; this.timeline.height = 64;
     this.intents = []; this.model = null; this.tagName = ''; this.mindAt = 0;
     parent.append(this.mind);
@@ -115,6 +116,7 @@ export class AiDebugPanel {
       if (x1 - x0 > 60) { g.fillStyle = '#000'; g.fillText(String(p.intent ?? '').toUpperCase().slice(0, Math.floor((x1 - x0 - 8) / 11)), x0 + 6, 34); }
     });
     g.fillStyle = 'rgba(255,255,255,.45)'; g.fillText(`INTENT · LAST ${TRACE} s`, 0, 8);
+    this.drawRadar(race, m);
     // Options, controller internals and counters.
     const parts = [];
     const cands = (m.cands ?? []).filter((c) => Number.isFinite(c.score));
@@ -126,8 +128,62 @@ export class AiDebugPanel {
       }).join('')}</div>`);
     }
     if (m.gauges?.length) parts.push(`<h6>INSIDE THE CONTROLLER</h6><div class="mg">${m.gauges.map((x) => `<div><span>${esc(x.label)}</span><i><b style="width:${(x.value * 100).toFixed(0)}%;${x.color ? `background:${x.color}` : ''}"></b></i><em>${esc(x.text ?? '')}</em></div>`).join('')}</div>`);
+    if (m.log?.length) parts.push(`<h6>RECENT EVENTS</h6><div class="ml">${m.log.map((x) => `<div>${esc(x)}</div>`).join('')}</div>`);
     if (m.counters?.length) parts.push(`<div class="mn">${m.counters.map((x) => `<span><small>${esc(x.label)}</small>${esc(String(x.value))}</span>`).join('')}</div>`);
     this.mindBody.innerHTML = parts.join('');
+  }
+
+  /**
+   * Top-down radar in road coordinates for architectures that report one (m.radar): the road with the car and its
+   * rivals, where each rival is expected to be, the lanes the planner weighed (chosen one bright) and any contact it
+   * expects. Left on screen is left on the road.
+   */
+  drawRadar(race, m) {
+    const cv = this.radarCv, r = m.radar;
+    cv.hidden = !r;
+    if (!r) return;
+    const ahead = (r.rivals ?? []).reduce((m, v) => Math.max(m, v.d), 0), behind = (r.rivals ?? []).reduce((m, v) => Math.min(m, v.d), 0);
+    const dMax = Math.max(35, Math.min(90, ahead * 1.3 + 12)), dMin = -Math.max(12, Math.min(30, -behind * 1.2 + 6));
+    const g = cv.getContext('2d'), W = 560, H = 420, PX = 20, PY = H / (dMax - dMin), yMe = H * dMax / (dMax - dMin), theme = m.theme?.color ?? '#fff', tone = toneColor(m.tone);
+    const X = (lat) => W / 2 - lat * PX, Y = (d) => yMe - d * PY, half = r.half ?? 7.5;
+    g.clearRect(0, 0, W, H);
+    g.fillStyle = 'rgba(8,10,14,.55)'; g.fillRect(0, 0, W, H);
+    g.fillStyle = 'rgba(255,255,255,.07)'; g.fillRect(X(half), 0, 2 * half * PX, H);
+    g.strokeStyle = 'rgba(255,255,255,.5)'; g.lineWidth = 3; g.beginPath(); g.moveTo(X(half), 0); g.lineTo(X(half), H); g.moveTo(X(-half), 0); g.lineTo(X(-half), H); g.stroke();
+    g.font = '600 15px "JetBrains Mono", monospace'; g.textBaseline = 'middle'; g.lineWidth = 1;
+    for (let d = Math.ceil(dMin / 10) * 10; d <= dMax; d += 10) {
+      if (!d) continue;
+      g.strokeStyle = 'rgba(255,255,255,.08)'; g.beginPath(); g.moveTo(0, Y(d)); g.lineTo(W, Y(d)); g.stroke();
+      g.fillStyle = 'rgba(255,255,255,.35)'; g.textAlign = 'left'; g.fillText(`${d > 0 ? '+' : ''}${d}`, 4, Y(d) - 8);
+    }
+    const poly = (pts, col, w, dash = [], a = 1) => {
+      if (pts.length < 2) return;
+      g.globalAlpha = a; g.strokeStyle = col; g.lineWidth = w; g.setLineDash(dash); g.beginPath();
+      pts.forEach(([d, l], k) => (k ? g.lineTo(X(l), Y(d)) : g.moveTo(X(l), Y(d)))); g.stroke(); g.setLineDash([]); g.globalAlpha = 1;
+    };
+    const box = (lat, d, col, a = 1) => { g.globalAlpha = a; g.fillStyle = col; g.fillRect(X(lat) - 1.96 * PX / 2, Y(d) - 4.56 * PY / 2, 1.96 * PX, 4.56 * PY); g.globalAlpha = 1; };
+    // lanes weighed: the chosen one last so it sits on top
+    for (const l of (r.lanes ?? []).filter((q) => !q.chosen)) poly(l.rp, theme, 2, [], .35);
+    for (const l of (r.lanes ?? []).filter((q) => q.chosen)) { poly(l.rp, '#000', 7, [], .5); poly(l.rp, tone, 4); }
+    // rivals: forecast path, body, label
+    for (const v of r.rivals ?? []) {
+      const col = v.kind === 'alongside' ? '#ff8f3d' : v.kind === 'ahead' ? '#ffb02e' : '#4f8cff', k = race.cars.findIndex((c) => c.id === v.id), name = race.entries[k]?.team?.short ?? `#${v.id}`;
+      poly([[v.d, v.l], ...(v.rp ?? []).slice(1)], col, 2, [4, 4], .8);
+      const e = v.rp?.at(-1); if (e) { g.fillStyle = col; g.beginPath(); g.arc(X(e[1]), Y(e[0]), 4, 0, 7); g.fill(); }
+      box(v.l, v.d, col, .9);
+      if (v.focus) { g.strokeStyle = tone; g.lineWidth = 3; g.strokeRect(X(v.l) - 1.96 * PX / 2 - 4, Y(v.d) - 4.56 * PY / 2 - 4, 1.96 * PX + 8, 4.56 * PY + 8); }
+      g.fillStyle = '#fff'; g.textAlign = v.l > 0 ? 'right' : 'left';
+      g.fillText(`${name} ${v.d >= 0 ? '+' : ''}${v.d.toFixed(0)} m`, X(v.l) + (v.l > 0 ? -1 : 1) * (1.96 * PX / 2 + 8), Y(v.d) - 6);
+      g.fillStyle = 'rgba(255,255,255,.6)'; g.fillText(`${v.v - r.me.v >= 0 ? '+' : ''}${(v.v - r.me.v).toFixed(1)} m/s`, X(v.l) + (v.l > 0 ? -1 : 1) * (1.96 * PX / 2 + 8), Y(v.d) + 9);
+    }
+    box(r.me.l, 0, theme, 1);
+    g.strokeStyle = '#fff'; g.lineWidth = 2; g.strokeRect(X(r.me.l) - 1.96 * PX / 2, Y(0) - 4.56 * PY / 2, 1.96 * PX, 4.56 * PY);
+    if (r.contact) {
+      const cx = X(r.contact.l), cy = Y(r.contact.d); g.strokeStyle = '#ff3b3b'; g.lineWidth = 4;
+      g.beginPath(); g.moveTo(cx - 9, cy - 9); g.lineTo(cx + 9, cy + 9); g.moveTo(cx + 9, cy - 9); g.lineTo(cx - 9, cy + 9); g.stroke();
+      g.fillStyle = '#ff3b3b'; g.textAlign = 'left'; g.fillText(`${r.contact.closing} m/s`, cx + 14, cy);
+    }
+    g.fillStyle = 'rgba(255,255,255,.55)'; g.textAlign = 'right'; g.fillText(`RADAR · ${r.cap != null ? `cap ${Math.round(r.cap * 3.6)} km/h` : 'no cap'}`, W - 6, 12);
   }
 
   draw(car, c, plan, target, gov, color) {

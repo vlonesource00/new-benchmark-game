@@ -41,7 +41,8 @@ const THEMES = {
   'gemini-supreme-v4': { color: '#4285f4', mind: 'Offline min-time line tracked by a tyre-aware MPCC' },
   phantom: { color: '#9b5de5', mind: 'Imitates a ghost tape; MPPI rollouts on an exact plant' },
   'phantom-v2': { color: '#b388ff', mind: 'Ghost tape v2 with an adaptive plant model' },
-  'solinator-6.1': { color: '#ffce45', mind: 'Gate-to-gate arrivals; full-plant transfer graph' }
+  'solinator-6.1': { color: '#ffce45', mind: 'Gate-to-gate arrivals; full-plant transfer graph' },
+  apex: { color: '#00e0b8', mind: 'Identified g-g-v limit line; shadow lanes rolled out against predicted rivals' }
 };
 
 // CRV packs its scored lanes as "kind*:score ..." in debug() and as geometry in visualDebug().
@@ -148,6 +149,33 @@ const PROFILES = {
       counters: [counter('accepted', d.stats?.acceptedPlans), counter('rejected', d.stats?.rejected)]
     };
   }
+};
+// APEX: lanes weighed against predicted rivals; the radar (road coordinates) and extras come from visualDebug().
+PROFILES.apex = (d, v) => {
+  const cb = d.combat ?? {}, st = cb.stats ?? {}, x = v?.extras ?? null;
+  const raw = Array.isArray(v?.candidates) && v.candidates.length ? v.candidates : cb.cands ?? [], top = raw.reduce((m, c) => Math.max(m, c.score ?? -Infinity), -Infinity);
+  // a lane that is simply blocked scores far below the rest; the bars clip it so the real choices stay readable
+  const rk = (id) => (cb.cands ?? []).find((c) => c.kind === id)?.risk;
+  const cands = raw.map((c) => ({ label: c.kind, score: Math.max(c.score, top - 60), chosen: c.chosen, points: c.points, note: `${c.score.toFixed(0)}${num(c.risk ?? rk(c.kind)) && (c.risk ?? rk(c.kind)) > 0.5 ? ` · risk ${(c.risk ?? rk(c.kind)).toFixed(0)} m` : ''}` }));
+  const ev = (cb.events ?? []).slice().reverse().map((e) => `${e.t.toFixed(0)} s  ${e.kind === 'pass' ? '▲ PASS' : '▼ PASSED'} #${e.rival}  ${e.kind === 'pass' ? (e.moved ? 'by move' : 'on pace') : e.tag}  ${e.edge >= 0 ? '+' : ''}${e.edge} m/s`);
+  return {
+    intent: d.intent ?? 'INIT', sub: d.sub ?? '', focus: d.focus != null ? { id: d.focus, kind: d.focusKind ?? 'follow' } : null, side: d.side ?? 0,
+    cands, candNote: 'lanes weighed (position gained − contact price)',
+    gauges: [
+      gauge('stability', num(d.stability), num(d.stability) == null ? '' : pct(d.stability), d.stability < .5 ? '#ff4d4d' : '#3ddc84'),
+      gauge('grip used', num(d.latUse), num(d.latUse) == null ? '' : pct(clamp01(d.latUse)), '#4fd1e8'),
+      gauge('speed vs line', num(d.targetSpeed) && num(d.lineSpeed) ? d.targetSpeed / Math.max(1, d.lineSpeed) : null, num(d.lineSpeed) ? `${Math.round(d.targetSpeed * 3.6)} / ${Math.round(d.lineSpeed * 3.6)} km/h` : ''),
+      gauge('traffic cap', num(cb.cap) && num(d.lineSpeed) ? Math.min(1, cb.cap / Math.max(1, d.lineSpeed)) : null, num(cb.cap) ? `${Math.round(cb.cap * 3.6)} km/h` : 'free', '#ffb02e'),
+      gauge('dirty air', num(d.wake), num(d.wake) == null ? '' : pct(clamp01(d.wake)), '#9aa4b2'),
+      gauge('traction', num(d.tcCap), num(d.tcCap) == null ? '' : pct(d.tcCap), '#c77dff'),
+      gauge('contact risk', num(cb.contact?.closing) ? cb.contact.closing / 4 : 0, cb.contact ? `${cb.contact.closing} m/s in ${cb.contact.t.toFixed(1)} s` : 'none', cb.contact?.closing > 2.4 ? '#ff4d4d' : '#ff8f3d')
+    ],
+    counters: [counter('passes', st.passes), counter('by move', st.movePasses), counter('on pace', st.pacePasses), counter('passed by', st.lost), counter('guards', st.guards), counter('plans', st.plans), counter('lane changes', st.lanes)],
+    tags: [cb.tag && cb.tag !== 'follow' && cb.tag, num(cb.cap) && 'speed cap', cb.contact && 'contact forecast', d.wake > .3 && 'in the wake'].filter(Boolean),
+    log: ev,
+    radar: x ? { half: x.half, me: x.me, rivals: x.rivals ?? [], lanes: x.lanes ?? [], contact: x.contact ?? null, cap: x.cap ?? null } : null,
+    extras: x
+  };
 };
 PROFILES['phantom-v2'] = PROFILES.phantom;
 

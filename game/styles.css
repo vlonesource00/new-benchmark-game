@@ -368,6 +368,8 @@ body.replaying #replay-bug { display: flex; animation: fade-in .3s ease both; }
 .aimind .mt { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 5px; }
 .aimind .mt i { font-style: normal; font-size: 10px; letter-spacing: .1em; padding: 1px 6px; border: 1px solid var(--tone); color: var(--tone); text-transform: uppercase; }
 .aimind canvas { display: block; width: 280px; height: 32px; margin-top: 8px; }
+.aimind canvas.radar { height: 210px; }
+.aimind .ml > div { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--dim); line-height: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .aimind h6 { margin: 8px 0 3px; font-size: 9px; letter-spacing: .16em; color: var(--faint); font-weight: 700; }
 .aimind .mc > div, .aimind .mg > div { display: grid; grid-template-columns: 82px 1fr auto; align-items: center; gap: 6px; font-family: 'JetBrains Mono', monospace; font-size: 10px; height: 15px; color: var(--dim); }
 .aimind .mc span, .aimind .mg span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }

@@ -41,7 +41,39 @@ export class ApexDriver {
     if (baked) { sh = new Line(this.track, { ds: baked.ds }); if (sh.load(baked)) { const m = new CarModel(cls); m.margin = this.options.margin ?? 1; m.jerk = this.options.jerk ?? 0; m.grip = 0.9; sh.speeds(m); } else sh = null; }
     this.shadows.set(cls, sh); return sh;
   }
-  debug() { const c = this.combat; return { architecture: 'APEX', intent: this.mode, targetSpeed: this.targetSpeed, e: this.e, stability: this.stability, grip: this.model?.grip, combat: c ? { state: c.state, side: c.plan?.side ?? 0, A: c.plan?.A ?? 0, cap: c.cap, tag: c.plan?.tag, cands: c.lastCands, stats: c.stats } : null }; }
+  /** What the debugger shows: intent and the numbers behind it. Cheap: reads what the last update left behind. */
+  debug() {
+    const c = this.combat, plan = c?.plan, st = c?.stats ?? {}, lat = this.latCap ? Math.abs(this.ayReq ?? 0) / this.latCap : 0;
+    return {
+      architecture: 'APEX', intent: this.intent ?? this.mode, sub: this.sub ?? '', mode: this.mode,
+      targetSpeed: this.targetSpeed, lineSpeed: this.lineSpeed, e: this.e, stability: this.stability, grip: this.model?.grip, balance: this.balance,
+      wake: this.wake, share: this.share, tcCap: this.tcCap, protect: this.protect, latUse: lat, push: this.push, hot: this.hot, slipF: this.sF, slipR: this.sR, latHold: Boolean(this.nbHeld),
+      focus: c?.focus?.id ?? null, focusKind: c?.focus?.kind ?? null, focusGap: c?.focus?.ds ?? null, side: plan?.side ?? 0,
+      combat: c ? { state: c.state, side: plan?.side ?? 0, A: plan?.A ?? 0, cap: Number.isFinite(c.cap) ? c.cap : null, tag: plan?.tag, contact: c.contact ?? null, stats: st,
+        cands: (c.visCands ?? []).map((q) => ({ kind: q.kind, score: q.score, chosen: q.chosen, risk: q.risk, clear: q.clear })), events: (c.events ?? []).slice(-6) } : null
+    };
+  }
+  /** Geometry for the 3D lens and the radar: the path being followed, the lanes weighed, the aim point and the rival forecasts. */
+  visualDebug() {
+    const path = this.path ?? this.line, cur = this.cur;
+    if (!path || !cur) return null;
+    const i0 = path.idx(cur.i), n = clamp(Math.round(8 * Math.max(10, cur.v) / path.ds), 40, 110), pts = [];
+    for (let j = 0; j <= n; j += 2) { const i = path.idx(i0 + j); pts.push({ x: +path.px[i].toFixed(2), z: +path.pz[i].toFixed(2), v: +path.v[i].toFixed(1) }); }
+    const Lp = clamp(0.32 * cur.v + 7, 9, 32), ai = path.idx(i0 + Math.round(Lp / path.ds)), c = this.combat;
+    const tone = { ATTACK: '#ff4d6d', TOW: '#ffb02e', ALONGSIDE: '#ff8f3d', FOLLOW: '#ffb02e', PIT: '#c77dff' }[this.intent];
+    return {
+      trackingPoint: { x: path.px[ai], z: path.pz[ai] },
+      selectedTrajectory: { points: pts, mode: this.intent ?? this.mode, ...(tone ? { color: tone } : {}) },
+      candidates: (c?.visCands ?? []).map((q) => ({ kind: q.kind, score: q.score, chosen: q.chosen, points: q.points })),
+      extras: { ...(c?.vis() ?? {}), me: { l: +(this.field?.me?.lat ?? 0).toFixed(2), v: +cur.v.toFixed(1) }, half: this.track.halfWidth }
+    };
+  }
+  /** Intent label for the debugger, from what the combat planner and the pit guide are doing. */
+  labelIntent(pitting) {
+    const c = this.combat, cs = pitting ? 'PIT' : c?.state ?? 'FREE';
+    this.intent = this.stability < 0.3 ? 'RECOVER' : { PIT: 'PIT', ATTACK: 'ATTACK', SETUP: 'TOW', ALONGSIDE: 'ALONGSIDE', FOLLOW: 'FOLLOW' }[cs] ?? 'PACE';
+    this.sub = cs === 'SETUP' ? `in the tow · pull out ${c.plan?.side > 0 ? 'left' : 'right'} in ${c.plan?.delay?.toFixed(1)} s` : cs === 'ATTACK' ? `${c.plan?.tag ?? ''} ${c.plan?.side > 0 ? 'left' : 'right'} lane` : cs === 'ALONGSIDE' ? 'holding the gap' : cs === 'FOLLOW' && Number.isFinite(c.cap) ? 'speed capped behind' : this.mode.toLowerCase();
+  }
   /** Live grip: the game's tyre formula for each wheel, relative to the identification reference. */
   refresh(car) {
     const o = this.options, lg = liveGrip(car);
@@ -105,14 +137,23 @@ export class ApexDriver {
       if (path !== line) c = path.closest(car.x, car.z, c.i);
     }
     this.path = path;
-    const { i, f, e } = c; this.e = e;
+    const { i, f, e } = c; this.e = e; this.cur = { i, x: real.x, z: real.z, v };
     // ---- lateral ----
     const hPath = path.heading(i, f), beta = Math.atan2(car.v, Math.max(2, car.u));
     const psi = angle(car.yaw + beta - hPath);
     const Lp = clamp(0.32 * v + 7, 9, 32);
     const kp = path.sample(path.ks, i, f, v * (o.preview ?? 0.08));
     // the correction toward the line is bounded by what the tyres can give on top of the corner itself
-    const fbMax = (o.fbShare ?? 0.45) * model.lat(v) / (v * v), kc = kp + clamp(-2 * psi / Lp - e / (Lp * Lp), -fbMax, fbMax);
+    const fbMax = (o.fbShare ?? 0.45) * model.lat(v) / (v * v);
+    let corr = clamp(-2 * psi / Lp - e / (Lp * Lp), -fbMax, fbMax);
+    // lateral discipline: never close on a car alongside faster than there is room for. Past the allowed drift the car holds
+    // the heading that drifts at exactly the allowed rate, with the full tyre budget available to do it.
+    const nb = o.latGuard === false || !this.combat ? null : this.combat.neighbor(v); this.nb = nb;
+    if (nb) {
+      const drift = nb.dir * v * Math.sin(psi);
+      if (drift > nb.rate) { const pt = nb.dir * Math.asin(clamp(nb.rate / v, -0.35, 0.35)), fbSafe = 0.8 * model.lat(v) / (v * v); corr = clamp(-2 * (psi - pt) / Lp, -fbSafe, fbSafe); this.nbHeld = true; } else this.nbHeld = false;
+    } else this.nbHeld = false;
+    const kc = kp + corr;
     this.ayReq = v * v * kp; this.latCap = model.lat(v);
     const ff = model.steerFor(v * v * kc, v), rDes = v * kc, rErr = rDes - car.yawRate;
     const dBeta = this.dBeta = beta - model.betaFor(v * v * kc, v), slide = Math.sign(dBeta) * Math.max(0, Math.abs(dBeta) - (o.slideBand ?? 0.04));
@@ -122,10 +163,11 @@ export class ApexDriver {
     // ---- longitudinal ----
     const look = v * 0.1, d2 = Math.max(4, v * 0.25);
     // target: the braking envelope when the car may use all the thrust it really has (hybrid, tow), else the table profile
-    const prof = (o.freeThrust ?? (this.combat?.state !== 'FREE')) ? path.vbrk : path.v;
+    // (in a slipstream the thrust is worth more than the table says, so the same envelope applies there)
+    const wk = car.aero?.wake ?? 0;
+    const prof = (o.freeThrust ?? (this.combat?.state !== 'FREE' || wk > (o.towWake ?? 0.05))) ? path.vbrk : path.v;
     let vt = path.sample(prof, i, f, look), vt2 = path.sample(prof, i, f, look + d2);
     // dirty air: where a corner sets the speed, the downforce a car ahead takes away takes speed too (straights keep the tow)
-    const wk = car.aero?.wake ?? 0;
     if (wk > 0.05) { const ws = model.wakeSpeed(v, wk); const lim = (j) => path.vmax[path.idx(i + j)] < path.v[path.idx(i + j)] + 2; if (lim(1) || lim(Math.round(look / path.ds) + 2)) { vt *= ws; vt2 *= ws; } }
     this.wake = wk;
     if (combatCap < Infinity) { vt = Math.min(vt, combatCap); vt2 = Math.min(vt2, combatCap); }
@@ -164,6 +206,7 @@ export class ApexDriver {
     throttle *= this.protect; if (sR > hi) brake *= this.protect;
     brake *= this.stability; throttle *= this.stability;
     this.mode = brake > 0 ? 'BRAKE' : throttle > 0.95 ? 'PUSH' : 'CORNER';
+    this.lineSpeed = path.sample(path.v, i, f, 0); this.labelIntent(toPit < 600 && toPit > 0.3);
     real.controls = { throttle, brake, steer: this.steer };
     if (o.learn) this.learn(car, i);
   }

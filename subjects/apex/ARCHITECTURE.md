@@ -31,6 +31,10 @@ and the architecture documents and drivers of SPEARHEAD (`next-racer`), SOLSTICE
 | `game/core/async-seats.js` | For `apex` seats only: install the strategist, post `apexState`, relay the worker's `intent` onto the car | `driver.id === 'apex'` |
 | `game/core/seat-worker.js` | Reply carries `intent` when the car has one | `car.intent` set |
 | `game/core/hybrid.js` | `hybridStep` reads `car.intent = { deploy, harvest, ttl }`: `deploy` 0..1 scales the ATTACK deploy power (95 kW), `harvest` 0..1 sets lift-off regen between the ATTACK and BUILD figures, `ttl` seconds of validity without refresh. All energy rules (throttle above 0.8, minimum speed, store limits) still apply, and a car without `intent` is unchanged | `car.intent` set with a finite `deploy` |
+| `game/ui/lens-model.js` | `apex` entry in `THEMES` and `PROFILES` (debugger only): maps APEX's `debug()`/`visualDebug()` to the shared lens model, plus the optional `log`, `radar` and `extras` fields it passes through | The debugger (B) is open on an `apex` car; no other profile changes |
+| `game/ui/ai-debug.js` | Generic: if a lens model carries `radar`, draw a road-coordinates radar canvas; if it carries `log`, list the lines. Hidden when absent | A lens model sets `radar` or `log` (only the apex profile does) |
+| `game/render/ai-lens.js` | Generic: if a lens model carries `extras`, draw rival forecast ribbons, the car-width footprint of the planned path and a predicted-contact marker | A lens model sets `extras` (only the apex profile does) |
+| `game/styles.css` | Two rules for the radar canvas and the event log inside `.aimind` | Elements exist only when the above fire |
 
 
 ## 1. What the repo and the physics tell us

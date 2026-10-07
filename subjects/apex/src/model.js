@@ -1,5 +1,6 @@
 import GGV from '../data/ggv.json' with { type: 'json' };
 import { tyreGrip } from '../../../game/engine/sim/tyre.js';
+import { carSpecFor } from '../../../game/engine/sim/car-specs.js';
 import { clamp, table } from './math.js';
 
 // The tyre force shape tanh(s)(1 - 0.16 clamp((s - 1.4)/5, 0, 1)) peaks at s* = 2.40 where it is 0.9528.
@@ -20,6 +21,7 @@ export class CarModel {
     this.refGrip = tyreGrip({ core: 90, optimum: 90, pressure: 2.15, wear: 0, gripScale: 1 }, 3300);
     this.grip = 1; this.push = 1; this.brakeMix = 1.6; this.driveMix = 2; this.lateralMix = 1; this.hybrid = 0;
     this.margin = 1;
+    const sp = carSpecFor(classId); this.dragK = 0.5 * 1.225 * sp.area * sp.cd / sp.mass;           // clean-air drag deceleration = dragK v²
     // Lateral-jerk limit (m/s³) the car can follow in a direction change: v³ |dk/ds| <= jerk.
     this.jerk = 0;
   }
@@ -32,6 +34,8 @@ export class CarModel {
     const base = table(this.g.drive, v) * (0.25 + 0.75 * this.grip);
     return base + (this.hybrid > 0 ? this.hybrid * 1000 / (Math.max(v, 12) * mass) : 0);
   }
+  /** Extra acceleration from a car's slipstream: the game takes up to 42 % off the drag in its wake. */
+  towGain(v, wake) { return 0.42 * wake * this.dragK * v * v; }
   /** Share of the lateral capacity that comes from downforce at speed v (what dirty air takes 16 % of). */
   dfShare(v) { return clamp(1 - table(this.g.lateral, 20) / table(this.g.lateral, Math.max(20, v)), 0, 0.7); }
   /** Speed factor in another car's wake: the game removes up to 16 % of the downforce. */

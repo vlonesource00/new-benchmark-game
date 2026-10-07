@@ -29,7 +29,7 @@ export function createApexBridge({ hostTrack, index = 0, options = {}, state = n
       driver.reset(); this.errors = 0; this.lastError = null;
     },
     debug() { return driver?.debug?.() ?? { architecture: 'APEX', intent: 'INIT' }; },
-    visualDebug() { return { trackingPoint: driver?.trackingPoint ?? hostTrack.at(hostTrack.gridS) }; },
+    visualDebug() { return driver?.visualDebug?.() ?? { trackingPoint: hostTrack.at(hostTrack.gridS) }; },
     dispose() { driver = null; }
   };
 }

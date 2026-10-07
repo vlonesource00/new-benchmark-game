@@ -8,6 +8,8 @@
 //    (dashed when the AI did not say and the focus is inferred from the field)
 //  · chevrons on the side it is going for, a cross over a car it is blocked by
 //  · a pedal aura under the car, the predicted pose a second ahead and the aim point
+//  · when the AI reports extras: where it expects each nearby rival to be (a car-width forecast ribbon),
+//    the car-width footprint of its own path, and a marker where it expects contact
 import * as THREE from 'three';
 import { toneColor } from '../ui/lens-model.js';
 
@@ -135,6 +137,28 @@ export class AiLens {
         const n = m.path.length;
         ribbon(m.path, .7, (p) => (Number.isFinite(p.v) ? speedColor(p.v) : theme), (k) => .45 * (1 - k / n) + .05, y0 + .2);
         for (let k = 1; k < n; k++) seg({ x: m.path[k - 1].x, y: y0 + .22, z: m.path[k - 1].z }, { x: m.path[k].x, y: y0 + .22, z: m.path[k].z }, theme, .9 * (1 - k / n));
+      }
+      // Extras an AI can report (APEX): rival forecasts, own footprint, expected contact.
+      const x = m.extras;
+      if (x) {
+        if (m.path) {
+          // the track the car's own width will sweep, so a squeeze between two cars can be read off the ground
+          const edge = (sg) => m.path.map((p, k, a) => { const q = a[Math.min(a.length - 1, k + 1)], o = a[Math.max(0, k - 1)], dx = q.x - o.x, dz = q.z - o.z, l = Math.hypot(dx, dz) || 1; return { x: p.x - dz / l * .98 * sg, z: p.z + dx / l * .98 * sg }; });
+          for (const sg of [-1, 1]) { const e = edge(sg); for (let k = 1; k < e.length; k++) seg({ x: e[k - 1].x, y: y0 + .16, z: e[k - 1].z }, { x: e[k].x, y: y0 + .16, z: e[k].z }, theme, .55 * (1 - k / e.length)); }
+        }
+        for (const v of x.rivals ?? []) {
+          const kc = col(v.kind === 'alongside' ? toneColor('alongside') : v.kind === 'ahead' ? toneColor('follow') : toneColor('defend')), n = v.pts?.length ?? 0;
+          if (n > 1) {
+            ribbon(v.pts, 1.96, () => kc, (k) => (v.focus ? .32 : .18) * (1 - k / n), y0 + .1);
+            const e = v.pts[n - 1]; ring(e.x, e.z, 1.2, kc, .8, y0 + .14, 14);
+          }
+        }
+        const k = x.contact;
+        if (k && Number.isFinite(k.x)) {
+          const pulse = 1 + .25 * Math.sin(performance.now() / 90), r = (1.4 + Math.min(3, k.closing) * .35) * pulse, cy = y0 + .4;
+          seg({ x: k.x - r, y: cy, z: k.z - r }, { x: k.x + r, y: cy, z: k.z + r }, RED, 1); seg({ x: k.x - r, y: cy, z: k.z + r }, { x: k.x + r, y: cy, z: k.z - r }, RED, 1);
+          ring(k.x, k.z, r * 1.3, RED, .9, cy, 20); disc(k.x, k.z, r, r * 2.4, RED, .35, y0 + .06);
+        }
       }
       // Tether to the rival it is working on.
       const f = m.focus, other = f && f.index >= 0 ? race.cars[f.index] : null;

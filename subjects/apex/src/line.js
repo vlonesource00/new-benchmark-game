@@ -6,6 +6,8 @@ import { clamp, angle } from './math.js';
  * those points, so geometry (headings, signed curvature, arc length) comes from the points themselves
  * and a bump in q is a bump in the path.
  */
+const LANE_KEYS = ['px', 'pz', 'len', 'h', 'k', 'ks', 'dk', 'lat', 'vmax', 'v', 'vbrk'];
+
 export class Line {
   constructor(track, { ds = 3, edge = -0.5 } = {}) {
     this.track = track;
@@ -182,10 +184,16 @@ export class Line {
    * A lane over a window: this line moved sideways by shift[j] metres (+ right) at stations i0 + j (j = 0..n), and
    * identical elsewhere. The arrays are copies, so the lane is a full Line a tracker can follow, built in O(window).
    */
-  laneWindow(shift, i0, n) {
+  blankLane() {
     const L = Object.create(Line.prototype), N = this.N;
     Object.assign(L, { track: this.track, N, ds: this.ds, edge: this.edge, bound: this.bound, st: this.st, trim: this.trim, btrim: this.btrim });
-    for (const key of ['px', 'pz', 'len', 'h', 'k', 'ks', 'dk', 'lat', 'vmax', 'v', 'vbrk']) L[key] = this[key].slice();
+    for (const key of LANE_KEYS) L[key] = this[key].slice();
+    return L;
+  }
+  laneWindow(shift, i0, n, into = null) {
+    // `into` is a lane from blankLane() that held an earlier window: only the stations this window uses are refreshed from the line
+    const L = into ?? this.blankLane();
+    if (into) for (const key of LANE_KEYS) { const src = this[key], dst = L[key]; for (let c = -14; c <= n + 16; c++) { const i = this.idx(i0 + c); dst[i] = src[i]; } }
     for (let j = 0; j <= n; j++) { const i = this.idx(i0 + j), h = this.h[i]; L.px[i] = this.px[i] + Math.cos(h) * shift[j]; L.pz[i] = this.pz[i] - Math.sin(h) * shift[j]; L.lat[i] = this.lat[i] + shift[j]; }
     // behind the window the lane stays at its starting offset for a few stations, so the join has no kink
     for (let c = 1; c <= 8; c++) { const i = this.idx(i0 - c), h = this.h[i]; L.px[i] = this.px[i] + Math.cos(h) * shift[0]; L.pz[i] = this.pz[i] - Math.sin(h) * shift[0]; L.lat[i] = this.lat[i] + shift[0]; }
