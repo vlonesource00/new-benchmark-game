@@ -2,6 +2,8 @@ import { CarModel, liveGrip } from './model.js';
 import { Line } from './line.js';
 import { clamp, angle } from './math.js';
 import { PitGuide } from './pit.js';
+import { Field } from './field.js';
+import { Combat } from './combat.js';
 
 /**
  * APEX driver. Writes only `car.controls` (and, for the GTP energy manager, `car.intent`).
@@ -27,10 +29,19 @@ export class ApexDriver {
     this.line.speeds(this.model);
     this.cursor = -1;
     this.pitGuide = new PitGuide(this.track);
+    this.field = new Field(this.track); this.combat = new Combat(this); this.shadows = new Map();
     this.slipPeak = new Float32Array(this.line.N); this.lapClean = true; this.lastStation = -1; this.learned = 0; this.lapCount = 0;
   }
-  reset() { this.steer = 0; this.cursor = -1; this.sent = null; this.pitGuide?.reset(); this.path = null; }
-  debug() { return { architecture: 'APEX', intent: this.mode, targetSpeed: this.targetSpeed, e: this.e, stability: this.stability, grip: this.model?.grip }; }
+  reset() { this.steer = 0; this.cursor = -1; this.sent = null; this.pitGuide?.reset(); this.path = null; this.field?.reset(); this.combat?.reset(); }
+  /** Racing line (with its speed profile) of another class, for predicting rivals of that class. */
+  shadow(cls) {
+    if (cls === this.classId) return this.line;
+    if (this.shadows.has(cls)) return this.shadows.get(cls);
+    const baked = this.options.lines?.[this.track.id]?.[cls]; let sh = null;
+    if (baked) { sh = new Line(this.track, { ds: baked.ds }); if (sh.load(baked)) { const m = new CarModel(cls); m.margin = this.options.margin ?? 1; m.jerk = this.options.jerk ?? 0; m.grip = 0.9; sh.speeds(m); } else sh = null; }
+    this.shadows.set(cls, sh); return sh;
+  }
+  debug() { const c = this.combat; return { architecture: 'APEX', intent: this.mode, targetSpeed: this.targetSpeed, e: this.e, stability: this.stability, grip: this.model?.grip, combat: c ? { state: c.state, side: c.plan?.side ?? 0, A: c.plan?.A ?? 0, cap: c.cap, tag: c.plan?.tag, cands: c.lastCands, stats: c.stats } : null }; }
   /** Live grip: the game's tyre formula for each wheel, relative to the identification reference. */
   refresh(car) {
     const o = this.options, lg = liveGrip(car);
@@ -84,6 +95,15 @@ export class ApexDriver {
       pitCap = this.pitGuide.cap(toPit);
       c = path.closest(car.x, car.z, c.i);
     } else if (this.pitGuide.path) this.pitGuide.reset();
+    this.state = state;
+    let combatCap = Infinity;
+    if (path === line && o.combat !== false && cars?.length > 1) {
+      const now = context?.time ?? 0;
+      this.field.update(real, cars, context, now);
+      const r = this.combat.update(now, real, c, v, this.field, cars);
+      path = r.path; combatCap = r.cap;
+      if (path !== line) c = path.closest(car.x, car.z, c.i);
+    }
     this.path = path;
     const { i, f, e } = c; this.e = e;
     // ---- lateral ----
@@ -91,7 +111,8 @@ export class ApexDriver {
     const psi = angle(car.yaw + beta - hPath);
     const Lp = clamp(0.32 * v + 7, 9, 32);
     const kp = path.sample(path.ks, i, f, v * (o.preview ?? 0.08));
-    const kc = kp - 2 * psi / Lp - e / (Lp * Lp);
+    // the correction toward the line is bounded by what the tyres can give on top of the corner itself
+    const fbMax = (o.fbShare ?? 0.45) * model.lat(v) / (v * v), kc = kp + clamp(-2 * psi / Lp - e / (Lp * Lp), -fbMax, fbMax);
     this.ayReq = v * v * kp; this.latCap = model.lat(v);
     const ff = model.steerFor(v * v * kc, v), rDes = v * kc, rErr = rDes - car.yawRate;
     const dBeta = this.dBeta = beta - model.betaFor(v * v * kc, v), slide = Math.sign(dBeta) * Math.max(0, Math.abs(dBeta) - (o.slideBand ?? 0.04));
@@ -100,7 +121,14 @@ export class ApexDriver {
     this.stability = clamp(1 - 2.5 * Math.max(0, over - 0.08) - 4 * Math.max(0, Math.abs(dBeta) - (o.betaLimit ?? 0.06)), 0, 1);
     // ---- longitudinal ----
     const look = v * 0.1, d2 = Math.max(4, v * 0.25);
-    let vt = path.sample(path.v, i, f, look), vt2 = path.sample(path.v, i, f, look + d2);
+    // target: the braking envelope when the car may use all the thrust it really has (hybrid, tow), else the table profile
+    const prof = (o.freeThrust ?? (this.combat?.state !== 'FREE')) ? path.vbrk : path.v;
+    let vt = path.sample(prof, i, f, look), vt2 = path.sample(prof, i, f, look + d2);
+    // dirty air: where a corner sets the speed, the downforce a car ahead takes away takes speed too (straights keep the tow)
+    const wk = car.aero?.wake ?? 0;
+    if (wk > 0.05) { const ws = model.wakeSpeed(v, wk); const lim = (j) => path.vmax[path.idx(i + j)] < path.v[path.idx(i + j)] + 2; if (lim(1) || lim(Math.round(look / path.ds) + 2)) { vt *= ws; vt2 *= ws; } }
+    this.wake = wk;
+    if (combatCap < Infinity) { vt = Math.min(vt, combatCap); vt2 = Math.min(vt2, combatCap); }
     if (pitCap < Infinity) { vt = Math.min(vt, pitCap); vt2 = Math.min(vt2, this.pitGuide.cap(Math.max(0, toPit - d2))); }
     const aProf = (vt2 * vt2 - vt * vt) / (2 * d2);
     this.targetSpeed = vt;

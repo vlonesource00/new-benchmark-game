@@ -16,7 +16,7 @@ export class Line {
     this.st = new Float64Array(N); this.lat = new Float64Array(N);
     for (let i = 0; i < N; i++) { const p = track.at(i * this.ds); this.px[i] = p.x; this.pz[i] = p.z; }
     this.trim = new Float64Array(N).fill(1); this.btrim = new Float64Array(N).fill(1);
-    this.vmax = new Float64Array(N); this.v = new Float64Array(N);
+    this.vmax = new Float64Array(N); this.v = new Float64Array(N); this.vbrk = new Float64Array(N);
     this.geometry(); this.locate();
   }
   idx(i) { const N = this.N; return ((i % N) + N) % N; }
@@ -68,6 +68,14 @@ export class Line {
         const t = Math.sqrt(s * s + 2 * len[pv] * Math.max(0.5, b));
         if (t < v[pv]) v[pv] = t;
       }
+    }
+    // braking envelope alone (no forward acceleration limit): what a car with more thrust than the table may still carry
+    const vb = this.vbrk; vb.set(vmax);
+    for (let pass = 0; pass < 2; pass++) for (let j = 0; j < N; j++) {
+      const i = ((start - j) % N + N) % N, pv = i === 0 ? N - 1 : i - 1, sp = vb[i], r = util(i, sp);
+      model.margin = m0 * btrim[i]; const b = model.brake(sp) * Math.pow(1 - Math.pow(r, pb), 1 / pb); model.margin = m0;
+      const t = Math.sqrt(sp * sp + 2 * len[pv] * Math.max(0.5, b));
+      if (t < vb[pv]) vb[pv] = t;
     }
     let T = 0; for (let i = 0; i < N; i++) T += len[i] / Math.max(1, 0.5 * (v[i] + v[i + 1 === N ? 0 : i + 1]));
     return T;
@@ -141,7 +149,7 @@ export class Line {
   lane(shift) {
     const L = Object.create(Line.prototype), N = this.N;
     Object.assign(L, { track: this.track, N, ds: this.ds, edge: this.edge, bound: this.bound, st: this.st, trim: this.trim, btrim: this.btrim, shift });
-    for (const key of ['px', 'pz', 'len', 'h', 'k', 'ks', 'dk', 'lat', 'vmax', 'v']) L[key] = new Float64Array(N);
+    for (const key of ['px', 'pz', 'len', 'h', 'k', 'ks', 'dk', 'lat', 'vmax', 'v', 'vbrk']) L[key] = new Float64Array(N);
     for (let i = 0; i < N; i++) {
       const h = this.h[i];
       L.px[i] = this.px[i] + Math.cos(h) * shift[i]; L.pz[i] = this.pz[i] - Math.sin(h) * shift[i]; L.lat[i] = this.lat[i] + shift[i];
@@ -157,6 +165,77 @@ export class Line {
     for (let i = 0; i < N; i++) { const a = (i - R + N) % N, b = (i + R) % N; L.dk[i] = Math.abs(L.ks[b] - L.ks[a]) / Math.max(1e-6, 2 * R * L.len[i]); }
     return L;
   }
+  /** Curvature stencils over stations [a, a + count) after their points changed. */
+  geometryRange(a, count) {
+    const N = this.N, { px, pz, len, h, k, ks, dk } = this;
+    for (let c = -1; c <= count + 1; c++) {
+      const i = this.idx(a + c), j = i + 1 === N ? 0 : i + 1, p = i === 0 ? N - 1 : i - 1;
+      const abx = px[i] - px[p], abz = pz[i] - pz[p], bcx = px[j] - px[i], bcz = pz[j] - pz[i];
+      const lab = Math.hypot(abx, abz), lbc = Math.hypot(bcx, bcz), lac = Math.hypot(px[j] - px[p], pz[j] - pz[p]);
+      len[i] = lbc; h[i] = Math.atan2(px[j] - px[p], pz[j] - pz[p]);
+      k[i] = 2 * (abz * bcx - abx * bcz) / Math.max(1e-9, lab * lbc * lac);
+    }
+    for (let c = 0; c <= count; c++) { const i = this.idx(a + c), p = i === 0 ? N - 1 : i - 1, j = i + 1 === N ? 0 : i + 1; ks[i] = 0.25 * k[p] + 0.5 * k[i] + 0.25 * k[j]; }
+    for (let c = 1; c < count; c++) { const i = this.idx(a + c), p = (i - 3 + N) % N, q = (i + 3) % N; dk[i] = Math.abs(ks[q] - ks[p]) / Math.max(1e-6, 6 * len[i]); }
+  }
+  /**
+   * A lane over a window: this line moved sideways by shift[j] metres (+ right) at stations i0 + j (j = 0..n), and
+   * identical elsewhere. The arrays are copies, so the lane is a full Line a tracker can follow, built in O(window).
+   */
+  laneWindow(shift, i0, n) {
+    const L = Object.create(Line.prototype), N = this.N;
+    Object.assign(L, { track: this.track, N, ds: this.ds, edge: this.edge, bound: this.bound, st: this.st, trim: this.trim, btrim: this.btrim });
+    for (const key of ['px', 'pz', 'len', 'h', 'k', 'ks', 'dk', 'lat', 'vmax', 'v', 'vbrk']) L[key] = this[key].slice();
+    for (let j = 0; j <= n; j++) { const i = this.idx(i0 + j), h = this.h[i]; L.px[i] = this.px[i] + Math.cos(h) * shift[j]; L.pz[i] = this.pz[i] - Math.sin(h) * shift[j]; L.lat[i] = this.lat[i] + shift[j]; }
+    // behind the window the lane stays at its starting offset for a few stations, so the join has no kink
+    for (let c = 1; c <= 8; c++) { const i = this.idx(i0 - c), h = this.h[i]; L.px[i] = this.px[i] + Math.cos(h) * shift[0]; L.pz[i] = this.pz[i] - Math.sin(h) * shift[0]; L.lat[i] = this.lat[i] + shift[0]; }
+    L.geometryRange(i0 - 10, n + 12);
+    L.window = { i0, n };
+    return L;
+  }
+  /**
+   * Quasi-steady-state speeds over stations [i0, i0 + n] only: start at `vStart` and end no faster than `vEnd` (the
+   * base line's speed where the lane rejoins it). Returns the time over the window.
+   */
+  speedsWindow(model, i0, n, vStart, vEnd, o = {}) {
+    const N = this.N, ks = this.ks, len = this.len, vmax = this.vmax, v = this.v, trim = this.trim, btrim = this.btrim, dk = this.dk, J = o.jerk ?? model.jerk;
+    const pb = o.brakeExp ?? 2, pd = o.driveExp ?? 2, top = o.top ?? 95, m0 = model.margin;
+    const lat = (s, i) => { model.margin = m0 * trim[i]; const a = model.lat(s); model.margin = m0; return a; };
+    for (let c = 0; c <= n; c++) {
+      const i = this.idx(i0 + c), ak = Math.abs(ks[i]); let s = top;
+      if (ak > 1e-6) { s = Math.min(top, Math.sqrt(lat(40, i) / ak)); for (let it = 0; it < 4; it++) s = Math.min(top, Math.sqrt(lat(s, i) / ak)); }
+      if (J > 0 && dk[i] > 1e-7) s = Math.min(s, Math.cbrt(J / dk[i]));
+      vmax[i] = s; v[i] = s;
+    }
+    const iS = this.idx(i0), iE = this.idx(i0 + n);
+    v[iS] = Math.min(v[iS], vStart);
+    const util = (i, s) => Math.min(1, s * s * Math.abs(ks[i]) / lat(s, i));
+    for (let c = 0; c < n; c++) {
+      const i = this.idx(i0 + c), nx = this.idx(i0 + c + 1), s = v[i], r = util(i, s);
+      const t = Math.sqrt(s * s + 2 * len[i] * Math.max(0, model.drive(s, o.mass) * Math.pow(1 - Math.pow(r, pd), 1 / pd)));
+      if (t < v[nx]) v[nx] = t;
+    }
+    v[iE] = Math.min(v[iE], vEnd);
+    for (let c = n; c > 0; c--) {
+      const i = this.idx(i0 + c), pv = this.idx(i0 + c - 1), s = v[i], r = util(i, s);
+      model.margin = m0 * btrim[i]; const b = model.brake(s) * Math.pow(1 - Math.pow(r, pb), 1 / pb); model.margin = m0;
+      const t = Math.sqrt(s * s + 2 * len[pv] * Math.max(0.5, b));
+      if (t < v[pv]) v[pv] = t;
+    }
+    // braking envelope over the window, closed by the base line's envelope at the far end
+    const vb = this.vbrk; for (let c = 0; c <= n; c++) vb[this.idx(i0 + c)] = vmax[this.idx(i0 + c)];
+    vb[iE] = Math.min(vb[iE], o.vbrkEnd ?? vEnd);
+    for (let c = n; c > 0; c--) {
+      const i = this.idx(i0 + c), pv = this.idx(i0 + c - 1), sp = vb[i], r = util(i, sp);
+      model.margin = m0 * btrim[i]; const b = model.brake(sp) * Math.pow(1 - Math.pow(r, pb), 1 / pb); model.margin = m0;
+      const t = Math.sqrt(sp * sp + 2 * len[pv] * Math.max(0.5, b));
+      if (t < vb[pv]) vb[pv] = t;
+    }
+    let T = 0; for (let c = 0; c < n; c++) { const i = this.idx(i0 + c); T += len[i] / Math.max(1, 0.5 * (v[i] + v[this.idx(i + 1)])); }
+    return T;
+  }
+  /** Station index (fractional) of track distance s. */
+  stationOf(s) { return ((s % this.track.length) + this.track.length) % this.track.length / this.ds; }
   /**
    * Corner zones from the speed profile: one per local speed minimum (apex) with at least `prom` m/s of
    * prominence, bounded by the speed maxima between consecutive apexes. Each zone is [a, b] in stations, wrapping.

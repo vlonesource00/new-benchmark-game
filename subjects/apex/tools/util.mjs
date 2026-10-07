@@ -14,7 +14,7 @@ race.start(); race.fitTyres(race.cars[0], 'medium'); race.entries[0].strategist.
 const c = race.cars[0]; const bins = new Map(); let n = 0;
 while (c.race.lap <= 2 && race.time < 400) {
   race.step(FIXED_DT);
-  if (c.race.lap !== 2 || Math.abs(c.ay) < 0.8 * (cls === 'lmdh' ? 20 : 14) || c.speed < 30) continue;
+  if (c.race.lap !== 2 || Math.abs(c.ay) < 0.8 * (cls === 'lmdh' ? 26 : 14) || c.speed < 30) continue;
   const w = c.wheels, a = [w[0], w[1]].map((x) => x.tyre), b = [w[2], w[3]].map((x) => x.tyre);
   const k = Math.round(c.speed / 10) * 10, e = bins.get(k) ?? { n: 0, uF: 0, uR: 0, sF: 0, sR: 0, ay: 0, ld: [0, 0, 0, 0] };
   const side = c.ay > 0 ? [1, 0] : [0, 1];   // outside wheel: left wheel when turning right (ay>0)

@@ -32,6 +32,10 @@ export class CarModel {
     const base = table(this.g.drive, v) * (0.25 + 0.75 * this.grip);
     return base + (this.hybrid > 0 ? this.hybrid * 1000 / (Math.max(v, 12) * mass) : 0);
   }
+  /** Share of the lateral capacity that comes from downforce at speed v (what dirty air takes 16 % of). */
+  dfShare(v) { return clamp(1 - table(this.g.lateral, 20) / table(this.g.lateral, Math.max(20, v)), 0, 0.7); }
+  /** Speed factor in another car's wake: the game removes up to 16 % of the downforce. */
+  wakeSpeed(v, wake) { return wake > 0 ? Math.sqrt(1 - 0.16 * Math.min(0.95, wake) * this.dfShare(v)) : 1; }
   /** Steady-state steering (normalised) that gives lateral acceleration ay at speed v. */
   steerFor(ay, v) { return this.mapFor(this.g.steer, ay, v); }
   /** Steady-state body sideslip (rad, opposite sign to ay in the game's convention) at ay and v. */
