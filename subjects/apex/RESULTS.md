@@ -206,3 +206,64 @@ Nürburgring (medium, 3 laps) is unchanged by this work (no notch fires): GTP 48
 What the table says: APEX is ahead on 22 of 24 rows, mean 1.7 %. The two rows it loses are the Solenne softs (+0.32 % GTP, +0.15 % GT3); a lap trace against SPH puts the remaining
 0.16 s on the long fast section at stations 650 to 1000, where SPH carries 2 to 3 m/s more. The gearbox notch is worth 0.51 s on that lap and nothing elsewhere; it exists because Solenne GTP soft
 is the most probable default, and it is guarded so that it cannot cost time where the car is already in the low gear.
+
+## M3a: strategist (P1) and the stint model
+
+### What the host's default strategist does to APEX
+
+The default `TeamStrategist` prices tyres from a prior calibrated on the reference AIs. APEX wears a set 2.2 to 3.1 times faster than that prior (`tools/wearprobe.mjs`, ratio of the wear gained per lap to
+`WEAR_CLIFF x compound wear / tyreLaps`, identical at 6, 12 and 20 laps). The default strategist therefore starts on a soft, runs it past the cliff, learns, and stops again: 2 to 8 stops in a 12 lap race
+(its own lap times on a dead set are 20 s slow). The same strategist runs every AI in the repo except SPH on Harbor Ring, so this is also what the opponents do.
+
+### What was built (`src/stintmodel.js`, `src/strategy.js`, `data/stint.json`)
+
+- **Stint model, measured on the real simulator** (`tools/wearbake.mjs`, run at the 12-lap calibration for every track, class and compound, once from the start and once from a set fitted in the pit, which runs
+  8 to 10 C hotter): per lap of age the wear gain as a multiple of the host's prior, the worst wheel's core temperature, and the lap time. Lap time is modelled as a function of the lap-average grip of the worst wheel (the game's own
+  tyre formula on core, pressure and wear), monotone and fitted on all compounds together; this is what lets one table serve every race length (the wear scale moves with the calibration, the temperature path does not).
+  Pit-lane transit per track and class (`tools/pitprobe.mjs`, 21 to 36 s, plus the host's own service time) is measured the same way.
+- **ApexStrategist**: a `TeamStrategist` subclass installed on an all-APEX entry (`installApexStrategy`, config `strategy`, default on). A dynamic programme over laps x tyre set x laps of fuel x stops x swap chooses the start compound, whether to box now and what the stop
+  contains (compound, litres, driver swap only when the rules ask for one, fuel-only stops allowed). It learns the wear scale from every clean lap (`observeLap`), keeps hard safety nets (fuel for the next lap, a dead set)
+  and falls through to the default strategist without a stint table, with a human in the team, or when `config.strategy` is off.
+
+### Result: solo race time against the default strategist (`tools/stratcamp.mjs`, seed 7, same car, same pace, only the pit calls differ)
+
+| Format | Track | Class | Default (stops) | APEX (stops) | Gain |
+|---|---|---|---|---|---|
+| sprint 6 | Harbor Ring | GTP | 438.3 (3) | 372.5 (1) | 65.8 s |
+| sprint 6 | Harbor Ring | GT3 | 490.9 (3) | 429.4 (1) | 61.4 s |
+| sprint 6 | Solenne | GTP | 401.6 (2) | 362.3 (1) | 39.3 s |
+| sprint 6 | Solenne | GT3 | 497.4 (3) | 418.6 (1) | 78.8 s |
+| sprint 6 | Alpine | GTP | 544.8 (4) | 432.5 (1) | 112.3 s |
+| sprint 6 | Alpine | GT3 | 607.0 (4) | 500.3 (1) | 106.8 s |
+| sprint 6 | Desert | GTP | 501.0 (2) | 456.4 (1) | 44.6 s |
+| sprint 6 | Desert | GT3 | 575.5 (2) | 533.6 (1) | 41.9 s |
+| classic 12 | Harbor Ring | GTP | 830.1 (5) | 711.8 (1) | 118.4 s |
+| classic 12 | Harbor Ring | GT3 | 902.0 (4) | 819.5 (1) | 82.6 s |
+| classic 12 | Solenne | GTP | 721.1 (2) | 687.9 (1) | 33.2 s |
+| classic 12 | Solenne | GT3 | 904.9 (4) | 796.8 (1) | 108.0 s |
+| classic 12 | Alpine | GTP | 963.7 (5) | 840.1 (1) | 123.6 s |
+| classic 12 | Alpine | GT3 | 1089.7 (5) | 967.7 (1) | 122.1 s |
+| classic 12 | Desert | GTP | 914.5 (2) | 874.5 (1) | 40.0 s |
+| classic 12 | Desert | GT3 | 1100.7 (3) | 1021.3 (1) | 79.4 s |
+| marathon 20 | Harbor Ring | GTP | 1264.3 (4) | 1196.5 (2) | 67.7 s |
+| marathon 20 | Harbor Ring | GT3 | 1404.5 (3) | 1376.5 (2) | 27.9 s |
+| marathon 20 | Solenne | GTP | 1234.0 (4) | 1160.3 (2) | 73.6 s |
+| marathon 20 | Solenne | GT3 | 1380.3 (3) | 1339.0 (2) | 41.3 s |
+| marathon 20 | Alpine | GTP | 1595.0 (8) | 1417.6 (2) | 177.3 s |
+| marathon 20 | Alpine | GT3 | 1771.4 (7) | 1625.2 (2) | 146.2 s |
+| marathon 20 | Desert | GTP | 1520.6 (3) | 1472.2 (2) | 48.4 s |
+| marathon 20 | Desert | GT3 | 1724.1 (2) | 1713.0 (2) | 11.1 s |
+
+24 of 24 faster, mean 77.2 s per race, no incident points in any run. Against the brute-force best one-stop plan (`tools/stratlab.mjs --grid1`, 81 plans per case, real simulator) the planner is within 0.2 to 0.6 s in the five cases
+checked (Solenne GTP/GT3, Harbor Ring GTP, Alpine GTP, Desert GT3): it picks the same tyres and a stop lap within one of the optimum. The model's absolute error is larger (a 12-lap race is predicted about 2 % short), but it is a bias common to every
+plan; the warm-set tables removed the one error that was not (a second stint 1 to 2 s slower per lap than predicted).
+
+In the seat-worker harness with SPH alongside (Solenne GTP, 12 laps, classic format, seed 11): APEX starts on the hard, stops once at lap 6 to 7 and finishes all 12 laps; SPH stops four times and completes 10; no contacts.
+
+### What did not move the race
+
+- **Push level.** Margin 0.93, 0.95, 0.97, 0.99 on the same plan (Solenne GTP, hard, stop at lap 7): 691.8, 689.5, 687.9, 686.5 s. More push wins even though the tyres wear 6 % faster per 0.02; the stability limit of the tracker, not tyre life,
+  sets the margin (M1).
+- **Hybrid deploy** (an opt-in `hyb` policy that spends the battery below a speed window, `Driver.energy`): lap times within +-0.3 s of the host's balanced mode; the car recovers about 0.4 MJ a lap, which is 4 s of full deploy,
+  and either policy spends it. Not enabled by default.
+- **Pit lane.** A stop is 13.7 s of service (2.2 s + driver swap 6 s in parallel with fuel + tyres 5.5 s) plus a transit of 21 to 36 s that the host's limiter fixes (the lane is 565 m at 16.7 m/s); the car loses nothing to the approach beyond that.

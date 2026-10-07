@@ -220,7 +220,16 @@ export class ApexDriver {
     this.mode = brake > 0 ? 'BRAKE' : throttle > 0.95 ? 'PUSH' : 'CORNER';
     this.lineSpeed = path.sample(path.v, i, f, 0); this.labelIntent(toPit < 600 && toPit > 0.3);
     real.controls = { throttle, brake, steer: this.steer };
+    if (real.hybrid) this.energy(real, car);
     if (o.learn) this.learn(car, i);
+  }
+  /** GTP energy manager (P2): where the battery is spent. The host applies the intent inside its own energy rules. */
+  energy(real, car) {
+    const o = this.options.hyb; if (!o) return;
+    const soc = real.hybrid.energy / 3e6, v = car.speed;
+    let d = clamp((o.vHi - v) / Math.max(1, o.vHi - o.vLo), 0, 1);
+    if (soc < (o.socMin ?? 0.05)) d *= Math.max(0, soc / (o.socMin ?? 0.05));
+    real.intent = { deploy: d * (o.max ?? 1), harvest: o.harvest ?? 0.5, ttl: 0.3 };
   }
   /**
    * Corner-limit learning (iterative learning control). The tyres tell where the limit is: the force
