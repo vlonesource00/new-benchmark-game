@@ -1,5 +1,6 @@
 // Head-to-head and small-field racing through the real EnduranceRace loop (lockstep seats), rolling start.
 //   node --import ./scripts/json-loader.mjs subjects/apex/tools/duel.mjs <ai1,ai2,...> <lmdh|gt> <track> [laps=4] [json-apex-options]
+//   --stops [--format=classic]: strategists live over the race length (default: no stops on --compound)
 //   car 0 is pole (front row, right), car 1 front row left, then two-by-two; --classes=lmdh,gt,... per car; --seed; --compound
 // Reports per car: finishing order, gap to the leader, best lap, incident points and log, severe contacts, passes.
 import { Track } from '../../../game/engine/sim/track.js';
@@ -13,13 +14,14 @@ const pos = process.argv.slice(2).filter((a) => !a.startsWith('--')), flags = Ob
 const [idsArg = 'apex,next-racer', cls = 'lmdh', trackName = 'harbor-ring', laps = '4', opts = '{}'] = pos;
 const ids = idsArg.split(','), perCar = (flags.classes ?? '').split(',').filter(Boolean), options = JSON.parse(opts), n = Number(laps), track = new Track(trackName);
 const short = (id) => AI_DRIVERS.find((d) => d.id === id)?.short ?? id;
-const teams = ids.map((id, i) => { const c = perCar[i] ?? cls; return { id: 't' + i, name: short(id) + i, short: short(id) + i, color: '#fff', index: i, starter: 0, classId: c, raceClass: c === 'lmdh' ? 'gtp' : 'gt3', drivers: [{ kind: 'ai', id, name: id, short: short(id) }], grid: i }; });
+const teams = ids.map((id, i) => { const c = perCar[i] ?? cls; return { id: 't' + i, name: short(id) + i, short: short(id) + i, color: '#fff', index: i, starter: 0, classId: c, raceClass: c === 'lmdh' ? 'gtp' : 'gt3', drivers: Array.from({ length: flags.format === 'classic' ? 2 : 1 }, () => ({ kind: 'ai', id, name: id, short: short(id) })), grid: i }; });
 const per = JSON.parse(flags.per ?? '{}');                       // --per='{"0":{...},"2":{...}}': options for one car only
 const makeBridge = (d, i, race) => d.id === 'apex' && (Object.keys(options).length || per[i]) ? createApexBridge({ hostTrack: race.track, index: i, options: { ...options, ...per[i] }, state: (car) => apexState(race, car) }) : createSeatBridge(d, i, race);
 const compound = flags.compound ?? 'medium';
-const race = new EnduranceRace({ track, teams, format: { ...FORMATS.custom, mandatoryStops: 0, mandatorySwap: false }, laps: 30, startCompound: compound, makeBridge, startType: flags.start ?? 'rolling', seed: Number(flags.seed ?? 7), weatherSeed: Number(flags.seed ?? 7) });
-for (const e of race.entries) e.strategist.decide = () => null;
-race.start(); for (const c of race.cars) race.fitTyres(c, compound, true);
+const race = new EnduranceRace({ track, teams, format: flags.format === 'classic' ? FORMATS.classic : { ...FORMATS.custom, mandatoryStops: 0, mandatorySwap: false }, laps: flags.stops ? n : 30, startCompound: compound, makeBridge, startType: flags.start ?? 'rolling', seed: Number(flags.seed ?? 7), weatherSeed: Number(flags.seed ?? 7) });
+// --stops: strategists live (their own start compounds and stops) over the real race length; otherwise a no-stop stint on --compound
+if (!flags.stops) for (const e of race.entries) e.strategist.decide = () => null;
+race.start(); if (!flags.stops) for (const c of race.cars) race.fitTyres(c, compound, true);
 // --contacts=<min closing>: log every contact with the state of both cars (APEX cars also with their planner state)
 if (flags.contacts) {
   const pairs = race.collisionStats.pairs, push = pairs.push.bind(pairs), min = Number(flags.contacts), last = new Map();
