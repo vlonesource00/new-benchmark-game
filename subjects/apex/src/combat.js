@@ -189,6 +189,9 @@ export class Combat {
     const dOff = field.me.lat - line.sample(line.lat, c.i, c.f, 0);
     if (hz.size || (this.escaping && Math.abs(dOff) > 0.8)) { this.escaping = true; return this.decide(now, car, c, v, field, rel, rel.filter((r) => r.ds > 0).sort((a, b) => a.ds - b.ds)[0]); }
     this.escaping = false;
+    const capMode = (o.combatMode ?? 'pass') !== 'pass';
+    this.run = this.straightRun(c, v);
+    if (!rel.length && capMode) { const t = this.tow(now, car, c, v, field); if (t) return { path: t, cap: this.planCap(this.ahead, v, t) }; }
     if (!rel.length) { this.plan = null; this.state = 'FREE'; this.focus = null; this.contact = null; this.visCands = []; return { path: line, cap: this.planCap(this.ahead, v, line) }; }
     const lead = rel.filter((r) => r.ds > 0).sort((a, b) => a.ds - b.ds)[0];
     this.state = lead && lead.ds < 80 ? 'FOLLOW' : 'FREE';
@@ -202,6 +205,8 @@ export class Combat {
       if (g) { if (this.atk) this.atk.until = now + 1.5; return { path: g, cap: this.planCap(this.ahead, v, g) }; }
       const p = o.pullOut === false ? null : this.pullOut(now, car, c, v, field, lead);
       if (p) return { path: p, cap: this.planCap(this.ahead, v, p) };
+      const t = this.tow(now, car, c, v, field);
+      if (t) return { path: t, cap: this.planCap(this.ahead, v, t) };
       this.plan = null; this.contact = null; this.visCands = [];
       return { path: line, cap: this.planCap(this.ahead, v, line) };
     }
@@ -374,6 +379,14 @@ export class Combat {
       const ahead = line.sample(line.v, line.idx(c.i + Math.round((lead.ds + 15) / line.ds)), 0, 0);
       const held = (Number.isFinite(this.cap) && this.cap < line.sample(line.v, c.i, c.f, 0) - 1) || (lead.ds < 30 && (d.wake ?? 0) > 0.05) || ahead > lead.v + 2;
       if (!settled || !held || lu > (o.pullLimit ?? 0.6) || lead.ds > 35 || now < (this.pullWait ?? -1)) return null;
+      // on a straight the tail is worth more than the outside lane: stay in the tow until the braking zone is near
+      // (then pull out to be alongside into it) or until the cap would make us lift behind it (slingshot)
+      const run = this.run;
+      if (o.towFollow !== false && o.towDefer !== false && this.towId === lead.id && run.straight && v > (o.towMinV ?? 40)) {
+        const brakeNear = run.brakeIn < lead.ds + Math.max(60, (o.pullLead ?? 1.6) * v);
+        const sling = lead.ds < (o.slingGap ?? 14) && Number.isFinite(this.cap) && this.cap < v + 1;
+        if (!brakeNear && !sling) return null;
+      }
       // inside of the next corner: the racing line's offset where it curves hardest over the next 40..200 m
       let kMax = 0, inside = 0; for (let m = 40; m <= 200; m += 6) { const ii = line.idx(c.i + Math.round((lead.ds + m) / line.ds)), k = Math.abs(line.ks[ii]); if (k > kMax) { kMax = k; inside = Math.sign(line.lat[ii]) || 1; } }
       const W = o.pullGap ?? 2.45, room = (sg) => Math.abs(lead.lat + sg * W) <= line.bound - 0.2;
@@ -401,6 +414,66 @@ export class Combat {
     this.plan = { lane, path: lane, side, A: 0, W, tag: 'pull', until: now + 0.2 }; this.state = 'ATTACK';
     this.focus = { id: lead.id, kind: 'attack', ds: lead.ds }; this.contact = null;
     this.visCands = [{ kind: `pull ${side > 0 ? 'L' : 'R'}`, score: 0, chosen: true, points: this.lanePoints(lane, i0, Math.min(n, 70)) }];
+    return lane;
+  }
+
+  /**
+   * The straight ahead: distance to where the racing line starts braking (its speed falls 3 m/s under the running peak)
+   * and whether the road up to there (at most 120 m) is near enough straight that the tail of a car ahead costs nothing.
+   */
+  straightRun(c, v) {
+    const line = this.d.line, N = Math.round(500 / line.ds);
+    let peak = line.v[c.i], brakeIn = Infinity, kMax = 0;
+    for (let j = 1; j <= N; j++) {
+      const ii = line.idx(c.i + j), vv = line.v[ii];
+      if (j * line.ds <= 120) kMax = Math.max(kMax, Math.abs(line.ks[ii]));
+      if (vv > peak) peak = vv; else if (vv < peak - 3) { brakeIn = j * line.ds; break; }
+    }
+    const lim = (this.d.options.towCurve ?? 0.004) * (this.towId != null ? 1.5 : 1);          // hysteresis once in the tow
+    return { brakeIn, straight: kMax < lim && Math.abs(line.ks[c.i]) < lim };
+  }
+
+  /**
+   * Tow (cap mode, straights): with a car up to ~90 m ahead, drive in its wake instead of on the racing line. The lane
+   * follows the leader's predicted lateral and blends back onto the racing line before the braking zone, so when the tow
+   * ends (or the pull-out takes over) the car is already where the corner wants it. Returns null when there is no tow to take.
+   */
+  tow(now, car, c, v, field) {
+    const d = this.d, o = d.options, line = d.line, run = this.run;
+    if (o.towFollow === false || !run.straight || v < (o.towMinV ?? 40)) { this.towId = null; return null; }
+    const settled = d.state?.greenAt == null || now - d.state.greenAt > (o.towAfter ?? 6);
+    const lead = settled ? this.ahead.filter((r) => r.ds > CAR_LEN * 0.5 && r.ds < (o.towRange ?? 60) && !this.hz?.has(r.id) && !r.box && !r.off).sort((a, b) => a.ds - b.ds)[0] : null;
+    // worth it: the wake is strong enough (and the car is not running away from us), and getting into it is a small move
+    // unless it is close (a car-width shift at 60 m costs nothing, a track-width sweep for a fading wake does)
+    const worth = lead && (this.towId === lead.id || (lead.v - v < (o.towRun ?? 3) && Math.abs(lead.lat - field.me.lat) < Math.max(o.towShift ?? 3.5, (o.towShiftNear ?? 7) * (1 - lead.ds / 60))));
+    if (!worth) { this.towId = null; return null; }
+    if (!lead || run.brakeIn < 10) { this.towId = null; return null; }
+    const i0 = c.i, n = clamp(Math.round(Math.min(run.brakeIn + 20, 4.5 * v) / line.ds), 30, 160), jB = run.brakeIn / line.ds;
+    const latAt = this.latAtFn(lead, this.predict(lead, 4, 0.1, false)), d0 = field.me.lat - line.sample(line.lat, i0, c.f, 0);
+    // getting into the wake and back onto the line are lane changes: size them by the offset so the lateral acceleration
+    // stays small (a smoothstep over L metres peaks at 6 D v^2 / L^2) and the lane keeps straight-line speed
+    const aLat = o.towLatAcc ?? 4, span = (D) => v * Math.sqrt(6 * Math.abs(D) / aLat);
+    let D = 0; for (let j = 0; j <= Math.min(n, jB); j += 4) { const ii = line.idx(i0 + j), l = clamp(latAt(line.st[ii]), -line.bound + 0.2, line.bound - 0.2); D = Math.max(D, Math.abs(l - line.lat[ii])); }
+    const tgt0 = clamp(latAt(line.st[i0]), -line.bound + 0.2, line.bound - 0.2) - line.lat[i0];
+    const rback = Math.max(40, (o.towReturn ?? 1.0) * v, span(D)), rin = Math.max(60, (o.towRamp ?? 1.2) * v, span(tgt0 - d0));
+    // start only with room to get into the wake and back out before the brakes; keep going until 10 m before them
+    if (this.towId !== lead.id && run.brakeIn < rin * 0.5 + rback + 10) { this.towId = null; return null; }
+    const jR = Math.min(rback / line.ds, jB), shift = new Float64Array(n + 1);
+    for (let j = 0; j <= n; j++) {
+      const ii = line.idx(i0 + j), u = smooth(j / (rin / line.ds)), back = j <= jB - jR ? 0 : smooth((j - (jB - jR)) / Math.max(1, jR));
+      shift[j] = (d0 * (1 - u) + (latAt(line.st[ii]) - line.lat[ii]) * u) * (1 - back);
+      const l = line.lat[ii] + shift[j]; if (Math.abs(l) > line.bound - 0.2) shift[j] = Math.sign(l) * (line.bound - 0.2) - line.lat[ii];
+    }
+    for (let pass = 0; pass < 2; pass++) { let prev = shift[0]; for (let j = 1; j < n; j++) { const cur = shift[j]; shift[j] = 0.25 * prev + 0.5 * cur + 0.25 * shift[j + 1]; prev = cur; } }
+    const bufs = (this.towBufs ??= [line.blankLane(), line.blankLane()]), k = this.plan?.path === bufs[0] ? 1 : 0;
+    const lane = line.laneWindow(shift, i0, n, bufs[k]);
+    lane.speedsWindow(d.model, i0, n, v, line.v[line.idx(i0 + n)], { mass: car.spec.mass + car.fuel * 0.75 });
+    // a tow that costs speed before the brakes is not a tow: do not start it
+    if (this.towId !== lead.id) { let minL = v, minP = Infinity; for (let j = 0; j <= Math.min(n, jB); j++) { const ii = line.idx(i0 + j); minL = Math.min(minL, line.v[ii]); minP = Math.min(minP, lane.v[ii]); } if (minL - minP > (o.towLoss ?? 1.5)) { this.towId = null; return null; } }
+    this.towId = lead.id;
+    this.plan = { lane, path: lane, side: 0, A: 0, tag: 'tow', until: now + 0.2 }; this.state = 'TOW'; this.contact = null;
+    this.focus = { id: lead.id, kind: 'follow', ds: lead.ds }; this.stats.tows = (this.stats.tows ?? 0) + (this.lastTow === lead.id ? 0 : 1); this.lastTow = lead.id;
+    this.visCands = [{ kind: 'tow', score: 0, chosen: true, points: this.lanePoints(lane, i0, Math.min(n, 70)) }];
     return lane;
   }
 

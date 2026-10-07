@@ -84,7 +84,7 @@ export class ApexDriver {
   labelIntent(pitting) {
     const c = this.combat, cs = pitting ? 'PIT' : c?.state ?? 'FREE';
     this.intent = this.stability < 0.3 ? 'RECOVER' : { PIT: 'PIT', ATTACK: 'ATTACK', SETUP: 'TOW', ALONGSIDE: 'ALONGSIDE', FOLLOW: 'FOLLOW' }[cs] ?? 'PACE';
-    this.sub = cs === 'SETUP' ? `in the tow · pull out ${c.plan?.side > 0 ? 'left' : 'right'} in ${c.plan?.delay?.toFixed(1)} s` : cs === 'ATTACK' ? `${c.plan?.tag ?? ''} ${c.plan?.side > 0 ? 'left' : 'right'} lane` : cs === 'ALONGSIDE' ? 'holding the gap' : cs === 'FOLLOW' && Number.isFinite(c.cap) ? 'speed capped behind' : this.mode.toLowerCase();
+    this.sub = cs === 'SETUP' ? `in the tow · pull out ${c.plan?.side > 0 ? 'left' : 'right'} in ${c.plan?.delay?.toFixed(1)} s` : cs === 'ATTACK' ? `${c.plan?.tag ?? ''} ${c.plan?.side > 0 ? 'left' : 'right'} lane` : cs === 'ALONGSIDE' ? 'holding the gap' : cs === 'TOW' ? `in the tow · braking in ${Math.round(c.run?.brakeIn ?? 0)} m` : cs === 'FOLLOW' && Number.isFinite(c.cap) ? 'speed capped behind' : this.mode.toLowerCase();
   }
   /** Live grip: the game's tyre formula for each wheel, relative to the identification reference. */
   refresh(car) {
