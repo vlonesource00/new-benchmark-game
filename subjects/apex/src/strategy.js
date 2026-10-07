@@ -75,7 +75,7 @@ export class ApexStrategist extends TeamStrategist {
   /** Predicted next laps of the car's own set, from its measured state. */
   curSet(car, n) {
     const c = car.wheels[0].tyre.compound, wear0 = maxWear(car);
-    const r = this.model.roll(c, n + 2, { age0: this.stintLaps + 1, wear0, core0: coreOf(car) });
+    const r = this.model.roll(c, n + 2, { age0: this.stintLaps + 1, wear0, core0: coreOf(car), warm: this.stops > 0 });
     return { c, t: r.t, wear: r.wear, wear0 };
   }
   startCompound() {
@@ -130,7 +130,7 @@ export class ApexStrategist extends TeamStrategist {
     super.observeLap(car, clean);
     if (!this.usable || !clean || before === null) return;
     const now = maxWear(car), dw = now - before, id = car.wheels[0].tyre.compound, age = this.stintLaps;
-    const pred = this.model.roll(id, 1, { age0: age - 1, wear0: before, core0: coreOf(car) });
+    const pred = this.model.roll(id, 1, { age0: age - 1, wear0: before, core0: coreOf(car), warm: this.stops > 0 });
     const dwPred = pred.wear[0] - before;
     if (dwPred > 0.01 && now < 0.95) {
       const a = this.model.adapt, k = Math.min(1.8, Math.max(0.55, dw / dwPred));

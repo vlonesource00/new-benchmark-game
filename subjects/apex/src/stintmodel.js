@@ -37,6 +37,8 @@ export class StintModel {
     for (const c of COMPOUND_IDS) {
       const rows = this.tables[c].rows;
       for (let i = 1; i < rows.length; i++) pts.push([this.grip(c, rows[i - 1].core, rows[i - 1].wear, rows[i].core, rows[i].wear), rows[i].t]);
+      const warm = this.tables[c].warm;      // the first warm row is the out-lap: no usable time
+      if (warm) for (let i = 1; i < warm.length; i++) pts.push([this.grip(c, warm[i - 1].core, warm[i - 1].wear, warm[i].core, warm[i].wear), warm[i].t]);
     }
     pts.sort((a, b) => a[0] - b[0]);
     // isotonic in g: lap time must not rise with grip. Pool adjacent violators.
@@ -56,8 +58,8 @@ export class StintModel {
    * Predicted laps of a set of `c`, starting at lap age `age0` from the state (wear0, core0): returns { t[k], wear[k], core[k] } for the next k = 1..count laps.
    * With no state given it is a fresh warm set (after a stop) or a fresh cold one (race start).
    */
-  roll(c, count, { age0 = 0, wear0 = 0, core0 = WARM } = {}) {
-    const rows = this.tables[c].rows, K = rows.length, prior = this.prior(c), a = this.adapt;
+  roll(c, count, { age0 = 0, wear0 = 0, core0 = WARM, warm = false } = {}) {
+    const rows = warm && this.tables[c].warm ? this.tables[c].warm : this.tables[c].rows, K = rows.length, prior = this.prior(c), a = this.adapt;
     const t = [], wear = [], core = []; let w = wear0, cc = core0;
     for (let k = 1; k <= count; k++) {
       const row = rows[Math.min(age0 + k, K) - 1];
@@ -69,11 +71,13 @@ export class StintModel {
     }
     return { t, wear, core };
   }
-  /** Cached roll of a fresh warm set for DP. */
+  /** Cached roll of a fresh set for the dynamic programme: warm (fitted in the pit) or cold (race start). */
   fresh(c, count, cold = false) {
     const key = `${c}|${count}|${cold}|${this.adapt.wear.toFixed(3)}|${this.adapt.time.toFixed(4)}|${this.adapt.core.toFixed(1)}`;
-    let r = this.cache.get(key); if (!r) { if (this.cache.size > 64) this.cache.clear(); r = this.roll(c, count, { core0: cold ? COLD : WARM }); this.cache.set(key, r); }
+    let r = this.cache.get(key);
+    if (!r) { if (this.cache.size > 64) this.cache.clear(); r = this.roll(c, count, { core0: cold ? COLD : WARM, warm: !cold }); this.cache.set(key, r); }
     return r;
   }
+  /** The measured warm rows start with the out-lap, whose time is the lane: take the modelled time for it. */
 }
 export { COMPOUND_IDS, WARM, COLD };
