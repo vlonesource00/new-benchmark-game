@@ -1,6 +1,6 @@
 # APEX: a pace-model racer with offline-precomputed racecraft
 
-Status: **approved by the owner with the decisions in section 0; M0 and M1 in progress.**
+Status: **approved by the owner with the decisions in section 0; M0 to M2 done, M3a (strategist) built; see RESULTS.md.**
 Registered id (planned): `apex`, short `APX`. Built under `subjects/apex/`, a bridge
 in `game/bridges/apex-bridge.js` and the minimal registration listed in section 9.
 Written after reading `subjects/BRIEF-next-ai.md`, `game/engine/sim/{vehicle,tyre,track}.js`,
@@ -303,30 +303,27 @@ the 8-car melee (contacts with much slower cars in corners, both modes) and defe
 Defence, yielding and blue-flag behaviour are not implemented yet (APEX is rarely the slower car in the benchmark); the yield model (`yieldOf`, `yieldPrior`,
 `attackBias`) exists as options but stays at its neutral values until a measurement supports them.
 
-## 7. Stint, resources and strategy (M3)
+## 7. Stint, resources and strategy (M3, as built so far)
 
-### 7.0 One resource planner (`src/planner.js`)
-Fuel, tyres (core temperature, pressure, wear per wheel), battery energy and the incident/damage account are one coupled problem: pushing harder buys time but spends tyre, fuel and energy, a pit stop resets some of them at a time cost, and a contact spends the incident account, damage and tyre life together. The planner holds a single race-length model of all of them (laps remaining, stops owed, rivals' predicted stops) and chooses, jointly: the push level per lap, the pit lap, compound and fuel load, the hybrid deploy/harvest schedule per lap and per corner exit, and the risk appetite for combat. It re-plans every lap and on any event (a rival's stop, a local yellow, damage, weather change, a position lost or gained), starting from the measured state, so forecast errors never accumulate. Section 7.1 to 7.3 describe its parts: the stint model, the energy manager and the strategy layer.
+The first design was a joint optimiser over push level, tyre state, fuel and battery. Measurement narrowed it: the decisions that move a race are the **pit plan** (which tyres, when to stop, how much fuel) and, a long way
+behind it, nothing else. Push level (margin 0.93 to 0.99) moves a 12-lap race by 1 to 4 s, the battery (about 0.4 MJ a lap) by less than 0.3 s a lap, and the host's pit lane fixes the transit. So the resource planner is a
+stint planner, and the other resources are kept in a form that can be added to it when a measurement says they pay.
 
-### 7.1 Stint plan (`src/stint.js`)
-- **State model:** the tyre equations of `tyre.js` for surface, core, pressure and wear per wheel, driven by slip power estimated from the lap model
-  (front/rear split, braking, cornering and traction contributions per station), plus fuel mass and hybrid charge.
-- **Decision variable:** a push level u ∈ [0.90, 1.0] scaling the corner-speed margin and traction slip target per lap (and a separate rear-traction factor).
-  The planner finds the u sequence minimising total stint time subject to: maximum fade ≤ 4 s (best flying lap to the last before the in-lap), end-of-stint wear below the
-  cliff with margin, rear core below its ceiling, and the fuel/energy needed to the planned stop (host `pitPlan` when known, else inferred from fuel burn).
-  Dynamic programming over laps on a coarse (u, core, wear) grid; per-lap cost from a table of lap time and slip energy against u that `tools/stint-table.mjs` bakes per
-  track × class × compound. Re-solved every lap against the measured state; correction from measured wear/temperature rather than from the forecast.
-- **Compound and temperature:** the planner knows each compound's optimum (82/90/99 °C), so it aims core temperature at the optimum early in the stint (warm-up laps are
-  deliberately pushed in the right places) and decays pace smoothly rather than holding full push until the cliff.
-- **Fuel:** weight at 0.75 kg/L is about 3 % of GT3 mass at a full 60 L tank; the model lowers speed targets automatically as fuel burns, so lap times *fall* along a clean stint
-  until tyre fade overtakes the fuel gain. Lift-and-coast is available when the host asks the team to save fuel.
-- **Hybrid energy manager (GTP, P2 approved):** the lap model includes deploy and regen. The manager writes `car.intent = { deploy, harvest, ttl }` every update: a per-lap energy budget set by the planner, spent per corner exit where deploy force `P/v` buys the most time, saved for attack, defence and straights where a rival is in the slipstream, and harvested by lift and brake-regen in the zones where lap-time cost is lowest. Charge is held in a band that never leaves the car empty for a defence or empty-handed on the last lap.
-- **Weather and damage:** wetness lowers the g-g-v and re-bases the plan; damage lowers power and raises drag in the model, and the car pits for repair when the host calls the meatball.
+### 7.1 Stint model (`src/stintmodel.js`, `data/stint.json`, baked by `tools/wearbake.mjs` and `tools/pitprobe.mjs`)
+- **Per track, class and compound, from the real simulator:** the wear gained per lap of age as a multiple of the host strategist's wear prior (about 2.2 on the first lap, 3.0 on laps 2 to 4, falling after; independent of race length because the host scales
+  wear with the calibration), the worst wheel's core temperature per lap of age, once for a set fitted at the race start (cold) and once for a set fitted in the pit (warm: 8 to 10 C hotter), and the pit-lane transit loss.
+- **Lap time through grip:** lap-average grip of the worst wheel from the game's own tyre formula (core, pressure from core, wear, compound) maps to lap time by a monotone curve fitted on every measured lap of every compound. One curve per track
+  and class serves any race length and any compound, and a set that is hotter than the table (traffic, damage) moves along the same curve.
+- **Live correction:** each clean lap compares the measured wear gain with the predicted one and rescales the model (`adapt.wear`, 0.55 to 1.8).
 
-### 7.2 Pit and strategy
-Pit entry and exit stay host-owned (`PitAutopilot`); APEX plans the approach so the stop is not preceded by a slow lap (push the in-lap, brake into the lane at the limiter) and
-prepares its own cold-tyre out-lap (tyre temperature is back in the window within ~1.5 laps by planned slip). With approved P1, APEX also owns the box call and compound. Without it, the host
-strategist plans from APEX's measured wear and fade, which is already favourable.
+### 7.2 Strategist (P1, `src/strategy.js`)
+`ApexStrategist` extends the host's `TeamStrategist` (the mechanism SPH uses) and is installed on an all-APEX entry before the race starts, so it also picks the start compound. A dynamic programme over (lap, tyre set, laps of fuel, stops made, swap done)
+minimises predicted race time; options at the end of each lap are continue, stop for each compound (swap only when the rules ask), or fuel-only. The stop's litres are what the remaining laps need plus a 0.35 lap margin. Hard rules of the format (mandatory stops, swap)
+are terminal constraints; a set above 0.9 wear is charged 600 s per unit. Safety nets: box for fuel when the next lap does not fit, or on a dead set. Anything the model does not cover (no table, human in the team, `config.strategy` false) falls through to the default strategist.
+RESULTS.md, M3a: 24 of 24 formats and circuits faster than the default strategist, mean 77 s per race, within 0.6 s of the brute-force best one-stop plan.
+
+### 7.3 Not built yet
+Rival-aware calls (undercut and overcut against a car within the pit loss, reacting to a rival's stop, local yellows), fuel margin and weight effect, hybrid deploy plan (`Driver.energy` exists as an opt-in experiment), tables for Nürburgring warm sets, damage and weather.
 
 ## 8. Real-time budget, determinism and verification
 

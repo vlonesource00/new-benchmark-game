@@ -11,7 +11,7 @@ import { FORMATS } from '../../../game/core/rules.js';
 
 const args = process.argv.slice(2), get = (k, d) => args.find((a) => a.startsWith('--' + k + '='))?.slice(k.length + 3) ?? d;
 const ids = get('drivers', 'apex').split(','), classId = get('class', 'lmdh'), laps = Number(get('laps', 3)), seed = Number(get('seed', 7));
-const realtime = args.includes('--realtime'), burstMs = Number(get('burst-ms', 0)), fps = Number(get('fps', 30)), endurance = args.includes('--endurance');
+const realtime = args.includes('--realtime'), burstMs = Number(get('burst-ms', 0)), fps = Number(get('fps', 30)), endurance = args.includes('--endurance'), duel = args.includes('--duel');   // --duel: the game's duel setup (custom format, no mandatory stop, one driver per car, 12 laps, strategists live)
 const perCar = get('classes', '').split(',').filter(Boolean), trackId = get('track', 'harbor-ring'), startType = get('start', 'rolling');
 const delays = []; let liveRace = null, workers = 0;
 globalThis.Worker = class {
@@ -31,9 +31,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const track = new Track(trackId), seats = new AsyncSeats(trackId);
 const teams = ids.map((id, i) => { const cls = perCar[i] ?? classId; return { id: 'w' + i, name: id, short: (AI_DRIVERS.find((d) => d.id === id)?.short ?? id).slice(0, 3) + i, color: '#ddd', index: i, grid: i, starter: 0,
   classId: cls, raceClass: cls === 'lmdh' ? 'gtp' : 'gt3', drivers: Array.from({ length: endurance ? 2 : 1 }, () => ({ kind: 'ai', ...AI_DRIVERS.find((d) => d.id === id) })) }; });
-const race = new EnduranceRace({ track, teams, laps: endurance ? 12 : 30, format: endurance ? FORMATS.classic : { ...FORMATS.custom, mandatoryStops: 0, mandatorySwap: false }, classId, difficulty: 1, weather: 'clear', seed, weatherSeed: seed, startType, makeBridge: seats.factory() });
+const race = new EnduranceRace({ track, teams, laps: endurance || duel ? 12 : 30, format: endurance ? FORMATS.classic : { ...FORMATS.custom, mandatoryStops: 0, mandatorySwap: false }, classId, difficulty: 1, weather: 'clear', seed, weatherSeed: seed, startType, makeBridge: seats.factory() });
 liveRace = race;
-if (!endurance) for (const e of race.entries) e.strategist.decide = () => null;
+if (!endurance && !duel) for (const e of race.entries) e.strategist.decide = () => null;
 async function answers() {
   const until = performance.now() + 10000;
   while (seats.hosts.some((h) => h?.seats.some((s) => s.inFlight)) && performance.now() < until) await sleep(1);

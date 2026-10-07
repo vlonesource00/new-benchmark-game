@@ -22,7 +22,7 @@ if (args.includes('--run') || args.includes('--default')) {
   const track = new Track(trackName);
   const team = { id: 'r', name: 'R', short: 'R', color: '#fff', index: 0, starter: 0, classId: cls, raceClass: cls === 'lmdh' ? 'gtp' : 'gt3', drivers: [0, 1].map((k) => ({ kind: 'ai', id: ai, name: ai + k, short: ai })), grid: 0 };
   const makeBridge = (d, i, race) => d.id === 'apex' && Object.keys(opts).length ? createApexBridge({ hostTrack: race.track, index: i, options: opts, state: (car) => apexState(race, car) }) : createSeatBridge(d, i, race);
-  const race = new EnduranceRace({ track, teams: [team], format: FORMATS[formatId], laps, classId: cls, seed, makeBridge });
+  const race = new EnduranceRace({ track, teams: [team], format: formatId === 'duel' ? { ...FORMATS.custom, mandatoryStops: 0, mandatorySwap: false } : FORMATS[formatId], laps, classId: cls, seed, makeBridge, startType: flag('start', 'rolling') });
   const e = race.entries[0];
   if (args.includes('--baseline')) e.strategist = new TeamStrategist(team, race.cal, race.format, seed, 0);
   const st = e.strategist;
