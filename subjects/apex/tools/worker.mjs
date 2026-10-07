@@ -77,6 +77,7 @@ try {
     incidents: race.entries.map((e) => race.stewards.of(e).inc), log: race.entries.map((e) => [...new Set(race.stewards.of(e).log.map((l) => l.kind))]),
     delayP50: delays[Math.floor(delays.length * 0.5)]?.toFixed(3), delayP95: delays[Math.floor(delays.length * 0.95)]?.toFixed(3), delayMax: delays.at(-1)?.toFixed(3),
     stints: race.entries.map((e) => ({ stops: e.stops ?? e.strategist.stops, stints: e.stints, pitTime: +(e.pitStopTime ?? 0).toFixed(1), reason: e.strategist.reason })),
+    finish: race.cars.map((c) => (c.race.finishTime == null ? null : +c.race.finishTime.toFixed(2))),
     stewards: race.entries.map((e) => race.stewards.of(e).log.map((l) => `${l.time.toFixed(0)}s L${l.lap} ${l.kind} ${l.points ?? ''}`)),
     errors: seats.hosts.map((h) => h?.seats[0]?.errors ?? 0) }));
 } finally { seats.dispose(); delete globalThis.Worker; }
