@@ -323,7 +323,8 @@ are terminal constraints; a set above 0.9 wear is charged 600 s per unit. Safety
 RESULTS.md, M3a: 24 of 24 formats and circuits faster than the default strategist, mean 77 s per race, within 0.6 s of the brute-force best one-stop plan.
 
 ### 7.3 Not built yet
-Rival-aware calls (undercut and overcut against a car within the pit loss, reacting to a rival's stop, local yellows), fuel margin and weight effect, hybrid deploy plan (`Driver.energy` exists as an opt-in experiment), tables for Nürburgring warm sets, damage and weather.
+Rival-aware calls (undercut and overcut against a car within the pit loss, reacting to a rival's stop, local yellows), fuel margin and weight effect, hybrid deploy plan (`Driver.energy` exists as an opt-in experiment), damage and weather. Nürburgring has cold and warm tables for five laps of age only (a lap there is 480 to 550 s); a longer stint reuses the last measured wear ratio, and
+the strategist was verified there over 6 laps (RESULTS.md), not 12.
 
 ## 8. Real-time budget, determinism and verification
 
@@ -383,6 +384,18 @@ No other AI, physics, track, rules, stewards or strategy file is changed.
 | M4 | **Tuning**: per-track parameter sweep within the baked data, multi-seed regression, real-time worker runs, tuning only against held-out seeds | All overall gates, full report |
 
 Each milestone is committed in small steps, with `RESULTS.md` updated and the run commands recorded.
+
+### Milestone status (as built; numbers in RESULTS.md)
+
+| # | Status | What is left |
+|---|---|---|
+| M0 | Done | none |
+| M1 | Done | Solenne soft-compound gap of 0.16 to 0.3 % |
+| M2 | Done for the default `cap` mode; the `pass` planner is built, measured and kept opt-in | Collision veto for spinning or stopped cars, lap-1 melee handling, the three duels with many raw contact events (Alpine GTP, Desert GTP), attacks that land under `pass` |
+| M3 | Strategist (P1) and stint model done and verified on five tracks; hybrid manager (P2) built as an opt-in experiment | Rival-aware pit calls, fuel margin, 12-lap Nürburgring measurement |
+| M4 | Partly done: duel campaign vs SPH (16 of 16, seed 7), per-class overrides, worker and duel tooling | Multi-seed regression, 8-car multiclass re-run, real-time worker runs, tuning against held-out seeds |
+
+The architecture itself (offline-baked pace core, tracker, combat in two modes, stint-model strategist, debugger, opt-in host changes) is complete as designed; what remains is verification breadth and the items above; of those only the collision veto would add a layer.
 
 ## 12. Risks
 
