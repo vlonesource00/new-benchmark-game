@@ -34,6 +34,23 @@ const teams = ids.map((id, i) => { const cls = perCar[i] ?? classId; return { id
 const race = new EnduranceRace({ track, teams, laps: endurance || duel ? 12 : 30, format: endurance ? FORMATS.classic : { ...FORMATS.custom, mandatoryStops: 0, mandatorySwap: false }, classId, difficulty: 1, weather: 'clear', seed, weatherSeed: seed, startType, makeBridge: seats.factory() });
 liveRace = race;
 if (!endurance && !duel) for (const e of race.entries) e.strategist.decide = () => null;
+// --contacts=<min closing m/s>: print every contact with the geometry and pedals of both cars (stderr)
+if (get('contacts', null)) {
+  const pairs = race.collisionStats.pairs, push = pairs.push.bind(pairs), min = Number(get('contacts', 2)), last = new Map();
+  pairs.push = (...a) => {
+    for (const [ia, ib, closing] of a) {
+      const key = ia + ':' + ib; if (closing < min || race.time - (last.get(key) ?? -9) < 0.5) continue; last.set(key, race.time);
+      const car = (id) => race.cars.find((x) => x.id === id), desc = (id) => { const c = car(id); return `${race.entryOf(c).team.name.slice(0, 3)}${c.id} s${c.s.toFixed(0)} lat${c.lateral.toFixed(1)} v${c.speed.toFixed(1)} thr${c.controls.throttle.toFixed(1)} brk${c.controls.brake.toFixed(1)} str${c.controls.steer.toFixed(2)}`; };
+      const A = car(ia), B = car(ib), dsAB = ((A.s - B.s + track.length * 1.5) % track.length) - track.length / 2;
+      const [front, back] = dsAB >= 0 ? [A, B] : [B, A], fx = Math.sin(front.yaw), fz = Math.cos(front.yaw), rx = fz, rz = -fx;
+      const dx = back.x - front.x, dz = back.z - front.z, dvx = back.vx - front.vx, dvz = back.vz - front.vz;
+      const lon = dx * fx + dz * fz, lat = dx * rx + dz * rz, vlon = dvx * fx + dvz * fz, vlat = dvx * rx + dvz * rz;
+      const kind = Math.abs(lat) < 2.2 && lon < -2.6 ? 'REAR-END' : Math.abs(lon) < 3.6 ? 'SIDE' : 'CORNER';
+      console.error(`CONTACT t${race.time.toFixed(2)} closing ${closing.toFixed(1)} ${kind} (${desc(back.id).slice(0, 4)} behind ${desc(front.id).slice(0, 4)}: lon ${lon.toFixed(1)} lat ${lat.toFixed(1)} vlon ${vlon.toFixed(1)} vlat ${vlat.toFixed(1)}): ${desc(ia)} | ${desc(ib)}`);
+    }
+    return push(...a);
+  };
+}
 async function answers() {
   const until = performance.now() + 10000;
   while (seats.hosts.some((h) => h?.seats.some((s) => s.inFlight)) && performance.now() < until) await sleep(1);
@@ -60,5 +77,6 @@ try {
     incidents: race.entries.map((e) => race.stewards.of(e).inc), log: race.entries.map((e) => [...new Set(race.stewards.of(e).log.map((l) => l.kind))]),
     delayP50: delays[Math.floor(delays.length * 0.5)]?.toFixed(3), delayP95: delays[Math.floor(delays.length * 0.95)]?.toFixed(3), delayMax: delays.at(-1)?.toFixed(3),
     stints: race.entries.map((e) => ({ stops: e.stops ?? e.strategist.stops, stints: e.stints, pitTime: +(e.pitStopTime ?? 0).toFixed(1), reason: e.strategist.reason })),
+    stewards: race.entries.map((e) => race.stewards.of(e).log.map((l) => `${l.time.toFixed(0)}s L${l.lap} ${l.kind} ${l.points ?? ''}`)),
     errors: seats.hosts.map((h) => h?.seats[0]?.errors ?? 0) }));
 } finally { seats.dispose(); delete globalThis.Worker; }
