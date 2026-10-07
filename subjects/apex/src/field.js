@@ -26,7 +26,7 @@ export class Field {
         h = { t: now, v: o.speed, lat: p.lateral, a: h.a * 0.6 + a * 0.4, vl: h.vl * 0.6 + vl * 0.4, k: h.k, s: p.s };
       }
       this.hist.set(o.id, h);
-      const rec = { id: o.id, car: o, cls: o.classId, ds, s: p.s, lat: p.lateral, v: o.speed, a: h.a, vl: h.vl, ghost: Boolean(o.ghost), done: o.race?.finishTime != null,
+      const rec = { id: o.id, car: o, cls: o.classId, ds, s: p.s, lat: p.lateral, v: o.speed, a: h.a, vl: h.vl, ghost: Boolean(o.ghost && car.ghost), done: o.race?.finishTime != null,
         gap: Math.abs(ds) - CAR_LEN, heading: o.yaw, laps: (o.race?.progress ?? 0) };
       rec.ahead = ds > 0; rec.dlat = p.lateral - me.lateral;
       rec.alongside = Math.abs(ds) < CAR_LEN + 0.6 && Math.abs(rec.dlat) < 6;

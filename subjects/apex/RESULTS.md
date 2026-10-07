@@ -319,3 +319,32 @@ Cap mode (default): first by about 11 s with 4 to 12 incident points. Planner mo
 - Rival-aware pit calls (undercut, overcut, reaction to rival stops, local yellows).
 - The three contact clusters above, the Solenne soft-compound gap (0.16 to 0.3 %), a multi-seed final battery, 8-car multiclass re-run.
 - The hybrid manager (`hyb`) stays opt-in: it moved a race by 1 to 4 s.
+
+### Duel campaign, second seed (seed 11, same 16 duels)
+
+| Track | Class | APEX pole: margin, APEX/SPH inc., contacts | APEX second: margin, inc., contacts |
+|---|---|---|---|
+| Harbor Ring | GTP | 26.7 s, 0/0, 0 | 33.8 s, 0/0, 1 |
+| Harbor Ring | GT3 | 39.5 s, 0/0, 0 | 43.2 s, 0/0, 2 |
+| Solenne | GTP | 55.5 s, 0/0, 0 | 55.3 s, 0/0, 0 |
+| Solenne | GT3 | 25.1 s, 4/12, 1 | 40.4 s, 0/4, 0 |
+| Alpine | GTP | 32.1 s, 0/0, 0 | 28.0 s, 0/0, 1 |
+| Alpine | GT3 | 20.5 s, 0/0, 0 | 15.2 s, 0/0, 0 |
+| Desert | GTP | 70.9 s, 0/0, 0 | 70.0 s, 0/0, 0 |
+| Desert | GT3 | 16.1 s, 0/0, 0 | 2.3 s, 0/0, 0 |
+
+**APEX wins 16 of 16, mean margin 35.9 s, APEX incident points 4 in total, 5 raw contacts in all 16 races.** The 23, 15 and 47 contact clusters of seed 7 (Alpine GTP, Desert GTP) did not appear: they were SPH's non-deterministic
+timing, not a systematic APEX weakness. The closest race is Desert GT3 with APEX second on the grid (2.3 s): a pure pace race, no incidents.
+
+### The one recurring incident: Solenne GT3 from pole (4 points in both seeds), and the fix
+
+Reproduced three times in the seat-worker harness with telemetry. SPH spins on lap 3 into the run-off and sits stopped for four seconds; the host's marshals then lift it back onto the road at zero speed
+(`EnduranceRace.rescue`: centreline, `rescueGhost` 2 s). **The host skips a collision only when both cars are ghosts**, but APEX's perception dropped every car with `ghost` set, so the rescued SPH vanished from APEX's field
+41 m ahead and APEX hit it at 40 m/s (closing 40.6 m/s, 4 incident points each; throttle and brake both zero at the moment of impact). Fixes, all in `src/combat.js` and `src/field.js`:
+
+- `Field` marks a car as a ghost only when both cars are ghosts (qualifying), so a rescued car is solid to APEX, as it is to the host.
+- Hazard detection (`Combat.hazards`): a car ahead that is stopped, spinning or far slower than the racing line, in or near our way, and that stopping behind would need more than a quarter of the car's braking for (0.6 of it for a
+  merely slower car), is a hazard for 1.5 s after it last qualified. A car with speed under 2.5 m/s counts as on the road (the marshals will put it there); a slow car off the track counts from 5 m further out.
+- Hazards are predicted as stopped or braking where they are, not as recovering onto their line, and the speed cap behind one is the exact stopping distance at half the car's braking over the whole approach (the 3 s forecast
+  cap is blind to a stopped car until it is too late at 60 m/s). Lateral escape lanes around a hazard exist (`escapeLanes` option) but are off: a first version made the planner steer hard across a 60 m/s corner entry and it was
+  not safer than braking.
