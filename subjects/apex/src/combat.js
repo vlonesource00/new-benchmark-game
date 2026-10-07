@@ -29,6 +29,7 @@ export class Combat {
   /** Rival future on the same road: arrays at t = 0, dt, ... T of track distance travelled, lateral offset and speed. */
   predict(r, T, dt, commit = true) {
     if (this.hz?.has(r.id)) return this.stalled(r, T, dt);
+    if (r.box && this.d.pitGuide) return this.boxing(r, T, dt);
     const d = this.d, ours = d.line, sh = (d.options.rivalLines === false ? null : d.rivalLine(r)) ?? d.shadow(r.cls) ?? ours, n = Math.round(T / dt), s = new Float64Array(n + 1), lat = new Float64Array(n + 1), v = new Float64Array(n + 1);
     const x0 = sh.stationOf(r.s), vl = sh.sample(sh.v, Math.floor(x0) % sh.N, x0 % 1, 0);
     let k = this.k.get(r.id) ?? 1; if (commit) { k += (clamp(r.v / Math.max(5, vl), 0.75, 1.2) - k) * 0.15; this.k.set(r.id, k); }
@@ -43,6 +44,21 @@ export class Combat {
     return { s, lat, v };
   }
 
+  /** A car on its in-lap: it peels to the pit-side edge and slows along the host's entry envelope, then leaves the road into the lane. */
+  boxing(r, T, dt) {
+    const g = this.d.pitGuide, lane = g.lane, n = Math.round(T / dt), s = new Float64Array(n + 1), lat = new Float64Array(n + 1), v = new Float64Array(n + 1);
+    const sh = this.d.rivalLine(r) ?? this.d.shadow(r.cls) ?? this.d.line, peel = 220;
+    let trav = 0, vv = r.v; s[0] = 0; lat[0] = r.lat; v[0] = vv;
+    for (let j = 1; j <= n; j++) {
+      const sa = r.s + trav, toE = lane.d(sa, lane.entry), inLane = toE > lane.L / 2;
+      const x = sh.stationOf(sa), vl = sh.sample(sh.v, Math.floor(x) % sh.N, x % 1, 0), vt = inLane ? lane.limit : Math.min(vl, g.cap(toE));
+      vv += clamp(vt - vv, -14 * dt, 5 * dt); vv = Math.max(2, vv);
+      trav += vv * dt; s[j] = trav; v[j] = vv;
+      const toE2 = lane.d(r.s + trav, lane.entry);
+      lat[j] = toE2 > lane.L / 2 ? lane.laneLat : toE2 < peel ? lane.edgeLat + (r.lat - lane.edgeLat) * smooth(toE2 / peel) : r.lat;
+    }
+    return { s, lat, v };
+  }
   /** A car that is stopped or in trouble does not drive its line: it carries on at its own speed, braking, and stays where it is across the road. */
   stalled(r, T, dt) {
     const n = Math.round(T / dt), s = new Float64Array(n + 1), lat = new Float64Array(n + 1), v = new Float64Array(n + 1);
@@ -58,14 +74,16 @@ export class Combat {
   hazards(now, v, c, field) {
     const o = this.d.options, line = this.d.line, set = new Set(), mem = (this.hzMem ??= new Map()), brake = this.d.model.brake(v);
     for (const r of field.list) {
-      if (r.done || r.ghost) continue;
+      if (r.done || r.ghost || r.box) { mem.delete(r.id); continue; }
       if (r.ds < -CAR_LEN) { mem.delete(r.id); continue; }
+      // a car in the run-off is only a hazard while it comes back toward the road
+      if (r.off && !(Math.sign(r.vl) === -Math.sign(r.lat) && Math.abs(r.vl) > 0.5)) { if ((mem.get(r.id) ?? -1) > now) set.add(r.id); else mem.delete(r.id); continue; }
       if (r.ds > CAR_LEN && r.ds < (o.escapeRange ?? 260) && v - r.v >= (o.escapeClosing ?? 8)) {
         const ii = line.idx(c.i + Math.round(r.ds / line.ds));
         // in our way now or within 1.5 s at its lateral speed; a slow car beside the road (a spinner in the run-off) may be coming back on, so it counts from further out
-        const vl = clamp(r.vl, -4, 4), reach = CAR_WID + 1.5 + (r.v < 8 ? 5 : 0), ref = [field.me.lat, line.lat[ii]];
+        const vl = clamp(r.vl, -4, 4), reach = CAR_WID + 1.5, ref = [field.me.lat, line.lat[ii]];
         // a car that has stopped is put back on the centreline by the marshals within seconds, so a stopped car counts as being on the road
-        if (ref.some((x) => Math.min(Math.abs(r.lat - x), Math.abs(r.lat + vl * 1.5 - x), r.v < 2.5 ? Math.abs(x) : Infinity) < reach)) {
+        if (ref.some((x) => Math.min(Math.abs(r.lat - x), Math.abs(r.lat + vl * 1.5 - x)) < reach)) {
           const gap = Math.max(1, r.ds - CAR_LEN - 2), need = (v * v - Math.max(0, r.v) ** 2) / (2 * gap), slow = r.v < Math.max(8, 0.45 * line.v[ii]);
           if (need > (slow ? 0.25 : (o.escapeNeed ?? 0.6)) * brake) mem.set(r.id, now + 1.5);
         }
@@ -174,6 +192,9 @@ export class Combat {
     const lead = rel.filter((r) => r.ds > 0).sort((a, b) => a.ds - b.ds)[0];
     this.state = lead && lead.ds < 80 ? 'FOLLOW' : 'FREE';
     this.focus = lead ? { id: lead.id, kind: 'follow', ds: lead.ds } : null;
+    // a car we are lapping, one on its in-lap or one far slower: pull out and go by on a wide lane, whatever the combat mode
+    this.slowMode = Boolean(lead && lead.ds < 160 && (lead.box || v - lead.v > (o.slowPass ?? 5) || lead.v < 0.7 * line.sample(line.v, line.idx(c.i + Math.round(lead.ds / line.ds)), 0, 0)));
+    if (this.slowMode) return this.decide(now, car, c, v, field, rel.length ? rel : [lead], lead);
     if ((o.combatMode ?? 'pass') !== 'pass') {
       // control: rear-end cap and alongside guard only
       const g = this.guard(now, car, c, v, field, rel);
@@ -205,6 +226,7 @@ export class Combat {
     this.rank ??= new Map(); this.events ??= [];
     for (const r of field.list) {
       if (r.done || r.ghost || Math.abs(r.ds) > 120) continue;
+      if (r.off || r.box) { this.rank.delete(r.id); continue; }
       const was = this.rank.get(r.id), is = r.ds > 8 ? 1 : r.ds < -8 ? -1 : was ?? 0;
       if (was && is && was !== is) {
         const kind = is < 0 ? 'pass' : 'passed-by';
@@ -244,7 +266,7 @@ export class Combat {
     const settled = d.state?.greenAt == null || now - d.state.greenAt > (o.passAfter ?? 8);     // not in the opening seconds, when the field is still sorting itself out
     const closing = lead ? v - lead.v : 0;
     // hunting: close behind and not being dropped is an attack to plan, however little we are gaining on it
-    const hunt = (o.combatMode ?? 'pass') === 'pass' && settled && lead && lead.ds < 150 && (closing > (o.passClosing ?? 3) || (lead.ds < (o.huntRange ?? 45) && closing > -1.5));
+    const hunt = ((o.combatMode ?? 'pass') === 'pass' || this.slowMode) && settled && lead && lead.ds < 150 && (closing > (o.passClosing ?? 3) || (lead.ds < (o.huntRange ?? 45) && closing > -1.5));
     const near = rel.filter((r) => Math.abs(r.ds) < CAR_LEN + 2.2 && Math.abs(r.lat - me) < 3.6);
     const T = hunt ? (o.passHorizon ?? 9) : (o.safeHorizon ?? 5), dt = 0.1, preds = rel.map((r) => this.predict(r, T, dt));
     this.nextAt = now + (o.planEvery ?? 0.15); this.gen ^= 1; this.used = 0;
@@ -282,7 +304,7 @@ export class Combat {
       const targets = rel.filter((r) => r.ds > -CAR_LEN * 2.5).sort((a, b) => Math.abs(a.ds) - Math.abs(b.ds)).slice(0, 2);
       targets.forEach((r, ti) => {
         const q = rel.indexOf(r), latAt = this.latAtFn(r, preds[q]);
-        for (const W of o.passGaps ?? [2.35]) for (const sg of [-1, 1]) for (const delay of ti ? [0] : o.passDelays ?? [0, 1.5, 3, 5]) {
+        for (const W of this.slowMode ? o.slowGaps ?? [2.6, 3.4] : o.passGaps ?? [2.35]) for (const sg of [-1, 1]) for (const delay of ti ? [0] : o.passDelays ?? [0, 1.5, 3, 5]) {
           const shadow = (j) => { const ii = line.idx(i0 + j), s = line.st[ii]; return latAt(s) + sg * W - line.lat[ii]; };
           mk(shadow, 'shadow', sg, W, delay);
         }
@@ -291,7 +313,7 @@ export class Combat {
     // emergency: lanes that pass a hazard on either side with room to spare (the car is predicted where it is, not on its line)
     for (const r of rel.filter((x) => this.hz?.has(x.id) && x.ds > -CAR_LEN * 2).slice(0, 2)) {
       const latAt = this.latAtFn(r, preds[rel.indexOf(r)]);
-      for (const W of o.escapeLanes ? o.escapeGaps ?? [3.6, 4.8] : []) for (const sg of [-1, 1]) mk((j) => { const ii = line.idx(i0 + j); return latAt(line.st[ii]) + sg * W - line.lat[ii]; }, 'escape', sg, W);
+      for (const W of o.escapeLanes !== false ? o.escapeGaps ?? [3.6, 4.8] : []) for (const sg of [-1, 1]) mk((j) => { const ii = line.idx(i0 + j); return latAt(line.st[ii]) + sg * W - line.lat[ii]; }, 'escape', sg, W);
     }
     // score
     const appetite = this.appetite(d.state), hold = o.planHold ?? 25;
@@ -386,7 +408,10 @@ export class Combat {
       if (r.ds <= CAR_LEN - 0.3) continue;
       const gap = r.ds - CAR_LEN - (o.capGap ?? 1.0) - (o.capReact ?? 0.2) * Math.max(0, v - r.v);
       // a hazard (stopped, spinning, far slower and near our way): the exact distance to stop behind it, over the whole approach rather than the 3 s forecast
-      if (this.hz?.has(r.id)) { cap = Math.min(cap, r.v + Math.sqrt(2 * a * Math.max(0, gap - (o.hazardGap ?? 4))) + (o.capSlack ?? 0.3)); continue; }
+      if (this.hz?.has(r.id)) {
+        const at = lane ? lane.lat[lane.idx(this.i0 + Math.round(r.ds / ds))] : my, tA = Math.min(1.5, r.ds / Math.max(5, v)), clear = CAR_WID + 0.8;
+        if (Math.abs(r.lat - at) >= clear && Math.abs(r.lat + clamp(r.vl, -4, 4) * tA - at) >= clear) continue;
+        cap = Math.min(cap, r.v + Math.sqrt(2 * a * Math.max(0, gap - (o.hazardGap ?? 4))) + (o.capSlack ?? 0.3)); continue; }
       // is it in our way over the next second? its lateral offset a moment from now against where our lane will be there
       const mine = lane ? lane.lat[lane.idx(this.i0 + Math.round(r.ds / ds))] : my, lateral = Math.min(Math.abs(r.lat - mine), Math.abs(r.lat + r.vl * 0.8 - mine));
       if (lateral >= CAR_WID + 0.5) continue;

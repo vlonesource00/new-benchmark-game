@@ -145,7 +145,7 @@ export class ApexDriver {
     let combatCap = Infinity;
     if (path === line && o.combat !== false && cars?.length > 1) {
       const now = context?.time ?? 0;
-      this.field.update(real, cars, context, now);
+      this.field.update(real, cars, context, now, state);
       const r = this.combat.update(now, real, c, v, this.field, cars);
       path = r.path; combatCap = r.cap;
       if (path !== line) c = path.closest(car.x, car.z, c.i);
