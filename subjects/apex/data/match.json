@@ -13,5 +13,15 @@
   "margin": 0.8977,
   "solo": 53.833,
   "target": 53.833
+ },
+ "solenne|lmdh|next-racer|0.005": {
+  "margin": 0.887,
+  "solo": 51.533,
+  "target": 51.523334999999996
+ },
+ "solenne|lmdh|next-racer|0.01": {
+  "margin": 0.8761,
+  "solo": 51.767,
+  "target": 51.77967
  }
 }
