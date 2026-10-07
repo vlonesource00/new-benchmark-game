@@ -12,7 +12,7 @@ export class ApexDriver {
   constructor(track, options = {}) {
     this.track = track; this.options = options;
     this.model = null; this.line = null; this.mode = 'INIT'; this.targetSpeed = 0;
-    this.steer = 0; this.cursor = -1; this.stability = 1;
+    this.steer = 0; this.cursor = -1; this.stability = 1; this.push = 1; this.pushApplied = 1;
   }
   prepare(car) {
     if (this.line && this.classId === car.classId) return;
@@ -37,7 +37,13 @@ export class ApexDriver {
     // A rear that is weaker than the front turns a limit corner into oversteer: take extra margin for the imbalance.
     const g = lg.grip * (1 - (o.balanceK ?? 0) * Math.max(0, lg.imbalance)) * (1 - (this.track.wetness ?? 0) * 0.36) * (this.track.tempGrip ?? 1);
     this.balance = lg.imbalance;
-    if (Math.abs(g - this.model.grip) < 0.004) return;
+    // Thermal governor: the core is the slow variable. Past the compound's window every extra degree costs grip twice
+    // (temperature and pressure) and wears the tread faster, so the push eases off before the tyres are cooked.
+    let hot = 0; for (const w of car.wheels) hot = Math.max(hot, w.tyre.core - (w.tyre.optimum ?? 90));
+    const target = clamp(1 - (o.thermalK ?? 0) * Math.max(0, hot - (o.thermalHot ?? 10)), o.pushMin ?? 0.8, 1);
+    this.push += (target - this.push) * 0.2; this.hot = hot;
+    if (Math.abs(g - this.model.grip) < 0.004 && Math.abs(this.push - this.pushApplied) < 0.004) return;
+    this.pushApplied = this.push; this.model.margin = (o.margin ?? 1) * this.push;
     this.model.grip = g;
     this.lapEstimate = this.line.speeds(this.model, { mass: car.spec.mass + car.fuel * 0.75 });
   }

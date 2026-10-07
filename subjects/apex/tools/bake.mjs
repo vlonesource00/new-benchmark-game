@@ -1,6 +1,7 @@
 // Bakes minimum-time lines into data/lines.json, keyed by track id and car class.
 //   node --import ./scripts/json-loader.mjs subjects/apex/tools/bake.mjs [track ...] [--classes=lmdh,gt] [--iter=30000] [--edge=-0.5] [--ds=3]
 import { readFileSync, writeFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
 import { Track } from '../../../game/engine/sim/track.js';
 import { Line } from '../src/line.js';
 import { CarModel } from '../src/model.js';
@@ -8,7 +9,7 @@ import { CarModel } from '../src/model.js';
 const args = process.argv.slice(2), flag = (k, d) => args.find((a) => a.startsWith(`--${k}=`))?.split('=')[1] ?? d;
 const tracks = args.filter((a) => !a.startsWith('--')), classes = flag('classes', 'lmdh,gt').split(',');
 const iterations = Number(flag('iter', 30000)), edge = Number(flag('edge', -0.5)), ds = Number(flag('ds', 3)), margin = Number(flag('margin', 0.9)), jerk = Number(flag('jerk', 40));
-const file = new URL('../data/lines.json', import.meta.url);
+const file = flag('out', null) ? pathToFileURL(flag('out')) : new URL('../data/lines.json', import.meta.url);
 let lines = {}; try { lines = JSON.parse(readFileSync(file, 'utf8')); } catch {}
 for (const id of tracks.length ? tracks : ['harbor-ring', 'solenne', 'alpine', 'desert']) {
   const track = new Track(id);

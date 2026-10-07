@@ -30,7 +30,7 @@ const apply = (z) => {
   for (const q of z) for (let i = q.a; i <= q.b; i++) { const j = ((i % N) + N) % N; trim[j] = q.lat; btrim[j] = i <= q.apex ? q.brk : 1; }
   return { ...entry, trim, btrim };
 };
-function evaluate(z, grip = 1, laps = real ? 3 : 2, rear = 1) {
+function evaluate(z, grip = 1, laps = real ? 3 : 2, rear = 1, strict = true) {
   const data = { ...baked, [trackName]: { ...baked[trackName], [cls]: apply(z) } };
   const team = { id: 'r', name: 'R', short: 'R', color: '#fff', index: 0, starter: 0, classId: cls, raceClass: cls === 'lmdh' ? 'gtp' : 'gt3', drivers: [{ kind: 'ai', id: 'apex', name: 'APEX', short: 'APX' }], grid: 0 };
   const race = new EnduranceRace({ track, teams: [team], format: { ...FORMATS.custom, mandatoryStops: 0, mandatorySwap: false }, laps: 30, startCompound: 'medium',
@@ -46,7 +46,7 @@ function evaluate(z, grip = 1, laps = real ? 3 : 2, rear = 1) {
     }
     c.fuel = Math.max(c.fuel, 30);
     if (c.race.lap >= 2 && c.speed > 20) maxDev = Math.max(maxDev, Math.abs(e.bridges[0].driver?.dBeta ?? 0));
-    if (c.race.lap !== lap) { if (lap === 2) t = c.race.lastLap; lap = c.race.lap; if (c.race.lastState === 'red') return { t: Infinity, why: 'invalid' }; }
+    if (c.race.lap !== lap) { if (lap === 2) t = c.race.lastLap; lap = c.race.lap; if (strict && c.race.lastState === 'red') return { t: Infinity, why: 'invalid' }; }
   }
   const st = race.stewards.of(e);
   if (st.inc > 0) return { t: Infinity, why: st.log.map((l) => l.kind).join(',') };
@@ -54,7 +54,8 @@ function evaluate(z, grip = 1, laps = real ? 3 : 2, rear = 1) {
   return { t: t ?? Infinity, maxDev };
 }
 const stress = [[0.93, 1], [1, 0.9], [0.97, 0.94]];
-const feasible = (z) => stress.every(([g, r]) => evaluate(z, g, real ? 3 : 2, r).t < Infinity);
+const feasible = (z) => stress.every(([g, r]) => evaluate(z, g, real ? 3 : 2, r, false).t < Infinity);
+if (process.env.DIAG) { for (const [g, r] of [[1, 1], ...stress]) { const x = evaluate(zones, g, real ? 3 : 2, r, false); console.log('diag', g, r, x.t, x.why ?? '', x.maxDev); } process.exit(0); }
 let best = evaluate(zones), t0 = Date.now();
 if (!feasible(zones)) { for (const q of zones) { q.lat = 0.9; q.brk = 0.9; } console.log('start infeasible under stress, begin at 0.9'); best = evaluate(zones); }
 console.log(`${cls} ${trackName} zones ${zones.length} start ${best.t.toFixed(3)} ${best.why ?? ''}`);

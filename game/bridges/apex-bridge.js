@@ -8,7 +8,7 @@ export const APEX_CANDIDATE = Object.freeze({ id: 'apex', label: 'APEX',
 
 export function createApexBridge({ hostTrack, index = 0, options = {}, state = null }) {
   let driver = null;
-  const settings = { ...config, lines, ...options };
+  const settings = { ...config, ...(config.tracks?.[hostTrack.id] ?? {}), lines, ...options };
   const make = () => new ApexDriver(hostTrack, settings);
   return {
     ...APEX_CANDIDATE, driverId: 'apex', candidateId: 'apex', native: true, errors: 0,

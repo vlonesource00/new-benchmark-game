@@ -1,8 +1,13 @@
 {
   "version": 1,
-  "margin": 0.9,
+  "margin": 0.97,
   "jerk": 40,
   "circleExp": 3,
   "preview": 0.24,
-  "useTrim": false
+  "slideGain": 5,
+  "slideBand": 0.02,
+  "useTrim": false,
+  "tracks": {
+    "nurburgring": { "margin": 0.8 }
+  }
 }

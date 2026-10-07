@@ -9,6 +9,7 @@ import { createApexBridge, apexState } from '../../../game/bridges/apex-bridge.j
 
 const [ai = 'apex', cls = 'lmdh', trackName = 'harbor-ring', laps = '6', compound = 'medium', opts = '{}'] = process.argv.slice(2);
 const options = JSON.parse(opts), n = Number(laps);
+if (process.env.APEX_LINES) { const { readFileSync } = await import('node:fs'); options.lines = JSON.parse(readFileSync(process.env.APEX_LINES, 'utf8')); }
 const track = new Track(trackName);
 const team = { id: 'r', name: 'R', short: 'R', color: '#fff', index: 0, starter: 0, classId: cls, raceClass: cls === 'lmdh' ? 'gtp' : 'gt3', drivers: [{ kind: 'ai', id: ai, name: ai, short: ai }], grid: 0 };
 const makeBridge = (d, i, race) => d.id === 'apex' && Object.keys(options).length
