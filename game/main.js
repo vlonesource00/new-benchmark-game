@@ -74,11 +74,12 @@ const exhaust = new ExhaustEvents();
 const unlockAudio = () => audio.unlock().then(() => audio.setVolume(settings.volume)).catch(() => {});
 const syncAudioFocus = () => {
   if (!audio.ctx) return;
-  const active = document.visibilityState === 'visible' && document.hasFocus();
+  // Pause only when the tab is hidden: Firefox reports document.hasFocus() false while the game is in front.
+  const active = document.visibilityState === 'visible';
   (active ? audio.ctx.resume() : audio.ctx.suspend()).catch(() => {});
 };
 document.addEventListener('visibilitychange', syncAudioFocus);
-['blur', 'focus', 'pagehide', 'pageshow'].forEach((t) => addEventListener(t, syncAudioFocus));
+['pagehide', 'pageshow'].forEach((t) => addEventListener(t, syncAudioFocus));
 addEventListener('pointerdown', unlockAudio);
 addEventListener('keydown', unlockAudio);
 
