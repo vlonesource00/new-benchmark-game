@@ -207,61 +207,73 @@ for M1. **Gate for leaving M1: flying lap ≤ the best baseline in section 1.1 o
 If the identified model shows no headroom over SPH on some circuit, that is reported honestly in `RESULTS.md` and the pace target there is "match"
 while the other levers carry the race.
 
-## 5. Awareness and rival models (M2)
+## 5. Awareness and rival models (M2, as built)
 
-### 5.1 Perception (`src/perception.js`)
-A fixed-size table, updated each call, for every car within 250 m of arc length and any car faster than us approaching from behind:
-road-frame position (s, lateral), speed, longitudinal and lateral acceleration (filtered on the snapshot timestamps, not the capped `dt`),
-yaw, oriented footprint, class, closing rate, time gap, wake relation (inside/outside the cone, tow value), overlap state (ahead, alongside-front,
-alongside, alongside-rear, behind), pit and ghost status, laps down. Reset on teleport, recovery or session change. Alongside is a state, not an
-"ahead" or "behind", since flipping between them was a known source of steering swing.
+The first design (a baked manoeuvre library with probabilistic rival futures) was replaced during M2 by an online rollout planner: it is simpler,
+needs no per-corner bake, and it prices the same things (gap at the horizon, contact, tow) in one number. What was built:
 
-### 5.2 Baked rival profiles (`tools/rival-profile.mjs`, `data/rivals/`)
-For each architecture × class × track: a speed-versus-station curve (solo flying lap), lateral-line curve, braking points and a behaviour record:
-yield-to-overlap tendency, defence timing, and brake-point lateness. Rivals are identified through a read-only roster field in `state` (the roster
-is public on the timing screen; see P3). The live model starts from the baked profile and blends toward observation (offset, speed, tyre-driven pace
-change), so it still works for an unknown or modified opponent. Equal copies of APEX use the pair id for deterministic role splitting so two APEX
-cars race each other cleanly.
+### 5.1 Perception (`src/field.js`)
+One table per update for every car on the road, in road coordinates measured from our own pose: arc distance `ds` (nose to nose, signed), lateral
+offset `lat` (+ is left of the driver), speed `v`, longitudinal and lateral acceleration (`a`, `vl`, filtered on snapshot time, not the capped `dt`),
+class, an `alongside` flag (nose-to-tail overlap within a lane and a half), pit and ghost status. Reset on teleport or recovery. It reads only the
+public snapshot (`cars`, `state`), never another driver's controls.
 
-### 5.3 Predicted occupancy
-Each rival yields a small set of candidate futures (profile, brake early, cover inside, drift wide) with probabilities updated from observed motion.
-They are scored separately, not unioned into one huge obstacle, and always include the "does the worst thing" branch for collision gating.
+### 5.2 Rival model (`Combat.predict`)
+A rival's future is its own racing line: the baked line of its class (the "shadow" profile, `Driver.shadow(cls)`) ridden at `k` times the speed of
+that line, where `k` is a running estimate of how fast this particular car drives relative to the model (clamped 0.75 to 1.2, updated at 15 % per
+planning cycle). The car's present lateral deviation from the line decays over 70 m. The prediction is a plain `[s, lat, v]` triple at 0.1 s;
+there is no branching, because a wrong branch is repaired by the next cycle (0.15 s later) and the cost of contact is priced on the worst overlap
+of the rollout. Rivals that react to APEX (yield, defend) show up as a change in `k` and `lat`, which is all the model needs to see.
 
-## 6. Combat (M2)
+### 5.3 Slipstream is part of the model
+The game's own wake cone is evaluated inside every rollout (behind a car by 1.5 to 110 m, within `2.4 + 0.05·behind` laterally, strength
+`exp(-behind/55)`): extra thrust on the straights from `towGain`, less downforce (a lower corner speed) in the corners, as measured on the real
+`Vehicle` (`model.wakeSpeed`, `model.towGain`). A lane that runs behind a car is therefore worth more speed on the straight and costs speed in the
+next corner, and the planner trades the two. Measured result (RESULTS.md, M2): at equal pace the dirty air in the corners cancels the tow gain, so
+the tow alone never makes a pass; it makes the pass possible when the rival also gives the car a braking or a line advantage.
 
-### 6.1 Precomputed manoeuvre library (`tools/bake-manoeuvres.mjs`, `data/manoeuvres.json`)
-Per corner (found from the baked line's curvature, entry/apex/exit gates discovered, not hard-coded) and per class, the tool builds and stores,
-as lateral-shift profiles over the baked line with their own speed profile from the g-g-v model:
+## 6. Combat (M2, as built)
 
-| Role | Options |
+### 6.1 One planner for every situation (`src/combat.js`)
+Every 0.15 s while a car is relevant (close ahead, alongside, or closing from behind) the planner builds a handful of **lanes**: the racing line
+shifted sideways by a smooth offset profile (windowed copies, each with its own quasi-steady-state speed profile, in pooled buffers so a cycle
+allocates nothing), rolls each one forward on a 0.1 s clock against the predicted rivals, scores the outcome and follows the best.
+
+| Lane | Meaning |
 |---|---|
-| Attack | late-brake inside dive, outside carry-speed, cutback (wide entry, late apex), tow-and-pull on straights, switch before the brake zone, kerb-hop squeeze |
-| Defend | inside cover, mirror move, late line-hold, outside-line defence with exit priority |
+| follow | the racing line |
+| hold | keep the present offset from the line (a car just ahead blocks the line) |
+| lean | give a car alongside a little more room |
+| shadow ±W | run beside the nearest rivals at lateral gap `W` (2.35 m: a car width plus a clear metre), on the left or on the right |
+| tow→L t | the same shadow lane, but stay on the racing line (in the slipstream) for `t` seconds and pull out later (0, 1.5, 3, 5 s) |
 
-Each entry stores: time and exit-speed cost versus the racing line, minimum required initial gap/overlap, the station where it commits,
-lateral rate at every point (so it is physically trackable), and the clearance it needs next to a rival body. At run time choosing a manoeuvre is a lookup
-over the nearest few corners, never a search or a rollout.
+Score of a lane, in metres of race distance:
+`Σ clip(end gap to each rival, ±40) · w + 0.3·own distance − contactCost(closing speed) · (1 − yield) + incumbent bonus − small penalties`.
+The horizon is 5 s when only avoiding trouble and 9 s when hunting (close behind a car that we are not dropping). The incumbent bonus (25 m) keeps the
+car from weaving between near-equal lanes. `contactCost` rises with closing speed squared and jumps above 2.4 m/s (the stewards' threshold is 3.5 m/s,
+the model leaves a margin), scaled by an appetite that grows as the incident account approaches the penalty limit.
 
-### 6.2 Tactical selector (`src/tactics.js`)
-States: FREE, FOLLOW (tow-optimised gap), SETUP, COMMIT, ALONGSIDE, DEFEND, YIELD (blue-flag and multiclass), RECOVER. Each candidate is scored in
-seconds: predicted exit-gap delta (positions are worth the time to the next rival), plus expected incident cost, plus tyre-energy cost.
-**Incident cost is `P(contact > 3.5 m/s) × (points × exchange rate + damage + time loss)` where the exchange rate rises as our incident account approaches the
-penalty limit**, so early in a race the car is bolder and near the limit it is not. Contact below ~2.5 m/s closing is priced at damage only.
-Commitment is tied to stations (brake point, turn-in, apex), and once alongside the occupied side is never crossed: the car holds its width or backs out only
-if the pass is already lost. A failed side is remembered for a corner or two; a repeated no-gain episode switches to the complementary route.
-- Squeeze and elbow: when side by side into a corner and the rival model says it yields, the car keeps its line and its body position (light contact is free);
-  the rival's response then decides who gets the apex. The model never closes a door on a car already alongside.
-- Defence is one decisive move per straight, not a weave; the stewards do not penalise it, but unpredictable movement is a collision risk.
-- Multiclass: GTP chooses the side the GT3 car is not on and passes on straights where it has the tow; GT3 holds a predictable line and eases aside
-  on a blue flag only when overlap is imminent (no gratuitous lifting).
-- Starts: launch-control throttle/slip schedule and a first-corner policy that takes gaps rather than waiting for a clean lane (the rolling-start handover blends
-  from the formation pilot's controls).
+### 6.2 Speed against what is ahead
+One rule, used in the rollouts and in the real-time controller: `capSpeed(gap, vLead, vMe)` is the leader's speed plus what braking at half of what the
+car has still takes out of the gap (less 1 m and a reaction distance that grows with the closing speed). The real-time version (`planCap`) evaluates it
+against the forecast of the leader over the next 3 s, so a car that is about to brake for a corner is respected before it brakes. A car already beside us
+is the lateral logic's business, not the brakes'.
 
-### 6.3 Clearance and steward gate (`src/safety.js`)
-Analytic swept-footprint check of the chosen path and speed against the predicted rival branches over the next 1.0–1.5 s, in road coordinates; closing speed at any predicted
-contact is computed and compared with 2.5/3.5 m/s. A failed check does not disable the whole pace plan; it picks the next manoeuvre or follows. Hard rules the gate
-enforces: never steer into a car that is alongside; never leave the kerb margin; after any off or spin the account is updated and the risk appetite drops.
-The emergency fallback is counted as a metric (SPH: 90+ per Harbor race; APEX target < 10).
+### 6.3 Lateral discipline (`Combat.neighbor`, tracker override in `driver.js`)
+Whatever the planner wants, the car never drifts toward a car that is, or within a second will be, alongside faster than the clear gap (less 0.35 m) over
+0.8 s allows, adding the other car's own drift. This single rule removed the start-line heavy contacts between equal cars (both swung to the same line in
+the first corner) and the side contacts of the first planner version, and it is what makes "elbows out" safe: the car holds its line next to a rival and
+lets the rival's response decide, but it never closes a door by moving across.
+
+### 6.4 Modes, attribution and the control
+`combatMode: "cap"` (the shipping default) runs only the rear-end cap and the alongside guard; `"pass"` runs the planner. The combat lab runs both on the
+same seed. Every position change is logged with the plan in force, the speed edge and the lateral gap; a pass counts as **made by a move** when the planner
+held an attack lane within 4 s before it, otherwise as **made on pace**. An **attack episode** runs while an ATTACK lane is held and ends 3 s after; it is
+won if a pass landed inside it. The debugger shows the same events live.
+
+### 6.5 Not built (and why)
+Defence, yielding and blue-flag behaviour are not implemented yet (APEX is rarely the slower car in the benchmark); the yield model (`yieldOf`, `yieldPrior`,
+`attackBias`) exists as options but stays at its neutral values until a measurement supports them.
 
 ## 7. Stint, resources and strategy (M3)
 

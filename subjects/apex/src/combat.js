@@ -68,7 +68,7 @@ export class Combat {
     const d = this.d, n = Math.round(T / dt), model = d.model;
     const s = new Float64Array(n + 1), lat = new Float64Array(n + 1), v = new Float64Array(n + 1);
     let x = i0 + f0, vv = v0, trav = 0; s[0] = 0; v[0] = v0; lat[0] = path.sample(path.lat, i0, f0, 0);
-    let worst = { closing: 0, t: -1, id: -1, j: 0 }, minClear = Infinity, tCap = false;
+    let worst = { closing: 0, t: -1, id: -1, j: 0 }, minClear = Infinity, tCap = false, maxOver = 0;
     for (let j = 1; j <= n; j++) {
       const i = Math.floor(x) % path.N, f = x - Math.floor(x);
       let vt = path.sample(path.v, i, f, 0), wake = 0;
@@ -85,8 +85,12 @@ export class Combat {
         const r = rivals[q], p = preds[q];
         if (r.ds < -CAR_LEN && j === 1) continue;
         // gap along the road between our nose and its tail, at the previous step
-        const gap = (r.ds + p.s[j - 1]) - trav - CAR_LEN, band = Math.abs(lat[j - 1] - p.lat[j - 1]);
-        if (gap > -CAR_LEN * 0.7 && band < CAR_WID + 0.55 && r.ds + p.s[j - 1] > trav) cap = Math.min(cap, this.capSpeed(Math.max(0, gap), Math.min(p.v[j - 1], p.v[Math.min(n, j + 3)]), vv));
+        const sr = r.ds + p.s[j - 1], gap = sr - trav - CAR_LEN;
+        if (!(gap > -CAR_LEN * 0.7 && sr > trav)) continue;
+        // is it in our way? our lane where it is, against where it is now and over the next 0.4 and 0.8 s (a car about to move into our lane is already in the way)
+        const xr = x + (sr - trav) / path.ds, mine = path.sample(path.lat, Math.floor(xr) % path.N, xr - Math.floor(xr), 0);
+        const band = Math.min(Math.abs(mine - p.lat[j - 1]), Math.abs(mine - p.lat[Math.min(n, j + 3)]), Math.abs(mine - p.lat[Math.min(n, j + 7)]));
+        if (band < CAR_WID + 0.55) cap = Math.min(cap, this.capSpeed(Math.max(0, gap), Math.min(p.v[j - 1], p.v[Math.min(n, j + 3)]), vv));
       }
       if (cap < Infinity) tCap = true;
       const target = Math.min(vt, cap);
@@ -94,6 +98,8 @@ export class Combat {
       vv = Math.max(2, vv);
       const step = vv * dt; trav += step; x += step / path.ds; s[j] = trav; v[j] = vv;
       const i2 = Math.floor(x) % path.N; lat[j] = path.sample(path.lat, i2, x - Math.floor(x), 0);
+      // faster than the lane can be driven even at full braking: the car runs wide there
+      const over = vv - path.vbrk[i2]; if (over > maxOver) maxOver = over;
       // clearance and contact severity against every rival at this step
       for (let q = 0; q < rivals.length; q++) {
         const r = rivals[q], p = preds[q], dsl = (trav) - (r.ds + p.s[j]), dla = lat[j] - p.lat[j];
@@ -108,7 +114,7 @@ export class Combat {
         }
       }
     }
-    return { s, lat, v, worst, minClear, capped: tCap };
+    return { s, lat, v, worst, minClear, capped: tCap, over: maxOver };
   }
 
   /** Price of a predicted contact in metres of race distance at speed `v`. */
@@ -243,7 +249,7 @@ export class Combat {
       // a rival that gives way (it brakes or moves over rather than hit us) makes a predicted squeeze cheaper; the prior is 0 until measured
       const yld = clamp(this.yieldOf(ro.worst.id), 0, 0.95), risk = this.contactCost(ro.worst.closing, v, appetite) * (1 - yld);
       const incumbent = this.plan && this.plan.tag === cd.tag && this.plan.side === cd.side ? hold : 0;
-      cd.score = P + 0.3 * dist - risk + incumbent - (ro.minClear < 0.15 && cd.tag === 'shadow' ? 6 : 0) + (cd.tag === 'shadow' && !cd.delay && lead && lead.ds < 30 ? (o.attackBias ?? 0) : 0);
+      cd.score = P + 0.3 * dist - risk - (o.overCost ?? 25) * Math.max(0, ro.over - 1.5) + incumbent - (ro.minClear < 0.15 && cd.tag === 'shadow' ? 6 : 0) + (cd.tag === 'shadow' && !cd.delay && lead && lead.ds < 30 ? (o.attackBias ?? 0) : 0);
       cd.ro = ro; cd.P = P; cd.risk = risk;
       if (!best || cd.score > best.score) best = cd;
     }

@@ -56,7 +56,7 @@ await Promise.all(Array.from({ length: jobs }, async () => {
         contacts: j.contacts, severe: j.severe, peak: j.peakClosing, movePasses: st.movePasses ?? 0, pacePasses: st.pacePasses ?? 0, attacks: st.attacks ?? 0, attackWins: st.attackWins ?? 0, cost: cb?.cost ?? null
       };
     }
-    results.push(row);
+    results.push(row); console.error(`done ${sc.t} ${sc.c} ${short[sc.r] ?? sc.r} d${sc.d} s${sc.s}: control P${row.cap?.place} passes ${row.cap?.passes.length} | planner P${row.pass?.place} passes ${row.pass?.passes.length} (move ${row.pass?.movePasses}) lost ${row.pass?.lost} inc ${row.pass?.inc}`);
   }
 }));
 
