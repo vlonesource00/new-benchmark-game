@@ -23,5 +23,25 @@
   "margin": 0.8761,
   "solo": 51.767,
   "target": 51.77967
+ },
+ "solenne|lmdh|next-racer|-0.01": {
+  "margin": 0.9395,
+  "solo": 50.75,
+  "target": 50.75433
+ },
+ "harbor-ring|lmdh|next-racer|-0.01": {
+  "margin": 0.9302,
+  "solo": 53.292,
+  "target": 53.294669999999996
+ },
+ "alpine|lmdh|next-racer|-0.01": {
+  "margin": 0.9194,
+  "solo": 62.292,
+  "target": 62.29575
+ },
+ "alpine|lmdh|next-racer|0": {
+  "margin": 0.8931,
+  "solo": 62.925,
+  "target": 62.925
  }
 }
