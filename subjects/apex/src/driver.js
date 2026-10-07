@@ -20,6 +20,8 @@ export class ApexDriver {
   prepare(car) {
     if (this.line && this.classId === car.classId) return;
     this.classId = car.classId;
+    // per-track, per-class overrides (config.tracks[track].perClass[class])
+    const pc = this.options.perClass?.[car.classId]; if (pc) this.options = { ...this.options, ...pc };
     const o = this.options;
     this.model = new CarModel(car.classId);
     this.line = new Line(this.track, { ds: o.lines?.[this.track.id]?.[car.classId]?.ds ?? 3, edge: o.edge ?? -0.5 });

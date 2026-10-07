@@ -10,6 +10,15 @@
   "useTrim": false,
   "combatMode": "cap",
   "tracks": {
-    "nurburgring": { "margin": 0.8 }
+    "nurburgring": {
+      "margin": 0.8
+    },
+    "harbor-ring": {
+      "perClass": {
+        "gt": {
+          "yawGain": 0.8
+        }
+      }
+    }
   }
 }

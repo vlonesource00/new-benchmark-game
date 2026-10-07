@@ -13,7 +13,7 @@ const args = process.argv.slice(2), get = (k, d) => args.find((a) => a.startsWit
 const ids = get('drivers', 'apex').split(','), classId = get('class', 'lmdh'), laps = Number(get('laps', 3)), seed = Number(get('seed', 7));
 const realtime = args.includes('--realtime'), burstMs = Number(get('burst-ms', 0)), fps = Number(get('fps', 30)), endurance = args.includes('--endurance'), duel = args.includes('--duel');   // --duel: the game's duel setup (custom format, no mandatory stop, one driver per car, 12 laps, strategists live)
 const perCar = get('classes', '').split(',').filter(Boolean), trackId = get('track', 'harbor-ring'), startType = get('start', 'rolling');
-const delays = []; let liveRace = null, workers = 0;
+const seenLog = [], delays = []; const tele = get('tele', null) ? (([s0, s1, lap = 1, car = 0]) => ({ s0: Number(s0), s1: Number(s1), lap: Number(lap), car: Number(car) }))(get('tele', '').split(':')) : null; let lastTele = -1; let liveRace = null, workers = 0;
 globalThis.Worker = class {
   constructor(target) {
     this.index = workers++;
@@ -55,6 +55,7 @@ async function answers() {
   const until = performance.now() + 10000;
   while (seats.hosts.some((h) => h?.seats.some((s) => s.inFlight)) && performance.now() < until) await sleep(1);
 }
+const stewardPos = ids.map(() => []);
 const t0 = performance.now();
 try {
   race.start(); await seats.start(race);
@@ -65,6 +66,8 @@ try {
   while (race.cars.some((c) => c.race.lap <= laps) && race.time < 4000 && race.phase !== 'finished') {
     for (let step = 0; step < 4; step++) {
       race.step(FIXED_DT);
+      if (tele) { const c = race.cars[tele.car]; if (c.s >= tele.s0 && c.s <= tele.s1 && race.time - lastTele >= 0.1 && c.race.lap >= tele.lap) { lastTele = race.time; console.error(`TELE t${race.time.toFixed(2)} L${c.race.lap} s${c.s.toFixed(0)} lat${c.lateral.toFixed(1)} v${c.speed.toFixed(1)} ay${c.ay.toFixed(1)} yaw${((c.yaw - track.at(c.s).heading) * 57.3).toFixed(1)} r${c.yawRate.toFixed(2)} st${c.controls.steer.toFixed(2)} thr${c.controls.throttle.toFixed(2)} brk${c.controls.brake.toFixed(2)} g${c.gear}`); } }
+      race.entries.forEach((e, i) => { const n = race.stewards.of(e).log.length; if (n !== (seenLog[i] ?? 0)) { seenLog[i] = n; const c = race.cars[i]; stewardPos[i].push(`t${race.time.toFixed(0)} s${c.s.toFixed(0)} lat${c.lateral.toFixed(1)} v${c.speed.toFixed(0)} yaw${((c.yaw - track.at(c.s).heading) * 57.3).toFixed(0)} thr${c.controls.throttle.toFixed(1)} brk${c.controls.brake.toFixed(1)}`); } });
       race.cars.forEach((c, i) => { if (c.race.lap !== lastLap[i]) { lapRows[i].push(+c.race.lastLap.toFixed(2)); tyreRows[i].push(c.wheels[0].tyre.compound[0].toUpperCase() + Math.max(...c.wheels.map((w) => w.tyre.wear)).toFixed(2).slice(1) + (c.pit ? 'P' : '')); lastLap[i] = c.race.lap; } });
     }
     frame++;
@@ -78,6 +81,7 @@ try {
     delayP50: delays[Math.floor(delays.length * 0.5)]?.toFixed(3), delayP95: delays[Math.floor(delays.length * 0.95)]?.toFixed(3), delayMax: delays.at(-1)?.toFixed(3),
     stints: race.entries.map((e) => ({ stops: e.stops ?? e.strategist.stops, stints: e.stints, pitTime: +(e.pitStopTime ?? 0).toFixed(1), reason: e.strategist.reason })),
     finish: race.cars.map((c) => (c.race.finishTime == null ? null : +c.race.finishTime.toFixed(2))),
+    stewardPos,
     stewards: race.entries.map((e) => race.stewards.of(e).log.map((l) => `${l.time.toFixed(0)}s L${l.lap} ${l.kind} ${l.points ?? ''}`)),
     errors: seats.hosts.map((h) => h?.seats[0]?.errors ?? 0) }));
 } finally { seats.dispose(); delete globalThis.Worker; }
