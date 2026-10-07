@@ -235,7 +235,8 @@ export class Combat {
       cands.push({ lane, A: fn ? 0 : A, tag, side, W, delay, i0, n });
     };
     mk(0, 'follow', 0);
-    if (Math.abs(d0) > 0.6) mk(d0, 'hold', Math.sign(d0));
+    // holding an offset only makes sense while a car is beside us or right in front: otherwise the way back to the racing line is the plan
+    if (Math.abs(d0) > 0.6 && (near.length || (lead && lead.ds < 35))) mk(d0, 'hold', Math.sign(d0));
     if (near.length) {                                           // a car beside us: the lane that holds the gap, and one that gives it room
       const nr = near.reduce((a, r) => (Math.abs(r.lat - me) < Math.abs(a.lat - me) ? r : a)), away = -(Math.sign(nr.lat - me) || 1);
       mk(d0 + away * 0.6, 'lean', away);
