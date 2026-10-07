@@ -45,13 +45,16 @@ export class CarModel {
   }
 }
 
-/** Grip ratio of a live car versus the identification reference (game tyre formula, per wheel, worst axle). */
+/**
+ * Grip ratio of a live car versus the identification reference, from the game's own tyre formula applied to each
+ * wheel's live state. Returns the worst axle's grip and how much weaker the rear is than the front.
+ */
 export function liveGrip(car) {
-  let worst = 2;
-  for (const w of car.wheels) {
-    const t = w.tyre, load = w.load > 100 ? w.load : 3300;
+  const axle = [2, 2];
+  car.wheels.forEach((w, n) => {
+    const t = w.tyre, load = w.load > 100 ? w.load : 3300, a = n < 2 ? 0 : 1;
     const g = tyreGrip(t, load) / tyreGrip({ ...t, core: t.optimum ?? 90, pressure: 2.15, wear: 0, gripScale: 1 }, load);
-    if (g < worst) worst = g;
-  }
-  return worst;
+    if (g < axle[a]) axle[a] = g;
+  });
+  return { grip: Math.min(axle[0], axle[1]), front: axle[0], rear: axle[1], imbalance: axle[0] - axle[1] };
 }

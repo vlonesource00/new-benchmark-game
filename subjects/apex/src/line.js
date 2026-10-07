@@ -15,7 +15,7 @@ export class Line {
     this.h = new Float64Array(N); this.k = new Float64Array(N); this.ks = new Float64Array(N); this.dk = new Float64Array(N);
     this.st = new Float64Array(N); this.lat = new Float64Array(N);
     for (let i = 0; i < N; i++) { const p = track.at(i * this.ds); this.px[i] = p.x; this.pz[i] = p.z; }
-    this.trim = new Float64Array(N).fill(1);
+    this.trim = new Float64Array(N).fill(1); this.btrim = new Float64Array(N).fill(1);
     this.vmax = new Float64Array(N); this.v = new Float64Array(N);
     this.geometry(); this.locate();
   }
@@ -43,7 +43,7 @@ export class Line {
   }
   /** Quasi-steady-state lap on this line for `model`; fills this.v and returns the lap time. */
   speeds(model, o = {}) {
-    const N = this.N, ks = this.ks, len = this.len, vmax = this.vmax, v = o.out ?? this.v, trim = this.trim, dk = this.dk, J = o.jerk ?? model.jerk;
+    const N = this.N, ks = this.ks, len = this.len, vmax = this.vmax, v = o.out ?? this.v, trim = this.trim, btrim = this.btrim, dk = this.dk, J = o.jerk ?? model.jerk;
     const pb = o.brakeExp ?? 2, pd = o.driveExp ?? 2, top = o.top ?? 95, m0 = model.margin;
     const lat = (s, i) => { model.margin = m0 * trim[i]; const a = model.lat(s); model.margin = m0; return a; };
     for (let i = 0; i < N; i++) {
@@ -64,7 +64,7 @@ export class Line {
       }
       for (let j = 0; j < N; j++) {
         const i = ((start - j) % N + N) % N, pv = i === 0 ? N - 1 : i - 1, s = v[i], r = util(i, s);
-        model.margin = m0 * trim[i]; const b = model.brake(s) * Math.pow(1 - Math.pow(r, pb), 1 / pb); model.margin = m0;
+        model.margin = m0 * btrim[i]; const b = model.brake(s) * Math.pow(1 - Math.pow(r, pb), 1 / pb); model.margin = m0;
         const t = Math.sqrt(s * s + 2 * len[pv] * Math.max(0.5, b));
         if (t < v[pv]) v[pv] = t;
       }
@@ -134,6 +134,55 @@ export class Line {
     this.resample(); this.locate();
     return this.speeds(model, o);
   }
+  /**
+   * A lane: this line moved sideways by `shift[i]` metres (+ right) along its own normals. It shares the station
+   * index (and trims), so a car can change between lanes without losing its place.
+   */
+  lane(shift) {
+    const L = Object.create(Line.prototype), N = this.N;
+    Object.assign(L, { track: this.track, N, ds: this.ds, edge: this.edge, bound: this.bound, st: this.st, trim: this.trim, btrim: this.btrim, shift });
+    for (const key of ['px', 'pz', 'len', 'h', 'k', 'ks', 'dk', 'lat', 'vmax', 'v']) L[key] = new Float64Array(N);
+    for (let i = 0; i < N; i++) {
+      const h = this.h[i];
+      L.px[i] = this.px[i] + Math.cos(h) * shift[i]; L.pz[i] = this.pz[i] - Math.sin(h) * shift[i]; L.lat[i] = this.lat[i] + shift[i];
+    }
+    L.geometry();
+    // the shift adds curvature that the three-point stencil reads with station-scale noise; smooth that part only
+    const dk = new Float64Array(N);
+    for (let i = 0; i < N; i++) dk[i] = L.k[i] - this.k[i];
+    for (let pass = 0; pass < 2; pass++) { const b = dk.slice(); for (let i = 0; i < N; i++) { let t = 0; for (let q = -2; q <= 2; q++) t += (3 - Math.abs(q)) * b[this.idx(i + q)]; dk[i] = t / 9; } }
+    for (let i = 0; i < N; i++) L.k[i] = this.k[i] + dk[i];
+    for (let i = 0; i < N; i++) { const a = i === 0 ? N - 1 : i - 1, j = i + 1 === N ? 0 : i + 1; L.ks[i] = 0.25 * L.k[a] + 0.5 * L.k[i] + 0.25 * L.k[j]; }
+    const R = 3;
+    for (let i = 0; i < N; i++) { const a = (i - R + N) % N, b = (i + R) % N; L.dk[i] = Math.abs(L.ks[b] - L.ks[a]) / Math.max(1e-6, 2 * R * L.len[i]); }
+    return L;
+  }
+  /**
+   * Corner zones from the speed profile: one per local speed minimum (apex) with at least `prom` m/s of
+   * prominence, bounded by the speed maxima between consecutive apexes. Each zone is [a, b] in stations, wrapping.
+   */
+  zones(prom = 4) {
+    const N = this.N, v = this.v, apex = [];
+    // smooth lightly, then find minima with prominence over the surrounding maxima
+    for (let i = 0; i < N; i++) {
+      let lo = true; for (let d = -6; d <= 6; d++) if (v[this.idx(i + d)] < v[i] - 1e-9) { lo = false; break; }
+      if (!lo) continue;
+      let l = v[i], r = v[i];
+      for (let d = 1; d < N / 2; d++) { const x = v[this.idx(i - d)]; if (x < v[i] - 1e-9) break; l = Math.max(l, x); }
+      for (let d = 1; d < N / 2; d++) { const x = v[this.idx(i + d)]; if (x < v[i] - 1e-9) break; r = Math.max(r, x); }
+      if (Math.min(l, r) - v[i] >= prom && (!apex.length || i - apex.at(-1) > 6)) apex.push(i);
+    }
+    if (!apex.length) return [{ a: 0, b: N - 1, apex: 0 }];
+    const zones = [];
+    for (let k = 0; k < apex.length; k++) {
+      const p = apex[k], n = apex[(k + 1) % apex.length];
+      // boundary: speed maximum between this apex and the next
+      let best = p, span = (n - p + N) % N || N;
+      for (let d = 0; d <= span; d++) { const i = this.idx(p + d); if (v[i] > v[best] || best === p) best = i; }
+      zones.push({ apex: p, end: best });
+    }
+    return zones.map((z, k) => ({ a: zones[(k - 1 + zones.length) % zones.length].end, b: z.end, apex: z.apex }));
+  }
   /** Index and interpolation of the closest segment to (x, z) near `hint` (global search when hint < 0). */
   closest(x, z, hint = -1, span = 14) {
     const N = this.N, { px, pz } = this;
@@ -161,6 +210,7 @@ export class Line {
     if (data?.px?.length !== this.N) return false;
     this.px.set(data.px); this.pz.set(data.pz); this.geometry(); this.locate();
     if (data.trim?.length === this.N) this.trim.set(data.trim);
+    if (data.btrim?.length === this.N) this.btrim.set(data.btrim);
     return true;
   }
 }

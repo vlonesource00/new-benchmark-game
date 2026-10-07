@@ -21,6 +21,8 @@ const rows = [], t0 = Date.now(), tMax = Math.max(400, track.length / 6) * n;
 let lap = 1, offs = 0, maxSlip = 0, lapTemp = null, lapStart = null; const stat = [];
 while (c.race.lap <= n && race.time < tMax) {
   race.step(FIXED_DT);
+  if (process.env.REARGRIP) for (const w of [c.wheels[2], c.wheels[3]]) w.tyre.gripScale = Number(process.env.REARGRIP);
+  if (process.env.FRONTGRIP) for (const w of [c.wheels[0], c.wheels[1]]) w.tyre.gripScale = Number(process.env.FRONTGRIP);
   if (Math.abs(c.lateral) > track.halfWidth + track.curbWidth) offs += FIXED_DT;
   if (c.race.lap !== lap) {
     rows.push(+c.race.lastLap.toFixed(3));

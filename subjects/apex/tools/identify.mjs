@@ -25,14 +25,14 @@ function car(speed) {
   return c;
 }
 const hold = (c, v) => { const k = v / Math.max(0.1, Math.hypot(c.vx, c.vz)); c.vx *= k; c.vz *= k; };
-function lateral(v) {
+function lateral(v, boost = null) {
   const c = car(v); let best = 0, bestSteer = 0; const map = [], bmap = [];
   for (let t = 0; t < 16; t += DT) {
     const steer = Math.min(1, t / 16), err = v - c.speed;
     c.controls = { steer, throttle: Math.max(0, Math.min(1, 0.3 + err * 0.5)), brake: err < -1 ? Math.min(1, -err * 0.1) : 0 };
     c.step(DT, plane); hold(c, v);
     // keep core temperature at the optimum: the rig measures grip, not heating
-    for (const w of c.wheels) { w.tyre.core = w.tyre.surface = COMPOUNDS[compound].optimum; w.tyre.wear = 0; }
+    for (const [n, w] of c.wheels.entries()) { w.tyre.core = w.tyre.surface = COMPOUNDS[compound].optimum; w.tyre.wear = 0; if (boost) w.tyre.gripScale = COMPOUNDS[compound].grip * (boost === 'rear' ? (n >= 2 ? 3 : 1) : (n < 2 ? 3 : 1)); }
     if (Math.abs(c.ay) > best) { best = Math.abs(c.ay); bestSteer = steer; }
     if (Math.abs(c.ay) >= map.length + 1 && Math.abs(c.ay) >= best - 1e-9) { map.push(+steer.toFixed(4)); bmap.push(+Math.atan2(c.v, Math.max(2, c.u)).toFixed(4)); }
   }
@@ -61,6 +61,10 @@ function trade(v, steer, frac) {
 const bins = (rows, step = 5) => { const m = new Map(); for (const [v, a] of rows) { const k = Math.round(v / step) * step; m.set(k, Math.max(m.get(k) ?? -1e9, a)); } return [...m].sort((a, b) => a[0] - b[0]); };
 const speeds = [8, 12, 16, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90];
 const lat = speeds.map((v) => [v, lateral(v)]);
+// axle limits: boost one axle's grip so the other one is what saturates
+const latF = speeds.map((v) => [v, lateral(v, 'rear').ay]), latR = speeds.map((v) => [v, lateral(v, 'front').ay]);
+console.log('front-limited', latF.map(([v, a]) => `${v}:${a.toFixed(1)}`).join(' '));
+console.log('rear-limited ', latR.map(([v, a]) => `${v}:${a.toFixed(1)}`).join(' '));
 console.log('lateral', cls, compound, fuel, lat.map(([v, r]) => `${v}:${r.ay.toFixed(2)}@${r.steer.toFixed(2)}`).join(' '));
 const br = bins([30, 50, 70, 90].flatMap(braking));
 console.log('brake', br.map(([v, a]) => `${v}:${a.toFixed(2)}`).join(' '));
@@ -70,6 +74,6 @@ const tr = [20, 35, 50, 65].map((v) => { const r = lat.find(([s]) => s === v) ??
 console.log('trade (decel while turning at ~80% steer map)', tr.map(([v, a]) => `${v}:${a}`).join(' '));
 if (process.argv.includes('--write')) {
   const file = new URL('../data/ggv.json', import.meta.url), all = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : {};
-  all[cls] = { compound, fuel, lateral: lat.map(([v, r]) => [v, +r.ay.toFixed(3)]), steer: lat.map(([v, r]) => [v, r.map]), beta: lat.map(([v, r]) => [v, r.bmap]), brake: br.map(([v, a]) => [v, +a.toFixed(3)]), drive: dr.map(([v, a]) => [v, +a.toFixed(3)]) };
+  all[cls] = { compound, fuel, lateral: lat.map(([v, r]) => [v, +r.ay.toFixed(3)]), latFront: latF.map(([v, a]) => [v, +a.toFixed(3)]), latRear: latR.map(([v, a]) => [v, +a.toFixed(3)]), steer: lat.map(([v, r]) => [v, r.map]), beta: lat.map(([v, r]) => [v, r.bmap]), brake: br.map(([v, a]) => [v, +a.toFixed(3)]), drive: dr.map(([v, a]) => [v, +a.toFixed(3)]) };
   writeFileSync(file, JSON.stringify(all));
 }

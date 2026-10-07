@@ -1,1 +1,8 @@
-{ "version": 1 }
+{
+  "version": 1,
+  "margin": 0.9,
+  "jerk": 40,
+  "circleExp": 3,
+  "preview": 0.24,
+  "useTrim": false
+}
