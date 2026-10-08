@@ -216,8 +216,8 @@ export const PIT_LANE_LOSS_S = 18;
 // Planner model, fitted to scripts/strategy/stint-rig.mjs stints (RAZOR, GTP and GT3, three tracks): a fresh soft is
 // ~2 % quicker than a medium and a hard ~3 % slower (it also runs cooler); after that lap time follows the tread,
 // losing about half of the grip wearGrip() takes away (gentle to 72 % wear, then the cliff). Out-lap on cold tyres ~1 s.
-const COMPOUND_PACE = { soft: -0.02, medium: 0, hard: 0.03 };
-const WEAR_K = 0.45, WEAR_INIT = 1.5;
+const COMPOUND_PACE = { soft: -0.016, medium: 0, hard: 0.022 };  // fresh-tyre pace vs medium, stint-rig 2026-10
+const WEAR_K = 0.45, WEAR_INIT = 1.1;
 const OUT_LAP_S = 1;
 /** Fraction of grip lost at tread wear `w` (the tyre model's wearGrip). */
 const wearLoss = (w) => 0.10 * w + 1.2 * Math.max(0, w - 0.72) ** 2;

@@ -3,9 +3,9 @@
 
 export const COMPOUNDS = Object.freeze({
   // optimum = core °C of peak grip; heat = how fast slip warms the tread.
-  soft:   Object.freeze({ id: 'soft',   label: 'SOFT',   short: 'S', color: '#ff3b3b', grip: 1.07, wear: 1.65, optimum: 82, heat: 1.06 }),
+  soft:   Object.freeze({ id: 'soft',   label: 'SOFT',   short: 'S', color: '#ff3b3b', grip: 1.025, wear: 1.65, optimum: 82, heat: 1.06 }),
   medium: Object.freeze({ id: 'medium', label: 'MEDIUM', short: 'M', color: '#ffd23b', grip: 1.0,  wear: 1.0,  optimum: 90, heat: 1.0 }),
-  hard:   Object.freeze({ id: 'hard',   label: 'HARD',   short: 'H', color: '#f2f2f2', grip: 0.96, wear: 0.58, optimum: 99, heat: 0.9 })
+  hard:   Object.freeze({ id: 'hard',   label: 'HARD',   short: 'H', color: '#f2f2f2', grip: 0.985, wear: 0.58, optimum: 99, heat: 0.9 })
 });
 export const COMPOUND_IDS = Object.freeze(Object.keys(COMPOUNDS));
 
@@ -19,7 +19,9 @@ export const TYRE_HEAT = Object.freeze({ lmdh: 0.32, gt: 0.42 });
 // Measured on the unscaled engine (Astra at race pace, Harbor Ring, 120 Hz):
 // fuel burnt and mean medium-tyre wear per metre of racing. See
 // scripts/sim-endurance.mjs --calibrate.
-export const BASELINE = Object.freeze({ fuelPerM: 8.2e-5, wearPerM: 6.3e-8 });
+// wearPerM re-measured 2026-10 on the hottest corner (what the cliff and the strategists act on) with RAZOR at race
+// pace: the old 6.3e-8 was a mean over four tyres with Astra, so tyres hit the cliff 1.5-1.8x sooner than planned.
+export const BASELINE = Object.freeze({ fuelPerM: 8.2e-5, wearPerM: 1.05e-7 });
 
 export const TANK_LITRES = 60;
 export const FUEL_KG_PER_L = 0.75;
@@ -43,7 +45,7 @@ export function calibrate(track, laps) {
   // several laps and teams can undercut or run long. Very short races still get
   // a three-lap tank; long ones stop every nine laps.
   const fuelLaps = clampInt(Math.round(Math.max(3, Math.min(30, laps)) * 0.68), 3, 9);
-  const tyreLaps = Math.max(3, fuelLaps * 1.25);
+  const tyreLaps = Math.max(5, fuelLaps);
   const lapFuelBase = BASELINE.fuelPerM * track.length;
   const lapWearBase = BASELINE.wearPerM * track.length;
   const fuelScale = TANK_LITRES / (fuelLaps * lapFuelBase);

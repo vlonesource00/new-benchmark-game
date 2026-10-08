@@ -14,7 +14,7 @@ race.start(); race.fitTyres(race.cars[0], compound); for (const w of race.cars[0
 const e = race.entries[0], c = race.cars[0];
 e.strategist.decide = () => null;
 const times = [], wear = [], core = [], tMax = Math.max(400, track.length / 6) * n; let lap = 1;
-while (c.race.lap <= n && race.time < tMax) {
+while (c.race.lap <= n && race.time < tMax && race.phase !== 'finished') {
   race.step(FIXED_DT);
   if (c.race.lap !== lap) { times.push(+c.race.lastLap.toFixed(3)); wear.push(+maxWear(c).toFixed(3)); core.push(+Math.max(...c.wheels.map((w) => w.tyre.core)).toFixed(0)); c.fuel = TANK_LITRES; lap = c.race.lap; }
 }
