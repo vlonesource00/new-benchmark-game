@@ -9,6 +9,11 @@
   "slideBand": 0.02,
   "useTrim": false,
   "combatMode": "cap",
+  "classes": {
+    "lmdh": {
+      "brakeExp": 1.85
+    }
+  },
   "tracks": {
     "nurburgring": {
       "margin": 0.8

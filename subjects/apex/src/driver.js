@@ -21,6 +21,8 @@ export class ApexDriver {
     if (this.line && this.classId === car.classId) return;
     this.classId = car.classId;
     // per-track, per-class overrides (config.tracks[track].perClass[class])
+    // (per-class defaults for every track first: config.classes[class])
+    const cc = this.options.classes?.[car.classId]; if (cc) this.options = { ...this.options, ...cc };
     const pc = this.options.perClass?.[car.classId]; if (pc) this.options = { ...this.options, ...pc };
     const o = this.options;
     this.model = new CarModel(car.classId);
@@ -29,7 +31,7 @@ export class ApexDriver {
     if (o.useTrim === false && baked) { baked.trim = undefined; baked.btrim = undefined; }
     if (!this.line.load(baked)) { this.line.seed(); this.line.optimise(this.model, { iterations: o.quickIterations ?? 4000, seed: 7 }); }
     this.model.margin = o.margin ?? 1; this.model.jerk = o.jerk ?? 0;
-    this.sopt = {}; for (const key of ['gears', 'notch', 'notchBand', 'notchMargin', 'notchGain', 'notchHalf', 'notchProm']) if (o[key] !== undefined) this.sopt[key] = o[key];
+    this.sopt = {}; for (const key of ['gears', 'notch', 'notchBand', 'notchMargin', 'notchGain', 'notchHalf', 'notchProm', 'brakeExp']) if (o[key] !== undefined) this.sopt[key] = o[key];
     this.model.gearAware = o.gears !== false;
     this.line.speeds(this.model, { ...this.sopt, mass: car.spec.mass + car.fuel * 0.75 });
     this.cursor = -1;
