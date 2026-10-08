@@ -442,9 +442,14 @@ export class Combat {
       fresh = pick;
     }
     const { side, W } = this.atk, i0 = c.i, n = clamp(Math.round(4.5 * v / line.ds), 50, 160);
-    const { lane, loss } = fresh ?? this.pullLane(car, c, v, me, this.latAtFn(lead, this.predict(lead, 4, 0.1, false)), side, W);
+    const pr = fresh ? null : this.predict(lead, 4, 0.1, false), { lane, loss, minP } = fresh ?? this.pullLane(car, c, v, me, this.latAtFn(lead, pr), side, W, 0, false);
+    // once committed the yardstick is the car being passed, not our own racing line: a lane slower than our line but still as quick as
+    // it is (the inside of a corner it defends) keeps the move alive
+    let rivalMin = Infinity; if (pr?.v) for (let j = 0; j < Math.min(pr.v.length, 26); j++) rivalMin = Math.min(rivalMin, pr.v[j]);
+    const stillQuick = Number.isFinite(loss) && minP >= rivalMin - (o.pullRivalSlack ?? 0.5);
     // a lane that turns into a losing move once committed (the rival moved over, the corner tightened): drop it
-    if (loss > (this.atk.lim ?? o.pullLoss ?? 2) + 1) {
+    if (loss > (this.atk.lim ?? o.pullLoss ?? 2) + 1 && !stillQuick) {
+      if (!Number.isFinite(loss)) this.stats.dropFeas = (this.stats.dropFeas ?? 0) + 1; else this.stats.dropLoss = (this.stats.dropLoss ?? 0) + 1;
       // mid-corner the lane already being driven is kept for a moment (it is still drivable, it just stopped paying): snapping back to the racing line from the wrong side runs the car wide
       const luNow = Math.abs(d.ayReq ?? 0) / Math.max(1, d.latCap ?? 1), held = this.plan?.tag === 'pull' && this.plan.path && this.plan.path !== lane;
       // (and so is it right behind the rival: falling back in there means braking onto its gearbox)
@@ -460,16 +465,25 @@ export class Combat {
    * much slower than the racing line it is over the next 2.5 s (compared at the corner minimums: we start below the line's
    * speed because we are held up, which is not the lane's fault). `alt` picks the spare buffer when two sides are compared.
    */
-  pullLane(car, c, v, me, latAt, side, W, alt = 0) {
+  pullLane(car, c, v, me, latAt, side, W, alt = 0, join = true) {
     const d = this.d, o = d.options, line = d.line, i0 = c.i, n = clamp(Math.round(4.5 * v / line.ds), 50, 160);
-    const d0 = me - line.sample(line.lat, i0, c.f, 0), lu = clamp(Math.abs(d.ayReq ?? 0) / Math.max(1, d.latCap ?? 1), 0, 1);
+    let d0 = me - line.sample(line.lat, i0, c.f, 0); const lu = clamp(Math.abs(d.ayReq ?? 0) / Math.max(1, d.latCap ?? 1), 0, 1);
     // the move across is a smoothstep over the ramp, peaking at 6 D v^2 / L^2 sideways: long enough that it takes only part of the
     // grip the corner leaves spare (a short ramp flicks the nose, eats the grip and the lane's own speed profile then brakes for it)
     const D = Math.abs(latAt(line.st[i0]) + side * W - line.lat[i0] - d0), aSide = Math.max(o.pullLatMin ?? 2.5, (o.pullLatAcc ?? 6) * (1 - lu));
     // (smootherstep peaks at 5.77 D v^2 / L^2, close enough to the 6 used for the length)
     const rin = Math.max(40, (o.pullRamp ?? 1.0) * (1 + (o.pullRampLu ?? 0.6) * lu) * v, v * Math.sqrt(6 * D / aSide)) / line.ds, shift = new Float64Array(n + 1);
     // and it starts along the heading the car already has off the line, so the switch itself asks for no steering
-    const sl0 = clamp(this.slope(v, i0), -0.15, 0.15);
+    let sl0 = clamp(this.slope(v, i0), -0.15, 0.15);
+    // a lane already being driven is continued from itself (its offset and heading here), not re-anchored on the car every frame:
+    // re-ramping from wherever the car has drifted to builds a different, tighter lane each cycle and the move reads as losing
+    const prev = !join && this.plan?.tag === 'pull' ? this.plan.path : null, NS = line.lat.length;
+    if (prev?.window) {
+      const r = (i0 - prev.window.i0 + NS) % NS, pd = prev.lat[i0] - line.lat[i0];
+      if (r + 3 <= prev.window.n && Math.abs(pd - d0) < (o.pullWarmTol ?? 0.6)) {
+        d0 = pd; sl0 = clamp((prev.lat[line.idx(i0 + 2)] - prev.lat[i0] - line.lat[line.idx(i0 + 2)] + line.lat[i0]) / (2 * line.ds), -0.25, 0.25);
+      }
+    }
     for (let j = 0; j <= n; j++) {
       const ii = line.idx(i0 + j), tgt = latAt(line.st[ii]) + side * W - line.lat[ii], u = smoother(j / rin);
       shift[j] = d0 * (1 - u) + tgt * u + sl0 * j * line.ds * (1 - Math.min(1, j / rin)) ** 2;
@@ -485,10 +499,10 @@ export class Combat {
     // the tyres allow at this speed (a fast corner taken on someone else's line), and joining it is a slide, not a lift
     // (over the first moments of the move, against the corner limit of the lane where the racing line has room: there is no time to
     // brake for a lane that is tighter than our speed a few metres on, and a fast corner taken at the limit has no grip to brake with)
-    let late = 0; const jN = Math.max(2, Math.round((o.pullFeasT ?? 0.6) * v / line.ds));
+    let late = 0; const jN = join ? Math.max(2, Math.round((o.pullFeasT ?? 0.6) * v / line.ds)) : -1;   // (a lane already being driven continues from where we are: only joining one needs this)
     for (let j = 0; j <= jN; j++) { const ii = line.idx(i0 + j); late = Math.max(late, (v - lane.vmax[ii]) - Math.max(0, v - line.vmax[ii])); }
     if (late > (o.pullStartDv ?? 0.5)) return { lane, loss: Infinity };
-    return { lane, loss: minL - minP };
+    return { lane, loss: minL - minP, minP };
   }
 
   /**
@@ -560,7 +574,7 @@ export class Combat {
    */
   guard(now, car, c, v, field, rel) {
     const line = this.d.line, near = rel.filter((r) => Math.abs(r.ds) < CAR_LEN + 2.2 && Math.abs(r.lat - field.me.lat) < 3.6);
-    if (!near.length) { this.plan = null; return null; }
+    if (!near.length) { if (this.plan?.tag === 'guard') this.plan = null; return null; }   // (only its own plan: a pull being driven is read back by pullOut)
     const i0 = c.i, f0 = c.f, n = clamp(Math.round(2.6 * v / line.ds), 24, 80), d0 = field.me.lat - line.sample(line.lat, i0, f0, 0);
     let side = 0, gapMin = Infinity;
     for (const r of near) { const g = Math.abs(r.lat - field.me.lat) - CAR_WID; if (g < gapMin) { gapMin = g; side = Math.sign(r.lat - field.me.lat); } }
