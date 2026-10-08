@@ -2,6 +2,8 @@ import { clamp } from './math.js';
 import { CAR_LEN, CAR_WID } from './field.js';
 
 const smooth = (u) => { u = clamp(u, 0, 1); return u * u * (3 - 2 * u); };
+// smootherstep: its curvature starts and ends at zero, so a lane change built on it asks for no sudden steering at either end
+const smoother = (u) => { u = clamp(u, 0, 1); return u * u * u * (u * (6 * u - 15) + 10); };
 
 /**
  * Racecraft. Every cycle it builds a handful of lanes (windowed copies of the racing line shifted sideways, each with its
@@ -406,7 +408,7 @@ export class Combat {
       // off a straight (a braking zone, a corner) a move is only worth starting from close enough to get a nose alongside before the apex
       if (!this.run.straight && lead.ds > (slowish ? o.pullCornerSlow ?? 40 : o.pullCornerRange ?? 24)) return null;
       // already half alongside is no time to start a lane change into it: the alongside guard owns that
-      if (!settled || !held || lead.ds < (o.pullMin ?? CAR_LEN) || lu > (o.pullLimit ?? 1.05) || lead.ds > Math.max(35, reach) || now < (this.pullWait ?? -1)) return null;
+      if (!settled || !held || closing < -(o.pullOpen ?? 1.0) || lead.ds < (o.pullMin ?? CAR_LEN) || lu > (o.pullLimit ?? 1.05) || lead.ds > Math.max(35, reach) || now < (this.pullWait ?? -1)) return null;
       // on a straight the tail is worth more than the outside lane: stay in the tow until the braking zone is near
       // (then pull out to be alongside into it) or until the cap would make us lift behind it (slingshot)
       const run = this.run;
@@ -433,7 +435,7 @@ export class Combat {
       }
       if (!pick) return null;
       // the inside of the corner is the shorter way round: it may give up more minimum speed than the outside and still come out ahead
-      const lim = pick.side === pref && kMax > 0.004 ? o.pullLossIn ?? 4.5 : o.pullLoss ?? 3;
+      const lim = pick.side === pref && kMax > 0.004 ? o.pullLossIn ?? 3 : o.pullLoss ?? 2;
       if (pick.loss > lim) { this.pullWait = now + (o.pullRetry ?? 0.8); return null; }
       this.atk = { id: lead.id, side: pick.side, lim, W, until: now + (o.pullHold ?? 4) }; this.stats.pulls = (this.stats.pulls ?? 0) + 1; this.lastAttack = now;
       if (pick.side !== pref) this.stats.outside = (this.stats.outside ?? 0) + 1;
@@ -442,7 +444,7 @@ export class Combat {
     const { side, W } = this.atk, i0 = c.i, n = clamp(Math.round(4.5 * v / line.ds), 50, 160);
     const { lane, loss } = fresh ?? this.pullLane(car, c, v, me, this.latAtFn(lead, this.predict(lead, 4, 0.1, false)), side, W);
     // a lane that turns into a losing move once committed (the rival moved over, the corner tightened): drop it
-    if (loss > (this.atk.lim ?? o.pullLoss ?? 3) + 1) {
+    if (loss > (this.atk.lim ?? o.pullLoss ?? 2) + 1) {
       // mid-corner the lane already being driven is kept for a moment (it is still drivable, it just stopped paying): snapping back to the racing line from the wrong side runs the car wide
       const luNow = Math.abs(d.ayReq ?? 0) / Math.max(1, d.latCap ?? 1), held = this.plan?.tag === 'pull' && this.plan.path && this.plan.path !== lane;
       // (and so is it right behind the rival: falling back in there means braking onto its gearbox)
@@ -460,10 +462,17 @@ export class Combat {
    */
   pullLane(car, c, v, me, latAt, side, W, alt = 0) {
     const d = this.d, o = d.options, line = d.line, i0 = c.i, n = clamp(Math.round(4.5 * v / line.ds), 50, 160);
-    const d0 = me - line.sample(line.lat, i0, c.f, 0), lu = clamp(Math.abs(d.ayReq ?? 0) / Math.max(1, d.latCap ?? 1), 0, 1), rin = Math.max(40, (o.pullRamp ?? 1.0) * (1 + (o.pullRampLu ?? 0.6) * lu) * v) / line.ds, shift = new Float64Array(n + 1);
+    const d0 = me - line.sample(line.lat, i0, c.f, 0), lu = clamp(Math.abs(d.ayReq ?? 0) / Math.max(1, d.latCap ?? 1), 0, 1);
+    // the move across is a smoothstep over the ramp, peaking at 6 D v^2 / L^2 sideways: long enough that it takes only part of the
+    // grip the corner leaves spare (a short ramp flicks the nose, eats the grip and the lane's own speed profile then brakes for it)
+    const D = Math.abs(latAt(line.st[i0]) + side * W - line.lat[i0] - d0), aSide = Math.max(o.pullLatMin ?? 2.5, (o.pullLatAcc ?? 6) * (1 - lu));
+    // (smootherstep peaks at 5.77 D v^2 / L^2, close enough to the 6 used for the length)
+    const rin = Math.max(40, (o.pullRamp ?? 1.0) * (1 + (o.pullRampLu ?? 0.6) * lu) * v, v * Math.sqrt(6 * D / aSide)) / line.ds, shift = new Float64Array(n + 1);
+    // and it starts along the heading the car already has off the line, so the switch itself asks for no steering
+    const sl0 = clamp(this.slope(v, i0), -0.15, 0.15);
     for (let j = 0; j <= n; j++) {
-      const ii = line.idx(i0 + j), tgt = latAt(line.st[ii]) + side * W - line.lat[ii], u = smooth(j / rin);
-      shift[j] = d0 * (1 - u) + tgt * u;
+      const ii = line.idx(i0 + j), tgt = latAt(line.st[ii]) + side * W - line.lat[ii], u = smoother(j / rin);
+      shift[j] = d0 * (1 - u) + tgt * u + sl0 * j * line.ds * (1 - Math.min(1, j / rin)) ** 2;
       const l = line.lat[ii] + shift[j]; if (Math.abs(l) > line.bound) shift[j] = Math.sign(l) * line.bound - line.lat[ii];
     }
     for (let pass = 0; pass < 3; pass++) { let prev = shift[0]; for (let j = 1; j < n; j++) { const cur = shift[j]; shift[j] = 0.25 * prev + 0.5 * cur + 0.25 * shift[j + 1]; prev = cur; } }
