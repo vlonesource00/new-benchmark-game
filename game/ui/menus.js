@@ -9,6 +9,7 @@ import { DIFFICULTIES, difficultyById } from '../core/difficulty.js';
 import { PACE_PROFILES } from '../core/pace-profiles.js';
 import { esc, fmtLap, fmtClock } from './format.js';
 import { RACE_CLASSES, FIELDS } from '../core/classes.js';
+import { EVENTS } from './events.js';
 
 const $ = (root, sel) => root.querySelector(sel);
 const $$ = (root, sel) => [...root.querySelectorAll(sel)];
@@ -24,33 +25,78 @@ export function trackOutline(points) {
   return `<svg viewBox="0 0 100 100"><path d="${d}Z" fill="none" stroke="#fff" stroke-width="4" stroke-linejoin="round"/></svg>`;
 }
 
+const WEATHER = { clear: 'Clear', hot: 'Hot', overcast: 'Overcast', rain: 'Rain', changeable: 'Changeable' };
+const HOURS = { track: 'Circuit time', morning: 'Morning', afternoon: 'Afternoon', sunset: 'Sunset', night: 'Night' };
+const CAUTIONS = { full: 'Safety car', fcy: 'FCY only', off: 'No cautions' };
+const FIELD_LABEL = (f) => FIELDS[f ?? 'multi']?.label ?? 'Multiclass';
+/** One-line description of a race setup, as chips. */
+const chips = (s) => [`${s.laps} laps`, `${s.teamCount} cars`, FIELD_LABEL(s.field), HOURS[s.startTime ?? 'track'], WEATHER[s.weather ?? 'clear'], CAUTIONS[s.caution ?? 'full']]
+  .map((c) => `<span class="ev-chip">${esc(c)}</span>`).join('');
+
+/**
+ * The lobby: your licence front and centre, the race you set up last ready to
+ * go, and a row of series events, each one click from the grid.
+ * act: { go, start, event(preset), career, setup, outlines, version }
+ */
 export function renderMenu(el, act) {
+  const s = act.setup, t = trackById(s.trackId), c = act.career;
+  const official = (s.session ?? 'official') === 'official' && s.drive && c;
   el.innerHTML = `
     <div class="menu-brand">
-      <div class="kicker">Multi-architecture endurance racing</div>
       <h1>PHANTOM<em>ENDURANCE</em></h1>
-      <p>Four racing AIs. Pick your co-driver or draw one. Fuel, tyres, pit stops and driver swaps — share a car with a machine and bring it home.</p>
+      <div class="kicker">Share a car with a machine · bring it home</div>
     </div>
     <nav class="menu-list">
-      <button class="menu-item" data-go="setup">Quick Race <small>Endurance</small></button>
-      <button class="menu-item" data-go="duel">AI Duel <small>Watch two AIs race</small></button>
-      <button class="menu-item" disabled>Multiplayer <span class="lock">LAN · M4</span></button>
+      <button class="menu-item" data-go="setup">Custom race <small>Tune everything</small></button>
+      <button class="menu-item" data-go="duel">AI Duel <small>Watch two AIs</small></button>
       <button class="menu-item" data-go="drivers">Drivers <small>AI roster</small></button>
       <button class="menu-item" data-go="settings">Settings</button>
     </nav>
-    ${act.career ? licenseCard(act.career) : ''}
-    <div class="menu-foot">Four circuits · Endurance<br>Build ${esc(act.version)}</div>`;
+    ${c ? licenseCard(c) : ''}
+    <section class="lobby">
+      <div class="ev-hero">
+        <div class="ev-hero-map">${trackOutline(act.outlines[s.trackId])}</div>
+        <div class="ev-hero-body">
+          <div class="kicker">Your next race · ${official ? 'Official · rated' : 'Hosted · unrated'}</div>
+          <h2>${esc(t.name)}</h2>
+          <div class="ev-place">${esc(t.place)} · ${esc(FORMATS[s.formatId]?.label ?? 'CUSTOM')}</div>
+          <div class="ev-chips">${chips(s)}${official && !meetsLicense(c, s.formatId) ? `<span class="ev-chip warn">Needs ${FORMAT_LICENSE[s.formatId]} licence · switch to hosted</span>` : ''}</div>
+          <div class="ev-actions"><button class="cta" data-race>Race now</button><button class="cta ghost" data-go="setup">Briefing</button></div>
+        </div>
+      </div>
+      <h3 class="lobby-h">Series</h3>
+      <div class="ev-row">${EVENTS.map((e) => {
+        const p = e.preset, tr = trackById(p.trackId), lic = FORMAT_LICENSE[p.formatId] ?? 'R';
+        const locked = e.kind === 'official' && c && !meetsLicense(c, p.formatId);
+        return `<button class="ev-card ${e.kind}${locked ? ' locked' : ''}" data-event="${e.id}" style="--lic:${licenseById(lic).color}">
+          <div class="ev-map">${trackOutline(act.outlines[p.trackId])}</div>
+          <div class="ev-top"><span class="ev-kind">${e.kind === 'official' ? 'OFFICIAL' : 'HOSTED'}</span>${e.kind === 'official' ? `<span class="ev-lic">${locked ? '🔒 ' : ''}${lic}</span>` : ''}</div>
+          <b>${esc(e.series)}</b><span class="ev-track">${esc(tr.name)}</span>
+          <p>${esc(e.blurb)}</p>
+          <div class="ev-meta">${p.laps} laps · ${esc(HOURS[p.startTime ?? 'track'])} · ${esc(WEATHER[p.weather ?? 'clear'])}</div></button>`;
+      }).join('')}</div>
+    </section>
+    <div class="menu-foot">Build ${esc(act.version)}</div>`;
   $$(el, '[data-go]').forEach((b) => b.addEventListener('click', () => act.go(b.dataset.go)));
+  $(el, '[data-race]').addEventListener('click', () => act.start());
+  $$(el, '[data-event]').forEach((b) => b.addEventListener('click', () => {
+    const e = EVENTS.find((x) => x.id === b.dataset.event);
+    // A locked official series still opens: as a hosted race, flagged on the briefing.
+    const locked = e.kind === 'official' && c && !meetsLicense(c, e.preset.formatId);
+    act.event({ ...e.preset, ...(locked ? { session: 'hosted' } : {}) });
+  }));
 }
 
-/** Licence, Safety Rating and iRating, iRacing-style. */
+/** Licence, Safety Rating (with the promotion line), iRating and recent form, iRacing-style. */
 function licenseCard(c) {
-  const lic = licenseById(c.license), last = c.history?.[0];
+  const lic = licenseById(c.license), recent = (c.history ?? []).slice(0, 5);
+  const sr = Math.max(0, Math.min(4.99, c.sr));
   return `<div class="license-card" style="--lic:${lic.color}">
     <div class="lc-badge"><b>${lic.id}</b><span>${c.sr.toFixed(2)}</span></div>
-    <div class="lc-body"><small>${esc(lic.name)} LICENCE</small><b>${c.iRating} <em>iR</em></b>
+    <div class="lc-body"><small>${esc(lic.name)} LICENCE</small><b>${c.iRating} <em>iRating</em></b>
+      <div class="lc-sr" title="Safety Rating 4.00 with two races in class promotes"><i style="width:${(sr / 4.99) * 100}%"></i><u style="left:${(4 / 4.99) * 100}%"></u></div>
       <span>${c.starts} starts · ${c.wins} wins · ${c.top5} top 5${c.starts ? ` · ${(c.incidents / Math.max(1, c.starts)).toFixed(1)} inc/race` : ''}</span>
-      ${last ? `<span class="lc-last">Last: P${last.position}/${last.field} · ${esc(last.track)} · ${last.official ? `${last.dIr >= 0 ? '+' : ''}${last.dIr} iR · ${last.dSr >= 0 ? '+' : ''}${last.dSr.toFixed(2)} SR` : 'hosted'}</span>` : '<span class="lc-last">Race an official Sprint to start your rating</span>'}</div></div>`;
+      ${recent.length ? `<div class="lc-form">${recent.map((r) => `<span class="${r.position === 1 ? 'win' : r.position <= 3 ? 'pod' : ''}" title="${esc(r.track)} · ${r.official ? `${r.dIr >= 0 ? '+' : ''}${r.dIr} iR` : 'hosted'}">P${r.position}</span>`).join('')}</div>` : '<span class="lc-last">Race an official Rookie Sprint to start your rating</span>'}</div></div>`;
 }
 
 /** Difficulty blurb plus the pace rivals will aim for on the selected track. */
@@ -68,50 +114,52 @@ function stepper(name, value, suffix = '') {
   return `<div class="stepper" data-step="${name}"><button data-d="-1">−</button><output>${value}${suffix}</output><button data-d="1">+</button></div>`;
 }
 
+let openDrawer = null;
 export function renderSetup(el, s, teams, outlines, act, career = null) {
   const fmt = FORMATS[s.formatId];
   const session = s.session ?? 'official', official = session === 'official' && s.drive && career;
   const gated = official && !meetsLicense(career, s.formatId);
   const matched = official ? difficultyForRating(career.iRating) : null;
   const player = teams.find((t) => t.drivers.some((d) => d.kind === 'human'));
+  const t = trackById(s.trackId), field = s.field ?? 'multi';
+  // Drawers: each shows its settings in one line; open one to change them.
+  const drawer = (id, title, summary, body) => `<details class="drawer" data-drawer="${id}" ${openDrawer === id ? 'open' : ''}><summary><b>${title}</b><span>${summary}</span><i></i></summary><div class="drawer-body">${body}</div></details>`;
+  const yes = (v) => (v ? 'On' : 'Off');
   el.innerHTML = `
     <div class="panel-wrap">
-      <div class="panel-head"><div><div class="kicker">Quick race</div><h2>Race Setup</h2></div><button class="back" data-back>← Back</button></div>
+      <div class="panel-head"><div><div class="kicker">Event briefing · ${official ? 'Official · rated' : 'Hosted · unrated'}</div><h2>${esc(t.name)}</h2></div><button class="back" data-back>← Lobby</button></div>
+      <div class="brief-tracks">${TRACKS.map((x) => `<button class="brief-track ${x.id === s.trackId ? 'sel' : ''}" data-track="${x.id}" ${x.ready ? '' : 'disabled'} title="${esc(x.place)}">${trackOutline(outlines[x.id])}<b>${esc(x.name)}</b></button>`).join('')}</div>
       <div class="grid-2">
         <div>
-          <div class="block"><h3>Circuit</h3><div class="tracks">
-            ${TRACKS.map((t) => `<button class="track-card ${t.id === s.trackId ? 'sel' : ''}" data-track="${t.id}" ${t.ready ? '' : 'disabled'}>
-              ${t.ready ? '' : '<span class="tag">SOON</span>'}<b>${esc(t.name)}</b><span>${esc(t.place)}</span><p>${esc(t.blurb)}</p>${trackOutline(outlines[t.id])}</button>`).join('')}
-          </div></div>
-          <div class="block"><h3>Race</h3>
+          <div class="block brief-main">
             <div class="row"><label>Session<span class="hint">${official ? `Rated: iRating and Safety Rating change · rivals matched to your ${career.iRating} iR` : s.drive ? 'Unrated: any format, any difficulty' : 'Team principal races are always unrated'}</span></label>${seg('session', [['official', 'Official'], ['hosted', 'Hosted']], session)}</div>
-            ${career ? `<div class="row"><label>Your licence<span class="hint">Sprint: R · Classic 12: D · Marathon 20: C licence for official races</span></label><span class="lic-chip" style="--lic:${licenseById(career.license).color}">${licenseText(career.license, career.sr)} · ${career.iRating} iR</span></div>` : ''}
-            <div class="row"><label>Field<span class="hint">${s.field === 'gt3' ? 'GT3 only' : s.field === 'gtp' ? 'GTP hybrid prototypes only' : 'IMSA-style multiclass: GTP hybrids start ahead, GT3 behind · classified per class'}</span></label>${seg('field', Object.values(FIELDS).map((f) => [f.id, f.label]), s.field ?? 'multi')}</div>
-            ${(s.field ?? 'multi') === 'multi' && s.drive ? `<div class="row"><label>Your class<span class="hint">${s.playerClass === 'gt3' ? 'GT3: ABS, traction control, watch your mirrors' : 'GTP: 1030 kg, hybrid deploy (H cycles mode), carbon brakes'}</span></label>${seg('playerClass', [['gtp', 'GTP'], ['gt3', 'GT3']], s.playerClass ?? 'gtp')}</div>` : ''}
+            <div class="row"><label>Format<span class="hint">${fmt.mandatoryStops} mandatory stop${fmt.mandatoryStops > 1 ? 's' : ''}${fmt.mandatorySwap ? ' · driver swap required' : ''}${career ? ` · official needs ${FORMAT_LICENSE[s.formatId]} licence` : ''}</span></label>${seg('formatId', Object.values(FORMATS).map((f) => [f.id, f.label]), s.formatId)}</div>
+            <div class="row"><label>Rivals<span class="hint">${official ? `Official field matched to your iRating: ${esc(difficultyById(matched).label)}` : esc(aiHint(s))}</span></label>${seg('difficulty', DIFFICULTIES.map((d) => [d.id, d.label]), official ? matched : difficultyById(s.difficulty).id)}</div>
+          </div>
+          ${drawer('race', 'Race', `${s.laps} laps · ${s.teamCount} cars · ${esc(FIELD_LABEL(field))}${field === 'multi' && s.drive ? ` · you in ${(s.playerClass ?? 'gtp').toUpperCase()}` : ''}`, `
+            <div class="row"><label>Laps<span class="hint">Any number (1–${MAX_LAPS}); fuel and tyres scale with distance</span></label>${stepper('laps', s.laps)}</div>
+            <div class="row"><label>Cars<span class="hint">Two drivers per car</span></label>${stepper('teamCount', s.teamCount)}</div>
+            <div class="row"><label>Field<span class="hint">${field === 'gt3' ? 'GT3 only' : field === 'gtp' ? 'GTP hybrid prototypes only' : 'GTP hybrids start ahead, GT3 behind · classified per class'}</span></label>${seg('field', Object.values(FIELDS).map((f) => [f.id, f.label]), field)}</div>
+            ${field === 'multi' && s.drive ? `<div class="row"><label>Your class<span class="hint">${s.playerClass === 'gt3' ? 'GT3: ABS, traction control, watch your mirrors' : 'GTP: 1030 kg, hybrid deploy (H cycles mode), carbon brakes'}</span></label>${seg('playerClass', [['gtp', 'GTP'], ['gt3', 'GT3']], s.playerClass ?? 'gtp')}</div>` : ''}`)}
+          ${drawer('conditions', 'Conditions', `${esc(HOURS[s.startTime ?? 'track'])} · ${esc(WEATHER[s.weather ?? 'clear'])} · day cycle ${yes(s.dayCycle ?? true).toLowerCase()}`, `
+            <div class="row"><label>Start time<span class="hint">Circuit picks its usual hour</span></label>${seg('startTime', Object.entries(HOURS).map(([k, v]) => [k, k === 'track' ? 'Circuit' : v]), s.startTime ?? 'track')}</div>
+            <div class="row"><label>Weather<span class="hint">Rain wets the track; sun heats it. Changeable can turn mid-race</span></label>${seg('weather', Object.entries(WEATHER), s.weather ?? 'clear')}</div>
+            <div class="row"><label>Day cycle<span class="hint">The sun moves as the race runs; lights on after dark</span></label>${seg('dayCycle', [[true, 'On'], [false, 'Off']], s.dayCycle ?? true)}</div>`)}
+          ${drawer('rules', 'Rules', `${(s.startType ?? 'rolling') === 'rolling' ? 'Rolling' : 'Standing'} start · ${esc(CAUTIONS[s.caution ?? 'full'])} · qualifying ${yes(s.qualifying ?? true).toLowerCase()} · ${esc(COMPOUNDS[s.startCompound].label)} tyres`, `
             <div class="row"><label>Start<span class="hint">${(s.startType ?? 'rolling') === 'rolling' ? 'Rolling: two-wide formation behind the pole car, green at the start zone' : 'Standing: five red lights on the grid'}</span></label>${seg('startType', [['rolling', 'Rolling'], ['standing', 'Standing']], s.startType ?? 'rolling')}</div>
             <div class="row"><label>Race control<span class="hint">${{ full: 'Full course yellow, then the safety car for big incidents', fcy: 'Full course yellow only: 80 km/h limiter, no safety car', off: 'No cautions: incidents stay local yellows' }[s.caution ?? 'full']}</span></label>${seg('caution', [['full', 'Safety car'], ['fcy', 'FCY only'], ['off', 'Off']], s.caution ?? 'full')}</div>
             <div class="row"><label>Qualifying<span class="hint">${(s.qualifying ?? true) ? 'Lone qualifying: out lap + 2 timed laps, ghosted · best lap sets the grid in each class' : 'Grid from the draw'}</span></label>${seg('qualifying', [[true, 'On'], [false, 'Off']], s.qualifying ?? true)}</div>
-            <div class="row"><label>Format<span class="hint">${fmt.mandatoryStops} mandatory stop${fmt.mandatoryStops > 1 ? 's' : ''}${fmt.mandatorySwap ? ' · driver swap required' : ''}</span></label>
-              ${seg('formatId', Object.values(FORMATS).map((f) => [f.id, f.label]), s.formatId)}</div>
-            <div class="row"><label>Laps<span class="hint">Type any number of laps (1–${MAX_LAPS}); fuel and tyres scale with distance</span></label>${stepper('laps', s.laps)}</div>
-            <div class="row"><label>Teams<span class="hint">Two drivers per car</span></label>${stepper('teamCount', s.teamCount)}</div>
-            <div class="row"><label>AI difficulty<span class="hint">${official ? `Official field matched to your iRating: ${esc(difficultyById(matched).label)}` : esc(aiHint(s))}</span></label>${seg('difficulty', DIFFICULTIES.map((d) => [d.id, d.label]), official ? matched : difficultyById(s.difficulty).id)}</div>
-            <div class="row"><label>Start time<span class="hint">Circuit picks its usual hour</span></label>${seg('startTime', [['track', 'Circuit'], ['morning', 'Morning'], ['afternoon', 'Afternoon'], ['sunset', 'Sunset'], ['night', 'Night']], s.startTime ?? 'track')}</div>
-            <div class="row"><label>Weather<span class="hint">Rain wets the track; sun heats it. Changeable can turn mid-race</span></label>${seg('weather', [['clear', 'Clear'], ['hot', 'Hot'], ['overcast', 'Overcast'], ['rain', 'Rain'], ['changeable', 'Changeable']], s.weather ?? 'clear')}</div>
-            <div class="row"><label>Day cycle<span class="hint">The sun moves as the race runs; lights on after dark</span></label>${seg('dayCycle', [[true, 'On'], [false, 'Off']], s.dayCycle ?? true)}</div>
-            <div class="row"><label>Start tyre</label>${seg('startCompound', COMPOUND_IDS.map((c) => [c, COMPOUNDS[c].label]), s.startCompound)}</div>
-          </div>
-          <div class="block"><h3>You</h3>
-            <div class="row"><label>Role<span class="hint">Drive a stint with an AI teammate, or run the pit wall and watch</span></label>
-              ${seg('drive', [[true, 'Driver'], [false, 'Team principal']], s.drive)}</div>
+            <div class="row"><label>Start tyre</label>${seg('startCompound', COMPOUND_IDS.map((c) => [c, COMPOUNDS[c].label]), s.startCompound)}</div>`)}
+          ${drawer('driver', 'You', s.drive ? `Driver · ${esc(s.playerName)} · ${s.coDriver && s.coDriver !== 'random' ? esc(AI_DRIVERS.find((d) => d.id === s.coDriver)?.name ?? 'Random') : 'random'} co-driver · ${s.gearbox === 'manual' ? 'manual' : 'auto'} · assist ${yes(s.assist).toLowerCase()}` : 'Team principal · pit wall', `
+            <div class="row"><label>Role<span class="hint">Drive a stint with an AI teammate, or run the pit wall and watch</span></label>${seg('drive', [[true, 'Driver'], [false, 'Team principal']], s.drive)}</div>
             <div class="row"><label>Name</label><input type="text" maxlength="12" value="${esc(s.playerName)}" data-name ${s.drive ? '' : 'disabled'}></div>
             <div class="row"><label>Co-driver<span class="hint">The AI that drives your car while you rest</span></label>${seg('coDriver', [['random', 'Random'], ...AI_DRIVERS.map((d) => [d.id, d.name])], s.coDriver ?? 'random')}</div>
             <div class="row"><label>Steering assist<span class="hint">Speed-sensitive lock and counter-steer</span></label>${seg('assist', [[true, 'On'], [false, 'Off']], s.assist)}</div>
-            <div class="row"><label>Gearbox<span class="hint">Manual: E / Q or the bumpers to shift</span></label>${seg('gearbox', [['auto', 'Auto'], ['manual', 'Manual']], s.gearbox ?? 'auto')}</div>
-          </div>
+            <div class="row"><label>Gearbox<span class="hint">Manual: E / Q or the bumpers to shift</span></label>${seg('gearbox', [['auto', 'Auto'], ['manual', 'Manual']], s.gearbox ?? 'auto')}</div>`)}
+          ${career ? `<div class="brief-lic"><span class="lic-chip" style="--lic:${licenseById(career.license).color}">${licenseText(career.license, career.sr)} · ${career.iRating} iR</span><span>Rookie Sprint: R · Classic 12: D · Marathon 20: C licence for official races</span></div>` : ''}
         </div>
         <div>
-          <div class="block"><h3>Grid draw · seed ${s.seed}</h3>
+          <div class="block"><h3>Entry list · seed ${s.seed}</h3>
             <div class="team-list">${teams.map((t) => `
               <div class="team-row"><span class="grid-pos">P${t.grid + 1}</span><span class="cls-tag" style="background:${RACE_CLASSES[t.raceClass ?? 'gt3'].color};color:${RACE_CLASSES[t.raceClass ?? 'gt3'].fg}">${RACE_CLASSES[t.raceClass ?? 'gt3'].label}</span><span class="bar" style="background:${t.color}"></span>
                 <div><b>${esc(t.name)}</b><div class="drivers">${t.drivers.map((d, i) => d.kind === 'human'
@@ -123,8 +171,12 @@ export function renderSetup(el, s, teams, outlines, act, career = null) {
         </div>
       </div>
     </div>
-    <div class="setup-foot"><span class="summary">${esc(trackById(s.trackId).name)} · ${s.laps} laps · ${s.teamCount} cars</span>${gated ? `<span class="summary" style="color:var(--bad)">Needs a ${FORMAT_LICENSE[s.formatId]} licence for official · switch to Hosted</span>` : ''}<button class="cta" data-start ${gated ? 'disabled' : ''}>${official ? 'Join official race' : 'Go racing'}</button></div>`;
+    <div class="setup-foot"><span class="summary">${esc(t.name)} · ${s.laps} laps · ${s.teamCount} cars · ${esc(CAUTIONS[s.caution ?? 'full'])}</span>${gated ? `<span class="summary" style="color:var(--bad)">Needs a ${FORMAT_LICENSE[s.formatId]} licence for official · switch to Hosted</span>` : ''}<button class="cta" data-start ${gated ? 'disabled' : ''}>${official ? 'Join official race' : 'Go racing'}</button></div>`;
 
+  $$(el, '[data-drawer]').forEach((d) => d.addEventListener('toggle', () => {
+    if (d.open) { openDrawer = d.dataset.drawer; $$(el, '[data-drawer]').forEach((o) => { if (o !== d) o.open = false; }); }
+    else if (openDrawer === d.dataset.drawer) openDrawer = null;
+  }));
   $(el, '[data-back]').addEventListener('click', () => act.go('menu'));
   $(el, '[data-start]').addEventListener('click', () => act.start());
   $(el, '[data-reroll]').addEventListener('click', () => act.set({ seed: Math.floor(Math.random() * 1e6) }));

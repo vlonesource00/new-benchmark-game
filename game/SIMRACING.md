@@ -19,7 +19,7 @@ Status: ✅ shipped · 🟡 prototype in this branch · ⬜ planned
 | Damage and repairs | Meatball forces a repair; optional fast repair | Repair time added to the stop, damage reset | 🟡 |
 | Track limits | Lap invalidation; repeated cutting → slow-down | Invalid laps ✅, slow-down ⬜ | 🟡 |
 | Pit-lane speeding | Penalty for exceeding the limiter | Autopilot holds the limiter, so it can't happen yet | ⬜ (manual pit lane) |
-| Full-course caution / safety car | Pace car, wave-arounds, lucky dog | Phase 3 | ⬜ |
+| Full-course caution / safety car | Pace car, wave-arounds, lucky dog | `core/caution.js`: FCY (80 km/h, Code 60 on the Nordschleife) on its own or escalating to a modelled safety car out of the pit lane; queue behind the leader with wave-arounds, pit lane closed then open, SC in this lap, leader-controlled restart. AI seats follow a caution autopilot; human seats get a limiter and 10 s to give back places passed under caution. HUD: caution strip, track map, fcy/sc/restart flags | 🟡 (no lucky dog) |
 | Protests | Post-race review against a replay | The replay system exists; a protest form is phase 4 | ⬜ |
 
 ## 2. Driver progression (licence, Safety Rating, iRating)
@@ -97,5 +97,5 @@ Measured solo, best lap over 3 laps: harbor-ring Solstice GTP 54.4 s vs GT3 62.0
 
 1. **Phase 1 (this branch):** stewards (incidents, penalties, flags, repairs), licence/SR/iRating career, official vs hosted, relative, incident and flag HUD, spotter, fuel calculator, results with rating deltas.
 2. **Phase 2:** practice and lone qualifying sessions with grid-by-time, formation lap and rolling start, garage setups, in-car adjustments, local season with schedule.
-3. **Phase 3:** full-course yellow and safety car, ~~multi-class fields~~ (prototype done), slow-down penalties for cutting.
+3. **Phase 3:** ~~full-course yellow and safety car~~ (done), ~~multi-class fields~~ (prototype done), slow-down penalties for cutting.
 4. **Phase 4:** online host (M4), splits by iRating, protests.

@@ -184,7 +184,9 @@ function duelTeams() {
 }
 
 const nav = {
-  version: VERSION, career,
+  version: VERSION, career, setup, outlines,
+  /** A lobby event: its preset over the setup, then the briefing. */
+  event(preset) { Object.assign(setup, preset); nav.go('setup'); },
   go(name) {
     save('pe.setup', setup);
     if (name === 'menu') { stopRace(); renderMenu($('#screen-menu'), nav); }
