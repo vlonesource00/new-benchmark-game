@@ -7,6 +7,8 @@
 // report stay empty; nothing is invented. A focus the AI did not declare is
 // inferred from the field and marked as such.
 
+import { razorLens } from '../../subjects/razor/src/lens.js';
+
 const TONES = {
   attack: '#ff4d6d', alongside: '#ff8f3d', defend: '#4f8cff', follow: '#ffb02e',
   yield: '#9aa4b2', pit: '#c77dff', recover: '#ff3b3b', pace: '#3ddc84'
@@ -42,7 +44,8 @@ const THEMES = {
   phantom: { color: '#9b5de5', mind: 'Imitates a ghost tape; MPPI rollouts on an exact plant' },
   'phantom-v2': { color: '#b388ff', mind: 'Ghost tape v2 with an adaptive plant model' },
   'solinator-6.1': { color: '#ffce45', mind: 'Gate-to-gate arrivals; full-plant transfer graph' },
-  apex: { color: '#00e0b8', mind: 'Identified g-g-v limit line; shadow lanes rolled out against predicted rivals' }
+  apex: { color: '#00e0b8', mind: 'Identified g-g-v limit line; shadow lanes rolled out against predicted rivals' },
+  razor: { color: '#ff6238', mind: 'Fast line to the wake; committed open-space attacks with smooth joins' }
 };
 
 // CRV packs its scored lanes as "kind*:score ..." in debug() and as geometry in visualDebug().
@@ -178,6 +181,7 @@ PROFILES.apex = (d, v) => {
   };
 };
 PROFILES['phantom-v2'] = PROFILES.phantom;
+PROFILES.razor = razorLens;
 
 /** Infer who a car is racing when its AI does not say: the nearest car ahead, else one closing from behind. */
 function inferFocus(race, idx) {
@@ -201,7 +205,7 @@ export function lensModel(race, idx, archId, dbg = {}, vis = null) {
   m.gauges = (m.gauges ?? []).filter(Boolean); m.counters = (m.counters ?? []).filter(Boolean);
   m.tone = toneOf(m.intent);
   if (m.focus) { m.focus.declared = true; m.focus.index = idOf(race, m.focus.id); if (m.focus.index < 0) m.focus = null; }
-  if (!m.focus) { const f = inferFocus(race, idx); if (f) m.focus = { ...f, declared: false, index: idOf(race, f.id) }; }
+  if (!m.focus && !m.suppressInference) { const f = inferFocus(race, idx); if (f) m.focus = { ...f, declared: false, index: idOf(race, f.id) }; }
   if (m.block != null) { const b = idOf(race, m.block); m.block = b >= 0 ? b : null; }
   const pts = vis?.selectedTrajectory?.points;
   m.path = Array.isArray(pts) && pts.length > 1 ? pts : null;

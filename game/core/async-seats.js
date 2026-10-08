@@ -7,6 +7,8 @@ import { plain } from '../bridges/remote-sync.js';
 import { nextRacerState } from '../bridges/next-racer-state.js';
 import { apexState } from '../bridges/apex-state.js';
 import { installApexStrategy } from '../../subjects/apex/src/strategy.js';
+import { razorState } from '../bridges/razor-state.js';
+import { installRazorStrategy } from '../../subjects/razor/src/strategy.js';
 import { installNativeStrategy } from '../../subjects/next-racer/src/strategy.js';
 import { guardControls,previewRoute } from '../../subjects/next-racer/src/safety.js';
 import { previewFeedback,feedbackDebug,resetFeedback } from '../../subjects/next-racer/src/feedback.js';
@@ -37,6 +39,7 @@ export class AsyncSeats {
       if (driver.kind === 'human') return createSeatBridge(driver, index, race);
       if (driver.id === 'next-racer') installNativeStrategy(race,race.cars[index]);
       if (driver.id === 'apex') installApexStrategy(race, race.cars[index]);
+      if (driver.id === 'razor') installRazorStrategy(race, race.cars[index]);
       return this.seat(driver, index, race);
     };
   }
@@ -75,11 +78,12 @@ export class AsyncSeats {
       seq: -1, inFlight: false, controls: null, pendingDt: 0, lastLatency: 0, sentAt: 0, lastDebug: null,
       epoch:0,controlTime:null,preview:null,controlDelay:.02,
       receive(data) {
-        if(driver.id==='next-racer'&&data.epoch!==this.epoch)return;
+        if((driver.id==='next-racer'||driver.id==='razor')&&data.epoch!==this.epoch)return;
         this.inFlight = false; this.controls = data.controls; this.errors = data.errors;
         if(driver.id==='next-racer'){this.controlTime=data.time;this.preview=data.preview??null;
           this.controlDelay=Math.max(0,Math.min(.2,race.time-data.time));}
-        if (driver.id === 'apex') this.intent = data.intent ?? null;
+        if(driver.id==='razor'){this.controlTime=data.time;this.controlDelay=Math.max(0,Math.min(.2,race.time-data.time));}
+        if (driver.id === 'apex' || driver.id === 'razor') this.intent = data.intent ?? null;
         this.lastLatency = performance.now() - this.sentAt;
         if (data.debug) this.lastDebug = data.debug;
         if (data.visual !== undefined) this.lastVisual = data.visual;
@@ -90,7 +94,7 @@ export class AsyncSeats {
           local.update(car, cars, dt, context); this.errors = local.errors ?? 0; return;
         }
         if (this.controls) car.controls = this.controls;
-        if (driver.id === 'apex') car.intent = this.intent ?? null;
+        if (driver.id === 'apex' || driver.id === 'razor') car.intent = this.intent ?? null;
         if(driver.id==='next-racer'&&this.controls)car.controls=guardControls(car,cars,race.track,
           previewFeedback(car,race.track,this.preview,context.time)??this.controls,
           {route:previewRoute(race.track,this.preview,context.time),
@@ -114,6 +118,8 @@ export class AsyncSeats {
           ...(driver.id==='next-racer'?{state:nextRacerState(race,race.cars[index]),
             ambient:race.track.ambient,epoch:this.epoch,controlDelay:this.controlDelay,feedbackPeriod:1/120}:{}),
           ...(driver.id === 'apex' ? { state: apexState(race, race.cars[index]) } : {}),
+          ...(driver.id === 'razor' ? { state: razorState(race, race.cars[index]),
+            ambient: race.track.ambient, epoch: this.epoch, controlDelay: this.controlDelay } : {}),
           debug: seats.wantDebug || undefined,
           // The 3D lens draws only the focused car: its plan geometry, a few times a second.
           visual: (seats.wantDebug && seats.lensIndex === index && (this.lensTick = (this.lensTick ?? 0) + 1) % 4 === 0) || undefined

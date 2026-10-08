@@ -1,0 +1,93 @@
+import assert from 'node:assert/strict';
+import { Track } from '../../../game/engine/sim/track.js';
+import { Vehicle } from '../../../game/engine/sim/vehicle.js';
+import { PitLane } from '../../../game/core/pit.js';
+import { TrafficField } from '../src/field.js';
+import { createRazorBridge } from '../../../game/bridges/razor-bridge.js';
+import { CASES, runEncounter } from './encounters.mjs';
+import { EnduranceRace, FIXED_DT } from '../../../game/core/race.js';
+import { FORMATS } from '../../../game/core/rules.js';
+import { razorState } from '../../../game/bridges/razor-state.js';
+import { lensModel } from '../../../game/ui/lens-model.js';
+
+const track = new Track('harbor-ring'), lane = new PitLane(track, 2);
+const me = new Vehicle({ classId: 'lmdh' }), other = new Vehicle({ classId: 'gt' });
+me.id = 0; other.id = 1; me.place(track, 300, 0, 55); other.place(track, 330, 0, 45);
+const field = new TrafficField(track);
+const observe = (meta = {}) => field.update(me, [me, other], {}, 0, { rivals: [{ id: 1, ...meta }] });
+let n = 0;
+function test(name, fn) { fn(); n++; console.log('PASS ' + name); }
+test('ordinary opponent is eligible for attack', () => assert.equal(observe()[0].target, true));
+test('box call removes the target but keeps its solid body', () => { const r = observe({ boxCalled: true })[0]; assert.equal(r.target, false); assert.equal(r.box, true); });
+test('pit approach remains a road obstacle, never a tow', () => { const r = observe({ pit: 'approach' })[0]; assert.equal(r.target, false); });
+for (const phase of ['lane', 'service']) test('pit ' + phase + ' is excluded from road traffic', () => {
+  other.place(track, lane.boxes[1], phase === 'service' ? lane.boxLat : lane.laneLat, 10);
+  assert.equal(observe({ pit: phase }).length, 0);
+});
+test('off-road pit release is excluded', () => assert.equal(observe({ pit: 'release' }).length, 0));
+test('a pit car rejoining the road is physical, never a target', () => {
+  other.place(track, lane.exit, lane.rejoinLat, 20);
+  const r = observe({ pit: 'release' })[0]; assert.ok(r); assert.equal(r.target, false);
+});
+test('retired car on the road stays a hazard', () => {
+  other.place(track, 330, 0, 0); const r = observe({ retired: true })[0]; assert.equal(r.hazard, true); assert.equal(r.target, false);
+});
+test('both qualifying ghosts are excluded', () => { me.ghost = other.ghost = true; assert.equal(observe().length, 0); me.ghost = other.ghost = false; });
+test('one marshaled ghost remains solid under the host collision rule', () => { other.ghost = true; assert.equal(observe().length, 1); other.ghost = false; });
+test('lens cannot infer a pit rival that the controller excluded', () => {
+  const race = { cars: [me, other], track };
+  me.race = { progress: 0 }; other.race = { progress: 10 };
+  const m = lensModel(race, 0, 'razor', { intent: 'PACE', focus: null, combat: { stats: {} } });
+  assert.equal(m.focus, null); assert.equal(m.arch, 'razor');
+});
+test('native bridge provides finite controls and an aim point', () => {
+  const b = createRazorBridge({ hostTrack: track }); b.reset({ cars: [me] });
+  b.update(me, [me], 1 / 60, { time: 0 }); assert.equal(b.errors, 0);
+  for (const key of ['steer', 'brake', 'throttle']) assert.ok(Number.isFinite(me.controls[key]));
+  const p = b.visualDebug().trackingPoint; assert.ok(Number.isFinite(p.x) && Number.isFinite(p.z));
+});
+test('fresh teammate with only distant traffic drives without a target', () => {
+  other.place(track, 1100, 0, 45);
+  const b = createRazorBridge({ hostTrack: track }); b.reset({ cars: [me, other] });
+  b.update(me, [me, other], 1 / 60, { time: 0 }); assert.equal(b.errors, 0, b.lastError);
+  assert.ok(me.controls.throttle > 0); assert.equal(b.driver.combat.focus, null);
+});
+test('fully blocked road brakes before the stationary row', () => {
+  const t = new Track('harbor-ring');
+  const teams = Array.from({ length: 9 }, (_, i) => ({ id: 'b' + i, index: i, name: 'b' + i, short: 'B', color: '#fff', grid: i, classId: 'lmdh',
+    drivers: [{ id: i ? 'obstacle' : 'razor', kind: 'ai', name: 'B' }] }));
+  const race = new EnduranceRace({ track: t, teams, laps: 30, format: { ...FORMATS.custom, mandatoryStops: 0, mandatorySwap: false },
+    makeBridge: (seat, index, r) => index === 0 ? createRazorBridge({ hostTrack: t, state: c => razorState(r, c) })
+      : { update(c) { c.controls = { throttle: 0, brake: 1, steer: 0 }; }, reset() {} } });
+  race.start(); race.phase = 'racing';
+  for (const e of race.entries) e.strategist.decide = () => null;
+  for (let i = 0; i < race.cars.length; i++) {
+    const c = race.cars[i]; c.place(t, i ? 388 : 310, i ? -7.175 + (i - 1) * 2.05 : 3.2, i ? 0 : 55);
+    race.fitTyres(c, 'soft', true); c.gear = 4;
+    for (const w of c.wheels) w.tyre.core = w.tyre.optimum;
+    c.race.previousS = c.s; c.race.progress = c.s - 310;
+  }
+  while (race.time < 2) race.step(FIXED_DT);
+  assert.equal(race.collisionStats.severeContacts, 0);
+  assert.equal(race.entries[0].bridges[0].errors, 0);
+  assert.ok(race.cars[0].speed < 20); assert.ok(race.cars[0].s < 382, JSON.stringify({ s: race.cars[0].s, v: race.cars[0].speed,
+    lat: race.cars[0].lateral, contacts: race.contacts, debug: race.entries[0].bridges[0].debug() }));
+});
+const outcomes = [];
+for (const hz of [20, 30, 60]) for (const setup of CASES) {
+  const r = runEncounter(setup, { hz }); outcomes.push(r);
+  test(`${hz} Hz ${setup.name}: finite, stays on road, no hard contact`, () => {
+    assert.equal(r.errors, 0, r.lastError); assert.equal(r.severe, 0); assert.equal(r.off, 0);
+  });
+}
+for (const name of ['straight-same-class', 'gtp-through-gt3', 'gt3-same-class', 'apex-near-pace']) {
+  const setup = CASES.find(c => c.name === name), r = outcomes.find(r => r.hz === 60 && r.case === name);
+  const control = runEncounter(setup, { hz: 60, attacks: false });
+  test(name + ': earlier pass requires an executed lateral move', () => {
+    assert.ok(r.passedAt !== null); assert.ok(r.stats.associatedPasses > 0);
+    assert.ok(control.passedAt === null || r.passedAt + 1 < control.passedAt);
+  });
+}
+console.log(JSON.stringify({ passed: n, encounters: outcomes.length, severe: outcomes.reduce((s, r) => s + r.severe, 0),
+  off: outcomes.reduce((s, r) => s + r.off, 0), contacts: outcomes.reduce((s, r) => s + r.contacts, 0),
+  maxP95ms: Math.max(...outcomes.map(r => r.updateP95ms)), unresolved: ['Mid-corner equal-class conversion', 'Self-fight conversion'] }));

@@ -8,6 +8,9 @@ import { createRevolutionBridge } from '../bridges/revolution-bridge.js';
 import { createNextRacerBridge } from '../bridges/next-racer-bridge.js';
 import { createApexBridge, apexState } from '../bridges/apex-bridge.js';
 import { installApexStrategy } from '../../subjects/apex/src/strategy.js';
+import { createRazorBridge } from '../bridges/razor-bridge.js';
+import { razorState } from '../bridges/razor-state.js';
+import { installRazorStrategy } from '../../subjects/razor/src/strategy.js';
 import { nextRacerState } from '../bridges/next-racer-state.js';
 import { installNativeStrategy } from '../../subjects/next-racer/src/strategy.js';
 import { HumanFilter } from './human.js';
@@ -64,6 +67,9 @@ export function createSeatBridge(driver, index, race) {
     case 'apex':
       installApexStrategy(race, race.cars[index]);
       return createApexBridge({ hostTrack, index, state: car => apexState(race, car) });
+    case 'razor':
+      installRazorStrategy(race, race.cars[index]);
+      return createRazorBridge({ hostTrack, index, state: car => razorState(race, car) });
     case 'next-racer':
       installNativeStrategy(race,race.cars[index]);
       return createNextRacerBridge({hostTrack,index,state:car=>nextRacerState(race,car)});

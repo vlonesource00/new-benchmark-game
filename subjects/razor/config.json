@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "name": "RAZOR",
+  "margin": 0.97,
+  "jerk": 40,
+  "circleExp": 2,
+  "throttleAllow": 2.4,
+  "preview": 0.24,
+  "slideGain": 5,
+  "slideBand": 0.02,
+  "useTrim": false,
+  "steerJerk": 65,
+  "tractionSlip": 2.05,
+  "thermalK": 0.002,
+  "thermalHot": 18,
+  "pushMin": 0.9,
+  "combatPeriod": 0.12,
+  "attackRange": 70,
+  "towRange": 110,
+  "rubAllowance": 0.06,
+  "recoveryHold": 0.18,
+  "strategy": true,
+  "tracks": {
+    "nurburgring": { "margin": 0.8 },
+    "harbor-ring": { "perClass": { "gt": { "yawGain": 0.8 } } }
+  }
+}
