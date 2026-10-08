@@ -47,7 +47,7 @@ export class RazorDriver extends ApexDriver {
     return this.controlPose;
   }
   labelIntent(pitting) {
-    const cs = pitting ? 'PIT' : this.combat?.state ?? 'FREE';
+    const cs = pitting ? 'PIT' : this.combat?.plan?.defendingReturn ? 'DEFEND' : this.combat?.state ?? 'FREE';
     if (this.stability < 0.3 && this.lastCar?.speed > 8) this.lowSince ??= this.now;
     else this.lowSince = null;
     const recovering = this.lowSince !== null && this.now - this.lowSince >= (this.options.recoveryHold ?? 0.18);

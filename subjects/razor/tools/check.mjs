@@ -88,6 +88,16 @@ for (const name of ['straight-same-class', 'gtp-through-gt3', 'gt3-same-class', 
     assert.ok(control.passedAt === null || r.passedAt + 1 < control.passedAt);
   });
 }
+for (const hz of [20, 30, 60]) for (const name of ['close-corner-entry', 'corner-exit']) {
+  const setup = CASES.find(c => c.name === name);
+  const r = outcomes.find(r => r.hz === hz && r.case === setup.name);
+  const control = runEncounter(setup, { hz, attacks: false });
+  test(`${hz} Hz ${name}: keep the side and convert without a hard hit`, () => {
+    assert.ok(r.passedAt !== null); assert.ok(r.stats.associatedPasses > 0);
+    assert.ok(control.passedAt === null || r.passedAt + 1 < control.passedAt);
+    assert.equal(r.attackSideFlips, 0);
+  });
+}
 console.log(JSON.stringify({ passed: n, encounters: outcomes.length, severe: outcomes.reduce((s, r) => s + r.severe, 0),
   off: outcomes.reduce((s, r) => s + r.off, 0), contacts: outcomes.reduce((s, r) => s + r.contacts, 0),
   maxP95ms: Math.max(...outcomes.map(r => r.updateP95ms)), unresolved: ['Mid-corner equal-class conversion', 'Self-fight conversion'] }));

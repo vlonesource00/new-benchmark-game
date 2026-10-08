@@ -17,6 +17,8 @@ const wrap = (n, L) => ((n + 1.5 * L) % L) - L / 2;
 export const CASES = [
   { name: 'straight-same-class', s: 250, gap: 14, cls: 'lmdh', rival: 'apex', margin: 0.95 },
   { name: 'corner-same-class', s: 760, gap: 11, cls: 'lmdh', rival: 'apex', margin: 0.95 },
+  { name: 'close-corner-entry', s: 600, gap: 6, cls: 'lmdh', rival: 'apex', margin: 0.95 },
+  { name: 'corner-exit', s: 1700, gap: 6, cls: 'lmdh', rival: 'apex', margin: 0.95 },
   { name: 'gtp-through-gt3', s: 300, gap: 23, cls: 'lmdh', rival: 'apex', rivalClass: 'gt' },
   { name: 'gt3-same-class', s: 270, gap: 12, cls: 'gt', rival: 'apex', margin: 0.95 },
   { name: 'stopped-car', s: 310, gap: 78, cls: 'lmdh', rival: 'stopped', yaw: 0 },
@@ -79,6 +81,7 @@ export function runEncounter(setup, { attacks = true, hz = 60, duration = 24, tr
   };
   let passedAt = null, firstClear = null, sideTime = 0, sideThrottle = 0, brakingSide = 0, maxSteerStep = 0, minSpeed = speed;
   let prevSteer = 0, off = 0, sideFlips = 0, side = 0, lastSide = 0, behindSeconds = 0;
+  let attackSideFlips = 0, lastAttackSide = 0, lastAttackTarget = null;
   const rows = [], intentSeconds = {}, dt = FIXED_DT;
   while (race.time < duration) {
     race.step(dt);
@@ -94,6 +97,13 @@ export function runEncounter(setup, { attacks = true, hz = 60, duration = 24, tr
     side = d.combat.plan?.side ?? 0;
     if (side && lastSide && side !== lastSide) sideFlips++;
     if (side) lastSide = side;
+    if (!passedAt && d.combat.plan?.kind === 'attack') {
+      const target = d.combat.plan.target;
+      if (target === lastAttackTarget && lastAttackSide && side !== lastAttackSide) attackSideFlips++;
+      lastAttackSide = side; lastAttackTarget = target;
+    } else if (d.combat.plan?.kind !== 'attack' && Math.abs(d.combat.me?.e ?? 0) < 0.25) {
+      lastAttackSide = 0; lastAttackTarget = null;
+    }
     intentSeconds[d.intent] = (intentSeconds[d.intent] ?? 0) + dt;
     if (trace && Math.round(race.time * 120) % 30 === 0) rows.push({ t: round(race.time, 2), s: round(c.s, 1), v: round(c.speed, 1), gap: round(gap, 1), lat: round(c.lateral, 2), rivalLat: round(rival.lateral, 2), throttle: round(c.controls.throttle, 2), brake: round(c.controls.brake, 2), steer: round(c.controls.steer, 3), target: round(d.targetSpeed, 1), state: d.intent, side, stab: round(d.stability, 2), cap: Number.isFinite(d.combat.cap) ? round(d.combat.cap, 1) : null, cands: d.combat.visCands.map(q => ({ side: q.side, kind: q.kind, score: q.score, risk: q.risk, chosen: q.chosen })) });
   }
@@ -101,7 +111,7 @@ export function runEncounter(setup, { attacks = true, hz = 60, duration = 24, tr
   const out = { case: setup.name, attacks, hz, passedAt: passedAt && round(passedAt, 2), gain: round(c.race.progress - lead.race.progress, 1), behindSeconds: round(behindSeconds, 1),
     contacts: race.contacts, severe: race.collisionStats.severeContacts, peakClosing: round(race.collisionStats.peakClosing, 1), off: round(off), minSpeed: round(minSpeed, 1),
     sideSeconds: round(sideTime, 1), sideThrottle: sideTime ? round(sideThrottle / sideTime, 2) : null, sideBrake: sideTime ? round(brakingSide / sideTime, 2) : null,
-    sideFlips, maxSteerStep: round(maxSteerStep), updateP95ms: round(costs[Math.floor(costs.length * 0.95)] ?? 0), errors: bridge.errors, lastError: bridge.lastError,
+    sideFlips, attackSideFlips, maxSteerStep: round(maxSteerStep), updateP95ms: round(costs[Math.floor(costs.length * 0.95)] ?? 0), errors: bridge.errors, lastError: bridge.lastError,
     damage: round(c.damage), contactLog: contactLog.slice(0, 10), intentSeconds: Object.fromEntries(Object.entries(intentSeconds).map(([k, v]) => [k, round(v, 1)])), stats: bridge.driver.combat.stats, events: bridge.driver.combat.events,
     ...(bridge.errors ? { fault: { debug: bridge.driver.debug(), field: bridge.driver.field.list.map(r => ({ id: r.id, width: r.width, v: r.v, lat: r.lat, ds: r.ds })) } } : {}) };
   if (trace) out.trace = rows;

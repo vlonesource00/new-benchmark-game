@@ -1,4 +1,4 @@
-# RAZOR first development build
+# RAZOR development checkpoint
 
 Base: `origin/graphics-aaa` at `c0fb713`. Separate `razor` driver; SOLSTICE,
 SPEARHEAD, APEX and the shared physics are preserved.
@@ -10,6 +10,13 @@ SPEARHEAD, APEX and the shared physics are preserved.
 - Constant-size corridor search, pooled geometry buffers and local retiming.
   Measured position/tangent joins, bounded steering jerk and persistent sides.
   Road narrowing uses smooth anticipatory tapers instead of sharp offset clipping.
+- Quintic Hermite joins settle incoming slope and curvature without the old
+  quadratic bulge. An established attack cannot switch sides, or merge back
+  through a nearby rival. Defensive cover also returns through a fitted corridor.
+- Opponent motion is integrated through braking zones, using public class,
+  tyre and fuel state. A cached 34-step forecast is shared by the candidates.
+  Close, open space receives a small preference without requiring a guaranteed
+  forecast pass or awarding a pass merely for choosing it.
 - Moving wake pursuit, inside/outside separation, full-throttle use of owned
   space, one defensive cover and smooth returns. A failed move must return
   before starting a new move in the opposite direction.
@@ -30,24 +37,28 @@ SPEARHEAD, APEX and the shared physics are preserved.
 `tools/check.mjs` runs native physics encounters at 20/30/60 Hz, pit/ghost/retired
 occupancy checks, a fresh-driver takeover, a fully blocked road and paired pass
 counterfactuals. Pit filtering is also checked in the architecture lens.
-All 42 assertions pass; the production build also passes.
+All 54 assertions pass; the production build also passes. A separate
+`tools/endurance-check.mjs` checks the repeated-soft-stop regression and the
+GT3 defensive-return off-track in real 12- and 20-lap races.
 
 At 60 Hz, these deliberately staged Harbor soft-tyre encounters produced:
 
 | Encounter | RAZOR clear-ahead time | Same traffic-aware driver, attacks disabled |
 | --- | ---: | ---: |
-| GTP against slightly slower APEX | 6.41 s | 10.10 s |
+| GTP against slightly slower APEX | 6.35 s | 10.10 s |
 | GTP through APEX GT3 | 3.70 s | 10.02 s |
-| GT3 against slightly slower APEX | 7.72 s | 13.35 s |
-| GTP against near-pace APEX | 6.02 s | 18.77 s |
+| GT3 against slightly slower APEX | 7.63 s | 13.35 s |
+| GTP against near-pace APEX | 5.70 s | 19.26 s |
+| Close corner entry against slightly slower APEX | 3.04 s | 17.86 s |
+| Corner exit against slightly slower APEX | 3.06 s | 10.75 s |
 
 A conversion needs sustained clearance, executed lateral departure and overlap,
 and earlier completion than its paired baseline. Live "passes after moves" are
 associations, not causal proof. Ordinary race order changes and pit advantages
 are not awarded as demonstrated tactical passes.
 
-The 24 encounter runs had zero hard contacts, zero off-track time and zero
-controller errors. There were 63 light contact steps across the matrix; the tests do not
+The 30 encounter runs had zero hard contacts, zero off-track time and zero
+controller errors. There were 74 light contact steps across the matrix; the tests do not
 claim zero touches. Measured update p95 was below 1 ms on this machine,
 excluding preparation. This is not a hardware-independent latency guarantee.
 
@@ -63,18 +74,30 @@ Separate six-lap soft-start races completed with no contacts or incidents;
 the resource planner called earlier stops under that race's faster wear rate.
 The maximum windows do not force a car to stay out when fuel or wear requires a stop.
 
-Native 12-lap Harbor clear, seed 7, two AI teammates per car:
+Native 12-lap Harbor clear, seed 7, hard start, two AI teammates per car:
 
 | Class | RAZOR finish | APEX finish | RAZOR stops / swaps |
 | --- | ---: | ---: | --- |
-| GTP | 720.25 s | 721.56 s | 1 / 1 |
-| GT3 | 823.88 s | 826.98 s | 1 / 1 |
+| GTP | 730.18 s | 729.02 s | 1 / 1 |
+| GT3 | 824.77 s | 829.40 s | 1 / 1 |
 
-Both RAZOR entries finished without incidents or controller errors. GTP recorded
-two light contact steps and zero hard contacts; GT3 recorded zero contacts.
-Those small wins validate the race integration; they do not prove combat
-superiority. The initial pit windows use measured RAZOR stint limits instead of
-waiting for the steep late-hard fade in the inherited planner's fuel window.
+Both RAZOR entries finished without incidents or controller errors. Each run
+recorded one light contact step and no hard contact.
+These races validate the race integration; they do not prove combat
+superiority. The stint limits now enter the full remaining-race cost model,
+including fresh sets. The old post-decision window override chose a long soft
+finish, then paid for repeated short stops: that GT3 reproduction took 875.92 s
+with three stops. The revised search chooses hards and one stop. Long races
+beyond the inherited planner's three-stop capacity use the normal game planner.
+
+The 20-lap clear GT3 regression finished RAZOR in 1379.58 s and APEX in
+1390.75 s, with two stops each. RAZOR recorded a contact incident but no
+off-track, wall, loss-of-control or recovery incident; fleet-wide hard contacts
+were zero. APEX recorded a contact and an off-track. The final 20-lap GTP
+check took 1220.72 s versus APEX's 1211.80 s, with three stops versus two,
+one light contact step and no incidents or controller errors. An earlier run
+of that setup measured stint fade below 2.9 s. Universal endurance wins are
+not established.
 
 The two-lap RAZOR/APEX seat-worker smoke completed without errors, contacts or
 incidents. Its combined delay percentiles are invalid because the legacy harness
@@ -83,12 +106,18 @@ check completed without controller errors or recorded incidents, with 3 contact
 steps and finite simulated reply ages of 25 ms. It does not establish a zero-contact
 worker result or a hardware-independent transport guarantee.
 
+The current actual-worker GT3 endurance prefix ran through 75 seconds after
+green, starting RAZOR on hards and APEX on softs. RAZOR returned 2281 control
+replies with zero contacts, incidents, damage or errors. Its simulated reply-age
+p95 was 25 ms; APEX's timestamp-less reply ages remain unavailable. This prefix
+does not establish a completed endurance race or compare equal-tyre hot laps.
+
 Changeable checks on the latest base traversed wetness 0.00–0.93. The dry stint
 maximum is restricted to Clear; applying it between showers had forced a poor
 fresh-soft stop and caused a GTP regression. With normal weather planning restored,
-GTP completed without incidents or controller errors but lost by 23.40 s with
+GTP completed without incidents or controller errors but lost by 27.43 s with
 two stops. GT3 completed without controller errors but lost control, went off
-track, hit the wall and required recovery; it lost by 41.33 s with two stops.
+track, hit the wall and required recovery; it lost by 50.47 s with two stops.
 Weather strategy and GT3 wet stability remain explicit limitations.
 
 ## Still to solve
