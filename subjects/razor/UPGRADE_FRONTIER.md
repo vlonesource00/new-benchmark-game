@@ -5,7 +5,44 @@ encounter or a strategy win does not establish universal combat or endurance
 superiority. Preserve paired attacks-disabled controls and count executed moves
 separately from faster-line passes.
 
-## Updated control-cadence checkpoint
+## Current 963e019 checkpoint
+
+The latest shared tyre recalibration is included. The native suite passes 69
+checks and 33 encounters, with no hard contact, off-road time or controller
+error. GTP executes paired worker passes at 20/30/60 Hz and during cadence
+changes; the corresponding following controls do not pass. Small side contact
+remains, below 0.7% damage in the staged runs.
+
+The final unchanged 30 Hz worker suite passes only one of four matchups. GTP
+passes RAZOR but has 15 light-contact steps; GTP fails to pass APEX while the
+following control passes at 9.62 s; GT3 fails to pass RAZOR. Only GTP through
+APEX GT3 satisfies the existing clean causal-pass check. None of the four
+attack runs goes off-road or has a severe contact. Restore the missed GTP/APEX
+conversion and improve GT3 tactics before calling the worker combat complete.
+
+GT3's slower worker pass remains clean. A roadside-gap check removes the
+30 Hz self-fight road departure, but matched GT3 30/60 Hz still follows rather
+than converting. Supplemental native GT3 self-fights remain on-road at all
+three cadences without converting. This is an unresolved tactical gap, not a
+completed architecture. Mid-corner conversion, moving multi-row routing and
+human defense also need stronger evidence.
+
+RAZOR now has its own clear-Harbor stint priors for the current tyre model.
+Twenty-lap native GTP/GT3 probes finish with two/one stops and maximum valid-lap
+stint spreads of 1.36/2.98 seconds. Fuel, compulsory swaps and caution calls
+work in the checked native scenarios. Other tracks and weather retain the
+inherited policy; rain is not retuned. Two completed native ten-car Harbor
+runs both finish RAZOR first and second but disagree on incidents: the first
+has one field-wide severe contact and 12.7% damage on both RAZOR cars, while
+the repeat has no severe contact and 1% damage. This discrepancy still needs
+a reproducible collision trace. Timeout is not a passing result.
+
+Next priority: convert reachable GT3 gaps without committing to an outside
+lane that closes in the braking zone. Keep the actual worker and the paired
+following control in every acceptance test. Do not replace a failed conversion
+assertion with an intent label or an incident-assisted position gain.
+
+## Historical cc5aead control-cadence checkpoint
 
 The current base is `cc5aead`, including the shared tyre/energy/strategy update.
 Held-control physics prediction restores GT3 straight acceleration at 20/30 Hz

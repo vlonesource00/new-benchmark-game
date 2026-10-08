@@ -140,6 +140,7 @@ async function encounter(attacks) {
            target: n(debug.targetSpeed), line: n(debug.lineSpeed), e: n(debug.e), stability: n(debug.stability),
            timing: debug.controlTiming, neighbor: debug.neighbor,
            curvature: n(debug.requestedCurvature), clearance: n(debug.combat?.clearance),
+           geometry: debug.pathGeometry,
           mode: debug.mode, state: debug.combat?.state, side: debug.combat?.side, cap: debug.combat?.cap, cands: debug.combat?.cands,
           rival: process.argv.includes('--quiet-trace') ? undefined : seats.hosts[1]?.seats[0]?.debug() });
         nextTrace = process.argv.includes('--trace-every-frame') ? race.time : race.time + 0.2;

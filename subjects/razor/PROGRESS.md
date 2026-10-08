@@ -1,9 +1,112 @@
 # RAZOR development checkpoint
 
-Base: `origin/graphics-aaa` at `cc5aead`. Separate `razor` driver; SOLSTICE,
+Base: `origin/graphics-aaa` at `963e019`. Separate `razor` driver; SOLSTICE,
 SPEARHEAD, APEX and the shared physics are preserved.
 
-## 2026-10-08 control-cadence upgrade
+## 2026-10-08 current-physics checkpoint
+
+The latest tyre recalibration reduces soft grip to 1.025, raises hard grip to
+0.985 and changes the wear calibration. Measurements in later sections that
+use `cc5aead` are historical, not results for this base.
+
+GTP keeps the healthy-rate controller's preview after measured transport age.
+Long-held GTP inputs use the isolated chassis forecast. A closing GTP with two
+body spans of room on a straight forms its lane sooner; an open attack gets
+its fitted formation time before long-horizon predictions can cancel it.
+Front-obstruction braking remains active. GT3 rejects a new attack into a
+roadside gap that is too narrow, uses 0.7 nominal yaw feedback and retains 0.8
+feedback for long-held inputs. Coarse native GT3 updates use the same held-input
+forecast. No action rollout or extra grip is supplied.
+
+Actual matched RAZOR GTP workers, Harbor, warm softs, 35 L, 24-second encounters:
+
+| Cadence | Secured pass at | Light-contact steps | Severe contact / off-road |
+| --- | --- | --- | --- |
+| 20 Hz | 4.64 s | 2 | 0 / 0 |
+| 30 Hz | 3.92 s | 15 | 0 / 0 |
+| 60 Hz | 3.58 s | 1 | 0 / 0 |
+| 60/20/60/30 Hz | 3.57 s | 8 | 0 / 0 |
+
+Both cars stay on-road; damage stays below 0.7%. Each attacks-disabled paired
+control does not pass. These are executed-move results, not lap-time or strategy
+wins. GT3's 20 Hz matched worker pass stays clean; matched GT3 30/60 Hz still
+does not convert. The earlier 30 Hz GT3 road departure is removed. Native
+GT3 self-fights at all three cadences also stay on-road, without a hard contact,
+but do not convert. Broader superiority remains unproven.
+
+The strict native suite passes 69 checks across 33 encounter fixtures, with no
+severe contact, off-road time or controller errors, and 78 light-contact steps.
+The two added checks reject stale pass associations after a suspended encounter
+and correctly report car ID zero as a nose obstruction. The original conversion
+and bumper-reserve assertions are unchanged. The predictor cannot alter the
+actual car or its track rubber.
+
+The final unmodified `tools/worker-check.mjs` at 30 Hz passes only one of
+four matchups, so the current worker regression suite is not green:
+
+| Worker matchup | Attack pass | Following-control pass | Light-contact steps | Result |
+| --- | --- | --- | --- | --- |
+| GTP against RAZOR | 3.92 s | None | 15 | Fails zero-contact assertion |
+| GTP against APEX | None | 9.62 s | 0 | Attack fails to convert |
+| GTP through APEX GT3 | 3.42 s | 10.37 s | 0 | Passes |
+| GT3 against RAZOR | None | None | 1 | Attack fails to convert |
+
+All four attack runs have zero severe contact, off-road time and rival off-road
+time. Each worker returns 721 replies, with 25 ms p95 reply age. The GTP/APEX
+miss is a tactical regression: the attack policy loses a pass that its paired
+following control completes. This checkpoint is not a completed combat release;
+the original worker assertions have not been relaxed.
+
+Slow GTP workers complete 125-second staged runs on Harbor, Solenne and Alpine
+with no contacts, off-road time, damage or errors. Harbor's full-distance
+circuit is 52.217 s; Solenne's second circuit is 50.008 s. These warm-soft runs
+use a shifted timing origin and are not normal qualifying sessions. The host
+lap counter accumulates a full circuit from the staged origin: the earlier
+description of the 250 m-start run as a partial lap was incorrect. Yellow lap
+colour means slower than the previous best, not an invalid lap.
+
+Clear Harbor now uses RAZOR's own current-physics stint priors: ten laps per
+compound from cold and warm tyres, for both classes, at constant 60 L. GT3 data
+was refitted after the feedback change. The planner prices excess fade into
+future stints instead of imposing the obsolete 2/3/6-lap compound limits.
+An incompatible tyre signature disables these priors; other tracks/weather
+keep the previous inherited policy. Mixed human/AI teams keep the game planner.
+
+Native Harbor, clear, seed 7, classic format, two all-AI teammates per entry:
+
+| Test | RAZOR finish | Stops | APEX finish | Max valid-lap stint spread |
+| --- | --- | --- | --- | --- |
+| GTP, 12 laps, warm-hard override | 693.57 s | 1 | 696.97 s | 1.38 s |
+| GT3, 12 laps, warm-hard override | 805.09 s | 1 | 808.56 s | 1.63 s |
+| GTP, 20 laps, planned start | 1146.06 s | 2 | 1167.88 s | 1.36 s |
+| GT3, 20 laps, planned start | 1318.14 s | 1 | 1357.49 s | 2.98 s |
+
+All four tests have zero contacts, RAZOR incidents and controller errors;
+mandatory swaps complete. These are endurance results, not causal combat
+evidence. `tools/stint-check.mjs` passes eight compatibility/integration checks;
+`tools/endurance-check.mjs` enforces the four-second spread in both classes.
+Native twelve-lap GT3 probes with a manual safety car or full yellow also
+finish with one stop, a swap and no RAZOR incident or controller error. Rain
+handling has not been retuned.
+
+Remaining work: matched GT3 30/60 Hz conversion, moving multi-row traffic,
+defense against human movement, rain validation and broader field evidence.
+The native ten-car Harbor benchmark (five laps, warm hards, seed 7, pits
+disabled) finished RAZOR first and second. Its first completed run recorded
+52 field-wide contact steps and one severe contact, with both RAZOR cars at
+12.7% damage and eight incident points. A repeat with a read-only severe-contact
+observer recorded two contact steps, no severe contact, 1% RAZOR damage and
+zero RAZOR incident points; the best laps were 53.11/53.21 s. The discrepancy
+is unresolved, so the repeat is not proof that the full-field collision problem
+is fixed. The bench does not establish causal pass counts. Timed-out batches
+supply no result.
+
+The front-braking/expanded-nose-width experiment is not shipped. Expanding the
+nose envelope removed three required native passes and raised light-contact
+steps from 78 to 182 without improving the hard-contact result. The existing
+front-obstruction policy is retained.
+
+## Historical cc5aead control-cadence upgrade
 
 The tyre/strategy/energy update in `8aa6469` and Claude's A/B bench in
 `cc5aead` are included. Claude's softened straight-line stability fix is kept.
@@ -28,8 +131,8 @@ Warm-soft Harbor straight, through the actual game's worker transport:
 The straight tests have no contacts, off-tracks or worker faults. The 60 Hz
 straight traces agree with the previous controller. A 75-second changing-rate
 run on each of Harbor, Solenne and Alpine also has no contacts, off-tracks or
-worker faults. Harbor's first 60.175-second lap starts
-250 m into the circuit and must not be reported as a full-lap pace result.
+worker faults. Harbor's first 60.175-second circuit uses a shifted timing
+origin 250 m into the layout; it is a staged run, not normal qualifying.
 
 The matched GT3 20 Hz worker encounter completes an executed pass at 5.22 s,
 with no contact or off-track time for either car. Its attacks-disabled control

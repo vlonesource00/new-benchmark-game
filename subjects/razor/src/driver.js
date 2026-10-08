@@ -36,15 +36,25 @@ export class RazorDriver extends ApexDriver {
     // The combined-slip force peak is broad. Extra slip past it only spends
     // tread. Heat and age trim that waste rather than imposing a race-speed cap.
     this.options.tractionSlip = clamp(2.1 - Math.max(0, hot - 20) * 0.004 - Math.max(0, wear - 0.35) * 0.18, 1.86, 2.1);
-    super.update(car, cars, dt, context);
+    const scheduledYaw = this.options.heldYawGain !== undefined && dt + this.controlDelay > 0.075;
+    const nominalYaw = this.options.yawGain;
+    if (scheduledYaw) this.options.yawGain = this.options.heldYawGain;
+    try { super.update(car, cars, dt, context); }
+    finally {
+      if (scheduledYaw) {
+        if (nominalYaw === undefined) delete this.options.yawGain;
+        else this.options.yawGain = nominalYaw;
+      }
+    }
     if (cars?.length > 1 && this.path === this.combat?.plan?.path && this.combat.noseBrake > 0) {
       car.controls.throttle = 0;
       car.controls.brake = Math.max(car.controls.brake, this.combat.noseBrake);
     }
   }
   predict(car, dt) {
-    if (this.options.physicalPrediction === true && this.classId === 'gt' && this.controlDelay > 0
-      && dt + this.controlDelay > 0.0251) {
+    const heldThreshold = this.classId === 'gt' ? 0.0251 : 0.075;
+    if (this.options.physicalPrediction === true && (this.controlDelay > 0 || this.classId === 'gt' && dt > 1 / 30 + 1e-6)
+      && dt + this.controlDelay > heldThreshold) {
       this.delay = clamp(this.controlDelay + dt * 0.5, 0.008, 0.06);
       this.posePrediction = 'held controls';
       this.lastR = car.yawRate; this.lastDt = dt;
@@ -52,11 +62,10 @@ export class RazorDriver extends ApexDriver {
       return this.controlPose;
     }
     this.posePrediction = 'extrapolated';
-    // Predict the actual held-control age, rather than treating a slower
-    // decision rate as an extra one-and-a-half frames of transport latency.
-    // Once reply age is measured, it already accounts for transport. Add
-    // only half the next held interval, otherwise a worker aims too far ahead.
-    const held = this.controlDelay > 0 ? 0.5 : dt <= 1 / 30 + 1e-6 ? 1.5 : 0.5;
+    // GT3 aims at the centre of the next held interval after measured transport
+    // age. GTP retains the faster controller's calibrated preview at healthy
+    // rates; long-held GTP inputs use the chassis forecast above instead.
+    const held = this.classId === 'gt' && this.controlDelay > 0 ? 0.5 : dt <= 1 / 30 + 1e-6 ? 1.5 : 0.5;
     const horizon = clamp(this.controlDelay + dt * held, 0.008, 0.06);
     // Use the bounded extrapolator only where its chassis response has been
     // validated. GTP needs its existing faster angular prediction in fights.

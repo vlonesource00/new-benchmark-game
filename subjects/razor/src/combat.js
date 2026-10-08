@@ -179,8 +179,15 @@ export class RazorCombat {
     const offset = kind === 'return' ? -c.e : kind === 'cover' ? side * 1.1 - c.e : kind === 'tow' ? r.dlat : r.dlat + side * gap;
     const v = Math.max(12, car.speed);
     const latBudget = Math.max(2.5, d.model.lat(v) - Math.abs(car.ay ?? 0) * 0.55);
+    // A closing GTP can form its lane sooner while the straight still leaves
+    // two body spans of room. Tight entries retain the usual formation budget;
+    // the chassis controller keeps its own steering and traction limits.
+    const straightRun = kind === 'attack' && car.classId === 'lmdh' && car.speed - r.v > 0.5
+      && r.ds > 2 * ((car.spec.halfLength ?? 2.28) + r.along)
+      && Math.abs(d.line.sample(d.line.ks, this.me.i, this.me.f)) < 0.001;
+    const formationJerk = straightRun ? Math.max(d.options.jerk ?? 40, 65) : d.options.jerk ?? 40;
     const entry = clamp(Math.max(v * Math.sqrt(5.8 * Math.abs(offset) / latBudget),
-      v * Math.cbrt(60 * Math.abs(offset) / Math.max(20, d.options.jerk ?? 40)), kind === 'return' ? v * 1.6 : 0), 28, 190);
+      v * Math.cbrt(60 * Math.abs(offset) / Math.max(20, formationJerk)), kind === 'return' ? v * 1.6 : 0), 28, 190);
     const hold = kind === 'return' ? 0 : Math.max(70, v * 2.3, Math.max(0, r.ds) + v);
     const q = this.corridors.build(car, c, this.goal(car, r, side, kind, clearance), entry, hold, active);
     return { ...q, kind, side, clearance, target: r.id, A: Math.abs(offset), tag: kind, risk: 0, score: 0, clear: false,
@@ -257,6 +264,14 @@ export class RazorCombat {
           const coverSide = Math.abs(curve) > 0.001 ? Math.sign(curve) : Math.sign(r.dlat);
           if (side !== coverSide) continue;
         }
+        // Clipping a GT3's destination back onto the road does not create a
+        // passing gap. Do not start another attack into that closed roadside
+        // band. Existing overlap keeps its owned side until there is room.
+        if (car.classId === 'gt' && !hazard && !defender
+          && !(this.plan?.kind === 'attack' && this.plan.target === r.id)) {
+          const wanted = r.offset + side * ((this.ownWidth ?? car.spec.halfWidth ?? 0.98) + r.width + 0.14);
+          if (Math.abs(this.bounded(r.bi, wanted) - wanted) > 0.3) continue;
+        }
         let q;
         if (this.plan?.target === r.id && this.plan.side === side && now < this.plan.rebuildAt
           && (!hazard || Math.abs(r.lat - this.plan.rivalLat) < 0.8)) {
@@ -274,7 +289,8 @@ export class RazorCombat {
     const committed = !clearedAttack && this.plan && this.plan.target === r?.id && this.plan.side !== 0;
     const ownsSide = committed && (Math.abs(this.me.e) > 0.45 || r?.alongside);
     const useful = candidates.filter(q => q.kind !== 'attack' ||
-      ((!ownsSide || q.side === this.plan.side) && (q.overlap > 0.15 || q.clear || q.endGap < 8 || q.closeSpace)));
+      ((committed || car.classId !== 'lmdh' || q.score > own.score + 0.15)
+        && (!ownsSide || q.side === this.plan.side) && (q.overlap > 0.15 || q.clear || q.endGap < 8 || q.closeSpace)));
     let best = useful.reduce((a, b) => b.score > a.score ? b : a);
     if (defender) {
       const cover = candidates.find(q => q.kind === 'cover');
@@ -296,7 +312,12 @@ export class RazorCombat {
       // side switch. Finish the open-side run until there is merging room.
       const mergeUnsafe = ownsSide && r.ds > -span - 2 &&
         r.ds < span + Math.max(2, (car.speed - r.v) * 0.9);
-      const viable = hold && (mergeUnsafe || hold.progress >= own.progress - 14 || r.alongside || hold.endGap < 8);
+      // Give an open GTP attack its fitted formation time before comparing
+      // long-horizon predictions again. Nose obstruction still limits inputs
+      // every update, and a closed side or a new hazard can end the commitment.
+      const forming = car.classId === 'lmdh' && hold?.kind === 'attack' && hold.risk < 0.1
+        && now < hold.born + hold.entry / Math.max(12, car.speed);
+      const viable = hold && (forming || mergeUnsafe || hold.progress >= own.progress - 14 || r.alongside || hold.endGap < 8);
       if (viable && (!closed || now - this.blockedAt < 0.5 || r.alongside)) best = hold;
     }
     if ((best.kind === 'fast line' || best.kind === 'hold') && this.plan?.path !== d.line && Math.abs(c.e) > 0.25) {
@@ -367,8 +388,8 @@ export class RazorCombat {
       }
       if (safe < cap) { cap = safe; blocked = r.id; }
     }
-    this.contact = blocked ? { type: 'nose blocked', id: blocked } : null;
-    if (blocked) this.stats.blockedNose++;
+    this.contact = blocked !== null ? { type: 'nose blocked', id: blocked } : null;
+    if (blocked !== null) this.stats.blockedNose++;
     return cap;
   }
   update(now, car, c, v, field) {
@@ -378,11 +399,11 @@ export class RazorCombat {
     if (wasBlocked !== this.fullBlock) this.next = -1;
     for (const [id, e] of this.encounters) {
       const r = field.byId.get(id);
-      if (!r?.target) { this.encounters.delete(id); continue; }
+      if (!r?.target || now - e.started > 25) { this.encounters.delete(id); continue; }
       e.maxOffset = Math.max(e.maxOffset, Math.abs(c.e)); e.hadOverlap ||= r.alongside;
       if (r.ds < -(car.spec.halfLength + r.along + 1.2) && e.hadOverlap && e.maxOffset > 0.7 && !this.passed.has(id)) {
         this.stats.associatedPasses++; this.passed.add(id); this.event(now, 'pass associated with move', id); this.encounters.delete(id);
-      } else if (now - e.started > 25) this.encounters.delete(id);
+      }
     }
     let r = this.chooseFocus(car, field), hazard = false, defender = false;
     const obstacle = field.list.find(q => (q.hazard || q.box || q.pit || q.done) && q.ds > -2

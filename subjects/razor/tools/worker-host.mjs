@@ -26,11 +26,25 @@ if (workerData.options?.physicalAllCadences) {
   };
 }
 
+if (workerData.options?.geometryTrace) {
+  const debug = RazorDriver.prototype.debug;
+  RazorDriver.prototype.debug = function (...args) {
+    const out = debug.apply(this, args), car = this.lastCar, path = this.path ?? this.line;
+    if (!car || !path) return out;
+    const q = path.closest(car.x, car.z, this.cursor);
+    const x = path.sample(path.px, q.i, q.f), z = path.sample(path.pz, q.i, q.f);
+    out.pathGeometry = { i: q.i, observedE: q.e, pathLat: this.track.nearest(x, z).lateral,
+      observedLat: car.lateral, yaw: car.yaw, pathHeading: path.heading(q.i, q.f),
+      curvature: path.sample(path.ks, q.i, q.f), profile: path.sample(path.vbrk, q.i, q.f),
+      age: this.controlDelay, prediction: this.delay, grip: this.model.grip };
+    return out;
+  };
+}
+
 if (workerData.options?.departureDelay > 0 || workerData.options?.projectedGuard || workerData.options?.retainClearance || workerData.options?.timedGuard) {
   const { installDepartureExperiment } = await import('./departure-experiment.mjs');
   installDepartureExperiment();
 }
-
 if (workerData.attacks === false) {
   const update = RazorDriver.prototype.update;
   RazorDriver.prototype.update = function (...args) {

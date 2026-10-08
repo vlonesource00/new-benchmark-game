@@ -61,6 +61,26 @@ test('fresh teammate with only distant traffic drives without a target', () => {
   b.update(me, [me, other], 1 / 60, { time: 0 }); assert.equal(b.errors, 0, b.lastError);
   assert.ok(me.controls.throttle > 0); assert.equal(b.driver.combat.focus, null);
 });
+test('a suspended encounter cannot earn a pass after its observation window', () => {
+  const t = new Track('harbor-ring');
+  const cars = [0, 1].map(id => new Vehicle(id, 'test', '#fff', 'lmdh'));
+  cars[0].place(t, 300, 0, 55); cars[1].place(t, 280, 0, 45);
+  const b = createRazorBridge({ hostTrack: t, options: { strategy: false, attacks: false } });
+  b.reset({ cars });
+  b.driver.combat.encounters.set(1, { started: 0, side: 1, maxOffset: 1, hadOverlap: true });
+  b.update(cars[0], cars, 1 / 60, { time: 30 });
+  assert.equal(b.errors, 0); assert.equal(b.driver.combat.stats.associatedPasses, 0);
+  assert.equal(b.driver.combat.encounters.size, 0);
+});
+test('the car numbered zero is recorded when it blocks the nose', () => {
+  const t = new Track('harbor-ring');
+  const cars = [0, 1].map(id => new Vehicle(id, 'test', '#fff', 'lmdh'));
+  cars[1].place(t, 300, 0, 55); cars[0].place(t, 312, 0, 40);
+  const b = createRazorBridge({ hostTrack: t, index: 1, options: { strategy: false, attacks: false } });
+  b.reset({ cars }); b.update(cars[1], cars, 1 / 60, { time: 0 });
+  assert.equal(b.errors, 0); assert.ok(Number.isFinite(b.driver.combat.cap));
+  assert.equal(b.driver.combat.contact.id, 0); assert.ok(b.driver.combat.stats.blockedNose > 0);
+});
 test('a newly reachable opening preempts the timer and retains its side', () => {
   // Consecutive public snapshots exercise the reaction boundary. This is not
   // a simulated pass and does not supply any passing-performance credit.
