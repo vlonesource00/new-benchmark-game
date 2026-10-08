@@ -41,10 +41,48 @@ Reducing yaw/slip feedback fixed the short straight but regressed matched
 corner fights. Restoring the gains before corners and imposing a separate
 steering slew limit also regressed tests; those changes are rejected.
 
-The complete native suite has 66 passing checks and a pre-existing matched GTP 30 Hz hard contact
-under the updated physics, reproducible without this GT3 prediction change.
+Before the completed-pass return fix below, the complete native suite had 66
+passing checks and a pre-existing matched GTP 30 Hz hard contact under the
+updated physics, reproducible without this GT3 prediction change.
 Older endurance/fade numbers below predate the shared tyre update and require
 revalidation. Multi-row traffic routing remains a separate local experiment.
+
+## 2026-10-08 completed-pass return
+
+An attack no longer keeps its side lock after the rear has cleared the rival's
+nose by 0.8 m. It starts the existing fitted return to the fast line. Ownership
+is retained while the bodies still overlap; there is no direct steering jump.
+The previous side lock could carry a completed pass through the next braking
+zone, lose the advantage and bring the cars back into contact.
+
+The strict native suite now passes all 67 checks and 33 encounters at
+20/30/60 Hz: zero hard contacts, zero off-track time, 82 light-contact steps
+versus 130 before this return fix. In the matched GTP 30 Hz case the pass is
+secured at 5.80 s without contact, rather than 19.62 s after a hard contact.
+The matched 20 Hz GTP pass remains at 3.72 s with one light-contact step.
+
+Real-worker GT3 checks retain a clean causal pass against RAZOR at 20 Hz
+(5.22 s; following does not pass) and APEX at 30 Hz (4.47 s). The APEX
+attacks-disabled control passes only later and becomes incident-affected;
+do not use its final gain as a clean pace comparison. Matched GT3 at 30 Hz
+still does not pass and ends 29.8 m behind, versus 6.5 m for following.
+
+A two-car fight with cadence cycling through 60/20/60/30 Hz every two seconds
+also fails to secure a pass. It has 182 light-contact steps and 4.29% damage
+per car, despite no hard contacts, off-tracks or worker faults. Repeated rubbing
+is not a successful move. The worker fixture now reports damage and peak
+closing speed alongside contacts; consistent forecast transitions remain under
+investigation. Broad corridor refitting and native GTP held-control prediction
+were tested in isolation and rejected because they lost existing conversions.
+
+Using held-control prediction at every GT3 worker cadence reduces that mixed
+fight to 45 light-contact steps and 1.65% damage, but still fails to secure the
+pass. It also adds 0.208 s to the identically staged 60 Hz Harbor partial lap
+(60.192 vs 60.400 s). This extension is not enabled in production. Keeping the
+physical predictor for 0.25 s after a slow-rate observation also failed: 151
+light-contact steps, 5.77% damage and no pass. The test-only all-cadence variant
+can be reproduced with `tools/cadence.mjs --all-cadences`; healthy 60 Hz
+production behaviour keeps the existing predictor.
 
 ## Implemented
 

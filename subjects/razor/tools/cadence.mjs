@@ -10,6 +10,7 @@ const trackId = process.argv.find(a => a.startsWith('--track='))?.slice(8) ?? 'h
 const long = process.argv.includes('--long');
 const strict = process.argv.includes('--assert');
 const selected = process.argv.find(a => a.startsWith('--cases='))?.slice(8).split(',');
+const allCadences = process.argv.includes('--all-cadences');
 const cases = [
   { name: '20', hz: 20 }, { name: '30', hz: 30 }, { name: '60', hz: 60 },
   { name: 'variable', hz: 60, cadence: '60,20,60,30' }
@@ -20,7 +21,8 @@ for (const setup of cases) for (const enabled of process.argv.includes('--enable
   const seconds = long ? 75 : 6;
   const args = ['--import', './scripts/json-loader.mjs', 'subjects/razor/tools/worker-encounters.mjs',
     'apex', 'gt', '--hz=' + setup.hz, '--seconds=' + seconds, '--start=250', '--gap=800',
-    '--track=' + trackId, '--driver-options=' + JSON.stringify({ physicalPrediction: enabled }),
+    '--track=' + trackId, '--driver-options=' + JSON.stringify({ physicalPrediction: enabled,
+      physicalAllCadences: enabled && allCadences }),
     '--solo', '--trace', '--quiet-trace', '--trace-every-frame', '--allow-incidents'];
   if (setup.cadence) args.push('--cadence=' + setup.cadence);
   const job = spawnSync(process.execPath, args, { cwd: root, encoding: 'utf8', timeout: 120000, maxBuffer: 12e6 });
@@ -40,7 +42,7 @@ for (const setup of cases) for (const enabled of process.argv.includes('--enable
     error = Math.max(error, Math.abs(row.e)); minSpeed = Math.min(minSpeed, row.v);
   }
   const round = n => +n.toFixed(4);
-  const report = { trackId, cadence: setup.name, enabled, seconds, meanThrottle: round(throttle / total),
+  const report = { trackId, cadence: setup.name, enabled, allCadences, seconds, meanThrottle: round(throttle / total),
     liftSeconds: round(lift), modeFlips, maxSteerStep: round(steerStep), maxLineError: round(error),
     minSpeed: round(minSpeed), contacts: result.contacts, severe: result.severe, offSeconds: result.off,
     errors: result.errors, replyAgeP95: result.replyAgeP95, lapTimes: result.lapTimes };

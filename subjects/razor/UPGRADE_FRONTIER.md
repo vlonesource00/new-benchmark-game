@@ -13,10 +13,14 @@ without reducing its calibrated feedback gains. A matched 20 Hz GT3 worker
 fight converts a clean causal pass; 30 Hz still does not convert. Normal 60 Hz
 straight behaviour is unchanged. See `PROGRESS.md` and `tools/cadence.mjs`.
 
-The native matched GTP 30 Hz test now records a hard contact with prediction
-both enabled and disabled. Do not treat the old all-pass suite or endurance
-figures below as results for the new shared tyre model. The architecture still
-needs stronger matched-cadence combat, multi-car routing and new stint priors.
+The completed-pass return now fixes the native matched GTP 30 Hz hard contact:
+the strict suite passes all 67 checks, with no hard contacts or off-tracks over
+33 encounters. It finishes the pass before the next braking zone instead of
+retaining a costly side lane. This does not solve matched 30/60 Hz GT3 tactics.
+Changing-rate worker combat still rubs repeatedly and fails to secure a pass;
+forecast transitions need more validation. The architecture still needs stronger
+matched-cadence combat, multi-car routing and new stint priors. Do not treat
+the old endurance figures below as results for the new shared tyre model.
 
 ## Earlier checkpoint before the shared tyre update
 

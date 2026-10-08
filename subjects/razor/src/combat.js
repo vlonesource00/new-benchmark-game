@@ -233,6 +233,11 @@ export class RazorCombat {
   }
   decide(now, car, c, field, r, hazard, defender) {
     const d = this.driver, active = this.plan?.path, candidates = [];
+    // End the passing lane once our rear has cleared the rival's nose. Keeping
+    // the side lock after that carries a completed pass through the next
+    // braking zone, where the longer lane lets the rival overlap again.
+    const clearedAttack = r && this.plan?.kind === 'attack' && this.plan.target === r.id
+      && r.ds < -((car.spec.halfLength ?? 2.28) + r.along + 0.8);
     this.corridors.release();
     const own = { path: d.line, i: c.i, f: c.f, side: 0, kind: 'fast line', target: r?.id, tag: 'fast line' };
     candidates.push(this.evaluate(own, car, field, r));
@@ -240,7 +245,8 @@ export class RazorCombat {
       this.plan = { ...own, kind: 'blocked', tag: 'road blocked' }; this.visCands = [];
       this.next = now + (d.options.combatPeriod ?? 0.12); this.stats.plans++; return;
     }
-    if (r && (hazard || defender || this.reach(car, r) || Math.abs(r.ds) < 10) && (hazard || defender || d.options.attacks !== false)) {
+    if (r && (hazard || defender || this.reach(car, r) || Math.abs(r.ds) < 10)
+      && (hazard || defender || (!clearedAttack && d.options.attacks !== false))) {
       for (const side of [-1, 1]) {
         if (!hazard && !defender && this.plan?.kind === 'return' && Math.abs(this.me.e) > 0.45) continue;
         if (defender) {
@@ -262,7 +268,7 @@ export class RazorCombat {
     }
     // A committed side owns its corridor through overlap. Small prediction
     // fluctuations cannot send it across the rival's body to the other side.
-    const committed = this.plan && this.plan.target === r?.id && this.plan.side !== 0;
+    const committed = !clearedAttack && this.plan && this.plan.target === r?.id && this.plan.side !== 0;
     const ownsSide = committed && (Math.abs(this.me.e) > 0.45 || r?.alongside);
     const useful = candidates.filter(q => q.kind !== 'attack' ||
       ((!ownsSide || q.side === this.plan.side) && (q.overlap > 0.15 || q.clear || q.endGap < 8 || q.closeSpace)));

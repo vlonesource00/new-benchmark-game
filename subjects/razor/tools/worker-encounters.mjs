@@ -141,7 +141,9 @@ async function encounter(attacks) {
     }
     return { attacks, passedAt: passedAt === null ? null : +passedAt.toFixed(2),
       gain: +(race.cars[0].race.progress - race.cars[1].race.progress).toFixed(1),
-      contacts: race.contacts, severe: race.collisionStats.severeContacts, off: off[0], rivalOff: off[1], errors, replies,
+      contacts: race.contacts, severe: race.collisionStats.severeContacts,
+      peakClosing: race.collisionStats.peakClosing, damage: race.cars.map(c => c.damage),
+      off: off[0], rivalOff: off[1], errors, replies,
       replyAgeP95: ages[Math.floor(ages.length * 0.95)],
       lapTimes,
       associatedPasses: debug.combat?.stats?.associatedPasses ?? 0, events: debug.combat?.events ?? [],
