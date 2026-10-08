@@ -9,6 +9,13 @@ export const COMPOUNDS = Object.freeze({
 });
 export const COMPOUND_IDS = Object.freeze(Object.keys(COMPOUNDS));
 
+// Heat into the tread from sliding, per car class. Measured with scripts/strategy/stint-rig.mjs (RAZOR at race pace):
+// at the raw rate a stint drove every compound 25-50 C past its window (GTP cores 125-138 C), so softs and mediums
+// fell off a cliff within two laps and hards were the only sane call. With these the cores settle 95-105 C, a soft
+// is quickest for ~4 laps, a medium for ~7 and a hard runs 10+ laps, so the compound is a real choice. The GTP
+// tyre takes more load and downforce, so it gets the bigger cut.
+export const TYRE_HEAT = Object.freeze({ lmdh: 0.32, gt: 0.42 });
+
 // Measured on the unscaled engine (Astra at race pace, Harbor Ring, 120 Hz):
 // fuel burnt and mean medium-tyre wear per metre of racing. See
 // scripts/sim-endurance.mjs --calibrate.
@@ -43,6 +50,7 @@ export function calibrate(track, laps) {
   const wearScale = WEAR_CLIFF / (tyreLaps * lapWearBase);
   return {
     laps, fuelLaps, tyreLaps, fuelScale, wearScale,
+    refLap: track.length / 50, // planner lap-time guess (s) until the car has run a clean lap
     lapFuel: TANK_LITRES / fuelLaps,
     refuelRate: 6.5,          // L/s
     tyreChangeS: 5.5,

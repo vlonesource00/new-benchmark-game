@@ -26,8 +26,8 @@ export class RazorStrategist extends ApexStrategist {
     if (this.trackId !== 'harbor-ring' || this.race?.weather.id !== 'clear' || !this.usable) return Infinity;
     return { soft: 2, medium: 3, hard: this.hardWindow }[compound] ?? Infinity;
   }
-  decide(car, lapsLeft, aiDriving = true) {
-    const plan = super.decide(car, lapsLeft, aiDriving);
+  decide(car, lapsLeft, aiDriving = true, caution = false) {
+    const plan = super.decide(car, lapsLeft, aiDriving, caution);
     if (this.reason === 'APEX PLAN') this.reason = 'RAZOR PLAN';
     return plan;
   }

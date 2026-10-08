@@ -31,6 +31,7 @@ export const CAUTION = {
   minGreen: 45,         // no new caution within this long of a green flag
   maxPerRace: 3,
   fcyMin: 20,           // shortest FCY (s)
+  fcyPits: 6,           // pit lane opens this long into a plain FCY
   clearFor: 6,          // track clear this long before race control ends a caution
   ending: 5,            // "FCY ending" warning (s)
   giveBack: 10          // seconds to hand back a position gained under caution
@@ -175,6 +176,11 @@ export class RaceControl {
     const leader = this.leaderCar();
 
     if (this.phase === 'fcy') {
+      // Pit lane open under a plain full course yellow once everyone has slowed (a safety car keeps it shut until the queue forms).
+      if (!this.pitsOpen && !this.escalate && t > CAUTION.fcyPits) {
+        this.pitsOpen = true; race.log('flag', null, 'FCY · PIT LANE OPEN');
+        for (const e of race.entries) if (!e.pit) e.decidedLap = 0;
+      }
       if (this.escalate && leader) {
         // The safety car leaves the pit exit just ahead of the leader.
         const pitRun = lane.d(lane.boxEnd, lane.exit) / lane.limit * CAUTION.fcyV + 60;
@@ -234,6 +240,11 @@ export class RaceControl {
     const race = this.race;
     this.phase = 'green'; this.reason = null; this.lastGreen = race.time; this.pitsOpen = true; this.released = false;
     this.sc = null; this.waving = false; this.queue = [];
+    // A stop called only for the cheap caution price is off once racing resumes, unless the car is already committed to the lane.
+    for (const e of race.entries) {
+      const lane = race.lane, s = e.car.s;
+      if (!e.pit && e.pitPlan && e.strategist.reason === 'CAUTION' && !lane.inWindow(s, wrap(lane.approach - 40, lane.L), lane.entry)) { e.pitPlan = null; e.strategist.boxThisLap = false; e.strategist.reason = ''; race.log('strategy', e, 'STAY OUT · GREEN'); }
+    }
     for (const st of this.state) { st.gap = st.pos = null; st.waved = false; st.warn = 0; st.owe = null; }
     race.log('flag', null, text);
     return false;

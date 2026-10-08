@@ -92,13 +92,14 @@ export class ApexStrategist extends TeamStrategist {
     this.decisions.push({ at: 'start', compound: best.c, cost: +best.cost.toFixed(1) });
     return best.c;
   }
-  decide(car, lapsLeft, aiDriving = true) {
-    if (!this.usable || !aiDriving || this.request || car.race.lap < 1) return super.decide(car, lapsLeft, aiDriving);
+  decide(car, lapsLeft, aiDriving = true, caution = false) {
+    if (!this.usable || !aiDriving || this.request || car.race.lap < 1) return super.decide(car, lapsLeft, aiDriving, caution);
     if (lapsLeft <= 1) { this.boxThisLap = false; this.reason = 'FINAL LAP'; return (this.plan = null); }
     const n = lapsLeft, fuelLaps = Math.floor(car.fuel / this.fuelPerLap - 0.15);
     const cur = this.curSet(car, n), r = this.root({ n, cur, fuelLaps, stops: this.stops, swaps: this.swaps });
     const best = r.stops.reduce((b, s) => (s.cost < b.cost ? s : b), { cost: INF });
-    const box = best.cost < r.cont - 0.05 || r.cont >= INF;
+    // under caution the stop now is cheaper by what the slow field gives back (later stops still pay full price)
+    const box = best.cost - (caution ? this.cautionSaving(caution) : 0) < r.cont - 0.05 || r.cont >= INF;
     this.decisions.push({ lap: car.race.lap, left: lapsLeft, cont: +r.cont.toFixed(1), stop: best.cost < INF ? +best.cost.toFixed(1) : null, compound: best.compound, box });
     if (!box) {
       // physical safety net the planner may not see: do not run past what the fuel or the tyres can take
@@ -111,7 +112,7 @@ export class ApexStrategist extends TeamStrategist {
       }
       this.boxThisLap = false; this.reason = ''; return (this.plan = null);
     }
-    this.boxThisLap = true; this.reason = 'APEX PLAN';
+    this.boxThisLap = true; this.reason = caution && !(best.cost < r.cont - 0.05) ? 'CAUTION' : 'APEX PLAN';
     this.chosen = { ...best, after: lapsLeft - 1 };
     return (this.plan = this.fit(car, lapsLeft - 1, best));
   }

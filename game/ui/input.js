@@ -9,7 +9,7 @@ const ACTION_KEYS = {
   BracketRight: 'focusNext', BracketLeft: 'focusPrev', KeyM: 'mute', KeyF: 'focusMine', Enter: 'confirm',
   Digit1: 'pitTyre', Digit2: 'pitFuel', Digit3: 'pitSwap', Digit4: 'pitBox', Digit5: 'pitCancel',
   Numpad1: 'pitTyre', Numpad2: 'pitFuel', Numpad3: 'pitSwap', Numpad4: 'pitBox', Numpad5: 'pitCancel',
-  KeyI: 'replay', Space: 'playPause', ArrowUp: 'rateUp', ArrowDown: 'rateDown',
+  KeyY: 'callSc', KeyU: 'callFcy', KeyI: 'replay', Space: 'playPause', ArrowUp: 'rateUp', ArrowDown: 'rateDown',
   Minus: 'volDown', NumpadSubtract: 'volDown', Equal: 'volUp', NumpadAdd: 'volUp'
 };
 const REPEATABLE = new Set(['volDown', 'volUp']);

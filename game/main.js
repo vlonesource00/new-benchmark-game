@@ -533,6 +533,13 @@ input.on((action) => {
   }
   if (action === 'aiDebug') { const on = aiDebug.toggle(); if (seats) seats.wantDebug = on; aiDebug.update(race, focusId, teamsById); return; }
   if (action === 'mute') { toast(audio.toggle() ? 'Sound on' : 'Sound muted', 1200); return; }
+  // Race director: Y sends the safety car out (FCY where the race runs FCY only), U a full course yellow.
+  if (action === 'callSc' || action === 'callFcy') {
+    if (!race || race.cautionMode === 'off' || race.session !== 'race') { toast('Race control is off for this session', 1400); return; }
+    if (race.caution.active) { toast('A caution is already out', 1200); return; }
+    const kind = action === 'callSc' && race.cautionMode === 'full' ? 'sc' : 'fcy';
+    race.callCaution(kind); toast(kind === 'sc' ? 'Race director · safety car' : 'Race director · full course yellow', 1400); return;
+  }
   if (overlay) return;
   if (action === 'pit') { if (pitOpen) setPitOpen(false); else openPit(); return; }
   if (pitOpen) {

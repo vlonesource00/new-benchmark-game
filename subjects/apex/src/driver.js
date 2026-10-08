@@ -209,7 +209,11 @@ export class ApexDriver {
     const rK = car.ay / v, rRef = o.stateStability !== false && Math.sign(rK) === Math.sign(car.yawRate) && Math.abs(rK) > Math.abs(rDes) ? rK : rDes;
     const over = Math.sign(car.yawRate) === Math.sign(rRef) ? Math.max(0, Math.abs(car.yawRate) - Math.abs(rRef)) : Math.abs(car.yawRate);
     const dBetaS = o.stateStability === false ? dBeta : Math.min(Math.abs(dBeta), Math.abs(beta - model.betaFor(car.ay, v)));
-    this.stability = clamp(1 - 2.5 * Math.max(0, over - 0.08) - 4 * Math.max(0, dBetaS - (o.betaLimit ?? 0.06)), 0, 1);
+    // On a straight (the path asks for little lateral force) a yaw wobble with next to no slip angle is the car weaving
+    // through a lane change or a wake, not a slide: it does not lift the pedals there, which only made the car surge and
+    // stall in front of its rivals. A slip angle that builds brings the full term back; corners keep it as it was.
+    const straight = v > (o.straightV ?? 50) && Math.abs(this.ayReq) < (o.straightAy ?? 4), wobble = straight ? Math.max(o.wobbleFloor ?? 0.4, clamp((Math.abs(beta) - 0.015) / 0.035, 0, 1)) : 1;
+    this.stability = clamp(1 - 2.5 * Math.max(0, over - 0.08) * wobble - 4 * Math.max(0, dBetaS - (o.betaLimit ?? 0.06)), 0, 1);
     if (this.stability < 0.3 && !(this.lastStab < 0.3) && this.combat?.stats) this.combat.stats.recovers = (this.combat.stats.recovers ?? 0) + 1;
     this.lastStab = this.stability;
     // Slide learning: a slide on the racing line is the profile asking for more than this car holds there (typically
@@ -267,7 +271,7 @@ export class ApexDriver {
     this.sF = sF; this.sR = sR;
     throttle *= this.protect; if (sR > hi) brake *= this.protect;
     brake *= this.stability; throttle *= this.stability;
-    this.mode = brake > 0 ? 'BRAKE' : throttle > 0.95 ? 'PUSH' : 'CORNER';
+    this.mode = brake > 0 ? 'BRAKE' : throttle > 0.95 || (Math.abs(this.ayReq) < 4 && throttle > 0.5) ? 'PUSH' : 'CORNER'; // a straight is PUSH even when the pedal trims for a tow or a gap
     this.lineSpeed = path.sample(path.v, i, f, 0); this.labelIntent(toPit < 600 && toPit > 0.3);
     real.controls = { throttle, brake, steer: this.steer };
     if (real.hybrid) this.energy(real, car);

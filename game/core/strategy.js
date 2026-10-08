@@ -11,7 +11,8 @@ export class TeamStrategist {
     this.team = team; this.cal = cal; this.format = format;
     this.style = strategyStyle(seed, index);
     this.fuelPerLap = cal.lapFuel;
-    this.wearPerLap = { ...Object.fromEntries(Object.values(COMPOUNDS).map((c) => [c.id, WEAR_CLIFF * c.wear / cal.tyreLaps])) };
+    // (cars at race pace wear ~1.5x the calibration's nominal rate: the estimate starts there and is learnt from the car)
+    this.wearPerLap = { ...Object.fromEntries(Object.values(COMPOUNDS).map((c) => [c.id, WEAR_INIT * WEAR_CLIFF * c.wear / cal.tyreLaps])) };
     this.stops = 0; this.swaps = 0; this.boxThisLap = false; this.reason = '';
     this.request = null;           // human override: { compound, swap, fuel }
     this.lapMark = null;
@@ -22,16 +23,20 @@ export class TeamStrategist {
     // Race-planner model: seconds per lap each compound is off a medium, and
     // seconds per lap it fades with every lap of age (learnt from the stint).
     this.lapRef = cal.refLap ?? 70;
-    this.deg = Object.fromEntries(Object.values(COMPOUNDS).map((c) => [c.id, DEG_MEDIUM * c.wear ** 0.9]));
+    // How much harder than the wear model each compound has faded for this car (learnt per stint, 1 = as modelled).
+    this.fade = Object.fromEntries(COMPOUND_IDS.map((id) => [id, 1]));
     this.stintTimes = [];
   }
-  compoundLife(id) { return (WEAR_CLIFF + 0.06) / this.wearPerLap[id]; }
+  /** Laps until the compound is fully worn (the cost model prices the cliff before that). */
+  compoundLife(id) { return 1 / this.wearRate(id); }
+  /** Wear per lap the planner uses: aggressive teams count on a little less, careful ones on a little more. */
+  wearRate(id) { return this.wearPerLap[id] * (1 - 0.1 * this.style.aggression); }
   /** Called when the car completes a lap (not an in/out lap). */
   observeLap(car, clean) {
     const now = { fuel: car.fuel, wear: maxWear(car) };
     this.lastLap = clean ? car.race.lastLap : null;
     if (clean && (this.stintBest === null || car.race.lastLap < this.stintBest)) this.stintBest = car.race.lastLap;
-    if (clean) { this.stintTimes.push([this.stintLaps, car.race.lastLap]); this.lapRef = this.lapRef * 0.7 + car.race.lastLap * 0.3; this.learnDeg(car.wheels[0].tyre.compound); }
+    if (clean) { this.stintTimes.push([this.stintLaps, car.race.lastLap, now.wear]); this.lapRef = this.lapRef * 0.7 + car.race.lastLap * 0.3; this.learnDeg(car.wheels[0].tyre.compound); }
     if (this.lapMark && clean) {
       const fuel = this.lapMark.fuel - now.fuel, wear = now.wear - this.lapMark.wear;
       if (fuel > 0) this.fuelPerLap = this.fuelPerLap * 0.5 + fuel * 0.5;
@@ -41,20 +46,26 @@ export class TeamStrategist {
     this.lapMark = now; this.stintLaps += 1;
   }
   resetMark() { this.lapMark = null; this.stintLaps = 0; this.stintBest = null; this.lastLap = null; this.stintTimes = []; }
-  /** Least-squares fade of this stint's clean laps against tyre age. */
+  /**
+   * Learns how much harder this compound fades than the wear model says: this stint's lap-time loss from its best
+   * lap against the model's loss at the same wear (needs a few laps and some wear before it says anything).
+   */
   learnDeg(id) {
     const t = this.stintTimes, n = t.length;
     if (n < 3) return;
-    let sx = 0, sy = 0, sxx = 0, sxy = 0;
-    for (const [x, y] of t) { sx += x; sy += y; sxx += x * x; sxy += x * y; }
-    const slope = (n * sxy - sx * sy) / Math.max(1e-6, n * sxx - sx * sx);
-    this.deg[id] = this.deg[id] * 0.6 + Math.min(3, Math.max(0.02, slope)) * 0.4;
+    const best = Math.min(...t.map((x) => x[1])), [, last, w] = t[n - 1], model = this.lapRef * WEAR_K * wearLoss(w);
+    if (model < 0.3) return;
+    this.fade[id] = clamp(this.fade[id] * 0.7 + ((last - best) / model) * 0.3, 0.5, 2.5);
   }
-  /** Seconds per lap compound `id` is off a medium (grip, scaled by team aggression). */
-  offset(id) { return this.lapRef * COMPOUND_PACE * (1 - COMPOUNDS[id].grip) * (1 + 0.25 * this.style.aggression); }
+  /** Seconds per lap compound `id` is off a fresh medium when new (measured: soft -2 %, hard +3 %, the hard running cooler). */
+  offset(id) { return this.lapRef * COMPOUND_PACE[id]; }
+  /** Seconds the next `laps` laps take over fresh-medium pace on compound `id` already `age` laps old. */
   stintCost(id, age, laps) {
     if (laps <= 0) return 0;
-    return laps * this.offset(id) + this.deg[id] * (laps * age + laps * (laps - 1) / 2) + (age === 0 ? OUT_LAP_S : 0);
+    const r = this.wearRate(id), k = this.lapRef * WEAR_K * this.fade[id];
+    let cost = laps * this.offset(id) + (age === 0 ? OUT_LAP_S : 0);
+    for (let j = 0; j < laps; j++) cost += k * wearLoss(Math.min(1, (age + j + 0.5) * r));
+    return cost;
   }
   /**
    * Cheapest way to run `n` more laps from fresh tyres with `owed` stops still
@@ -121,8 +132,13 @@ export class TeamStrategist {
     else if (aiDriving && lapsLeft - 1 >= 2 && this.planStint(car, lapsLeft - 1, owed).laps === 0) reasons.push('PLAN');
     if (owed > 0 && lapsLeft - 1 <= owed * 1) reasons.push('MANDATORY');
     if (this.format.mandatorySwap && this.swaps === 0 && lapsLeft - 1 <= 1 && this.team.drivers.length > 1) reasons.push('SWAP RULE');
-    // A stop under caution costs a fraction of a green-flag stop: take it when one is still needed.
-    if (caution && aiDriving && !reasons.length && lapsLeft - 1 >= 2 && (owed > 0 || fuelLaps < lapsLeft - 0.9 || wear > 0.35)) reasons.push('CAUTION');
+    // Under caution the field is slow, so a stop costs a fraction of a green-flag one: box when stopping now at that
+    // price beats the best plan from here (which pays full price for every later stop). A car that has just been in
+    // gains nothing and stays out; one that still owes a stop, or is due one soon, takes the cheap one.
+    if (caution && aiDriving && !reasons.length && lapsLeft - 1 >= 2) {
+      const n = lapsLeft - 1, stay = this.planStint(car, n, owed).cost;
+      if (this.stopLoss - this.cautionSaving(caution) + this.planFresh(n, Math.max(0, owed - 1)).cost < stay - 0.5) reasons.push('CAUTION');
+    }
     if (this.request) reasons.push('CALLED IN');
     this.boxThisLap = reasons.length > 0;
     this.reason = reasons.join(' + ');
@@ -141,7 +157,7 @@ export class TeamStrategist {
     // Fresh rubber when the cliff is near, or when the plan from new tyres
     // (change time included) beats running on: a fuel stop is a cheap tyre stop.
     const keep = after > 0 ? this.stintCost(id, this.stintLaps + 1, Math.min(after, stintLaps)) + (after > stintLaps ? this.stopLoss + this.planFresh(after - stintLaps, Math.max(0, owed - 1)).cost : 0) : 0;
-    let tyres = this.reason.includes('PLAN') || wear + this.wearPerLap[id] * stintLaps > WEAR_CLIFF + 0.04 || wear > 0.4 || (fresh && fresh.cost + this.cal.tyreChangeS < keep);
+    let tyres = this.reason.includes('PLAN') || this.reason.includes('CAUTION') || wear + this.wearPerLap[id] * stintLaps > WEAR_CLIFF + 0.04 || wear > 0.4 || (fresh && fresh.cost + this.cal.tyreChangeS < keep);
     let compound = id;
     if (tyres) compound = fresh ? fresh.id : this.pickCompound(stintLaps);
     const drivers = this.team.drivers.length;
@@ -165,6 +181,8 @@ export class TeamStrategist {
     if (a < -0.4 && i < 2) i += 1;
     return ids[i];
   }
+  /** Seconds a stop saves when taken under caution (`kind` 'fcy' or 'sc'): the lane costs less against a field at 80 km/h, and next to nothing against a queue behind the safety car. */
+  cautionSaving(kind) { return PIT_LANE_LOSS_S * (kind === 'sc' ? 0.75 : 0.5); }
   /** Compound an all-AI team starts on: the planner's first stint for the whole race. */
   startCompound() {
     this.memo = null;
@@ -195,11 +213,14 @@ export function strategyStyle(seed, index) {
 
 // Lane transit over a racing lap at the same spot, measured on Harbor Ring.
 export const PIT_LANE_LOSS_S = 18;
-// Planner model, from 12-lap Solenne races: lap time moves ~0.18 x the grip
-// difference (soft 1.3 s up on hard), a medium fades ~0.25 s per lap of age, and
-// an out-lap on cold tyres costs about a second.
-const COMPOUND_PACE = 0.18;
-const DEG_MEDIUM = 0.25;
+// Planner model, fitted to scripts/strategy/stint-rig.mjs stints (RAZOR, GTP and GT3, three tracks): a fresh soft is
+// ~2 % quicker than a medium and a hard ~3 % slower (it also runs cooler); after that lap time follows the tread,
+// losing about half of the grip wearGrip() takes away (gentle to 72 % wear, then the cliff). Out-lap on cold tyres ~1 s.
+const COMPOUND_PACE = { soft: -0.02, medium: 0, hard: 0.03 };
+const WEAR_K = 0.45, WEAR_INIT = 1.5;
 const OUT_LAP_S = 1;
+/** Fraction of grip lost at tread wear `w` (the tyre model's wearGrip). */
+const wearLoss = (w) => 0.10 * w + 1.2 * Math.max(0, w - 0.72) ** 2;
+const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
 
 export function maxWear(car) { return Math.max(...car.wheels.map((w) => w.tyre.wear)); }

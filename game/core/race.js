@@ -6,14 +6,14 @@ import { wrap } from '../engine/sim/math.js';
 import { raceInterval } from '../engine/sim/interval.js';
 import { halfCarInside } from '../engine/sim/racecraft-policy.js';
 import { carSpecFor } from '../engine/sim/car-specs.js';
-import { COMPOUNDS, FORMATS, TANK_LITRES, calibrate, serviceTime } from './rules.js';
+import { COMPOUNDS, FORMATS, TANK_LITRES, TYRE_HEAT, calibrate, serviceTime } from './rules.js';
 import { Weather } from './weather.js';
 import { PitLane, PitAutopilot } from './pit.js';
 import { TeamStrategist, maxWear } from './strategy.js';
 import { createSeatBridge } from './field.js';
 import { AI_DRIVERS } from './teams.js';
 import { Stewards, MEATBALL_DAMAGE } from './stewards.js';
-import { fitHybrid, hybridStep, aiDeployMode, HYBRID } from './hybrid.js';
+import { fitHybrid, hybridStep, aiDeployMode, deployMap, HYBRID } from './hybrid.js';
 import { classProfile, classForCar } from './classes.js';
 import { FormationPilot, ROLLING, rollingLead } from './formation.js';
 import { RaceControl } from './caution.js';
@@ -69,13 +69,19 @@ export class EnduranceRace {
     // Full course yellows and the safety car (core/caution.js): 'off' | 'fcy' | 'full'.
     this.cautionMode = caution; this.caution = new RaceControl(this, caution);
   }
+  /** The hybrid deploy map for this car's class, from its racing line's speed profile (built once). */
+  deployMapFor(car) {
+    this.deployMaps ??= new Map();
+    if (!this.deployMaps.has(car.classId)) this.deployMaps.set(car.classId, deployMap(this.lineFor(car), this.track.length));
+    return this.deployMaps.get(car.classId);
+  }
   lineFor(car) {
     if (!this.lines.has(car.classId)) this.lines.set(car.classId, new RacingLine(this.track, carSpecFor(car.classId)));
     return this.lines.get(car.classId);
   }
   fitTyres(car, compoundId, warm = false) {
     const c = COMPOUNDS[compoundId];
-    for (const w of car.wheels) w.tyre = createTyre(car.setup.pressure, { compound: c.id, gripScale: c.grip, wearScale: c.wear * this.cal.wearScale * (car.spec.tyreWear ?? 1), optimum: c.optimum, heat: c.heat, warm });
+    for (const w of car.wheels) w.tyre = createTyre(car.setup.pressure, { compound: c.id, gripScale: c.grip, wearScale: c.wear * this.cal.wearScale * (car.spec.tyreWear ?? 1), optimum: c.optimum, heat: c.heat * (TYRE_HEAT[car.spec?.key] ?? 1), warm });
   }
   reset() {
     const track = this.track, start = track.scenario?.start;
@@ -206,7 +212,7 @@ export class EnduranceRace {
       // Strategy call once per lap, just before the approach point.
       if (this.session !== 'qualifying' && !e.pit && c.race.finishTime === null && c.race.progress > 0 && e.decidedLap !== c.race.lap && lane.inWindow(s, wrap(lane.approach - 120, lane.L), lane.approach)) {
         e.decidedLap = c.race.lap;
-        e.pitPlan = e.strategist.decide(c, this.lapsLeft(c), e.team.drivers[e.active]?.kind !== 'human', caution && this.caution.pitsOpen);
+        e.pitPlan = e.strategist.decide(c, this.lapsLeft(c), e.team.drivers[e.active]?.kind !== 'human', caution && this.caution.pitsOpen ? (this.caution.sc ? 'sc' : 'fcy') : false);
         if (e.pitPlan) this.log('strategy', e, `${e.team.short} · BOX THIS LAP · ${e.strategist.reason}`);
         // Race control overrides strategy: a drive-through comes first, and the
         // meatball (heavy damage) calls the car in for repairs.
@@ -279,7 +285,7 @@ export class EnduranceRace {
         }
         aiDeployMode(c, ahead, this.lapsLeft(c), this.session === 'qualifying' ? (c.race.progress < 0 ? 'out' : 'push') : false, behind);
       } else c.hybrid.mode = c.hybrid.playerMode ?? 'balanced';
-      hybridStep(c, dt);
+      hybridStep(c, dt, this.deployMapFor(c), track.length);
     }
     const airflow = wakes(cars);
     cars.forEach((c, i) => c.step(dt, track, airflow[i]));
