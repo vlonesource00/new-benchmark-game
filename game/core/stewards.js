@@ -61,6 +61,13 @@ export class Stewards {
     if (st.inc >= L.dq) this.disqualify(e, `${st.inc}x INCIDENTS`);
   }
 
+  /** A race-control penalty outside the incident system (e.g. overtaking under caution). */
+  penalise(e, reason) {
+    const st = this.of(e); if (st.dq) return;
+    st.penalties.push({ type: 'drive-through', reason, lap: e.car.race.lap });
+    this.race.log('penalty', e, `${e.team.short} · DRIVE-THROUGH · ${reason}`);
+  }
+
   /** Marshal recovery counts as a loss of control. */
   recovered(e) { this.add(e, INCIDENT_POINTS.recovery, 'recovery'); }
 
@@ -103,6 +110,8 @@ export class Stewards {
       if (gained > WALL_DAMAGE && !touched.has(c.id)) this.add(e, INCIDENT_POINTS.wall, 'wall contact');
       // Unserved drive-through: black flag turns into a DQ.
       const p = st.penalties[0];
+      // The serving window does not run while the pit lane is closed by a caution.
+      if (p && race.caution?.active) p.lap = Math.max(p.lap, c.race.lap);
       if (p && c.race.lap - p.lap > PENALTY_LAPS) this.disqualify(e, 'IGNORED BLACK FLAG');
     }
   }

@@ -16,6 +16,7 @@ import { Stewards, MEATBALL_DAMAGE } from './stewards.js';
 import { fitHybrid, hybridStep, aiDeployMode, HYBRID } from './hybrid.js';
 import { classProfile, classForCar } from './classes.js';
 import { FormationPilot, ROLLING, rollingLead } from './formation.js';
+import { RaceControl } from './caution.js';
 
 export const FIXED_DT = 1 / 120;
 /** Lone qualifying: timed laps after the out lap, gap between cars on track (m), session cap (s). */
@@ -28,7 +29,7 @@ export const QUALI_LAPS = 2, QUALI_SPACING = 260, QUALI_TIME_LIMIT = 480;
  * render is in `snapshot()`; nothing outside this class mutates race state.
  */
 export class EnduranceRace {
-  constructor({ track, teams, format = FORMATS.classic, laps = format.laps, classId = 'gt', startCompound = 'medium', makeBridge = createSeatBridge, difficulty = 1, weather = 'clear', seed = 7, weatherSeed = seed, session = 'race', startType = 'standing' }) {
+  constructor({ track, teams, format = FORMATS.classic, laps = format.laps, classId = 'gt', startCompound = 'medium', makeBridge = createSeatBridge, difficulty = 1, weather = 'clear', seed = 7, weatherSeed = seed, session = 'race', startType = 'standing', caution = 'off' }) {
     this.track = track; this.teams = teams;
     // 'qualifying': lone qualifying, iRacing-style. Every car runs an out lap and
     // QUALI_LAPS timed laps as a ghost; the best clean lap sets its grid slot.
@@ -65,6 +66,8 @@ export class EnduranceRace {
     this.reset();
     // Race control: incident points, penalties and flags (see core/stewards.js).
     this.stewards = new Stewards(this); this.collisionStats.pairs = this.stewards.pairs;
+    // Full course yellows and the safety car (core/caution.js): 'off' | 'fcy' | 'full'.
+    this.cautionMode = caution; this.caution = new RaceControl(this, caution);
   }
   lineFor(car) {
     if (!this.lines.has(car.classId)) this.lines.set(car.classId, new RacingLine(this.track, carSpecFor(car.classId)));
@@ -101,6 +104,7 @@ export class EnduranceRace {
     });
     this.timingHistory = this.cars.map((c) => [{ progress: c.race.progress, time: 0 }]); this.nextTimingAt = 0;
     this.formation = this.startType === 'rolling' ? new FormationPilot(this) : null; this.greenAt = this.formation ? null : 0;
+    if (this.caution) this.caution = new RaceControl(this, this.cautionMode);
   }
   start() {
     this.reset(); this.phase = 'countdown';
@@ -146,6 +150,8 @@ export class EnduranceRace {
     return v && this.time - v.time < 0.6 ? v.controls : null;
   }
   activeDriver(e) { return e.team.drivers[e.active]; }
+  /** Debug / race-director call: full course yellow or safety car now. */
+  callCaution(kind = 'sc') { this.caution.call(kind); }
   requestPit(teamId, request = {}) {
     const e = this.entries.find((x) => x.team.id === teamId); if (!e) return;
     e.strategist.request = e.strategist.request ? null : request;
@@ -186,6 +192,13 @@ export class EnduranceRace {
       this.formation = null; this.greenAt = this.time;
       this.log('flag', null, 'GREEN FLAG · GREEN GREEN GREEN');
     }
+    const caution = !this.formation && this.caution.step(dt);
+    // Under caution AI seats are on the caution autopilot and humans run under its limiter.
+    const drive = (e, c, s) => {
+      if (!caution) return e.bridges[e.active].update(c, cars, dt, context);
+      if (e.team.drivers[e.active]?.kind === 'human') { e.bridges[e.active].update(c, cars, dt, context); this.caution.limit(e, s); }
+      else this.caution.drive(e, dt, s, context);
+    };
     if (!this.formation) for (const e of this.entries) {
       const c = e.car, s = projections.get(c.id).s;
       // A disqualified car sits in its box, out of everyone's way.
@@ -193,7 +206,7 @@ export class EnduranceRace {
       // Strategy call once per lap, just before the approach point.
       if (this.session !== 'qualifying' && !e.pit && c.race.finishTime === null && c.race.progress > 0 && e.decidedLap !== c.race.lap && lane.inWindow(s, wrap(lane.approach - 120, lane.L), lane.approach)) {
         e.decidedLap = c.race.lap;
-        e.pitPlan = e.strategist.decide(c, this.lapsLeft(c), e.team.drivers[e.active]?.kind !== 'human');
+        e.pitPlan = e.strategist.decide(c, this.lapsLeft(c), e.team.drivers[e.active]?.kind !== 'human', caution && this.caution.pitsOpen);
         if (e.pitPlan) this.log('strategy', e, `${e.team.short} · BOX THIS LAP · ${e.strategist.reason}`);
         // Race control overrides strategy: a drive-through comes first, and the
         // meatball (heavy damage) calls the car in for repairs.
@@ -203,7 +216,8 @@ export class EnduranceRace {
       }
       // The box call rides on the car, so drivers in seat workers can line up the stop too.
       c.race.boxThisLap = Boolean(e.pitPlan);
-      if (!e.pit && e.pitPlan && c.race.finishTime === null && lane.inWindow(s, lane.approach, lane.entry)) {
+      // Pit lane closed under caution until the field has queued behind the safety car.
+      if (!e.pit && e.pitPlan && c.race.finishTime === null && (!caution || this.caution.pitsOpen) && lane.inWindow(s, lane.approach, lane.entry)) {
         e.pit = new PitAutopilot(lane, e.box, this.lineFor(c)); e.pit.calledOnLap = c.race.lap; c.race.pitLap = true;
       }
       if (e.pit) {
@@ -212,9 +226,9 @@ export class EnduranceRace {
         // lateral move: cars arrive here at the limit, often holding a slide the
         // AIs drive on, and only their own controller can carry that. A lock-aware
         // governor scrubs speed to the approach profile meanwhile.
-        const cross = e.team.drivers[e.active]?.kind === 'human' ? lane.cross : Math.min(lane.cross, 0.5);
+        const cross = e.team.drivers[e.active]?.kind === 'human' || caution ? lane.cross : Math.min(lane.cross, 0.5);
         if (p.phase === 'approach' && toEntry > cross && toEntry <= lane.d(lane.approach, lane.entry) && lane.cross < lane.d(lane.approach, lane.entry)) {
-          e.bridges[e.active].update(c, cars, dt, context);
+          drive(e, c, s);
           p.track = track;
           const over = c.speed - p.targetSpeed(s, c), k = c.controls, lock = Math.min(1, Math.abs(k.steer ?? 0) * 2.5);
           if (over > -1.5) c.controls = { ...k, throttle: over <= 0 ? k.throttle * Math.min(1, -over / 1.5) : 0, brake: over > 1 ? Math.max(k.brake, Math.min(0.85, (over - 1) / 5) * (1 - 0.8 * lock)) : k.brake };
@@ -223,7 +237,7 @@ export class EnduranceRace {
           // the lift and the steering change never snap the rear loose.
           const blend = p.phase !== 'service' && (p.age ?? 0) < 1;
           let driver = null;
-          if (blend) { e.bridges[e.active].update(c, cars, dt, context); driver = { ...c.controls }; }
+          if (blend) { drive(e, c, s); driver = { ...c.controls }; }
           c.automatic = true;
           this.pitStep(e, c, dt);
           if (blend && e.pit === p && p.phase !== 'service') {
@@ -237,8 +251,8 @@ export class EnduranceRace {
         const bridge = e.bridges[e.active];
         // AI drivers never shift by hand; a car handed over from a manual stint gets its auto box back.
         if (!bridge.human) c.automatic = true;
-        bridge.update(c, cars, dt, context);
-        if (!bridge.human || bridge.assisted) {
+        drive(e, c, s);
+        if (!caution && (!bridge.human || bridge.assisted)) {
           // No point saving tyres on the last lap or the lap they come off.
           // Roster entries with `manage: false` run flat out all stint (no tyre-saving cap).
           const roster = AI_DRIVERS.find((a) => a.id === e.team.drivers[e.active]?.id);
@@ -255,7 +269,7 @@ export class EnduranceRace {
       const c = e.car; if (!c.hybrid) continue;
       const bridge = e.bridges[e.active];
       c.hybrid.auto = !bridge.human || bridge.assisted;
-      if (this.formation) c.hybrid.mode = 'build';
+      if (this.formation || caution) c.hybrid.mode = 'build';
       else if (c.hybrid.auto) {
         // Only same-class rivals are worth the energy; other-class traffic is passed on pace.
         let ahead = Infinity, behind = Infinity;
@@ -448,8 +462,10 @@ export class EnduranceRace {
   /** Compact, serialisable state for HUD / network clients. */
   snapshot() {
     const order = this.order(), leader = order[0], hazards = this.stewards.hazards(), inClass = this.classPositions(order);
+    const caution = this.caution.snapshot(), yellow = caution && caution.phase !== 'green' ? (caution.sc ? 'sc' : 'fcy') : null;
+    const carFlag = (e) => { const f = this.stewards.flagFor(e, hazards); return yellow && f !== 'black' && f !== 'meatball' && !e.pit ? yellow : f; };
     return {
-      flag: this.stewards.raceFlag(), incidentLimits: this.stewards.limits,
+      caution, flag: yellow && this.stewards.raceFlag() !== 'chequered' ? yellow : this.stewards.raceFlag(), incidentLimits: this.stewards.limits,
       session: this.session, formation: this.formation ? { toGreen: Math.max(0, this.formation.toGreen()) } : null, greenAt: this.greenAt, phase: this.phase, time: this.time, countdown: this.countdown, laps: this.laps, cal: { fuelLaps: this.cal.fuelLaps, tyreLaps: this.cal.tyreLaps },
       cars: this.cars.map((c) => {
         const e = this.entryOf(c), d = this.activeDriver(e);
@@ -465,7 +481,7 @@ export class EnduranceRace {
           active: e.active, fuelPerLap: e.strategist.fuelPerLap, reason: e.strategist.reason, request: e.strategist.request,
           plan: e.pitPlan, stints: e.stints, pitStopTime: e.pitStopTime, finishTime: c.race.finishTime, valid: c.race.valid, sectors: c.race.secCur.slice(), sectorState: c.race.secState.map((st, k) => (st === 'purple' && c.race.secCur[k] > this.secBest?.[k] ? 'green' : st)), sectorBest: c.race.secBest.slice(),
           coDriving: Boolean(e.bridges[e.active]?.assisted),
-          s: c.s, lateral: c.lateral, incidents: this.stewards.of(e).inc, flag: this.stewards.flagFor(e, hazards), penalty: this.stewards.pendingPenalty(e)?.type ?? null, dq: Boolean(c.race.dq)
+          s: c.s, lateral: c.lateral, incidents: this.stewards.of(e).inc, flag: carFlag(e), caution: this.caution.carState(c.id), hazard: hazards.some((h) => h.id === c.id), penalty: this.stewards.pendingPenalty(e)?.type ?? null, dq: Boolean(c.race.dq)
         };
       }),
       weather: this.weather.snapshot(),

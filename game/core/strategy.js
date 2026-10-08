@@ -104,7 +104,7 @@ export class TeamStrategist {
    * Decision for the lap about to reach the pit approach. `lapsLeft` counts
    * laps still to complete including the current one.
    */
-  decide(car, lapsLeft, aiDriving = true) {
+  decide(car, lapsLeft, aiDriving = true, caution = false) {
     const fuelLaps = car.fuel / this.fuelPerLap, wear = maxWear(car);
     const id = car.wheels[0].tyre.compound;
     const reasons = [];
@@ -121,6 +121,8 @@ export class TeamStrategist {
     else if (aiDriving && lapsLeft - 1 >= 2 && this.planStint(car, lapsLeft - 1, owed).laps === 0) reasons.push('PLAN');
     if (owed > 0 && lapsLeft - 1 <= owed * 1) reasons.push('MANDATORY');
     if (this.format.mandatorySwap && this.swaps === 0 && lapsLeft - 1 <= 1 && this.team.drivers.length > 1) reasons.push('SWAP RULE');
+    // A stop under caution costs a fraction of a green-flag stop: take it when one is still needed.
+    if (caution && aiDriving && !reasons.length && lapsLeft - 1 >= 2 && (owed > 0 || fuelLaps < lapsLeft - 0.9 || wear > 0.35)) reasons.push('CAUTION');
     if (this.request) reasons.push('CALLED IN');
     this.boxThisLap = reasons.length > 0;
     this.reason = reasons.join(' + ');

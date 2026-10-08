@@ -1,6 +1,7 @@
 // Headless endurance race on the game engine fork.
 //   node scripts/sim-endurance.mjs --calibrate            measure unscaled fuel/wear per metre
 //   node scripts/sim-endurance.mjs --laps 6 --teams 6 --seed 7 [--track harbor-ring] [--difficulty 0.9]
+//     [--caution full|fcy] [--call <race s> [--call-kind sc|fcy]] [--trace]   race control / safety car
 //   node scripts/sim-endurance.mjs --profile [--track harbor-ring]   record the difficulty reference pace
 import { Track } from '../game/engine/sim/track.js';
 import { EnduranceRace, FIXED_DT, maxWear } from '../game/core/race.js';
@@ -85,7 +86,8 @@ if (args.includes('--quali')) {
 }
 const format = Object.values(FORMATS).find((f) => f.laps === laps) ?? FORMATS.custom;
 const difficulty = Number(opt('difficulty', 1));
-const race = new EnduranceRace({ track, teams, format, laps, difficulty, startType: args.includes('--rolling') ? 'rolling' : 'standing' });
+const race = new EnduranceRace({ track, teams, format, laps, difficulty, startType: args.includes('--rolling') ? 'rolling' : 'standing', caution: opt('caution', 'off') });
+const callAt = Number(opt('call', NaN)); let called = false;
 console.log(`${trackName} · ${race.laps} laps · fuel stint ${race.cal.fuelLaps} laps · tyre life ${race.cal.tyreLaps} laps (medium)`);
 for (const t of teams) console.log(`  P${t.grid + 1} ${t.name.padEnd(20)} ${t.drivers.map((d, i) => (i === t.starter ? '*' : ' ') + d.name).join('  ')}`);
 race.start();
@@ -93,6 +95,11 @@ const wall = Date.now(); let seen = 0;
 const limit = race.laps * 200 + 300;
 while (race.phase !== 'finished' && race.time < limit) {
   race.step(FIXED_DT);
+  if (!called && race.time >= callAt) { called = true; race.callCaution(opt('call-kind', 'sc')); }
+  if (args.includes('--trace') && race.caution.active && Math.abs(race.time % 5) < FIXED_DT) {
+    const cs = race.snapshot(), q = cs.cars.filter((c) => c.caution?.pos).sort((a, b) => a.caution.pos - b.caution.pos);
+    console.log(`    ~ ${fmt(race.time)} ${cs.caution.phase} pits ${cs.caution.pitsOpen ? 'open' : 'shut'} sc ${cs.caution.sc ? cs.caution.sc.speed.toFixed(0) : '-'} | ${q.map((c) => `${race.entries[c.id].team.short}${c.caution.waved ? 'w' : ''}:${c.caution.gap == null ? '' : c.caution.gap.toFixed(0)}@${c.speed.toFixed(0)}`).join(' ')}`);
+  }
   while (seen < race.eventSeq) { const e = race.events.find((x) => x.id === seen + 1); seen++; if (e) console.log(`  [${fmt(e.time)}] ${e.type.toUpperCase().padEnd(8)} ${e.text}`); }
 }
 console.log(`\nsim ${fmt(race.time)} in ${((Date.now() - wall) / 1000).toFixed(1)}s wall · contacts ${race.contacts} · phase ${race.phase}`);
