@@ -43,5 +43,35 @@
   "margin": 0.8931,
   "solo": 62.925,
   "target": 62.925
+ },
+ "solenne|gt|next-racer|0": {
+  "margin": 0.9023,
+  "solo": 61.225,
+  "target": 61.208
+ },
+ "harbor-ring|gt|next-racer|0": {
+  "margin": 0.8777,
+  "solo": 63.8,
+  "target": 63.792
+ },
+ "solenne|gt|next-racer|-0.01": {
+  "margin": 0.9256,
+  "solo": 60.608,
+  "target": 60.59592
+ },
+ "harbor-ring|gt|next-racer|-0.01": {
+  "margin": 0.9007,
+  "solo": 63.175,
+  "target": 63.15408
+ },
+ "alpine|gt|next-racer|0": {
+  "margin": 0.8946,
+  "solo": 74.692,
+  "target": 74.7
+ },
+ "alpine|gt|next-racer|-0.01": {
+  "margin": 0.9178,
+  "solo": 73.95,
+  "target": 73.953
  }
 }

@@ -182,9 +182,13 @@ export class ApexDriver {
     // the heading that drifts at exactly the allowed rate, with the full tyre budget available to do it.
     const nb = o.latGuard === false || !this.combat ? null : this.combat.neighbor(v); this.nb = nb;
     if (nb) {
+      // the path itself may be sweeping toward that car (a racing line crossing the road into a hairpin): what is left for our own drift off it is the rest
+      const sl = (path.sample(path.lat, path.idx(i + 2), f, 0) - path.sample(path.lat, path.idx(i - 2), f, 0)) / (4 * path.ds), allowed = nb.rate - nb.dir * v * clamp(sl, -0.6, 0.6);
       const drift = nb.dir * v * Math.sin(psi);
-      if (drift > nb.rate) { const pt = nb.dir * Math.asin(clamp(nb.rate / v, -0.35, 0.35)), fbSafe = 0.8 * model.lat(v) / (v * v); corr = clamp(-2 * (psi - pt) / Lp, -fbSafe, fbSafe); this.nbHeld = true; } else this.nbHeld = false;
-    } else this.nbHeld = false;
+      if (drift > allowed) { const pt = nb.dir * Math.asin(clamp(allowed / v, -0.5, 0.5)), fbSafe = 0.8 * model.lat(v) / (v * v); const want = -2 * (psi - pt) / Lp; corr = clamp(want, -fbSafe, fbSafe); this.nbHeld = true;
+        // the tyres cannot turn away hard enough at this speed while the room to the car alongside closes: give up speed instead
+        this.nbShed = Math.abs(want) > fbSafe && nb.gap < (o.nbShedGap ?? 2.5); } else this.nbHeld = this.nbShed = false;
+    } else this.nbHeld = this.nbShed = false;
     // The steering target moves at a bounded lateral jerk: a path switch (racing line, tow, pull, guard lanes) changes the
     // curvature asked for in one frame, which snapped the wheel and rocked the car. The line itself never needs more.
     let kc = kp + corr; const J = o.steerJerk ?? 90;
@@ -223,6 +227,7 @@ export class ApexDriver {
     if (wk > 0.05) { const ws = model.wakeSpeed(v, wk); const lim = (j) => path.vmax[path.idx(i + j)] < path.v[path.idx(i + j)] + 2; if (lim(1) || lim(Math.round(look / path.ds) + 2)) { vt *= ws; vt2 *= ws; } }
     this.wake = wk;
     if (combatCap < Infinity) { vt = Math.min(vt, combatCap); vt2 = Math.min(vt2, combatCap); }
+    if (this.nbShed) { const vs = v * (o.nbShed ?? 0.9); vt = Math.min(vt, vs); vt2 = Math.min(vt2, vs); }
     if (pitCap < Infinity) { vt = Math.min(vt, pitCap); vt2 = Math.min(vt2, this.pitGuide.cap(Math.max(0, toPit - d2))); }
     const aProf = (vt2 * vt2 - vt * vt) / (2 * d2);
     this.targetSpeed = vt;
