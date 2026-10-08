@@ -405,3 +405,30 @@ The architecture itself (offline-baked pace core, tracker, combat in two modes, 
 - **Rival profiles overfit** to today's rival versions. Mitigation: the live correction and behavioural fallback, plus profiles are data, not code, and rebuilt by a tool.
 - **Wall-clock cost of bakes.** Nürburgring's 25 km line and manoeuvre library may take minutes offline; acceptable, runtime stays cheap.
 - **Branch.** Development is on `claude/apex-ai-driver-8me8r0`, the branch assigned to this session, not a branch literally named `apex`; I can rename or push a second branch on request.
+
+## 13. Where this architecture runs out (lessons for the next generation)
+
+Found while refining APEX to its limit (Oct 2026: smooth pulls, committed lanes, fast-corner slides). Each item names
+what was patched inside this design and why the patch is a ceiling rather than a fix.
+
+1. **Shared mutable plan, no ownership.** Hazard, guard, pull, tow and the line all read and write one `this.plan`.
+   `guard()` cleared it every frame, so a live pull never saw its own lane: it re-ramped from the car each cycle, the
+   loss jumped 0 -> 3..11 within frames and the move was dropped (and the mid-corner drop-hold never ran). Fixed by
+   ownership by tag, but the next design needs an explicit arbiter: one committed trajectory, behaviours propose, one
+   place decides, and the committed trajectory is the warm start of the next plan.
+2. **Lanes are judged against our own racing line, not against the race.** `loss` (line minimum minus lane minimum)
+   cannot tell "slower than ideal but quicker than the car being passed" from "losing". Patched with a rival-relative
+   keep rule; the real need is an outcome objective (position and time at a horizon against predicted rivals), which is
+   what blocks conversion against equal-pace cars (CRV wins from the front even when APEX is 1-2 s/lap faster).
+3. **Quasi-steady GGV speed model.** One friction ellipse per class (`brakeExp`), no load transfer or rear-axle limit:
+   trail-braking into fast tightening corners snaps the rear every lap and a per-class exponent is a fitted knob (LMDH
+   1.85 helps, GT loses with it). The next model needs per-axle grip with longitudinal load transfer in the profile.
+4. **Dirty air is a scalar applied where the car is.** The wake cuts the target only in the corner itself; extending it
+   to the braking envelope in the driver did not reduce traffic slides and broke a RAZOR encounter check. The wake
+   has to live inside the profile solver (a per-plan speed profile computed with the rival's wake), not on top of it.
+5. **Stability is reactive.** It multiplies throttle and brake after the yaw overshoot appears; 9-25 recoveries per
+   race remain. A predictive check (does the next 0.5 s of the plan exceed the axle limits?) belongs in planning.
+6. **Two learners with no shared objective.** Slide learning trims down and lap learning trims up from peak slip; they
+   can undo each other. One learner, one target (margin to the axle limit), per corner.
+7. **Evaluation noise.** Single 8-car races swing by several places and contact counts between identical builds;
+   decisions need seeds x tracks x classes before they are trusted (combatlab + three fields was the minimum used).
