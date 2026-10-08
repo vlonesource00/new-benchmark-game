@@ -1,17 +1,18 @@
 import { clamp } from '../../apex/src/math.js';
+import { CarModel, liveGrip } from '../../apex/src/model.js';
 import { Corridors } from './corridor.js';
 
 const wrap = (s, L) => ((s + L * 1.5) % L) - L / 2;
 const sampleAt = (line, a, s) => { const j = line.stationOf(s); return line.sample(a, Math.floor(j), j % 1); };
 
 // Bounded road-space planning. There are no native-vehicle rollouts or elapsed
-// time cutoffs: identical observations produce identical decisions at any FPS.
+// time cutoffs: search decisions do not depend on elapsed planning time.
 export class RazorCombat {
   constructor(driver) {
     this.driver = driver; this.corridors = new Corridors(driver);
     const L = driver.line; this.arc = new Float64Array(L.N + 1);
     for (let i = 0; i < L.N; i++) this.arc[i + 1] = this.arc[i] + L.len[i];
-    this.length = this.arc[L.N]; this.maps = new Map(); this.reset();
+    this.length = this.arc[L.N]; this.maps = new Map(); this.forecastModels = new Map(); this.reset();
   }
   reset() {
     this.state = 'FREE'; this.plan = null; this.focus = null; this.cap = Infinity;
@@ -24,14 +25,38 @@ export class RazorCombat {
   forecast(r, t) {
     const base = this.driver.line, map = r.map;
     if (r.hazard) return { ds: r.ds + Math.max(0, r.v * t + 0.5 * Math.min(0, r.a) * t * t), lat: r.offset + r.vl * Math.min(t, 0.7), v: Math.max(0, r.v + Math.min(0, r.a) * t) };
-    const vv = base.sample(map.speed, r.bi, r.bf), ahead = r.v * t + clamp(r.a, -12, 6) * t * t * 0.15;
-    const future = base.sample(map.speed, r.bi, r.bf, ahead);
-    const speed = Math.max(0, r.v + (future - vv) * Math.min(1, t / 0.8));
+    // Integrate through intervening braking zones. An endpoint speed delta
+    // applied to the whole horizon invents gains before a corner and misses
+    // the time spent braking in it. Reuse one fixed-size forecast per snapshot.
+    let prediction = r.prediction;
+    if (!prediction || prediction.time !== this.now) {
+      const d = this.driver;
+      if (!this.forecastModels.has(r.cls)) this.forecastModels.set(r.cls, new CarModel(r.cls));
+      const model = this.forecastModels.get(r.cls);
+      model.grip = liveGrip(r.car).grip * (1 - (d.track.wetness ?? 0) * 0.36) * (d.track.tempGrip ?? 1);
+      model.margin = d.model.margin;
+      prediction = { time: this.now, x: new Float64Array(35), v: new Float64Array(35), a: new Float64Array(35) };
+      prediction.v[0] = r.v;
+      const mass = r.car.spec.mass + (r.car.fuel ?? 0) * 0.75, dt = 0.1;
+      for (let i = 0; i < 34; i++) {
+        const x = prediction.x[i], v = prediction.v[i];
+        const limit = base.sample(map.speed, r.bi, r.bf, x + v * 0.12);
+        const a = clamp((limit - v) / dt, -model.brake(Math.max(8, v)), model.driveG(v, model.gearAt(v), mass));
+        prediction.a[i] = a;
+        prediction.x[i + 1] = x + Math.max(0, v * dt + 0.5 * a * dt * dt);
+        prediction.v[i + 1] = Math.max(0, v + a * dt);
+      }
+      r.prediction = prediction;
+    }
+    t = clamp(t, 0, 3.4);
+    const j = Math.min(34, Math.floor(t * 10 + 1e-8)), dt = Math.max(0, t - j * 0.1);
+    const ahead = prediction.x[j] + prediction.v[j] * dt + 0.5 * prediction.a[j] * dt * dt;
+    const speed = Math.max(0, prediction.v[j] + prediction.a[j] * dt);
     const correction = r.offset - base.sample(map.offset, r.bi, r.bf);
     const profileDrift = (base.sample(map.offset, r.bi, r.bf, 5) - base.sample(map.offset, r.bi, r.bf, -5)) * r.v / 10;
     const residual = clamp(r.vl - profileDrift, -3, 3);
     const lat = base.sample(map.offset, r.bi, r.bf, ahead) + correction * Math.exp(-t * 0.2) + residual * Math.min(t, 0.5);
-    return { ds: r.ds + Math.max(0, 0.5 * (r.v + speed) * t), lat, v: speed };
+    return { ds: r.ds + ahead, lat, v: speed };
   }
   targetOffset(r, i) {
     if (r.hazard) return r.offset;
@@ -176,7 +201,11 @@ export class RazorCombat {
     q.risk = risk; q.clear = clear; q.overlap = overlap; q.progress = progress;
     q.endGap = focus ? this.forecast(focus, horizon).ds - progress : null;
     const commitment = this.plan && this.plan.target === q.target && this.plan.side === q.side && q.kind !== 'tow' ? 1.6 : 0;
-    q.score = progress - risk * 14 - front * 4 + (clear ? 4 : 0) + Math.min(2, overlap) + commitment;
+    // At roughly two car lengths, open space has value before a forecast can
+    // guarantee the pass. This small preference breaks following stalemates;
+    // it supplies neither extra grip nor a successful-pass credit.
+    q.closeSpace = q.kind === 'attack' && focus?.ds > 0 && focus.ds < 10 && risk < 0.1;
+    q.score = progress - risk * 14 - front * 4 + (clear ? 4 : 0) + Math.min(2, overlap) + commitment + (q.closeSpace ? 5 : 0);
     return q;
   }
   decide(now, car, c, field, r, hazard, defender) {
@@ -211,30 +240,43 @@ export class RazorCombat {
     // A committed side owns its corridor through overlap. Small prediction
     // fluctuations cannot send it across the rival's body to the other side.
     const committed = this.plan && this.plan.target === r?.id && this.plan.side !== 0;
-    const useful = candidates.filter(q => q.kind !== 'attack' || q.overlap > 0.15 || q.clear || q.endGap < 8);
+    const ownsSide = committed && (Math.abs(this.me.e) > 0.45 || r?.alongside);
+    const useful = candidates.filter(q => q.kind !== 'attack' ||
+      ((!ownsSide || q.side === this.plan.side) && (q.overlap > 0.15 || q.clear || q.endGap < 8 || q.closeSpace)));
     let best = useful.reduce((a, b) => b.score > a.score ? b : a);
     if (defender) {
       const cover = candidates.find(q => q.kind === 'cover');
       if (cover && cover.progress >= own.progress - 3 && cover.risk < 0.15) best = cover;
       else best = { ...own, kind: 'hold', tag: 'defend exit speed' };
     }
-    if (committed) {
+    // A defensive cover must still earn its exit-speed budget. Applying the
+    // attack's side lock here would override the defense decision above and
+    // keep a costly or occupied cover simply because the threat is behind.
+    if (committed && !defender) {
       const hold = candidates.find(q => q.side === this.plan.side && q.kind !== 'fast line');
       const wanted = r.offset + this.plan.side * ((car.spec.halfWidth ?? 0.98) + r.width - 0.06);
       const closed = Math.abs(this.bounded(r.bi, wanted) - wanted) > 0.45;
       if (closed) this.blockedAt ??= now; else this.blockedAt = null;
       // Forecast uncertainty cannot uncommit a physically open side. A side
       // change while overlapping would cross the opponent's occupied body.
-      const viable = hold && (hold.progress >= own.progress - 14 || r.alongside || hold.endGap < 8);
+      const span = r.along + (car.spec.halfLength ?? 2.28);
+      // Returning to the fast line can cross the same occupied body as a
+      // side switch. Finish the open-side run until there is merging room.
+      const mergeUnsafe = ownsSide && r.ds > -span - 2 &&
+        r.ds < span + Math.max(2, (car.speed - r.v) * 0.9);
+      const viable = hold && (mergeUnsafe || hold.progress >= own.progress - 14 || r.alongside || hold.endGap < 8);
       if (viable && (!closed || now - this.blockedAt < 0.5 || r.alongside)) best = hold;
     }
-    if (best.kind === 'fast line' && this.plan?.path !== d.line && Math.abs(c.e) > 0.25) {
+    if ((best.kind === 'fast line' || best.kind === 'hold') && this.plan?.path !== d.line && Math.abs(c.e) > 0.25) {
+      const defendingReturn = best.kind === 'hold';
       if (this.plan?.kind === 'return' && now < this.plan.rebuildAt) {
         const cur = active.closest(car.x, car.z, c.i); best = { ...this.plan, i: cur.i, f: cur.f };
       } else {
         const dummy = r ?? { id: null, ds: 0, dlat: 0, width: 1 };
         best = this.make(car, c, dummy, 0, 'return', active);
       }
+      best.defendingReturn = defendingReturn;
+      if (defendingReturn) best.tag = 'defend exit speed';
       this.evaluate(best, car, field, r); candidates.push(best);
     }
     if (best.kind === 'attack' && (!this.plan || this.plan.target !== r.id || this.plan.kind !== 'attack')) {

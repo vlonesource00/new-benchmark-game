@@ -4,26 +4,32 @@ import { ApexStrategist } from '../../apex/src/strategy.js';
 // remains active. RAZOR's distinct slip budget must be calibrated in endurance
 // probes before claiming the four-second fade target.
 export class RazorStrategist extends ApexStrategist {
-  get usable() { return super.usable && (this.race?.track.wetness ?? 0) < 0.08; }
+  constructor(previous, trackId, classId, options = {}) {
+    super(previous, trackId, classId, options);
+    const roll = this.model.roll.bind(this.model);
+    this.model.roll = (compound, count, state = {}) => {
+      const prediction = roll(compound, count, state), limit = this.paceLimit(compound);
+      // Price the actual window into every future stint, including fresh
+      // tyres. Forcing a stop afterwards leaves the search optimistically
+      // choosing softs for a long finish, then paying for repeated stops.
+      for (let i = 0; i < prediction.t.length; i++) {
+        if ((state.age0 ?? 0) + i >= limit) prediction.t[i] = 1e9;
+      }
+      return prediction;
+    };
+  }
+  get hardWindow() { return this.classId === 'lmdh' ? 6 : 7; }
+  // The inherited dynamic programme permits three stops. Longer races use
+  // the game's normal planner rather than searching an impossible window.
+  get usable() { return super.usable && (this.race?.track.wetness ?? 0) < 0.08 && this.cal.laps <= this.hardWindow * 4; }
+  paceLimit(compound) {
+    if (this.trackId !== 'harbor-ring' || this.race?.weather.id !== 'clear' || !this.usable) return Infinity;
+    return { soft: 2, medium: 3, hard: this.hardWindow }[compound] ?? Infinity;
+  }
   decide(car, lapsLeft, aiDriving = true) {
     const plan = super.decide(car, lapsLeft, aiDriving);
     if (this.reason === 'APEX PLAN') this.reason = 'RAZOR PLAN';
-    if (plan || !this.usable || !aiDriving || this.request || lapsLeft <= 1 || this.trackId !== 'harbor-ring'
-      || this.race?.weather.id !== 'clear') return plan;
-    // Initial limits come from actual RAZOR stints, not a shared driver's
-    // optimistic long-stint prior. In particular, do not enter the hard tyre's
-    // steep seventh-lap fade while waiting for the fuel window.
-    const compound = car.wheels[0].tyre.compound;
-    const limit = { soft: 2, medium: 3, hard: this.classId === 'lmdh' ? 6 : 7 }[compound];
-    if (!limit || this.stintLaps + 1 < limit) return plan;
-    const fuelLaps = Math.floor(car.fuel / this.fuelPerLap - 0.15), cur = this.curSet(car, lapsLeft);
-    const root = this.root({ n: lapsLeft, cur, fuelLaps, stops: this.stops, swaps: this.swaps });
-    const best = root.stops.reduce((a, b) => b.cost < a.cost ? b : a, { cost: Infinity });
-    if (!Number.isFinite(best.cost)) return plan;
-    this.chosen = { ...best, after: lapsLeft - 1 };
-    this.boxThisLap = true; this.reason = 'RAZOR PACE WINDOW';
-    this.decisions.push({ lap: car.race.lap, box: true, reason: this.reason, compound: best.compound });
-    return (this.plan = this.fit(car, lapsLeft - 1, best));
+    return plan;
   }
 }
 

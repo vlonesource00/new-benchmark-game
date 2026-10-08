@@ -54,8 +54,13 @@ export class Corridors {
       const target = this.smoothGoal[j];
       const t = clamp(x / entry, 0, 1), S = smooth(t);
       const tail = 1 - smooth((x - tailStart) / Math.max(1, total - tailStart));
-      const initial = d0 + slope * x + 0.5 * curve * x * x;
-      return (initial * (1 - S) + target * S) * tail;
+      // Quintic Hermite basis: position, slope and curvature each settle
+      // independently. Multiplying the whole incoming quadratic by (1-S)
+      // lets its slope/curvature terms bulge far beyond the requested lane.
+      const h1 = t - 6 * t ** 3 + 8 * t ** 4 - 3 * t ** 5;
+      const h2 = 0.5 * t * t * (1 - t) ** 3;
+      const initial = d0 * (1 - S) + slope * entry * h1 + curve * entry * entry * h2;
+      return (initial + target * S) * tail;
     };
     for (let j = 0; j <= n; j++) this.shift[j] = at((j - q.f) * base.ds, j);
     base.laneWindow(this.shift, q.i, n, lane);

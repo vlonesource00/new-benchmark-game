@@ -42,12 +42,15 @@ export class RazorDriver extends ApexDriver {
   predict(car, dt) {
     // Predict the actual held-control age, rather than treating a slower
     // decision rate as an extra one-and-a-half frames of transport latency.
-    const horizon = clamp(this.controlDelay + dt * (dt <= 1 / 30 + 1e-6 ? 1.5 : 0.5), 0.008, 0.06);
+    // Once reply age is measured, it already accounts for transport. Add
+    // only half the next held interval, otherwise a worker aims too far ahead.
+    const held = this.controlDelay > 0 ? 0.5 : dt <= 1 / 30 + 1e-6 ? 1.5 : 0.5;
+    const horizon = clamp(this.controlDelay + dt * held, 0.008, 0.06);
     this.controlPose = super.predict(car, Math.max(0.0126, horizon / 1.5));
     return this.controlPose;
   }
   labelIntent(pitting) {
-    const cs = pitting ? 'PIT' : this.combat?.state ?? 'FREE';
+    const cs = pitting ? 'PIT' : this.combat?.plan?.defendingReturn ? 'DEFEND' : this.combat?.state ?? 'FREE';
     if (this.stability < 0.3 && this.lastCar?.speed > 8) this.lowSince ??= this.now;
     else this.lowSince = null;
     const recovering = this.lowSince !== null && this.now - this.lowSince >= (this.options.recoveryHold ?? 0.18);
