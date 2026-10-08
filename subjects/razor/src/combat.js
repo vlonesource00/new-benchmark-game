@@ -239,6 +239,7 @@ export class RazorCombat {
     }
     if (best.kind === 'attack' && (!this.plan || this.plan.target !== r.id || this.plan.kind !== 'attack')) {
       this.stats.attempts++; this.event(now, 'committed attack', r.id);
+      if (r.ds > 5) this.passed.delete(r.id);
       this.encounters.set(r.id, { started: now, side: best.side, maxOffset: 0, hadOverlap: false });
     }
     if (best.kind === 'evade' && this.plan?.kind !== 'evade') { this.stats.evasions++; this.event(now, 'evade', r.id); }
@@ -334,8 +335,17 @@ export class RazorCombat {
     const r = this.field.list.find(q => q.alongside && Math.abs(q.dlat) < width + q.width + 0.8);
     if (!r) return null;
     const gap = Math.abs(r.dlat) - width - r.width;
-    // Permit controlled rubbing; constrain only the lateral closing velocity.
-    return { id: r.id, dir: Math.sign(r.dlat), gap, rate: Math.max(-0.25, (gap + 0.06) / 0.35) + Math.sign(r.dlat) * r.vl };
+    // The shared controller subtracts a road-lateral path slope. RAZOR's
+    // observations instead use the smooth base-line normal; road coordinates
+    // jump at polygon joins. Translate the physical corridor sweep into that
+    // interface, without turning a coordinate jump into a steering correction.
+    const d = this.driver, path = d.path ?? d.line, pose = d.controlPose ?? this.car;
+    const q = path.closest(pose.x, pose.z, d.cur?.i ?? this.me.i);
+    const b = d.line.closest(pose.x, pose.z, d.cursor);
+    const legacySlope = clamp((path.sample(path.lat, path.idx(q.i + 2), q.f) - path.sample(path.lat, path.idx(q.i - 2), q.f)) / (4 * path.ds), -0.6, 0.6);
+    const sweep = Math.sin(path.heading(q.i, q.f) - d.line.heading(b.i, b.f)), dir = Math.sign(r.dlat);
+    // Permit controlled rubbing; constrain lateral closing, not the pedals.
+    return { id: r.id, dir, gap, rate: Math.max(-0.25, (gap + 0.06) / 0.35) + dir * (r.vl + v * (legacySlope - sweep)) };
   }
   vis() {
     return { field: (this.field?.list ?? []).slice(0, 12).map(r => ({ id: r.id, ds: r.ds, l: r.lat, v: r.v, target: r.target, box: r.box, hazard: r.hazard })),

@@ -8,7 +8,8 @@ export class RazorStrategist extends ApexStrategist {
   decide(car, lapsLeft, aiDriving = true) {
     const plan = super.decide(car, lapsLeft, aiDriving);
     if (this.reason === 'APEX PLAN') this.reason = 'RAZOR PLAN';
-    if (plan || !this.usable || !aiDriving || this.request || lapsLeft <= 1 || this.trackId !== 'harbor-ring') return plan;
+    if (plan || !this.usable || !aiDriving || this.request || lapsLeft <= 1 || this.trackId !== 'harbor-ring'
+      || this.race?.weather.id !== 'clear') return plan;
     // Initial limits come from actual RAZOR stints, not a shared driver's
     // optimistic long-stint prior. In particular, do not enter the hard tyre's
     // steep seventh-lap fade while waiting for the fuel window.

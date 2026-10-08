@@ -8,6 +8,9 @@ import { RazorCombat } from './combat.js';
 export class RazorDriver extends ApexDriver {
   prepare(car) {
     super.prepare(car);
+    // Close overlap constrains steering. Longitudinal intervention belongs to
+    // RAZOR's verified front-bumper obstruction, not the shared side guard.
+    if (this.options.overlapPedalCap === false) this.options.nbShed = Infinity;
     if (!(this.combat instanceof RazorCombat)) {
       this.field = new TrafficField(this.track);
       this.combat = new RazorCombat(this);
@@ -16,7 +19,7 @@ export class RazorDriver extends ApexDriver {
   reset() {
     super.reset(); this.lowSince = null; this.kcF = null;
     this.tcCap = 1; this.lastStab = 1; this.rebuild = null;
-    this.refreshClock = -1; this.forceRefresh = true; this.push = 1; this.pushApplied = 1;
+    this.refreshClock = 1; this.forceRefresh = true; this.push = 1; this.pushApplied = 1;
   }
   update(car, cars, dt, context = {}) {
     this.now = context.time ?? 0;
@@ -40,7 +43,8 @@ export class RazorDriver extends ApexDriver {
     // Predict the actual held-control age, rather than treating a slower
     // decision rate as an extra one-and-a-half frames of transport latency.
     const horizon = clamp(this.controlDelay + dt * (dt <= 1 / 30 + 1e-6 ? 1.5 : 0.5), 0.008, 0.06);
-    return super.predict(car, Math.max(0.0126, horizon / 1.5));
+    this.controlPose = super.predict(car, Math.max(0.0126, horizon / 1.5));
+    return this.controlPose;
   }
   labelIntent(pitting) {
     const cs = pitting ? 'PIT' : this.combat?.state ?? 'FREE';

@@ -10,6 +10,8 @@ export class Corridors {
     this.pool = Array.from({ length: 6 }, () => driver.line.blankLane());
     for (const p of this.pool) p.offset = new Float64Array(driver.line.N);
     this.shift = new Float64Array(220);
+    this.rawGoal = new Float64Array(220);
+    this.smoothGoal = new Float64Array(220);
     const base = driver.line;
     this.normalH = new Float64Array(base.N);
     for (let i = 0; i < base.N; i++) {
@@ -27,14 +29,31 @@ export class Corridors {
     const slope = clamp(Math.tan(angle(car.yaw + beta - h)), -0.28, 0.28);
     const curve = clamp((car.ay ?? 0) / (v * v) - base.sample(base.ks, q.i, q.f), -0.002, 0.002);
     const d0 = q.e, total = Math.min(630, Math.max(180, entry + hold + Math.max(50, v * 1.5)));
+    const tailStart = Math.max(entry, Math.min(entry + hold, total - Math.max(50, v * 1.5)));
     const n = Math.min(this.shift.length - 1, Math.ceil(total / base.ds));
+    for (let j = 0; j <= n; j++) {
+      const i = base.idx(q.i + j); this.rawGoal[j] = goal(base.st[i], i);
+    }
+    // A polygonal road join can briefly remove the space on one side. Pointwise
+    // clipping would make a sharp notch and propagate heavy braking upstream.
+    // Anticipate that narrowing with smooth tapers, always toward the proven
+    // base line and never beyond the available offset at a station.
+    const blend = Math.max(40, v * 1.25), radius = Math.ceil(blend / base.ds);
+    for (let j = 0; j <= n; j++) {
+      const magnitude = Math.abs(this.rawGoal[j]); let safe = magnitude;
+      for (let k = Math.max(0, j - radius); k <= Math.min(n, j + radius); k++) {
+        const other = Math.abs(this.rawGoal[k]);
+        if (other < magnitude) safe = Math.min(safe, other + (magnitude - other) * smooth(Math.abs(j - k) * base.ds / blend));
+      }
+      this.smoothGoal[j] = Math.sign(this.rawGoal[j]) * safe;
+    }
     // C2 initial conditions. The correction decays to zero with zero first
     // and second derivatives; the destination can follow a rival's road line.
     const at = (x, j) => {
       const i = base.idx(q.i + j);
-      const target = goal(base.st[i], i);
+      const target = this.smoothGoal[j];
       const t = clamp(x / entry, 0, 1), S = smooth(t);
-      const tail = 1 - smooth((x - entry - hold) / Math.max(1, total - entry - hold));
+      const tail = 1 - smooth((x - tailStart) / Math.max(1, total - tailStart));
       const initial = d0 + slope * x + 0.5 * curve * x * x;
       return (initial * (1 - S) + target * S) * tail;
     };

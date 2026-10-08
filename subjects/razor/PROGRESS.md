@@ -1,6 +1,6 @@
 # RAZOR first development build
 
-Base: `origin/graphics-aaa` at `86d3005`. Separate `razor` driver; SOLSTICE,
+Base: `origin/graphics-aaa` at `c0fb713`. Separate `razor` driver; SOLSTICE,
 SPEARHEAD, APEX and the shared physics are preserved.
 
 ## Implemented
@@ -9,11 +9,14 @@ SPEARHEAD, APEX and the shared physics are preserved.
   combat, traffic observations, slip expenditure and strategy installation.
 - Constant-size corridor search, pooled geometry buffers and local retiming.
   Measured position/tangent joins, bounded steering jerk and persistent sides.
+  Road narrowing uses smooth anticipatory tapers instead of sharp offset clipping.
 - Moving wake pursuit, inside/outside separation, full-throttle use of owned
   space, one defensive cover and smooth returns. A failed move must return
   before starting a new move in the opposite direction.
 - Static/spun/retired road obstacles remain physical. A completely blocked
   road gets a stopping constraint; viable escapes keep their acceleration.
+  The shared side guard is translated into smooth-line coordinates; overlap
+  itself supplies no longitudinal speed or acceleration cap.
 - Pit calls and approaches are excluded from pursuit but remain physical
   obstacles. Lane/service cars are excluded; releases re-enter occupancy when
   their body reaches the road. The debugger also suppresses phantom pit targets.
@@ -33,10 +36,10 @@ At 60 Hz, these deliberately staged Harbor soft-tyre encounters produced:
 
 | Encounter | RAZOR clear-ahead time | Same traffic-aware driver, attacks disabled |
 | --- | ---: | ---: |
-| GTP against slightly slower APEX | 6.36 s | 8.82 s |
-| GTP through APEX GT3 | 3.71 s | 7.42 s |
-| GT3 against slightly slower APEX | 7.64 s | 9.19 s |
-| GTP against near-pace APEX | 5.81 s | 7.24 s |
+| GTP against slightly slower APEX | 6.41 s | 10.10 s |
+| GTP through APEX GT3 | 3.70 s | 10.02 s |
+| GT3 against slightly slower APEX | 7.72 s | 13.35 s |
+| GTP against near-pace APEX | 6.02 s | 18.77 s |
 
 A conversion needs sustained clearance, executed lateral departure and overlap,
 and earlier completion than its paired baseline. Live "passes after moves" are
@@ -44,7 +47,7 @@ associations, not causal proof. Ordinary race order changes and pit advantages
 are not awarded as demonstrated tactical passes.
 
 The 24 encounter runs had zero hard contacts, zero off-track time and zero
-controller errors. There were light rubbing contacts at 20 Hz; the tests do not
+controller errors. There were 63 light contact steps across the matrix; the tests do not
 claim zero touches. Measured update p95 was below 1 ms on this machine,
 excluding preparation. This is not a hardware-independent latency guarantee.
 
@@ -64,10 +67,11 @@ Native 12-lap Harbor clear, seed 7, two AI teammates per car:
 
 | Class | RAZOR finish | APEX finish | RAZOR stops / swaps |
 | --- | ---: | ---: | --- |
-| GTP | 719.40 s | 721.51 s | 1 / 1 |
-| GT3 | 822.28 s | 825.57 s | 1 / 1 |
+| GTP | 720.25 s | 721.56 s | 1 / 1 |
+| GT3 | 823.88 s | 826.98 s | 1 / 1 |
 
-Both RAZOR entries finished without incidents, contacts or controller errors.
+Both RAZOR entries finished without incidents or controller errors. GTP recorded
+two light contact steps and zero hard contacts; GT3 recorded zero contacts.
 Those small wins validate the race integration; they do not prove combat
 superiority. The initial pit windows use measured RAZOR stint limits instead of
 waiting for the steep late-hard fade in the inherited planner's fuel window.
@@ -75,25 +79,30 @@ waiting for the steep late-hard fade in the inherited planner's fuel window.
 The two-lap RAZOR/APEX seat-worker smoke completed without errors, contacts or
 incidents. Its combined delay percentiles are invalid because the legacy harness
 includes APEX replies without timestamps. A dedicated RAZOR/RAZOR one-lap worker
-check completed without controller errors or recorded incidents, with 15 contact
+check completed without controller errors or recorded incidents, with 3 contact
 steps and finite simulated reply ages of 25 ms. It does not establish a zero-contact
 worker result or a hardware-independent transport guarantee.
 
-Changeable GTP vs APEX and Changeable GT3 solo completed through wetness
-0.00–0.93 with no RAZOR incidents or controller errors. GTP lost to APEX by
-about 15 s and made two stops. Wet-weather strategy remains a limitation.
+Changeable checks on the latest base traversed wetness 0.00–0.93. The dry stint
+maximum is restricted to Clear; applying it between showers had forced a poor
+fresh-soft stop and caused a GTP regression. With normal weather planning restored,
+GTP completed without incidents or controller errors but lost by 23.40 s with
+two stops. GT3 completed without controller errors but lost control, went off
+track, hit the wall and required recovery; it lost by 41.33 s with two stops.
+Weather strategy and GT3 wet stability remain explicit limitations.
 
 ## Still to solve
 
 1. Equal-car self-fight conversion and mid-corner equal-class attacks. The
    canonical cases do not yet demonstrate a pass; report them as unresolved.
-   In the corner case, attacks disabled completes a pass at 14.01 s while
+   In the corner case, attacks disabled completes a pass at 16.15 s while
    the current attack policy fails to convert within 24 s and loses time.
 2. Warm GTP hard stint fade: one final stint still rose about five seconds.
    The four-second target is not universally met.
 3. Defense against a varied field, dense moving traffic, more circuits, more
    seeds and the full worker combat matrix. Current evidence is chiefly Harbor.
-4. Fit RAZOR's own stint priors and evaluate weather decisions, instead of
+4. GT3 wet stability and weather decisions. Current rain evidence is not clean
+   across both classes. Fit RAZOR's own stint priors instead of
    treating APEX's priors as final RAZOR calibration.
 
 ## Reproduce
@@ -104,5 +113,6 @@ node --import ./scripts/json-loader.mjs subjects/razor/tools/encounters.mjs all 
 node --import ./scripts/json-loader.mjs subjects/razor/tools/race.mjs apex,razor lmdh 12 clear 7
 node --import ./scripts/json-loader.mjs subjects/razor/tools/race.mjs apex,razor gt 12 clear 7
 node --import ./scripts/json-loader.mjs subjects/razor/tools/race.mjs razor gt 12 changeable 7
+node --import ./scripts/json-loader.mjs subjects/razor/tools/race.mjs razor lmdh 6 clear 7 soft
 npm run game:build
 ```

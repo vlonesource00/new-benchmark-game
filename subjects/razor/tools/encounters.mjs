@@ -108,7 +108,7 @@ export function runEncounter(setup, { attacks = true, hz = 60, duration = 24, tr
   return out;
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const name = process.argv[2] ?? 'all', hz = Number(process.argv[3] ?? 60), trace = process.argv.includes('--trace');
   for (const setup of CASES.filter(s => name === 'all' || s.name === name)) {
     const enabled = runEncounter(setup, { attacks: true, hz, trace });
