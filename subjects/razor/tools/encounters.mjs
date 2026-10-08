@@ -38,7 +38,7 @@ export function runEncounter(setup, { attacks = true, hz = 60, duration = 24, tr
     if (index === 0 || setup.matchRivalHz) {
       const held = { t: -1, controls: null };
       const b = index === 0
-        ? createRazorBridge({ hostTrack: track, index, options: { attacks, strategy: false }, state: c => razorState(race, c) })
+        ? createRazorBridge({ hostTrack: track, index, options: { attacks, strategy: false, ...setup.driverOptions }, state: c => razorState(race, c) })
         : createSeatBridge(seat, index, race);
       return {
         get driver() { return b.driver; }, get errors() { return b.errors; }, get lastError() { return b.lastError; },
@@ -87,7 +87,7 @@ export function runEncounter(setup, { attacks = true, hz = 60, duration = 24, tr
   let passedAt = null, firstClear = null, sideTime = 0, sideThrottle = 0, brakingSide = 0, maxSteerStep = 0, minSpeed = speed;
   let prevSteer = 0, off = 0, sideFlips = 0, side = 0, lastSide = 0, behindSeconds = 0;
   let attackSideFlips = 0, lastAttackSide = 0, lastAttackTarget = null;
-  const rows = [], intentSeconds = {}, dt = FIXED_DT;
+  const rows = [], offLog = [], intentSeconds = {}, dt = FIXED_DT;
   while (race.time < duration) {
     race.step(dt);
     const [c, rival] = race.cars, d = race.entries[0].bridges[0].driver;
@@ -97,7 +97,16 @@ export function runEncounter(setup, { attacks = true, hz = 60, duration = 24, tr
     if (gap < -6) { firstClear ??= race.time; if (race.time - firstClear > 1.5) passedAt ??= firstClear; } else firstClear = null;
     if (gap > 0 && gap < 40) behindSeconds += dt;
     maxSteerStep = Math.max(maxSteerStep, Math.abs(c.controls.steer - prevSteer)); prevSteer = c.controls.steer;
-    if (Math.abs(c.lateral) > track.halfWidth + track.curbWidth) off += dt;
+    if (Math.abs(c.lateral) > track.halfWidth + track.curbWidth) {
+      off += dt;
+      if (trace && offLog.length < 4) {
+        const path = d.path, q = path.closest(c.x, c.z, d.cursor), x = path.sample(path.px, q.i, q.f), z = path.sample(path.pz, q.i, q.f);
+        offLog.push({ t: race.time, s: c.s, lat: c.lateral, pathLat: track.nearest(x, z).lateral, e: q.e,
+          v: c.speed, yaw: c.yaw, pathH: path.heading(q.i, q.f), steer: c.controls.steer, kind: d.combat.plan?.kind,
+          controlE: d.e, indices: [d.cursor, d.cur.i, q.i], prediction: d.delay, age: d.controlDelay,
+          nearE: path.closest(c.x, c.z, d.cur.i).e });
+      }
+    }
     minSpeed = Math.min(minSpeed, c.speed);
     side = d.combat.plan?.side ?? 0;
     if (side && lastSide && side !== lastSide) sideFlips++;
@@ -119,7 +128,7 @@ export function runEncounter(setup, { attacks = true, hz = 60, duration = 24, tr
     sideFlips, attackSideFlips, maxSteerStep: round(maxSteerStep), updateP95ms: round(costs[Math.floor(costs.length * 0.95)] ?? 0), errors: bridge.errors, lastError: bridge.lastError,
     damage: round(c.damage), contactLog: contactLog.slice(0, 10), intentSeconds: Object.fromEntries(Object.entries(intentSeconds).map(([k, v]) => [k, round(v, 1)])), stats: bridge.driver.combat.stats, events: bridge.driver.combat.events,
     ...(bridge.errors ? { fault: { debug: bridge.driver.debug(), field: bridge.driver.field.list.map(r => ({ id: r.id, width: r.width, v: r.v, lat: r.lat, ds: r.ds })) } } : {}) };
-  if (trace) out.trace = rows;
+  if (trace) { out.trace = rows; out.offLog = offLog; }
   return out;
 }
 

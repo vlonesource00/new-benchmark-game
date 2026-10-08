@@ -19,7 +19,8 @@ export class RazorCombat {
     this.next = -1; this.events = []; this.visCands = []; this.passed = new Set();
     this.stats = { plans: 0, attempts: 0, associatedPasses: 0, aborts: 0, recovers: 0, blockedNose: 0, evasions: 0 };
     this.encounters = new Map(); this.clearAt = null; this.blockedAt = null;
-    this.hints = new Map();
+    this.hints = new Map(); this.aperture = null; this.reactionAt = -1;
+    this.stats.opportunityReactions = 0;
   }
   event(now, kind, id) { this.events.push({ t: +now.toFixed(2), kind, id }); if (this.events.length > 30) this.events.shift(); }
   forecast(r, t) {
@@ -141,26 +142,48 @@ export class RazorCombat {
     const ahead = field.list.filter(r => r.ds > -4 && r.ds < (this.driver.options.towRange ?? 110) && r.target);
     return ahead.sort((a, b) => a.ds - b.ds)[0] ?? null;
   }
-  goal(car, r, side, kind) {
+  opportunity(car, field, r) {
+    let mask = 0;
+    if (r?.target && r.ds > 0 && r.ds < 40 && this.reach(car, r)) {
+      const half = this.ownWidth ?? car.spec.halfWidth ?? 0.98;
+      for (const side of [-1, 1]) {
+        const wanted = r.offset + side * (half + r.width + 0.14);
+        if (Math.abs(this.bounded(r.bi, wanted) - wanted) > 0.3) continue;
+        const blocked = field.list.some(q => q.id !== r.id && Math.abs(q.ds - r.ds) < q.along + r.along + 3
+          && Math.abs(q.offset - wanted) < half + q.width + 0.2);
+        if (!blocked) mask |= side < 0 ? 1 : 2;
+      }
+    }
+    const old = this.aperture;
+    this.aperture = { id: r?.id, mask };
+    return Boolean(old && old.id === r?.id && (mask & ~old.mask));
+  }
+  goal(car, r, side, kind, clearance = 0.14) {
     const d = this.driver, half = this.ownWidth ?? car.spec.halfWidth ?? 0.98;
     return (s, i) => {
       if (kind === 'return') return 0;
       if (kind === 'cover') return this.bounded(i, side * 1.1);
       const lat = this.targetOffset(r, i);
-      const gap = kind === 'tow' ? 0 : half + r.width + (r.hazard ? 1 : 0.14);
+      const gap = kind === 'tow' ? 0 : half + r.width + (r.hazard ? 1 : clearance);
       return this.bounded(i, lat + side * gap);
     };
   }
   make(car, c, r, side, kind, active) {
-    const d = this.driver, gap = (this.ownWidth ?? car.spec.halfWidth ?? 0.98) + r.width + (r.hazard ? 1 : 0.14);
+    const d = this.driver;
+    // Reserve extra bumper clearance while there is still room to form the
+    // lane. Once overlapping, keep the fitted corridor rather than demanding
+    // an abrupt lateral correction beside the rival.
+    const room = r.ds > (car.spec.halfLength ?? 2.28) + r.along + 3.5;
+    const clearance = kind === 'attack' && room ? d.options.passClearance ?? 0.14 : 0.14;
+    const gap = (this.ownWidth ?? car.spec.halfWidth ?? 0.98) + r.width + (r.hazard ? 1 : clearance);
     const offset = kind === 'return' ? -c.e : kind === 'cover' ? side * 1.1 - c.e : kind === 'tow' ? r.dlat : r.dlat + side * gap;
     const v = Math.max(12, car.speed);
     const latBudget = Math.max(2.5, d.model.lat(v) - Math.abs(car.ay ?? 0) * 0.55);
     const entry = clamp(Math.max(v * Math.sqrt(5.8 * Math.abs(offset) / latBudget),
       v * Math.cbrt(60 * Math.abs(offset) / Math.max(20, d.options.jerk ?? 40)), kind === 'return' ? v * 1.6 : 0), 28, 190);
     const hold = kind === 'return' ? 0 : Math.max(70, v * 2.3, Math.max(0, r.ds) + v);
-    const q = this.corridors.build(car, c, this.goal(car, r, side, kind), entry, hold, active);
-    return { ...q, kind, side, target: r.id, A: Math.abs(offset), tag: kind, risk: 0, score: 0, clear: false,
+    const q = this.corridors.build(car, c, this.goal(car, r, side, kind, clearance), entry, hold, active);
+    return { ...q, kind, side, clearance, target: r.id, A: Math.abs(offset), tag: kind, risk: 0, score: 0, clear: false,
       born: this.now, rebuildAt: this.now + Math.max(1.4, (entry + hold * 0.45) / v), rivalLat: r.lat };
   }
   evaluate(q, car, field, focus) {
@@ -362,6 +385,16 @@ export class RazorCombat {
     }
     if (!hazard && r?.target && r.ds < 0 && r.cls === car.classId && this.plan?.kind !== 'attack') defender = this.driver.options.defend !== false;
     this.focus = r ? { id: r.id, kind: hazard ? 'obstacle' : defender ? 'threat' : 'rival', ds: r.ds } : null;
+    const opening = this.opportunity(car, field, r);
+    const pursuing = !this.plan || ['fast line', 'tow', 'return'].includes(this.plan.kind);
+    if (opening && pursuing && !hazard && !defender && this.driver.options.attacks !== false
+      && now - this.reactionAt > 0.18 && now < this.next) {
+      // The inexpensive aperture sensor runs on every observation, even
+      // between full plans. A new reachable gap can preempt the quiet timer;
+      // an already committed manoeuvre keeps its side and fitted trajectory.
+      this.next = now; this.reactionAt = now; this.stats.opportunityReactions++;
+      this.event(now, 'opening reacted to', r.id);
+    }
     // Do not retain a target or its corridor after it boxes. Physical evasion
     // above is a separate action and never supplies a drafting reward.
     if (this.plan?.target != null && !field.byId.get(this.plan.target)?.target && !hazard) this.next = -1;

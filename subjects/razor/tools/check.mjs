@@ -52,6 +52,37 @@ test('fresh teammate with only distant traffic drives without a target', () => {
   b.update(me, [me, other], 1 / 60, { time: 0 }); assert.equal(b.errors, 0, b.lastError);
   assert.ok(me.controls.throttle > 0); assert.equal(b.driver.combat.focus, null);
 });
+test('a newly reachable opening preempts the timer and retains its side', () => {
+  // Consecutive public snapshots exercise the reaction boundary. This is not
+  // a simulated pass and does not supply any passing-performance credit.
+  const t = new Track('harbor-ring');
+  const cars = Array.from({ length: 4 }, (_, id) => Object.assign(new Vehicle({ classId: 'lmdh' }), { id }));
+  const b = createRazorBridge({ hostTrack: t, options: { strategy: false } }); b.reset({ cars });
+  const line = b.driver.line;
+  const place = (c, s, offset, v) => {
+    const j = line.stationOf(s), i = Math.floor(j), f = j % 1, h = line.heading(i, f);
+    c.place(t, s, line.sample(line.lat, i, f) + offset, v);
+    c.yaw = h; c.vx = Math.sin(h) * v; c.vz = Math.cos(h) * v; c.u = v; c.v = 0;
+    c.yawRate = line.sample(line.ks, i, f) * v; c.gear = b.driver.model.gearAt(v);
+    for (const w of c.wheels) { w.tyre.core = w.tyre.optimum; w.tyre.surface = w.tyre.optimum; w.tyre.wear = 0.1; }
+  };
+  place(cars[0], 300, 0, 65); place(cars[1], 335, 0, 65);
+  place(cars[2], 339, -2.15, 65); place(cars[3], 339, 2.15, 65); b.reset({ cars });
+  b.update(cars[0], cars, 1 / 60, { time: 0 });
+  assert.equal(b.driver.combat.plan.kind, 'fast line');
+  const scheduled = b.driver.combat.next;
+  place(cars[2], 370, -7, 65); place(cars[1], 335, 0, 50);
+  b.update(cars[0], cars, 1 / 60, { time: 0.05 });
+  assert.ok(0.05 < scheduled); assert.equal(b.driver.combat.plan.kind, 'attack');
+  assert.equal(b.driver.combat.stats.opportunityReactions, 1);
+  const path = b.driver.combat.plan.path, side = b.driver.combat.plan.side;
+  assert.equal(side, -1);
+  // Opening the opposite side does not uncommit the move already in progress.
+  place(cars[3], 375, 7, 65);
+  b.update(cars[0], cars, 1 / 60, { time: 0.07 });
+  assert.equal(b.driver.combat.plan.path, path); assert.equal(b.driver.combat.plan.side, side);
+  assert.equal(b.errors, 0); assert.equal(b.driver.combat.stats.associatedPasses, 0);
+});
 test('fully blocked road brakes before the stationary row', () => {
   const t = new Track('harbor-ring');
   const teams = Array.from({ length: 9 }, (_, i) => ({ id: 'b' + i, index: i, name: 'b' + i, short: 'B', color: '#fff', grid: i, classId: 'lmdh',
@@ -105,6 +136,16 @@ for (const hz of [20, 30]) {
   test(`${hz} Hz matched self-fight: an executed move passes; following does not`, () => {
     assert.ok(r.passedAt !== null); assert.ok(r.stats.associatedPasses > 0);
     assert.equal(control.passedAt, null); assert.equal(r.attackSideFlips, 0);
+  });
+}
+for (const hz of [30, 60]) {
+  const setup = CASES.find(c => c.name === 'gt3-same-class');
+  const r = outcomes.find(r => r.hz === hz && r.case === setup.name);
+  const narrow = runEncounter({ ...setup, driverOptions: { perClass: { gt: { yawGain: 0.8, passClearance: 0.14 } } } }, { hz });
+  test(`${hz} Hz GT3 bumper reserve reduces hits while converting`, () => {
+    assert.ok(r.contacts < narrow.contacts); assert.ok(r.contacts <= 1);
+    assert.ok(r.passedAt !== null && r.stats.associatedPasses > 0);
+    assert.ok(r.passedAt < narrow.passedAt + 0.5); assert.equal(r.attackSideFlips, 0);
   });
 }
 console.log(JSON.stringify({ passed: n, encounters: outcomes.length, severe: outcomes.reduce((s, r) => s + r.severe, 0),

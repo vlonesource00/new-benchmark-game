@@ -1,6 +1,6 @@
 // Same-cadence, warm-tyre encounters through the game's actual AsyncSeats and
-// seat-worker replicas. Four physics steps run between answers, retaining the
-// real 30 Hz snapshot age instead of directly executing a native driver.
+// seat-worker replicas. Physics runs between answers at the selected cadence,
+// retaining the real snapshot age instead of executing a native driver.
 import assert from 'node:assert/strict';
 import { Worker as Thread } from 'node:worker_threads';
 import { AsyncSeats } from '../../../game/core/async-seats.js';
@@ -14,6 +14,12 @@ const args = process.argv.slice(2).filter(arg => !arg.startsWith('--'));
 const rival = args[0] ?? 'razor';
 const classId = args[1] ?? 'lmdh';
 const rivalClassId = args[2] ?? classId;
+const option = (name, fallback) => Number(process.argv.find(a => a.startsWith('--' + name + '='))?.split('=')[1] ?? fallback);
+const hz = option('hz', 30), seconds = option('seconds', 24), start = option('start', 300);
+const gap = option('gap', rivalClassId === classId ? 13 : 23);
+assert.ok([20, 30, 60].includes(hz), 'Worker cadence must be 20, 30 or 60 Hz');
+assert.ok(Number.isFinite(start) && Number.isFinite(gap) && seconds > 0 && seconds <= 180);
+const tracing = process.argv.includes('--trace');
 assert.ok(AI_DRIVERS.some(d => d.id === rival), 'Unknown opponent');
 assert.ok([classId, rivalClassId].every(id => ['lmdh', 'gt'].includes(id)), 'Class must be lmdh or gt');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -68,7 +74,7 @@ async function encounter(attacks) {
       bridge.reset({ cars: race.cars });
       return bridge.driver;
     });
-    const line = geometries[0].line, start = 300, gap = rivalClassId === classId ? 13 : 23;
+    const line = geometries[0].line;
     const speed = Math.min(65, sampleAt(line, line.v, start) * 0.96);
     for (const [index, car] of race.cars.entries()) {
       const geometry = geometries[index], line = geometry.line;
@@ -85,9 +91,9 @@ async function encounter(attacks) {
     }
     for (const entry of race.entries) entry.bridges[0].reset();
     let clearSince = null, passedAt = null;
-    const off = [0, 0];
-    while (race.time < 24) {
-      for (let step = 0; step < 4; step++) {
+    const off = [0, 0], trace = []; let nextTrace = 0;
+    while (race.time < seconds) {
+      for (let step = 0; step < 120 / hz; step++) {
         race.step(FIXED_DT);
         const [car, other] = race.cars, ds = other.race.progress - car.race.progress;
         if (ds < -6) {
@@ -99,6 +105,17 @@ async function encounter(attacks) {
         }
       }
       await answers();
+      if (tracing && race.time >= nextTrace) {
+        const [car, other] = race.cars, debug = seats.hosts[0].seats[0].debug();
+        const n = x => Number.isFinite(x) ? +x.toFixed(3) : null;
+        trace.push({ t: n(race.time), s: n(car.s), gap: n(other.race.progress - car.race.progress),
+          v: n(car.speed), rivalV: n(other.speed), lat: n(car.lateral), rivalLat: n(other.lateral),
+          throttle: n(car.controls.throttle), brake: n(car.controls.brake), steer: n(car.controls.steer),
+          target: n(debug.targetSpeed), line: n(debug.lineSpeed), e: n(debug.e), stability: n(debug.stability),
+          state: debug.combat?.state, side: debug.combat?.side, cap: debug.combat?.cap, cands: debug.combat?.cands,
+          rival: seats.hosts[1]?.seats[0]?.debug() });
+        nextTrace = race.time + 0.2;
+      }
     }
     const debug = seats.hosts[0].seats[0].debug(), errors = race.entries.map(e => e.bridges[0].errors ?? 0);
     ages.sort((a, b) => a - b);
@@ -108,7 +125,8 @@ async function encounter(attacks) {
       gain: +(race.cars[0].race.progress - race.cars[1].race.progress).toFixed(1),
       contacts: race.contacts, severe: race.collisionStats.severeContacts, off: off[0], rivalOff: off[1], errors, replies,
       replyAgeP95: ages[Math.floor(ages.length * 0.95)],
-      associatedPasses: debug.combat?.stats?.associatedPasses ?? 0, events: debug.combat?.events ?? [] };
+      associatedPasses: debug.combat?.stats?.associatedPasses ?? 0, events: debug.combat?.events ?? [],
+      ...(tracing ? { trace } : {}) };
   } finally {
     seats.dispose();
     if (previousWorker === undefined) delete globalThis.Worker;
@@ -119,5 +137,5 @@ async function encounter(attacks) {
 const enabled = await encounter(true), control = await encounter(false);
 const moveDemonstrated = enabled.passedAt !== null && enabled.associatedPasses > 0 && enabled.rivalOff === 0
   && (control.passedAt === null || enabled.passedAt + 1 < control.passedAt);
-console.log(JSON.stringify({ rival, classId, rivalClassId, hz: 30, seconds: 24, enabled, control, moveDemonstrated }));
+console.log(JSON.stringify({ rival, classId, rivalClassId, hz, seconds, start, gap, enabled, control, moveDemonstrated }));
 if (process.argv.includes('--require-move')) assert.ok(moveDemonstrated, 'The worker must execute a causal pass');

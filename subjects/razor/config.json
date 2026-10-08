@@ -23,6 +23,6 @@
   "strategy": true,
   "tracks": {
     "nurburgring": { "margin": 0.8 },
-    "harbor-ring": { "perClass": { "gt": { "yawGain": 0.8 } } }
+    "harbor-ring": { "perClass": { "gt": { "yawGain": 0.8, "passClearance": 0.24, "predictionJerk": 65 } } }
   }
 }

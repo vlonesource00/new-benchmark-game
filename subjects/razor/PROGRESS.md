@@ -105,7 +105,7 @@ beyond the inherited planner's three-stop capacity use the normal game planner.
 The 20-lap clear GT3 regression finished RAZOR in 1376.39 s and APEX in
 1389.04 s, with two stops each. RAZOR recorded a contact incident but no
 off-track, wall, loss-of-control or recovery incident; fleet-wide hard contacts
-were zero. APEX recorded a contact and an off-track. The final 20-lap GTP
+were zero. APEX recorded a contact and an off-track. The earlier 20-lap GTP
 check took 1219.43 s versus APEX's 1209.66 s, with three stops versus two,
 zero contacts and no incidents or controller errors. That setup measured
 stint fade below 2.9 s. The warm 12-lap hard-start GTP race still faded
@@ -118,22 +118,54 @@ between replies and a measured 25 ms snapshot age. Each paired run lasts 24 s.
 The counterfactual disables only the focal RAZOR's attack option. These are
 staged combat checks, not full races or qualifying comparisons.
 
-| GTP worker encounter | Clear-ahead time | Attacks-disabled control |
+| 30 Hz worker encounter | Clear-ahead time | Attacks-disabled control |
 | --- | ---: | --- |
 | RAZOR against RAZOR | 5.22 s | No pass |
 | RAZOR against APEX | 5.40 s | No pass |
 | RAZOR through APEX GT3 | 2.85 s | 10.05 s |
+| GT3 RAZOR against RAZOR | 8.14 s | No pass |
 
-All three enabled runs had zero contacts, zero off-track time for either car, zero
+All four enabled runs had zero contacts, zero off-track time for either car, zero
 controller errors and 721 replies per worker. The APEX control had 368 light
 contact steps and no hard contacts; the RAZOR control had none. The mixed-class
-control had 215 light contact steps and no hard contacts. All three GTP moves
+control had 215 light contact steps and no hard contacts. All four moves
 pass `--require-move`, including measured lateral departure and overlap.
 The mixed-class fixture starts 23 m behind; the equal-class fixtures start
 13 m behind. Each car is placed on its class's baked line.
-The equal-car GT3 worker run did not pass, lost 25.1 m over 24 s and recorded
-17 light contact steps with no hard collision or RAZOR off-track. It remains
-an explicit failure, even though slower-opponent native GT3 checks convert.
+The earlier equal-car GT3 worker run failed to pass and recorded 17 light
+contact steps. The current Harbor GT3 predictor limits extrapolated yaw
+acceleration using the actual observation interval, while retaining measured
+yaw rate. Its passing lane reserves 0.24 m beyond the projected body widths
+when there is room to form a lane, rather than 0.14 m. During overlap it keeps
+the fitted corridor. The current GT3 counterfactual had no pass and 20 light
+contact steps; the enabled attack had none.
+
+The 2026-10-08 update also observes reachable side openings between full plans.
+A public-snapshot fixture opens one side at 50 ms and triggers an attack on
+that observation, ahead of the scheduled 120 ms plan. Opening the other side
+does not switch the committed move. This fixture proves a reaction boundary,
+not a completed pass. `check.mjs` passes 65 assertions and 33 native safety
+encounters: zero hard contacts or off-track time, 60 light contact steps, and
+approximately 0.70 ms p95 controller cost. The GT3 bumper fixtures reduce
+contact steps to one at both 30 and 60 Hz, adding less than 0.5 s to conversion.
+
+The latest native GT3 endurance regressions use the current game base:
+12 laps starting on hards: RAZOR 828.63 s, APEX 829.95 s, one stop each and
+zero contacts. Twenty laps with the normal starting compound: RAZOR 1376.26 s,
+APEX 1392.56 s, two stops each, 25 light fleet contact steps and zero hard
+contacts or off-track incidents. These are native races, not full worker races.
+
+The current native GTP hard-start 12-lap race remains clean: RAZOR 724.54 s,
+APEX 727.06 s, one stop each and zero contacts. Its last hard stint still fades
+4.93 s, above the target. The current 20-lap GTP run is also clean but loses:
+RAZOR 1221.80 s with three stops versus APEX 1211.19 s with two. RAZOR's last
+valid lap minus its fastest valid lap in each stint ranges from 2.11 to 2.95 s.
+The extra stop remains an endurance cost; this update does not solve it.
+
+Rejected experiments include widening every lane, shortening the side guard
+with body projections, and applying GT3's bounded yaw predictor to GTP. They
+caused corner or self-fight regressions. GTP retains its existing predictor;
+the new prediction setting is limited to Harbor GT3. No rain tuning changed.
 
 A fresh GTP RAZOR/APEX rolling-start prefix ran through 20 seconds after
 green with 630 replies each, zero contacts, incidents, damage or errors, and
@@ -163,14 +195,16 @@ Weather strategy and GT3 wet stability remain explicit limitations.
 
 ## Still to solve
 
-1. Mid-corner equal-class attacks, the native matched-60-Hz GTP self-fight,
-   and the equal-car GT3 worker fight remain unresolved. In the corner case,
+1. Mid-corner equal-class attacks and identical-driver worker fights at 60 Hz
+   remain unresolved, as does the native matched-60-Hz GTP self-fight.
+   The 30 Hz equal-car GT3 worker fight now converts cleanly. In the corner case,
    attacks disabled completes a pass at 16.15 s while
    the current attack policy fails to convert within 24 s and loses time.
 2. Warm GTP hard stint fade: one final stint still rose about five seconds.
    The four-second target is not universally met.
 3. Defense against a varied field, dense moving traffic, more circuits, more
-   seeds and the full worker combat matrix. Current evidence is chiefly Harbor.
+   seeds and worker cadences beyond the passing 30 Hz matrix. Current evidence
+   is chiefly Harbor; the passing matrix is not proof of universal combat wins.
 4. GT3 wet stability and weather decisions. Current rain evidence is not clean
    across both classes. Fit RAZOR's own stint priors instead of
    treating APEX's priors as final RAZOR calibration.
@@ -179,11 +213,12 @@ Weather strategy and GT3 wet stability remain explicit limitations.
 
 ```sh
 node --import ./scripts/json-loader.mjs subjects/razor/tools/check.mjs
+node --import ./scripts/json-loader.mjs subjects/razor/tools/worker-check.mjs
 node --import ./scripts/json-loader.mjs subjects/razor/tools/encounters.mjs all 60
 node --import ./scripts/json-loader.mjs subjects/razor/tools/worker-encounters.mjs razor lmdh --require-move
 node --import ./scripts/json-loader.mjs subjects/razor/tools/worker-encounters.mjs apex lmdh --require-move
 node --import ./scripts/json-loader.mjs subjects/razor/tools/worker-encounters.mjs apex lmdh gt --require-move
-node --import ./scripts/json-loader.mjs subjects/razor/tools/worker-encounters.mjs razor gt
+node --import ./scripts/json-loader.mjs subjects/razor/tools/worker-encounters.mjs razor gt --require-move
 node --import ./scripts/json-loader.mjs subjects/razor/tools/endurance-check.mjs
 node --import ./scripts/json-loader.mjs subjects/razor/tools/race.mjs apex,razor lmdh 12 clear 7
 node --import ./scripts/json-loader.mjs subjects/razor/tools/race.mjs apex,razor gt 12 clear 7

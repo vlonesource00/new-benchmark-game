@@ -18,12 +18,14 @@ export class RazorDriver extends ApexDriver {
   }
   reset() {
     super.reset(); this.lowSince = null; this.kcF = null;
+    this.lastR = undefined; this.lastDt = undefined; this.controlPose = null;
     this.tcCap = 1; this.lastStab = 1; this.rebuild = null;
     this.refreshClock = 1; this.forceRefresh = true; this.push = 1; this.pushApplied = 1;
   }
   update(car, cars, dt, context = {}) {
     this.now = context.time ?? 0;
     this.controlDelay = context.controlDelay ?? 0;
+    this.observationDt = dt;
     this.lastCar = car;
     let hot = 0, wear = 0;
     for (const w of car.wheels) {
@@ -46,7 +48,28 @@ export class RazorDriver extends ApexDriver {
     // only half the next held interval, otherwise a worker aims too far ahead.
     const held = this.controlDelay > 0 ? 0.5 : dt <= 1 / 30 + 1e-6 ? 1.5 : 0.5;
     const horizon = clamp(this.controlDelay + dt * held, 0.008, 0.06);
-    this.controlPose = super.predict(car, Math.max(0.0126, horizon / 1.5));
+    // Use the bounded extrapolator only where its chassis response has been
+    // validated. GTP needs its existing faster angular prediction in fights.
+    if (!(this.controlDelay > 0) || !Number.isFinite(this.options.predictionJerk)) {
+      this.controlPose = super.predict(car, Math.max(0.0126, horizon / 1.5));
+      return this.controlPose;
+    }
+    const delay = this.delay = Math.max(0.0189, horizon), r0 = car.yawRate;
+    const angularBudget = this.options.predictionJerk / Math.max(12, car.speed);
+    const dr = this.lastR === undefined ? 0 : clamp((r0 - this.lastR) / Math.max(0.001, this.lastDt ?? dt), -angularBudget, angularBudget);
+    this.lastR = r0; this.lastDt = dt;
+    // A held steering command cannot sustain an arbitrary yaw-acceleration
+    // spike. Extrapolate only the angular change our commanded jerk supports;
+    // the measured yaw rate itself is retained, including a real slide.
+    const sn = Math.sin(car.yaw), cs = Math.cos(car.yaw);
+    const vx = car.vx + (car.ax * sn + car.ay * cs) * delay;
+    const vz = car.vz + (car.ax * cs - car.ay * sn) * delay;
+    const yawRate = r0 + dr * delay, yaw = car.yaw + 0.5 * (r0 + yawRate) * delay;
+    const u = vx * Math.sin(yaw) + vz * Math.cos(yaw), v = vx * Math.cos(yaw) - vz * Math.sin(yaw);
+    this.controlPose = Object.create(car, {
+      x: { value: car.x + 0.5 * (car.vx + vx) * delay }, z: { value: car.z + 0.5 * (car.vz + vz) * delay },
+      yaw: { value: yaw }, yawRate: { value: yawRate }, vx: { value: vx }, vz: { value: vz }, u: { value: u }, v: { value: v }, speed: { value: Math.hypot(u, v) }
+    });
     return this.controlPose;
   }
   labelIntent(pitting) {
@@ -69,7 +92,10 @@ export class RazorDriver extends ApexDriver {
     const debug = super.debug();
     return { ...debug, architecture: 'RAZOR', planSource: 'dynamic corridors', slipBudget: this.options.tractionSlip,
       noseBrake: this.combat?.noseBrake ?? 0,
-      combat: { ...debug.combat, cands: (this.combat?.visCands ?? []).map(c => ({ kind: c.kind, side: c.side, score: c.score, risk: c.risk,
+      controlTiming: { observationDt: this.observationDt, prediction: this.delay, replyAge: this.controlDelay },
+      neighbor: this.nb, requestedCurvature: this.kcF,
+      combat: { ...debug.combat, clearance: this.combat?.plan?.clearance,
+        cands: (this.combat?.visCands ?? []).map(c => ({ kind: c.kind, side: c.side, score: c.score, risk: c.risk,
         chosen: c.chosen, clear: c.clear, endGap: c.endGap })), evidence: 'Associated passes require paired validation; pace passes are not move proof.' } };
   }
 }
