@@ -13,8 +13,9 @@ import { createRazorBridge } from '../../../game/bridges/razor-bridge.js';
 const args = process.argv.slice(2).filter(arg => !arg.startsWith('--'));
 const rival = args[0] ?? 'razor';
 const classId = args[1] ?? 'lmdh';
+const rivalClassId = args[2] ?? classId;
 assert.ok(AI_DRIVERS.some(d => d.id === rival), 'Unknown opponent');
-assert.ok(['lmdh', 'gt'].includes(classId), 'Class must be lmdh or gt');
+assert.ok([classId, rivalClassId].every(id => ['lmdh', 'gt'].includes(id)), 'Class must be lmdh or gt');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const sampleAt = (line, array, s) => {
   const j = line.stationOf(s);
@@ -46,7 +47,8 @@ async function encounter(attacks) {
   const track = new Track('harbor-ring'), seats = new AsyncSeats(track.id);
   const teams = ['razor', rival].map((id, index) => ({
     id: 't' + index, name: id, short: id, color: '#fff', index, grid: index, starter: 0,
-    classId, raceClass: classId === 'lmdh' ? 'gtp' : 'gt3',
+    classId: index === 0 ? classId : rivalClassId,
+    raceClass: (index === 0 ? classId : rivalClassId) === 'lmdh' ? 'gtp' : 'gt3',
     drivers: [{ ...AI_DRIVERS.find(d => d.id === id), kind: 'ai' }]
   }));
   const race = new EnduranceRace({ track, teams, laps: 30, seed: 7, difficulty: 1,
@@ -61,12 +63,15 @@ async function encounter(attacks) {
   try {
     await seats.start(race); race.start();
     race.phase = 'racing'; race.formation = null; race.countdown = 0; race.greenAt = 0;
-    const geometryBridge = createRazorBridge({ hostTrack: track, options: { strategy: false } });
-    geometryBridge.reset({ cars: race.cars });
-    const geometry = geometryBridge.driver;
-    const line = geometry.line, start = 300, gap = 13;
+    const geometries = race.cars.map((_, index) => {
+      const bridge = createRazorBridge({ hostTrack: track, index, options: { strategy: false } });
+      bridge.reset({ cars: race.cars });
+      return bridge.driver;
+    });
+    const line = geometries[0].line, start = 300, gap = rivalClassId === classId ? 13 : 23;
     const speed = Math.min(65, sampleAt(line, line.v, start) * 0.96);
     for (const [index, car] of race.cars.entries()) {
+      const geometry = geometries[index], line = geometry.line;
       const s = start + index * gap, v = Math.min(speed, sampleAt(line, line.v, s) * 0.96);
       car.place(track, s, sampleAt(line, line.lat, s), v); race.fitTyres(car, 'soft', true); car.fuel = 35;
       for (const wheel of car.wheels) {
@@ -114,5 +119,5 @@ async function encounter(attacks) {
 const enabled = await encounter(true), control = await encounter(false);
 const moveDemonstrated = enabled.passedAt !== null && enabled.associatedPasses > 0 && enabled.rivalOff === 0
   && (control.passedAt === null || enabled.passedAt + 1 < control.passedAt);
-console.log(JSON.stringify({ rival, classId, hz: 30, seconds: 24, enabled, control, moveDemonstrated }));
+console.log(JSON.stringify({ rival, classId, rivalClassId, hz: 30, seconds: 24, enabled, control, moveDemonstrated }));
 if (process.argv.includes('--require-move')) assert.ok(moveDemonstrated, 'The worker must execute a causal pass');

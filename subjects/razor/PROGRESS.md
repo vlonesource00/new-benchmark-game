@@ -122,14 +122,23 @@ staged combat checks, not full races or qualifying comparisons.
 | --- | ---: | --- |
 | RAZOR against RAZOR | 5.22 s | No pass |
 | RAZOR against APEX | 5.40 s | No pass |
+| RAZOR through APEX GT3 | 2.85 s | 10.05 s |
 
-Both enabled runs had zero contacts, zero off-track time for either car, zero
+All three enabled runs had zero contacts, zero off-track time for either car, zero
 controller errors and 721 replies per worker. The APEX control had 368 light
-contact steps and no hard contacts; the RAZOR control had none. Both GTP moves
+contact steps and no hard contacts; the RAZOR control had none. The mixed-class
+control had 215 light contact steps and no hard contacts. All three GTP moves
 pass `--require-move`, including measured lateral departure and overlap.
+The mixed-class fixture starts 23 m behind; the equal-class fixtures start
+13 m behind. Each car is placed on its class's baked line.
 The equal-car GT3 worker run did not pass, lost 25.1 m over 24 s and recorded
 17 light contact steps with no hard collision or RAZOR off-track. It remains
 an explicit failure, even though slower-opponent native GT3 checks convert.
+
+A fresh GTP RAZOR/APEX rolling-start prefix ran through 20 seconds after
+green with 630 replies each, zero contacts, incidents, damage or errors, and
+25 ms simulated RAZOR reply-age p95. Both started on hards. This checks launch
+and worker operation, not a completed race or a lap-time comparison.
 
 The two-lap RAZOR/APEX seat-worker smoke completed without errors, contacts or
 incidents. Its combined delay percentiles are invalid because the legacy harness
@@ -173,6 +182,7 @@ node --import ./scripts/json-loader.mjs subjects/razor/tools/check.mjs
 node --import ./scripts/json-loader.mjs subjects/razor/tools/encounters.mjs all 60
 node --import ./scripts/json-loader.mjs subjects/razor/tools/worker-encounters.mjs razor lmdh --require-move
 node --import ./scripts/json-loader.mjs subjects/razor/tools/worker-encounters.mjs apex lmdh --require-move
+node --import ./scripts/json-loader.mjs subjects/razor/tools/worker-encounters.mjs apex lmdh gt --require-move
 node --import ./scripts/json-loader.mjs subjects/razor/tools/worker-encounters.mjs razor gt
 node --import ./scripts/json-loader.mjs subjects/razor/tools/endurance-check.mjs
 node --import ./scripts/json-loader.mjs subjects/razor/tools/race.mjs apex,razor lmdh 12 clear 7
