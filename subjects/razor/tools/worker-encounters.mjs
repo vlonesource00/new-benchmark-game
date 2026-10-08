@@ -99,7 +99,20 @@ async function encounter(attacks) {
     let clearSince = null, passedAt = null;
     let lapSeen = race.cars[0].race.lap;
     const lapTimes = [];
-    const off = [0, 0], trace = []; let nextTrace = 0;
+    const off = [0, 0], trace = [], contactLog = []; let nextTrace = 0;
+    const pairs = race.collisionStats.pairs, pushPairs = pairs.push.bind(pairs);
+    pairs.push = (...rows) => {
+      if (tracing && (contactLog.length === 0 || race.time - contactLog.at(-1).t > 0.25)) {
+        const [car, other] = race.cars, dx = other.x - car.x, dz = other.z - car.z;
+        const rounded = value => +value.toFixed(3);
+        contactLog.push({ t: rounded(race.time), s: rounded(car.s), closing: rounded(rows[0][2]),
+          ahead: rounded(dx * Math.sin(car.yaw) + dz * Math.cos(car.yaw)),
+          across: rounded(dx * Math.cos(car.yaw) - dz * Math.sin(car.yaw)),
+          yawDifference: rounded(other.yaw - car.yaw), v: rounded(car.speed), rivalV: rounded(other.speed),
+          controls: { ...car.controls } });
+      }
+      return pushPairs(...rows);
+    };
     while (race.time < seconds) {
       const frameHz = cadence[Math.floor(race.time / 2) % cadence.length];
       for (let step = 0; step < 120 / frameHz; step++) {
@@ -147,7 +160,8 @@ async function encounter(attacks) {
       replyAgeP95: ages[Math.floor(ages.length * 0.95)],
       lapTimes,
       associatedPasses: debug.combat?.stats?.associatedPasses ?? 0, events: debug.combat?.events ?? [],
-      ...(tracing ? { trace } : {}) };
+      stats: debug.combat?.stats,
+      ...(tracing ? { trace, contactLog } : {}) };
   } finally {
     seats.dispose();
     if (previousWorker === undefined) delete globalThis.Worker;

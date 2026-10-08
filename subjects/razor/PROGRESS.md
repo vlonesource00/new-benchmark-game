@@ -84,6 +84,44 @@ light-contact steps, 5.77% damage and no pass. The test-only all-cadence variant
 can be reproduced with `tools/cadence.mjs --all-cadences`; healthy 60 Hz
 production behaviour keeps the existing predictor.
 
+## 2026-10-08 forecast and departure investigation
+
+Candidate scoring now starts the fast line from the observed position, as the
+passing corridors do. The steering controller still uses its held-input control
+pose. Starting only one candidate in the future biased a traffic comparison.
+The strict suite retains all 67 checks and 33 encounters: no hard contact or
+off-track time, 83 light-contact steps. The native matched GTP 30 Hz pass stays
+at 5.80 s without contact; the 60 Hz missed-pass deficit improves from 25.7 to
+20.6 m but still fails to convert. The real-worker matched GT3 20 Hz pass stays
+at 5.22 s with no contacts; the GT3 APEX 30 Hz pass is clean at 4.42 s. Its control
+becomes incident-affected and is not a clean final-pace reference.
+
+`tools/forecast-audit.mjs` compares predictions with interpolated later rival
+positions. In the 24-second native GT3/APEX 60 Hz fixture, scalar prediction
+position error p95 is 0.39 m at 0.2 s, 1.76 m at 0.6 s, 3.70 m at 1 s and
+16.56 m at 3.4 s. A Cartesian revision improves some median errors, but not
+the tail or pass conversion. It stays in `tools/forecast-model.mjs`; the
+production driver does not import it.
+
+Delayed pullout, projected/timed side guards and clearance retention are
+test-only variants in `tools/departure-experiment.mjs`. A maximum 0.3-second
+delay retains the clean 20 Hz self pass and the 30 Hz APEX pass. At fixed
+30 Hz it reduces the matched GT3 deficit from 29.8 to 10.2 m, still without
+passing. At changing 60/20/60/30 Hz it secures a pass at 17.45 s, but has 110
+light-contact steps and 3.97% damage per car. That is insufficient separation,
+not a clean new combat result. Increasing guard projection or retaining the
+wider lane causes off-track regressions in some combinations. None of these
+options is enabled in production. The worker fixture records body-frame
+contact locations when `--trace` is supplied.
+
+Reproduce the diagnostic and a rejected native variant:
+
+```sh
+node --import ./scripts/json-loader.mjs subjects/razor/tools/forecast-audit.mjs gt3-same-class 60
+node --import ./scripts/json-loader.mjs subjects/razor/tools/combat-experiments.mjs '{"departureDelay":0.3}' self-fight-matched gt 30
+node --import ./scripts/json-loader.mjs subjects/razor/tools/worker-encounters.mjs razor gt --hz=30 --cadence=60,20,60,30 --both-options --driver-options='{"departureDelay":0.3}' --trace --quiet-trace --allow-incidents
+```
+
 ## Implemented
 
 - APEX's identified model and baked geometry, with independent line metadata,

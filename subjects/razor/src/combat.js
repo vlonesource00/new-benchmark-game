@@ -239,7 +239,10 @@ export class RazorCombat {
     const clearedAttack = r && this.plan?.kind === 'attack' && this.plan.target === r.id
       && r.ds < -((car.spec.halfLength ?? 2.28) + r.along + 0.8);
     this.corridors.release();
-    const own = { path: d.line, i: c.i, f: c.f, side: 0, kind: 'fast line', target: r?.id, tag: 'fast line' };
+    // Compare all candidates from the observed position. The control pose is
+    // advanced to answer held inputs; passing corridors start at observation
+    // time, so using that future pose only for the fast line biases its score.
+    const own = { path: d.line, i: this.me.i, f: this.me.f, side: 0, kind: 'fast line', target: r?.id, tag: 'fast line' };
     candidates.push(this.evaluate(own, car, field, r));
     if (this.fullBlock) {
       this.plan = { ...own, kind: 'blocked', tag: 'road blocked' }; this.visCands = [];

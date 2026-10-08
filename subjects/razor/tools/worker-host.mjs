@@ -26,6 +26,11 @@ if (workerData.options?.physicalAllCadences) {
   };
 }
 
+if (workerData.options?.departureDelay > 0 || workerData.options?.projectedGuard || workerData.options?.retainClearance || workerData.options?.timedGuard) {
+  const { installDepartureExperiment } = await import('./departure-experiment.mjs');
+  installDepartureExperiment();
+}
+
 if (workerData.attacks === false) {
   const update = RazorDriver.prototype.update;
   RazorDriver.prototype.update = function (...args) {

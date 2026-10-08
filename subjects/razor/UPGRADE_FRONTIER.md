@@ -22,6 +22,27 @@ forecast transitions need more validation. The architecture still needs stronger
 matched-cadence combat, multi-car routing and new stint priors. Do not treat
 the old endurance figures below as results for the new shared tyre model.
 
+## Forecast and departure evidence
+
+The fast-line scoring origin now matches the observed-pose origin of passing
+corridors. The strict suite passes 67 checks and 33 encounters, with no hard
+contacts or off-tracks and 83 light-contact steps. Clean worker passes against
+RAZOR at 20 Hz and APEX at 30 Hz remain; matched 30 Hz GT3 still does not pass.
+
+The reproducible forecast audit finds several metres of position uncertainty
+by one second in the corner-entry tail, and about 16.6 m p95 by 3.4 seconds.
+The Cartesian forecast lowers some median errors without improving that tail.
+Treating these long-range body forecasts as firm occupancy loses existing
+passes. The revision remains a diagnostic tool, outside the live driver.
+
+A short delayed departure retains tow before forming the passing lane and
+reduces the fixed-30-Hz GT3 missed-pass deficit. It converts the variable-rate
+fight, but repeats side contact and costs about 4% damage in 24 seconds. Wider
+clearance retention and time-aligned body guards cause off-track regressions
+in some combinations. They are reproducible opt-in tools, not production
+options. Lane ownership, reachable separation and changing-rate control
+response must be resolved together before accepting that departure policy.
+
 ## Earlier checkpoint before the shared tyre update
 
 - Pooled paths restore their previous window before reuse. The old implementation
