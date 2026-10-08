@@ -481,6 +481,13 @@ export class Combat {
     const lane = line.laneWindow(shift, i0, n, bufs[k]);
     lane.speedsWindow(d.model, i0, n, v, line.v[line.idx(i0 + n)], { mass: car.spec.mass + car.fuel * 0.75 });
     let minL = v, minP = Infinity; const m = Math.min(n, Math.round(2.5 * v / line.ds)); for (let j = 0; j <= m; j++) { const ii = line.idx(i0 + j); minL = Math.min(minL, line.v[ii]); minP = Math.min(minP, lane.v[ii]); }
+    // a lane that wants us slower right here than the racing line does cannot be driven from the speed we carry: it is tighter than
+    // the tyres allow at this speed (a fast corner taken on someone else's line), and joining it is a slide, not a lift
+    // (over the first moments of the move, against the corner limit of the lane where the racing line has room: there is no time to
+    // brake for a lane that is tighter than our speed a few metres on, and a fast corner taken at the limit has no grip to brake with)
+    let late = 0; const jN = Math.max(2, Math.round((o.pullFeasT ?? 0.6) * v / line.ds));
+    for (let j = 0; j <= jN; j++) { const ii = line.idx(i0 + j); late = Math.max(late, (v - lane.vmax[ii]) - Math.max(0, v - line.vmax[ii])); }
+    if (late > (o.pullStartDv ?? 0.5)) return { lane, loss: Infinity };
     return { lane, loss: minL - minP };
   }
 

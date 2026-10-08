@@ -195,8 +195,11 @@ export class ApexDriver {
     if (J && Number.isFinite(this.kcF) && dt > 0) { const dk = J * dt / (v * v); kc = this.kcF + clamp(kc - this.kcF, -dk, dk); }
     this.kcF = kc;
     this.ayReq = v * v * kp; this.latCap = model.lat(v);
-    const ff = model.steerFor(v * v * kc, v), rDes = v * kc, rErr = rDes - car.yawRate;
-    const dBeta = this.dBeta = beta - model.betaFor(v * v * kc, v), slide = Math.sign(dBeta) * Math.max(0, Math.abs(dBeta) - (o.slideBand ?? 0.04));
+    // the steering maps are steep past the tyres' peak: a path asking for more than the car has would be answered with a
+    // snap of the wheel and a slip angle the car cannot hold, so the command asked of them stops just short of the peak
+    const ayM = Math.sign(kc) * Math.min(Math.abs(v * v * kc), (o.ayMapCap ?? 0.98) * model.lat(v) / Math.max(0.5, model.margin ?? 1));
+    const ff = model.steerFor(ayM, v), rDes = ayM / Math.max(2, v), rErr = rDes - car.yawRate;
+    const dBeta = this.dBeta = beta - model.betaFor(ayM, v), slide = Math.sign(dBeta) * Math.max(0, Math.abs(dBeta) - (o.slideBand ?? 0.04));
     this.steer = clamp(ff + (o.yawGain ?? 0.45) * rErr + (o.slideGain ?? 2.2) * slide, -1, 1);
     // Stability is a property of the car, not of the path: a lane switch moves the reference (rDes, the expected slip angle)
     // in one frame while the car is perfectly settled. Yaw and slip angle that the car's own lateral acceleration accounts
