@@ -9,6 +9,7 @@ import { createSafeWebGLRenderer } from './render/safe-renderer.js';
 import { SpectatorCamera } from './render/spectator.js';
 import { World } from './render/world-pro.js';
 import { CarModel, setHeadlights } from './render/car-pro.js';
+import { SafetyCarModel } from './render/safety-car.js';
 import { CarEffects } from './render/effects-pro.js';
 import { VisualFinish } from './render/finish-pro.js';
 import { AudioEngine } from './render/audio-pro.js';
@@ -123,6 +124,7 @@ const career = loadCareer();
 const official = () => mode !== 'duel' && (setup.session ?? 'official') === 'official' && setup.drive;
 const raceDifficulty = () => (official() ? difficultyForRating(career.iRating) : cfg().difficulty);
 let raceInfo = null;
+let scModel = null;
 let teams = [], teamsById = {}, cars = [], models = [], race = null, seats = null, snap = null, trackLength = 0;
 // Clock: each circuit starts at its own hour unless the setup picks one, and with
 // the day cycle on the race covers about 20 minutes of daylight per lap.
@@ -229,6 +231,7 @@ const duelNav = {
 function clearCars() {
   models.forEach((m) => scene.remove(m.root));
   models = []; cars = [];
+  if (scModel) scene.remove(scModel.root); scModel = null;
 }
 function stopRace() {
   raceToken += 1;
@@ -261,7 +264,7 @@ async function startRace({ session = (cfg().qualifying ?? true) ? 'qualifying' :
   try {
     seats = new AsyncSeats(def.id); seats.wantDebug = aiDebug.open;
     const duelRun = mode === 'duel';
-    race = new EnduranceRace({ track: new Track(def.scenario), teams, format: duelRun ? { ...FORMATS.custom, mandatoryStops: 0, mandatorySwap: false } : FORMATS[setup.formatId] ?? FORMATS.custom, laps: duelRun ? 12 : setup.laps, startCompound: setup.startCompound ?? 'medium', difficulty: difficultyById(raceDifficulty()).k, weather: setup.weather ?? 'clear', seed: setup.seed, weatherSeed: setup.weather === 'changeable' ? (Math.random() * 2 ** 31) | 0 : setup.seed, makeBridge: seats.factory(), session, startType: setup.startType ?? 'rolling' });
+    race = new EnduranceRace({ track: new Track(def.scenario), teams, format: duelRun ? { ...FORMATS.custom, mandatoryStops: 0, mandatorySwap: false } : FORMATS[setup.formatId] ?? FORMATS.custom, laps: duelRun ? 12 : setup.laps, startCompound: setup.startCompound ?? 'medium', difficulty: difficultyById(raceDifficulty()).k, weather: setup.weather ?? 'clear', seed: setup.seed, weatherSeed: setup.weather === 'changeable' ? (Math.random() * 2 ** 31) | 0 : setup.seed, makeBridge: seats.factory(), session, startType: setup.startType ?? 'rolling', caution: duelRun ? 'off' : setup.caution ?? 'full' });
     if (duelRun) race.laps = setup.laps;
     await seats.start(race);
     world.setPitBoxes?.(race.lane, teams);
@@ -270,7 +273,7 @@ async function startRace({ session = (cfg().qualifying ?? true) ? 'qualifying' :
   }
   if (token !== raceToken) return;
   setLoading($('#screen-loading'), 0.7, 'Rolling the cars out…');
-  trackLength = track.length;
+  trackLength = track.length; hud.rc.setTrack(race.track);
   cars = race.cars;
   // Ratings for every seat: the player's own, and stable per-driver AI numbers for the field.
   const diffId = raceDifficulty(), seat = (team, d) => {
@@ -568,6 +571,11 @@ function frame(ms, pumped = false) {
     if (raceActive && cars.length) {
       const car = cars[focusId] ?? cars[0];
       models.forEach((m) => m.update(spin));
+      // The safety car appears from the pit lane when race control deploys it.
+      const scCar = race?.caution?.sc ?? null;
+      if (scModel && scModel.car !== scCar) { scene.remove(scModel.root); scModel = null; }
+      if (scCar && !scModel && !replay) { scModel = new SafetyCarModel(scCar); if (wheelAsset) scModel.setWheelAsset(wheelAsset); scene.add(scModel.root); }
+      if (scModel) { scModel.root.visible = !replay; scModel.update(spin); }
       for (const e of exhaust.update(cars, spin)) {
         models[e.car.id]?.fire(e.strength);
         effects.backfire(e.car, e.strength, e.kind);

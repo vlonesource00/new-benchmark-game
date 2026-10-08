@@ -448,3 +448,44 @@ body.replaying #replay-bug { display: flex; animation: fade-in .3s ease both; }
 .rc-hyb .soc b.low { background: #ff6a3d; }
 .rc-hyb .kw { font-family: var(--mono); min-width: 64px; text-align: right; }
 .rc-hyb .kw.dep { color: #4cf0a0; } .rc-hyb .kw.reg { color: #22c9e8; }
+
+/* ---- race control: caution strip, track map ---- */
+.rc-sc { position: absolute; top: 128px; left: 50%; transform: translateX(-50%); width: 560px; animation: fade-in .25s ease both; filter: drop-shadow(0 4px 16px rgba(0,0,0,.45)); }
+.rc-sc[hidden], .rc-sc-me[hidden], .rc-map[hidden] { display: none; }
+.rc-sc-main { display: flex; align-items: stretch; background: var(--glass-hi); border-top: 3px solid #f5d33b; }
+.rc-sc-icon { flex: none; display: flex; align-items: center; justify-content: center; min-width: 64px; padding: 0 10px; font-size: 22px; font-style: italic; font-weight: 900; color: #111; background: repeating-linear-gradient(135deg, #f5d33b 0 10px, #e2b31a 10px 20px); }
+.rc-sc-icon.blink { animation: sc-blink .62s steps(2) infinite; }
+@keyframes sc-blink { 50% { background: #fff1b0; } }
+.rc-sc-text { flex: 1; display: flex; flex-direction: column; justify-content: center; padding: 6px 14px; min-width: 0; }
+.rc-sc-text b { font-size: 22px; font-weight: 900; font-style: italic; letter-spacing: .03em; color: #f5d33b; line-height: 1.1; }
+.rc-sc-text span { font-size: 11px; font-weight: 700; letter-spacing: .16em; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rc-sc-clock { align-self: center; padding: 0 14px; font-size: 17px; font-weight: 700; color: var(--ink); }
+.rc-sc.ending .rc-sc-text b, .rc-sc.released .rc-sc-text b { color: #3ad16b; }
+.rc-sc.ending .rc-sc-main, .rc-sc.released .rc-sc-main { border-top-color: #3ad16b; }
+.rc-sc-me { display: flex; align-items: center; gap: 12px; background: var(--glass); padding: 5px 12px; font-size: 13px; font-weight: 800; letter-spacing: .1em; margin-top: 2px; }
+.rc-sc-me .tag { background: rgba(255,255,255,.12); padding: 1px 8px; font-style: italic; }
+.rc-sc-me .tag small { font-size: 9px; letter-spacing: .2em; color: var(--faint); }
+.rc-sc-me .tag.bad { background: var(--bad); color: #fff; animation: rp-blink 1s steps(2) infinite; }
+.rc-sc-me .tag.wave { background: #2163d8; color: #fff; }
+.rc-sc-me .cue { color: var(--ink); } .rc-sc-me .cue.over { color: var(--bad); }
+.rc-sc-me .kv { display: flex; gap: 5px; align-items: baseline; } .rc-sc-me .kv small { font-size: 9px; letter-spacing: .2em; color: var(--faint); }
+.rc-sc-me .delta { position: relative; flex: 1; min-width: 70px; height: 6px; background: rgba(255,255,255,.1); }
+.rc-sc-me .delta::after { content: ''; position: absolute; left: 50%; top: -3px; bottom: -3px; width: 2px; background: var(--ink); }
+.rc-sc-me .delta i { position: absolute; top: 0; bottom: 0; } .rc-sc-me .delta i.over { background: var(--bad); } .rc-sc-me .delta i.under { background: var(--good); }
+.rc-map { position: absolute; right: 18px; bottom: 250px; width: 200px; height: 200px; background: radial-gradient(circle at 50% 50%, rgba(10,12,16,.55), rgba(10,12,16,.25) 70%, transparent); pointer-events: none; }
+.rc-map .trk { fill: none; stroke: rgba(0,0,0,.55); stroke-width: 7; stroke-linejoin: round; }
+.rc-map .trk-in { fill: none; stroke: rgba(235,238,242,.82); stroke-width: 3.2; stroke-linejoin: round; transition: stroke .3s; }
+.rc-map.yellow .trk-in { stroke: #f5d33b; }
+.rc-map .sf { fill: #fff; stroke: #111; stroke-width: 1.2; }
+.rc-map .car circle { stroke: #0b0d12; stroke-width: 1.2; transition: r .2s; }
+.rc-map .car.pit circle { opacity: .45; }
+.rc-map .car.me circle { stroke: #fff; stroke-width: 2; }
+.rc-map .car.hz circle { fill: var(--bad); stroke: #fff; animation: map-hz .5s steps(2) infinite; }
+@keyframes map-hz { 50% { opacity: .3; } }
+.rc-map .scar circle { fill: #f5d33b; stroke: #111; stroke-width: 1.4; }
+.rc-map .scar.on circle { animation: map-sc .62s steps(2) infinite; }
+@keyframes map-sc { 50% { fill: #fff1b0; } }
+.rc-map .scar text { font: 900 italic 6px/1 Arial, sans-serif; text-anchor: middle; fill: #111; }
+.tower.caution .bug { background: linear-gradient(90deg, #f5d33b 0 6px, #0b0d12 6px); }
+.tower.caution .bug .live { background: #f5d33b; box-shadow: 0 0 8px #f5d33b; }
+.lower.caution .tag { background: #f5d33b; color: #111; }

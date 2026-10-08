@@ -66,7 +66,7 @@ export class Hud {
 
   resetBroadcast() {
     this.prevPos = new Map(); this.moved = new Map();
-    this.fastest = null; this.lowerQueue = []; this.lowerUntil = 0; this.lowerKey = '';
+    this.fastest = null; this.lowerQueue = []; this.lowerUntil = 0; this.lowerKey = ''; this.czPhase = 'green';
     this.lastFocus = null; this.lastLit = 0; this.finalCalled = false; this.flagShown = false;
     const lower = this.q('lower'); lower.className = 'lower'; lower.innerHTML = '';
   }
@@ -88,6 +88,21 @@ export class Hud {
     void el.offsetWidth; el.classList.add('in');
     this.lowerKey = next.key; this.lowerUntil = now + next.seconds * 1000;
     this.cue(next.kind === 'fastest' ? 'fastest' : 'sting');
+  }
+
+  /** Race-control calls as broadcast moments: banner, lower third and an amber timing tower. */
+  raceControl(snap) {
+    const cz = snap.caution, phase = cz && snap.phase === 'racing' ? cz.phase : 'green', was = this.czPhase ?? 'green';
+    this.el.querySelector('.tower').classList.toggle('caution', phase !== 'green');
+    if (phase === was) return;
+    this.czPhase = phase;
+    const amber = '#f5d33b', why = cz?.reason ?? '';
+    const card = (tag, title, sub) => this.lowerThird(`<i class="bar" style="background:${amber}"></i><div class="tag">${tag}</div><div class="nm"><b>${esc(title)}</b><span>${esc(sub)}</span></div>`, 'caution', `cz${cz?.count}:${phase}`, 5);
+    if (phase === 'fcy') { this.announce(cz.label ?? 'FULL COURSE YELLOW', why || 'Race control', 3, amber); card('RACE CONTROL', cz.label ?? 'Full course yellow', `${why ? `${why} · ` : ''}80 km/h limiter · no overtaking`); this.cue('sting'); }
+    else if (phase === 'sc') { this.announce('SAFETY CAR', 'Close up behind the safety car', 3, amber); card('RACE CONTROL', 'Safety car deployed', 'Queue behind the leader · pit lane closed'); this.cue('sting'); }
+    else if (phase === 'ending') card('RACE CONTROL', 'FCY ending', 'Green flag in 5 seconds');
+    else if (phase === 'in') card('RACE CONTROL', 'Safety car in this lap', 'Lights out · restart at the line');
+    else if (phase === 'green' && was !== 'green') { this.announce('GREEN FLAG', 'Racing resumes', 2.5, '#3ad16b'); this.cue('go'); }
   }
 
   /** Shows a big centre banner for `seconds` (wall time). */
@@ -179,7 +194,8 @@ export class Hud {
     // Battle graphic: the focused car within a second of a rival.
     const battle = this.q('battle'), fi = cars.indexOf(focus);
     const near = (a, b) => a && b && !a.pit && !b.pit && !a.finished && !b.finished && Number.isFinite(b.gap - a.gap) && b.gap >= a.gap && b.gap - a.gap < 1;
-    const pair = snap.phase === 'racing' && snap.session !== 'qualifying' ? (near(cars[fi - 1], focus) ? [cars[fi - 1], focus] : near(focus, cars[fi + 1]) ? [focus, cars[fi + 1]] : null) : null;
+    const yellow = snap.caution && snap.caution.phase !== 'green';
+    const pair = snap.phase === 'racing' && snap.session !== 'qualifying' && !yellow ? (near(cars[fi - 1], focus) ? [cars[fi - 1], focus] : near(focus, cars[fi + 1]) ? [focus, cars[fi + 1]] : null) : null;
     if (pair) {
       const [a, b] = pair, ta = teamsById[a.team], tb = teamsById[b.team];
       battle.hidden = false;
@@ -256,6 +272,7 @@ export class Hud {
       this.lastActive.set(c.id, c.active);
     }
 
+    this.raceControl(snap);
     // Centre banner: countdown lights > timed flash > co-driver notice.
     const banner = this.q('banner');
     const mine = snap.cars.find((c) => c.team === playerTeamId);
