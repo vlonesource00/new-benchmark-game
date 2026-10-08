@@ -249,7 +249,10 @@ export class RazorCombat {
       if (cover && cover.progress >= own.progress - 3 && cover.risk < 0.15) best = cover;
       else best = { ...own, kind: 'hold', tag: 'defend exit speed' };
     }
-    if (committed) {
+    // A defensive cover must still earn its exit-speed budget. Applying the
+    // attack's side lock here would override the defense decision above and
+    // keep a costly or occupied cover simply because the threat is behind.
+    if (committed && !defender) {
       const hold = candidates.find(q => q.side === this.plan.side && q.kind !== 'fast line');
       const wanted = r.offset + this.plan.side * ((car.spec.halfWidth ?? 0.98) + r.width - 0.06);
       const closed = Math.abs(this.bounded(r.bi, wanted) - wanted) > 0.45;

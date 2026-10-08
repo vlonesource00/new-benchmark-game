@@ -24,6 +24,7 @@ export const CASES = [
   { name: 'stopped-car', s: 310, gap: 78, cls: 'lmdh', rival: 'stopped', yaw: 0 },
   { name: 'spun-car', s: 310, gap: 78, cls: 'lmdh', rival: 'stopped', yaw: Math.PI / 2 },
   { name: 'self-fight', s: 300, gap: 13, cls: 'lmdh', rival: 'razor' },
+  { name: 'self-fight-matched', s: 300, gap: 13, cls: 'lmdh', rival: 'razor', matchRivalHz: true },
   { name: 'apex-near-pace', s: 300, gap: 10, cls: 'lmdh', rival: 'apex' }
 ];
 
@@ -32,16 +33,20 @@ export function runEncounter(setup, { attacks = true, hz = 60, duration = 24, tr
   const ids = ['razor', setup.rival], classes = [cls, leadClass];
   const teams = ids.map((id, index) => ({ id: 't' + index, name: id, short: id, index, classId: classes[index], raceClass: classes[index] === 'lmdh' ? 'gtp' : 'gt3', color: '#fff', grid: index,
     drivers: [{ id, name: id, short: id, kind: 'ai' }] }));
-  const costs = [], held = { t: -1, controls: null }, updatePeriod = 1 / hz;
+  const costs = [], updatePeriod = 1 / hz;
   const makeBridge = (seat, index, race) => {
-    if (index === 0) {
-      const b = createRazorBridge({ hostTrack: track, index, options: { attacks, strategy: false }, state: c => razorState(race, c) });
+    if (index === 0 || setup.matchRivalHz) {
+      const held = { t: -1, controls: null };
+      const b = index === 0
+        ? createRazorBridge({ hostTrack: track, index, options: { attacks, strategy: false }, state: c => razorState(race, c) })
+        : createSeatBridge(seat, index, race);
       return {
         get driver() { return b.driver; }, get errors() { return b.errors; }, get lastError() { return b.lastError; },
         reset(s) { b.reset(s); held.t = -1; held.controls = null; }, debug: () => b.debug(),
         update(c, all, dt, context) {
           if (context.time - held.t + 1e-6 >= updatePeriod) {
-            const t = performance.now(); b.update(c, all, held.t < 0 ? updatePeriod : context.time - held.t, context); costs.push(performance.now() - t);
+            const t = performance.now(); b.update(c, all, held.t < 0 ? updatePeriod : context.time - held.t, context);
+            if (index === 0) costs.push(performance.now() - t);
             held.t = context.time; held.controls = { ...c.controls };
           } else c.controls = { ...held.controls };
         }
@@ -108,7 +113,7 @@ export function runEncounter(setup, { attacks = true, hz = 60, duration = 24, tr
     if (trace && Math.round(race.time * 120) % 30 === 0) rows.push({ t: round(race.time, 2), s: round(c.s, 1), v: round(c.speed, 1), gap: round(gap, 1), lat: round(c.lateral, 2), rivalLat: round(rival.lateral, 2), throttle: round(c.controls.throttle, 2), brake: round(c.controls.brake, 2), steer: round(c.controls.steer, 3), target: round(d.targetSpeed, 1), state: d.intent, side, stab: round(d.stability, 2), cap: Number.isFinite(d.combat.cap) ? round(d.combat.cap, 1) : null, cands: d.combat.visCands.map(q => ({ side: q.side, kind: q.kind, score: q.score, risk: q.risk, chosen: q.chosen })) });
   }
   const c = race.cars[0], lead = race.cars[1], bridge = race.entries[0].bridges[0]; costs.sort((a, b) => a - b);
-  const out = { case: setup.name, attacks, hz, passedAt: passedAt && round(passedAt, 2), gain: round(c.race.progress - lead.race.progress, 1), behindSeconds: round(behindSeconds, 1),
+  const out = { case: setup.name, attacks, hz, matchedRivalHz: Boolean(setup.matchRivalHz), passedAt: passedAt && round(passedAt, 2), gain: round(c.race.progress - lead.race.progress, 1), behindSeconds: round(behindSeconds, 1),
     contacts: race.contacts, severe: race.collisionStats.severeContacts, peakClosing: round(race.collisionStats.peakClosing, 1), off: round(off), minSpeed: round(minSpeed, 1),
     sideSeconds: round(sideTime, 1), sideThrottle: sideTime ? round(sideThrottle / sideTime, 2) : null, sideBrake: sideTime ? round(brakingSide / sideTime, 2) : null,
     sideFlips, attackSideFlips, maxSteerStep: round(maxSteerStep), updateP95ms: round(costs[Math.floor(costs.length * 0.95)] ?? 0), errors: bridge.errors, lastError: bridge.lastError,

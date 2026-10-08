@@ -88,7 +88,7 @@ for (const name of ['straight-same-class', 'gtp-through-gt3', 'gt3-same-class', 
     assert.ok(control.passedAt === null || r.passedAt + 1 < control.passedAt);
   });
 }
-for (const hz of [20, 30, 60]) for (const name of ['close-corner-entry', 'corner-exit']) {
+for (const hz of [20, 30, 60]) for (const name of ['close-corner-entry', 'corner-exit', 'self-fight']) {
   const setup = CASES.find(c => c.name === name);
   const r = outcomes.find(r => r.hz === hz && r.case === setup.name);
   const control = runEncounter(setup, { hz, attacks: false });
@@ -98,6 +98,15 @@ for (const hz of [20, 30, 60]) for (const name of ['close-corner-entry', 'corner
     assert.equal(r.attackSideFlips, 0);
   });
 }
+for (const hz of [20, 30]) {
+  const setup = CASES.find(c => c.name === 'self-fight-matched');
+  const r = outcomes.find(r => r.hz === hz && r.case === setup.name);
+  const control = runEncounter(setup, { hz, attacks: false });
+  test(`${hz} Hz matched self-fight: an executed move passes; following does not`, () => {
+    assert.ok(r.passedAt !== null); assert.ok(r.stats.associatedPasses > 0);
+    assert.equal(control.passedAt, null); assert.equal(r.attackSideFlips, 0);
+  });
+}
 console.log(JSON.stringify({ passed: n, encounters: outcomes.length, severe: outcomes.reduce((s, r) => s + r.severe, 0),
   off: outcomes.reduce((s, r) => s + r.off, 0), contacts: outcomes.reduce((s, r) => s + r.contacts, 0),
-  maxP95ms: Math.max(...outcomes.map(r => r.updateP95ms)), unresolved: ['Mid-corner equal-class conversion', 'Self-fight conversion'] }));
+  maxP95ms: Math.max(...outcomes.map(r => r.updateP95ms)), unresolved: ['Mid-corner equal-class conversion', '60 Hz matched self-fight conversion'] }));
