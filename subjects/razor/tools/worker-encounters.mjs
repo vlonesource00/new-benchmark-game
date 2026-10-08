@@ -111,7 +111,9 @@ async function encounter(attacks) {
         trace.push({ t: n(race.time), s: n(car.s), gap: n(other.race.progress - car.race.progress),
           v: n(car.speed), rivalV: n(other.speed), lat: n(car.lateral), rivalLat: n(other.lateral),
           throttle: n(car.controls.throttle), brake: n(car.controls.brake), steer: n(car.controls.steer),
-          target: n(debug.targetSpeed), line: n(debug.lineSpeed), e: n(debug.e), stability: n(debug.stability),
+           target: n(debug.targetSpeed), line: n(debug.lineSpeed), e: n(debug.e), stability: n(debug.stability),
+           timing: debug.controlTiming, neighbor: debug.neighbor,
+           curvature: n(debug.requestedCurvature), clearance: n(debug.combat?.clearance),
           state: debug.combat?.state, side: debug.combat?.side, cap: debug.combat?.cap, cands: debug.combat?.cands,
           rival: seats.hosts[1]?.seats[0]?.debug() });
         nextTrace = race.time + 0.2;

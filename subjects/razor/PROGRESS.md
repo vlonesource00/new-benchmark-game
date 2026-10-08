@@ -1,6 +1,6 @@
 # RAZOR development checkpoint
 
-Base: `origin/graphics-aaa` at `54019dc`. Separate `razor` driver; SOLSTICE,
+Base: `origin/graphics-aaa` at `8f1835b`. Separate `razor` driver; SOLSTICE,
 SPEARHEAD, APEX and the shared physics are preserved.
 
 ## Implemented
@@ -195,8 +195,10 @@ Weather strategy and GT3 wet stability remain explicit limitations.
 
 ## Still to solve
 
-1. Mid-corner equal-class attacks and identical-driver worker fights at 60 Hz
+1. Mid-corner equal-class attacks and identical-driver GT3 worker fights at 60 Hz
    remain unresolved, as does the native matched-60-Hz GTP self-fight.
+   The current GTP 60 Hz worker self-fight does convert cleanly at 4.43 s,
+   while its attacks-disabled control never passes in the 24-second window.
    The 30 Hz equal-car GT3 worker fight now converts cleanly. In the corner case,
    attacks disabled completes a pass at 16.15 s while
    the current attack policy fails to convert within 24 s and loses time.
@@ -208,6 +210,29 @@ Weather strategy and GT3 wet stability remain explicit limitations.
 4. GT3 wet stability and weather decisions. Current rain evidence is not clean
    across both classes. Fit RAZOR's own stint priors instead of
    treating APEX's priors as final RAZOR calibration.
+
+## Recycled-corridor correction
+
+Reusing a geometry buffer at a distant track position retained the previous
+window's passing lane. A direct reproduction left 75 stale stations displaced
+by up to 2 m. RAZOR now restores the previous window's geometry, speed profiles
+and offsets before reuse, including the join across the start line. The active
+buffer is excluded from recycling and a regression check verifies it is unchanged.
+
+All 66 checks and 33 native encounters pass: zero hard contact or off-track time,
+60 light-contact steps. The four 30 Hz worker matchups retain their prior pass
+times with zero attack contacts and zero off-track time for either car. A separate
+GTP 60 Hz worker self-fight passes at 4.43 s, with zero contacts and a non-passing
+control. GT3 at 60 Hz still fails to pass: attack finishes 17.1 m behind, compared
+with 9.7 m behind for the control, with zero contacts/off-tracks in either run.
+This GTP verification is not evidence that the recycling correction created the pass.
+
+The seeded Clear endurance results are unchanged: GT3 wins the 12-lap hard start
+by 1.32 s and the normal 20-lap race by 16.30 s. GTP still loses the normal 20-lap
+race by 10.61 s, with three stops against APEX's two. The 20-lap GT3 race retains
+25 light-contact steps; none of these three races has a hard contact, off-track
+incident or controller error. See `UPGRADE_FRONTIER.md` for unshipped experiments
+and remaining limits; this checkpoint is not a maximum-upgradability claim.
 
 ## Reproduce
 

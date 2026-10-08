@@ -83,6 +83,37 @@ test('a newly reachable opening preempts the timer and retains its side', () => 
   assert.equal(b.driver.combat.plan.path, path); assert.equal(b.driver.combat.plan.side, side);
   assert.equal(b.errors, 0); assert.equal(b.driver.combat.stats.associatedPasses, 0);
 });
+test('recycled corridors restore old geometry and profiles without editing the active lane', () => {
+  const t = new Track('harbor-ring'), car = Object.assign(new Vehicle({ classId: 'lmdh' }), { id: 0 });
+  const b = createRazorBridge({ hostTrack: t, options: { strategy: false } }); b.reset({ cars: [car] });
+  const base = b.driver.line, corridors = b.driver.combat.corridors;
+  const place = s => {
+    const j = base.stationOf(s), i = Math.floor(j), f = j % 1;
+    car.place(t, s, base.sample(base.lat, i, f), 50);
+    car.yaw = base.heading(i, f); car.u = 50; car.v = 0;
+    car.ay = base.sample(base.ks, i, f) * 2500;
+    return base.closest(car.x, car.z);
+  };
+  const active = corridors.build(car, place(300), () => 2, 40, 80).path;
+  const held = Object.fromEntries([...corridors.laneArrays, 'offset'].map(key => [key, active[key].slice()]));
+  corridors.release();
+  const old = corridors.build(car, place(t.length - 80), () => -2, 40, 80, active);
+  const previous = { ...old.path.window };
+  assert.ok(previous.i0 + previous.n >= base.N, 'exercise a window across the start line');
+  corridors.release();
+  const fresh = corridors.build(car, place(1700), () => 2, 40, 80, active);
+  assert.equal(fresh.path, old.path, 'exercise actual buffer reuse');
+  const current = new Set();
+  for (let j = -14; j <= fresh.n + 16; j++) current.add(base.idx(fresh.i + j));
+  let restored = 0;
+  for (let j = -14; j <= previous.n + 16; j++) {
+    const i = base.idx(previous.i0 + j); if (current.has(i)) continue;
+    for (const key of corridors.laneArrays) assert.equal(fresh.path[key][i], base[key][i], key + ' at ' + i);
+    assert.equal(fresh.path.offset[i], 0); restored++;
+  }
+  assert.ok(restored > 50);
+  for (const key of Object.keys(held)) assert.deepEqual(active[key], held[key], 'active ' + key);
+});
 test('fully blocked road brakes before the stationary row', () => {
   const t = new Track('harbor-ring');
   const teams = Array.from({ length: 9 }, (_, i) => ({ id: 'b' + i, index: i, name: 'b' + i, short: 'B', color: '#fff', grid: i, classId: 'lmdh',

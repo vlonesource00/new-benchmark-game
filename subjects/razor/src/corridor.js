@@ -9,6 +9,8 @@ export class Corridors {
     this.driver = driver;
     this.pool = Array.from({ length: 6 }, () => driver.line.blankLane());
     for (const p of this.pool) p.offset = new Float64Array(driver.line.N);
+    this.laneArrays = Object.keys(this.pool[0]).filter(key =>
+      ArrayBuffer.isView(driver.line[key]) && this.pool[0][key] !== driver.line[key]);
     this.shift = new Float64Array(220);
     this.rawGoal = new Float64Array(220);
     this.smoothGoal = new Float64Array(220);
@@ -23,6 +25,17 @@ export class Corridors {
     const d = this.driver, base = d.line, v = Math.max(8, car.speed);
     const lane = this.pool.find(p => p !== active && !p.busy);
     if (!lane) throw new Error('RAZOR corridor pool exhausted');
+    // laneWindow refreshes the new window only. Restore the previous window
+    // before recycling its buffer, including profiles and the wrapped join.
+    // Otherwise old passing lanes survive elsewhere on this retained Line.
+    if (lane.window) {
+      const { i0, n } = lane.window;
+      for (let j = -14; j <= n + 16; j++) {
+        const i = base.idx(i0 + j);
+        for (const key of this.laneArrays) lane[key][i] = base[key][i];
+        lane.offset[i] = 0;
+      }
+    }
     lane.busy = true;
     const q = base.closest(car.x, car.z, c.i), h = base.heading(q.i, q.f);
     const beta = Math.atan2(car.v, Math.max(2, car.u));
