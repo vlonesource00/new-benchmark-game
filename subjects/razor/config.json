@@ -11,6 +11,7 @@
   "useTrim": false,
   "steerJerk": 65,
   "overlapPedalCap": false,
+  "physicalPrediction": true,
   "tractionSlip": 2.05,
   "thermalK": 0.002,
   "thermalHot": 18,

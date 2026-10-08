@@ -2,6 +2,7 @@ import { ApexDriver } from '../../apex/src/driver.js';
 import { clamp } from '../../apex/src/math.js';
 import { TrafficField } from './field.js';
 import { RazorCombat } from './combat.js';
+import { heldControlPose } from './predict.js';
 
 // Share the identified vehicle model and baked geometry, not APEX's tactical
 // policy. RAZOR owns observations, corridors, commitment and slip expenditure.
@@ -42,6 +43,15 @@ export class RazorDriver extends ApexDriver {
     }
   }
   predict(car, dt) {
+    if (this.options.physicalPrediction === true && this.classId === 'gt' && this.controlDelay > 0
+      && dt + this.controlDelay > 0.0251) {
+      this.delay = clamp(this.controlDelay + dt * 0.5, 0.008, 0.06);
+      this.posePrediction = 'held controls';
+      this.lastR = car.yawRate; this.lastDt = dt;
+      this.controlPose = heldControlPose(car, this.track, this.delay);
+      return this.controlPose;
+    }
+    this.posePrediction = 'extrapolated';
     // Predict the actual held-control age, rather than treating a slower
     // decision rate as an extra one-and-a-half frames of transport latency.
     // Once reply age is measured, it already accounts for transport. Add
@@ -92,7 +102,7 @@ export class RazorDriver extends ApexDriver {
     const debug = super.debug();
     return { ...debug, architecture: 'RAZOR', planSource: 'dynamic corridors', slipBudget: this.options.tractionSlip,
       noseBrake: this.combat?.noseBrake ?? 0,
-      controlTiming: { observationDt: this.observationDt, prediction: this.delay, replyAge: this.controlDelay },
+      controlTiming: { observationDt: this.observationDt, prediction: this.delay, replyAge: this.controlDelay, predictor: this.posePrediction },
       neighbor: this.nb, requestedCurvature: this.kcF,
       combat: { ...debug.combat, clearance: this.combat?.plan?.clearance,
         cands: (this.combat?.visCands ?? []).map(c => ({ kind: c.kind, side: c.side, score: c.score, risk: c.risk,

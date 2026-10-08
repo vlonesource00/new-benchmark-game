@@ -9,6 +9,7 @@ import { EnduranceRace, FIXED_DT } from '../../../game/core/race.js';
 import { FORMATS } from '../../../game/core/rules.js';
 import { razorState } from '../../../game/bridges/razor-state.js';
 import { lensModel } from '../../../game/ui/lens-model.js';
+import { heldControlPose } from '../src/predict.js';
 
 const track = new Track('harbor-ring'), lane = new PitLane(track, 2);
 const me = new Vehicle({ classId: 'lmdh' }), other = new Vehicle({ classId: 'gt' });
@@ -17,6 +18,14 @@ const field = new TrafficField(track);
 const observe = (meta = {}) => field.update(me, [me, other], {}, 0, { rivals: [{ id: 1, ...meta }] });
 let n = 0;
 function test(name, fn) { fn(); n++; console.log('PASS ' + name); }
+test('held-control forecast cannot change the real car or deposit rubber', () => {
+  const car = new Vehicle(9, 'forecast', '#fff', 'gt');
+  car.place(track, 300, 0, 50); car.controls = { throttle: 1, brake: 0, steer: 0.15 };
+  const original = JSON.stringify(car), rubber = Array.from(track.rubber);
+  const future = heldControlPose(car, track, 0.06);
+  assert.notEqual(future.x, car.x); assert.ok(Number.isFinite(future.speed));
+  assert.equal(JSON.stringify(car), original); assert.deepEqual(Array.from(track.rubber), rubber);
+});
 test('ordinary opponent is eligible for attack', () => assert.equal(observe()[0].target, true));
 test('box call removes the target but keeps its solid body', () => { const r = observe({ boxCalled: true })[0]; assert.equal(r.target, false); assert.equal(r.box, true); });
 test('pit approach remains a road obstacle, never a tow', () => { const r = observe({ pit: 'approach' })[0]; assert.equal(r.target, false); });

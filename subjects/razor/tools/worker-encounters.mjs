@@ -17,7 +17,12 @@ const rivalClassId = args[2] ?? classId;
 const option = (name, fallback) => Number(process.argv.find(a => a.startsWith('--' + name + '='))?.split('=')[1] ?? fallback);
 const hz = option('hz', 30), seconds = option('seconds', 24), start = option('start', 300);
 const gap = option('gap', rivalClassId === classId ? 13 : 23);
+const trackId = process.argv.find(a => a.startsWith('--track='))?.slice(8) ?? 'harbor-ring';
+const driverOptions = JSON.parse(process.argv.find(a => a.startsWith('--driver-options='))?.slice(17) ?? '{}');
+const solo = process.argv.includes('--solo');
+const cadence = process.argv.find(a => a.startsWith('--cadence='))?.slice(10).split(',').map(Number) ?? [hz];
 assert.ok([20, 30, 60].includes(hz), 'Worker cadence must be 20, 30 or 60 Hz');
+assert.ok(cadence.every(n => [20, 30, 60].includes(n)), 'Invalid cadence schedule');
 assert.ok(Number.isFinite(start) && Number.isFinite(gap) && seconds > 0 && seconds <= 180);
 const tracing = process.argv.includes('--trace');
 assert.ok(AI_DRIVERS.some(d => d.id === rival), 'Unknown opponent');
@@ -35,7 +40,8 @@ async function encounter(attacks) {
     constructor(target) {
       const index = workerIndex++;
       this.thread = new Thread(new URL('./worker-host.mjs', import.meta.url), {
-        workerData: { target: target.href, attacks: index === 0 ? attacks : true }
+        workerData: { target: target.href, attacks: index === 0 ? attacks : true,
+          options: index === 0 || process.argv.includes('--both-options') ? driverOptions : undefined }
       });
       this.thread.on('message', data => {
         if (this.closed) return;
@@ -50,7 +56,7 @@ async function encounter(attacks) {
     postMessage(data) { this.thread.postMessage(data); }
     terminate() { this.closed = true; return this.thread.terminate(); }
   };
-  const track = new Track('harbor-ring'), seats = new AsyncSeats(track.id);
+  const track = new Track(trackId), seats = new AsyncSeats(track.id);
   const teams = ['razor', rival].map((id, index) => ({
     id: 't' + index, name: id, short: id, color: '#fff', index, grid: index, starter: 0,
     classId: index === 0 ? classId : rivalClassId,
@@ -91,11 +97,18 @@ async function encounter(attacks) {
     }
     for (const entry of race.entries) entry.bridges[0].reset();
     let clearSince = null, passedAt = null;
+    let lapSeen = race.cars[0].race.lap;
+    const lapTimes = [];
     const off = [0, 0], trace = []; let nextTrace = 0;
     while (race.time < seconds) {
-      for (let step = 0; step < 120 / hz; step++) {
+      const frameHz = cadence[Math.floor(race.time / 2) % cadence.length];
+      for (let step = 0; step < 120 / frameHz; step++) {
         race.step(FIXED_DT);
         const [car, other] = race.cars, ds = other.race.progress - car.race.progress;
+        if (car.race.lap !== lapSeen) {
+          lapTimes.push({ lap: lapSeen, time: car.race.lastLap, state: car.race.lastState });
+          lapSeen = car.race.lap;
+        }
         if (ds < -6) {
           clearSince ??= race.time;
           if (race.time - clearSince > 1.5) passedAt ??= clearSince;
@@ -114,19 +127,23 @@ async function encounter(attacks) {
            target: n(debug.targetSpeed), line: n(debug.lineSpeed), e: n(debug.e), stability: n(debug.stability),
            timing: debug.controlTiming, neighbor: debug.neighbor,
            curvature: n(debug.requestedCurvature), clearance: n(debug.combat?.clearance),
-          state: debug.combat?.state, side: debug.combat?.side, cap: debug.combat?.cap, cands: debug.combat?.cands,
-          rival: seats.hosts[1]?.seats[0]?.debug() });
-        nextTrace = race.time + 0.2;
+          mode: debug.mode, state: debug.combat?.state, side: debug.combat?.side, cap: debug.combat?.cap, cands: debug.combat?.cands,
+          rival: process.argv.includes('--quiet-trace') ? undefined : seats.hosts[1]?.seats[0]?.debug() });
+        nextTrace = process.argv.includes('--trace-every-frame') ? race.time : race.time + 0.2;
       }
     }
     const debug = seats.hosts[0].seats[0].debug(), errors = race.entries.map(e => e.bridges[0].errors ?? 0);
     ages.sort((a, b) => a - b);
     assert.ok(replies.every(n => n > 0), 'Both workers must answer');
-    assert.ok(errors.every(n => n === 0)); assert.equal(race.collisionStats.severeContacts, 0); assert.equal(off[0], 0);
+    assert.ok(errors.every(n => n === 0));
+    if (!process.argv.includes('--allow-incidents')) {
+      assert.equal(race.collisionStats.severeContacts, 0); assert.equal(off[0], 0);
+    }
     return { attacks, passedAt: passedAt === null ? null : +passedAt.toFixed(2),
       gain: +(race.cars[0].race.progress - race.cars[1].race.progress).toFixed(1),
       contacts: race.contacts, severe: race.collisionStats.severeContacts, off: off[0], rivalOff: off[1], errors, replies,
       replyAgeP95: ages[Math.floor(ages.length * 0.95)],
+      lapTimes,
       associatedPasses: debug.combat?.stats?.associatedPasses ?? 0, events: debug.combat?.events ?? [],
       ...(tracing ? { trace } : {}) };
   } finally {
@@ -136,8 +153,8 @@ async function encounter(attacks) {
   }
 }
 
-const enabled = await encounter(true), control = await encounter(false);
+const enabled = await encounter(true), control = solo ? enabled : await encounter(false);
 const moveDemonstrated = enabled.passedAt !== null && enabled.associatedPasses > 0 && enabled.rivalOff === 0
   && (control.passedAt === null || enabled.passedAt + 1 < control.passedAt);
-console.log(JSON.stringify({ rival, classId, rivalClassId, hz, seconds, start, gap, enabled, control, moveDemonstrated }));
+console.log(JSON.stringify({ trackId, rival, classId, rivalClassId, hz, cadence, seconds, start, gap, enabled, control, moveDemonstrated: !solo && moveDemonstrated }));
 if (process.argv.includes('--require-move')) assert.ok(moveDemonstrated, 'The worker must execute a causal pass');

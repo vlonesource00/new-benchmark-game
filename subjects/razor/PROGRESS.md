@@ -1,7 +1,50 @@
 # RAZOR development checkpoint
 
-Base: `origin/graphics-aaa` at `8f1835b`. Separate `razor` driver; SOLSTICE,
+Base: `origin/graphics-aaa` at `cc5aead`. Separate `razor` driver; SOLSTICE,
 SPEARHEAD, APEX and the shared physics are preserved.
+
+## 2026-10-08 control-cadence upgrade
+
+The tyre/strategy/energy update in `8aa6469` and Claude's A/B bench in
+`cc5aead` are included. Claude's softened straight-line stability fix is kept.
+The measurements below deliberately impose worker cadence; they are not
+measurements of browser FPS on a particular computer.
+
+RAZOR now advances an isolated replica under the controls already being held
+when a GT3 worker's snapshot interval/reply age exceeds the normal 60 Hz case.
+At most eight short physics steps predict the steering actuator and tyres.
+The forecast never searches future actions, modifies another driver or deposits
+rubber onto the actual track. Normal steering gains remain in use.
+
+Warm-soft Harbor straight, through the actual game's worker transport:
+
+| Cadence | Original mean throttle | Held-control prediction |
+| --- | --- | --- |
+| 20 Hz | 15.4% | 99.95% |
+| 30 Hz | 30.2% | 100.0% |
+| 60 Hz | 99.92% | 99.92% |
+| Changing cadence | 58.0% | 99.9% |
+
+The straight tests have no contacts, off-tracks or worker faults. The 60 Hz
+straight traces agree with the previous controller. A 75-second changing-rate
+run on each of Harbor, Solenne and Alpine also has no contacts, off-tracks or
+worker faults. Harbor's first 60.175-second lap starts
+250 m into the circuit and must not be reported as a full-lap pace result.
+
+The matched GT3 20 Hz worker encounter completes an executed pass at 5.22 s,
+with no contact or off-track time for either car. Its attacks-disabled control
+does not pass. The matched 30 Hz encounter remains clean but does not convert;
+universal passing superiority is not established. The standalone predictor
+benchmark is 0.046 ms median and 0.093 ms p95 on the test machine.
+
+Reducing yaw/slip feedback fixed the short straight but regressed matched
+corner fights. Restoring the gains before corners and imposing a separate
+steering slew limit also regressed tests; those changes are rejected.
+
+The complete native suite has 66 passing checks and a pre-existing matched GTP 30 Hz hard contact
+under the updated physics, reproducible without this GT3 prediction change.
+Older endurance/fade numbers below predate the shared tyre update and require
+revalidation. Multi-row traffic routing remains a separate local experiment.
 
 ## Implemented
 

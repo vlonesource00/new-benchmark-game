@@ -3,6 +3,16 @@
 import { parentPort, workerData } from 'node:worker_threads';
 import { RazorDriver } from '../src/driver.js';
 
+// Test-only overrides, applied after class/track calibration. Production
+// seat-workers never receive these options.
+if (workerData.options) {
+  const prepare = RazorDriver.prototype.prepare;
+  RazorDriver.prototype.prepare = function (...args) {
+    prepare.apply(this, args);
+    Object.assign(this.options, workerData.options);
+  };
+}
+
 if (workerData.attacks === false) {
   const update = RazorDriver.prototype.update;
   RazorDriver.prototype.update = function (...args) {
