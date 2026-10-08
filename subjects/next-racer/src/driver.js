@@ -10,6 +10,7 @@ import { guardControls,reverseSpace } from './safety.js';
 import { escapePrefix,escapeControl,actuationState,validatePrefix } from './plant.js';
 import { PitGuide,drivingTrack } from './pit.js';
 import { angle, clamp } from './math.js';
+import { tyreWet } from '../../../game/engine/sim/water.js';
 
 const clock=()=>globalThis.performance?.now?.()??Date.now();
 export class SpearheadDriver {
@@ -60,7 +61,7 @@ export class SpearheadDriver {
     this.lastResource=resource;
     if(obs.time>=this.nextEnvelope){
       const envelopeStart=clock();
-      const wet=clamp(((this.track.wetness??0)-.08)/.14,0,1),grip=this.control.o.gripUse;
+      const wet=clamp((tyreWet(this.track,car)-.08)/.14,0,1),grip=this.control.o.gripUse;
       this.road.rebuildEnvelope(car,grip+(Math.min(grip,.86)-grip)*wet);
       this.plan?.route.refresh();
       this.nextEnvelope=obs.time+1/(this.o.envelopeHz??2);

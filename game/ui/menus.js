@@ -3,7 +3,7 @@
 // wires clicks to the `act` callbacks; nothing here touches the sim.
 import { TRACKS, trackById } from '../core/tracks.js';
 import { licenseById, meetsLicense, FORMAT_LICENSE, difficultyForRating, licenseText } from '../core/career.js';
-import { FORMATS, COMPOUNDS, COMPOUND_IDS } from '../core/rules.js';
+import { FORMATS, TYRES as COMPOUNDS, TYRE_IDS as COMPOUND_IDS } from '../core/rules.js';
 import { AI_DRIVERS } from '../core/teams.js';
 import { DIFFICULTIES, difficultyById } from '../core/difficulty.js';
 import { PACE_PROFILES } from '../core/pace-profiles.js';

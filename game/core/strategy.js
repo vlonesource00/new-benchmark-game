@@ -1,4 +1,4 @@
-import { COMPOUNDS, COMPOUND_IDS, TANK_LITRES, WEAR_CLIFF } from './rules.js';
+import { COMPOUNDS, COMPOUND_IDS, TYRES, TYRE_IDS, WET_COMPOUNDS, TANK_LITRES, WEAR_CLIFF, CROSSOVER } from './rules.js';
 
 /**
  * One strategist per team. It measures real fuel burn and tyre wear per lap
@@ -12,7 +12,7 @@ export class TeamStrategist {
     this.style = strategyStyle(seed, index);
     this.fuelPerLap = cal.lapFuel;
     // (cars at race pace wear ~1.5x the calibration's nominal rate: the estimate starts there and is learnt from the car)
-    this.wearPerLap = { ...Object.fromEntries(Object.values(COMPOUNDS).map((c) => [c.id, WEAR_INIT * WEAR_CLIFF * c.wear / cal.tyreLaps])) };
+    this.wearPerLap = { ...Object.fromEntries(Object.values(TYRES).map((c) => [c.id, WEAR_INIT * WEAR_CLIFF * c.wear / cal.tyreLaps])) };
     this.stops = 0; this.swaps = 0; this.boxThisLap = false; this.reason = '';
     this.request = null;           // human override: { compound, swap, fuel }
     this.lapMark = null;
@@ -24,7 +24,7 @@ export class TeamStrategist {
     // seconds per lap it fades with every lap of age (learnt from the stint).
     this.lapRef = cal.refLap ?? 70;
     // How much harder than the wear model each compound has faded for this car (learnt per stint, 1 = as modelled).
-    this.fade = Object.fromEntries(COMPOUND_IDS.map((id) => [id, 1]));
+    this.fade = Object.fromEntries(TYRE_IDS.map((id) => [id, 1]));
     this.stintTimes = [];
   }
   /** Laps until the compound is fully worn (the cost model prices the cliff before that). */
@@ -115,11 +115,44 @@ export class TeamStrategist {
    * Decision for the lap about to reach the pit approach. `lapsLeft` counts
    * laps still to complete including the current one.
    */
+  /**
+   * Weather call: the tyre family the road needs over the next lap or two ('slick' | 'intermediate' | 'wet'), from the
+   * road's mean wetness and where the rain is heading. Rain on the circuit pushes the call wetter; a drying road with
+   * cars on it has a dry line well ahead of the mean, so the call goes drier. Hysteresis (0.05 past each crossover)
+   * keeps a car from boxing back and forth around one. Returns null without race weather (bare tracks, rigs).
+   */
+  weatherNeed(car) {
+    const env = this.env; if (!env?.track) return null;
+    const have = WET_COMPOUNDS[car.wheels[0].tyre.compound] ? car.wheels[0].tyre.compound : 'slick';
+    const mmh = env.weather?.snapshot ? env.weather.rainAt(env.weather.centre.x, env.weather.centre.z) : 0;
+    const trend = (env.track.wetness ?? 0) - (this.lastWet ?? env.track.wetness ?? 0); this.lastWet = env.track.wetness;
+    let w = (env.track.wetness ?? 0) + (mmh > 4 ? Math.min(0.18, mmh / 60) : 0) - (mmh < 0.5 && trend <= 0 ? 0.12 : 0);
+    const order = ['slick', 'intermediate', 'wet'], at = order.indexOf(have), m = 0.05;
+    let call = w < CROSSOVER.slickMax - (at > 0 ? m : -m) ? 'slick' : w < CROSSOVER.wetMin + (at === 2 ? -m : m) ? 'intermediate' : 'wet';
+    // Rain falling (or a front building up) never sends a car to a drier family: the road is about to get wetter.
+    const coming = mmh >= 1 || env.weather?.phase === 'building' || env.weather?.phase === 'shower';
+    if (coming && order.indexOf(call) < at) call = have;
+    return { call, have, wet: w, severe: Math.abs(order.indexOf(call) - at) > 1 || (have === 'slick' && w > 0.55) || (have !== 'slick' && w < 0.12) };
+  }
+  /** The rain tyre (or the slick for the stint) a weather stop fits. */
+  weatherCompound(call, stintLaps) { return call === 'slick' ? this.pickCompound(stintLaps) : call; }
+  /** Shared by subclass strategists: a plan when the weather alone says box (null otherwise). */
+  weatherCall(car, lapsLeft) {
+    const need = this.weatherNeed(car);
+    if (!need || need.call === need.have || lapsLeft <= 1 || (lapsLeft <= 2 && !need.severe)) return null;
+    this.boxThisLap = true; this.reason = `WEATHER · ${need.call.toUpperCase()}`;
+    const plan = this.servicePlan(car, lapsLeft - 1);
+    return this.plan = { ...plan, tyres: true, compound: this.weatherCompound(need.call, Math.max(1, Math.floor(TANK_LITRES / this.fuelPerLap))) };
+  }
   decide(car, lapsLeft, aiDriving = true, caution = false) {
     const fuelLaps = car.fuel / this.fuelPerLap, wear = maxWear(car);
     const id = car.wheels[0].tyre.compound;
     const reasons = [];
     if (lapsLeft <= 1 && !this.request) { this.boxThisLap = false; this.reason = 'FINAL LAP'; return this.plan = null; }
+    // Weather first: the wrong tyre family costs seconds a lap, far more than any stint plan saves.
+    if (aiDriving && !this.request) { const w = this.weatherCall(car, lapsLeft); if (w) return w; }
+    // On rain tyres (or a road that wants them) the dry-stint planner does not apply: only fuel, wear and the rules.
+    const rainy = Boolean(WET_COMPOUNDS[id]) || (this.weatherNeed(car)?.call ?? 'slick') !== 'slick';
     // Box now when the car cannot complete the next full lap with margin.
     if (fuelLaps < 1.15 && fuelLaps < lapsLeft - 0.9) reasons.push('FUEL');
     // Undercut: box a lap or two early when one tank still reaches the flag.
@@ -129,13 +162,13 @@ export class TeamStrategist {
     if (wear + this.wearPerLap[id] * 1.05 > WEAR_CLIFF + 0.05 && lapsLeft > 1) reasons.push('TYRES');
     // Race planner: an AI boxes when stopping now beats every later stop, extra
     // stops for fresh softs included (the old PACE rule only looked back).
-    else if (aiDriving && lapsLeft - 1 >= 2 && this.planStint(car, lapsLeft - 1, owed).laps === 0) reasons.push('PLAN');
+    else if (aiDriving && !rainy && lapsLeft - 1 >= 2 && this.planStint(car, lapsLeft - 1, owed).laps === 0) reasons.push('PLAN');
     if (owed > 0 && lapsLeft - 1 <= owed * 1) reasons.push('MANDATORY');
     if (this.format.mandatorySwap && this.swaps === 0 && lapsLeft - 1 <= 1 && this.team.drivers.length > 1) reasons.push('SWAP RULE');
     // Under caution the field is slow, so a stop costs a fraction of a green-flag one: box when stopping now at that
     // price beats the best plan from here (which pays full price for every later stop). A car that has just been in
     // gains nothing and stays out; one that still owes a stop, or is due one soon, takes the cheap one.
-    if (caution && aiDriving && !reasons.length && lapsLeft - 1 >= 2) {
+    if (caution && aiDriving && !rainy && !reasons.length && lapsLeft - 1 >= 2) {
       const n = lapsLeft - 1, stay = this.planStint(car, n, owed).cost;
       if (this.stopLoss - this.cautionSaving(caution) + this.planFresh(n, Math.max(0, owed - 1)).cost < stay - 0.5) reasons.push('CAUTION');
     }
@@ -160,6 +193,10 @@ export class TeamStrategist {
     let tyres = this.reason.includes('PLAN') || this.reason.includes('CAUTION') || wear + this.wearPerLap[id] * stintLaps > WEAR_CLIFF + 0.04 || wear > 0.4 || (fresh && fresh.cost + this.cal.tyreChangeS < keep);
     let compound = id;
     if (tyres) compound = fresh ? fresh.id : this.pickCompound(stintLaps);
+    // A wet road keeps (or fits) the rain tyre it calls for; the slick planner above only knows dry stints.
+    const wx = this.weatherNeed?.(car);
+    if (wx && wx.call !== 'slick') { if (WET_COMPOUNDS[id] && id === wx.call) { tyres = wear > 0.45; compound = id; } else { tyres = true; compound = wx.call; } }
+    else if (tyres && WET_COMPOUNDS[compound]) compound = this.pickCompound(stintLaps);
     const drivers = this.team.drivers.length;
     let swap = drivers > 1 && (this.format.mandatorySwap && this.swaps === 0 || this.team.drivers.every((d) => d.kind === 'ai') || this.stintBalanced());
     const r = this.request;
@@ -186,6 +223,8 @@ export class TeamStrategist {
   /** Compound an all-AI team starts on: the planner's first stint for the whole race. */
   startCompound() {
     this.memo = null;
+    const need = this.env ? this.weatherNeed({ wheels: [{ tyre: { compound: 'medium' } }] }) : null;
+    if (need && need.call !== 'slick') return need.call;
     return this.planFresh(this.cal.laps, this.format.mandatoryStops).id;
   }
   // Human-led teams hand the car to the AI for the middle stint of long races.
@@ -216,7 +255,7 @@ export const PIT_LANE_LOSS_S = 18;
 // Planner model, fitted to scripts/strategy/stint-rig.mjs stints (RAZOR, GTP and GT3, three tracks): a fresh soft is
 // ~2 % quicker than a medium and a hard ~3 % slower (it also runs cooler); after that lap time follows the tread,
 // losing about half of the grip wearGrip() takes away (gentle to 72 % wear, then the cliff). Out-lap on cold tyres ~1 s.
-const COMPOUND_PACE = { soft: -0.016, medium: 0, hard: 0.022 };  // fresh-tyre pace vs medium, stint-rig 2026-10
+const COMPOUND_PACE = { soft: -0.016, medium: 0, hard: 0.022, intermediate: 0.05, wet: 0.09 };  // fresh-tyre pace vs medium, stint-rig 2026-10
 const WEAR_K = 0.45, WEAR_INIT = 1.1;
 const OUT_LAP_S = 1;
 /** Fraction of grip lost at tread wear `w` (the tyre model's wearGrip). */

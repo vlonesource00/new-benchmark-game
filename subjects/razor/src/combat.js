@@ -1,6 +1,7 @@
 import { clamp } from '../../apex/src/math.js';
 import { CarModel, liveGrip } from '../../apex/src/model.js';
 import { Corridors } from './corridor.js';
+import { tyreWet } from '../../../game/engine/sim/water.js';
 
 const wrap = (s, L) => ((s + L * 1.5) % L) - L / 2;
 const sampleAt = (line, a, s) => { const j = line.stationOf(s); return line.sample(a, Math.floor(j), j % 1); };
@@ -34,7 +35,7 @@ export class RazorCombat {
       const d = this.driver;
       if (!this.forecastModels.has(r.cls)) this.forecastModels.set(r.cls, new CarModel(r.cls));
       const model = this.forecastModels.get(r.cls);
-      model.grip = liveGrip(r.car).grip * (1 - (d.track.wetness ?? 0) * 0.36) * (d.track.tempGrip ?? 1);
+      model.grip = liveGrip(r.car).grip * (1 - tyreWet(d.track, r.car) * 0.36) * (d.track.tempGrip ?? 1);
       model.margin = d.model.margin;
       prediction = { time: this.now, x: new Float64Array(35), v: new Float64Array(35), a: new Float64Array(35) };
       prediction.v[0] = r.v;

@@ -6,7 +6,8 @@ import { wrap } from '../engine/sim/math.js';
 import { raceInterval } from '../engine/sim/interval.js';
 import { halfCarInside } from '../engine/sim/racecraft-policy.js';
 import { carSpecFor } from '../engine/sim/car-specs.js';
-import { COMPOUNDS, FORMATS, TANK_LITRES, TYRE_HEAT, calibrate, serviceTime } from './rules.js';
+import { COMPOUNDS, TYRES, FORMATS, TANK_LITRES, TYRE_HEAT, calibrate, serviceTime, wetCall } from './rules.js';
+import { WaterField } from '../engine/sim/water.js';
 import { Weather } from './weather.js';
 import { PitLane, PitAutopilot } from './pit.js';
 import { TeamStrategist, maxWear } from './strategy.js';
@@ -36,7 +37,11 @@ export class EnduranceRace {
     this.session = session;
     // 'rolling': formation behind the leader, two-wide, green at the start zone (core/formation.js).
     this.startType = session === 'race' ? startType : 'standing';
-    this.weather = new Weather(weather, weatherSeed); this.weather.apply(track);
+    this.weather = new Weather(weather, weatherSeed); this.weather.bind(track);
+    // Surface water: rain fills a depth map over the road, puddles hold, tyres clear a dry line (engine/sim/water.js).
+    track.water = new WaterField(track, weatherSeed); this.weather.waterDriven = true; this.waterClock = 0;
+    this.prefillWater();
+    this.weather.apply(track);
     this.format = { ...format, laps };
     this.cal = calibrate(track, laps); this.laps = session === 'qualifying' ? QUALI_LAPS : this.cal.laps;
     this.classId = carSpecFor(classId).key;
@@ -51,7 +56,7 @@ export class EnduranceRace {
     });
     this.entries = teams.map((team, i) => ({
       team, car: this.cars[i], active: team.starter ?? 0,
-      bridges: [], strategist: new TeamStrategist(team, this.cal, this.format, seed, i),
+      bridges: [], strategist: Object.assign(new TeamStrategist(team, this.cal, this.format, seed, i), { env: { track, weather: this.weather } }),
       pit: null, pitPlan: null, pitStopTime: 0, decidedLap: 0,
       stints: [], stintStart: 0, box: this.lane.boxes[i]
     }));
@@ -79,9 +84,36 @@ export class EnduranceRace {
     if (!this.lines.has(car.classId)) this.lines.set(car.classId, new RacingLine(this.track, carSpecFor(car.classId)));
     return this.lines.get(car.classId);
   }
+  // A race that starts in (or just after) rain starts on a road that has been soaking: settle the field first.
+  prefillWater() {
+    const water = this.track.water, w = this.weather, wet0 = Math.min(0.95, w.wet);
+    if (wet0 > 0.01) { const d0 = -0.35 * Math.log(1 - wet0); for (let k = 0; k < water.depth.length; k++) water.depth[k] = d0 * (1 + 1.5 * water.basin[k]); }
+    if (w.rain > 0.01) for (let k = 0; k < 120; k++) water.step(5, (x, z) => w.rainAt(x, z), w.evaporation());
+    water.live = true; this.track.wetness = water.meanWet(); w.wet = this.track.wetness; this.track.weatherInfo = w.snapshot();
+  }
+  stepWater(dt) {
+    if ((this.waterClock += dt) < 0.25) return;
+    const w = this.weather, water = this.track.water, h = this.waterClock; this.waterClock = 0;
+    water.step(h, (x, z) => w.rainAt(x, z), w.evaporation());
+    this.track.wetness = water.meanWet(); w.wet = this.track.wetness; this.track.weatherInfo = w.snapshot();
+  }
+  // Visibility 0..1 per car: the spray of the cars just ahead and in line with it (fades over 90 m and 5 m across).
+  stepVisibility() {
+    const cars = this.cars, L = this.track.length;
+    for (const c of cars) {
+      let fog = 0;
+      for (const o of cars) {
+        if (o === c || !(o.spray > 0.02)) continue;
+        const ds = ((o.s - c.s) % L + L * 1.5) % L - L / 2; if (ds <= 0 || ds > 90) continue;
+        const lat = Math.abs(o.lateral - c.lateral), across = lat < 2.2 ? 1 : Math.max(0, 1 - (lat - 2.2) / 2.8);
+        fog = Math.max(fog, o.spray * (1 - ds / 90) * across);
+      }
+      c.visibility = 1 - 0.85 * fog;
+    }
+  }
   fitTyres(car, compoundId, warm = false) {
-    const c = COMPOUNDS[compoundId];
-    for (const w of car.wheels) w.tyre = createTyre(car.setup.pressure, { compound: c.id, gripScale: c.grip, wearScale: c.wear * this.cal.wearScale * (car.spec.tyreWear ?? 1), optimum: c.optimum, heat: c.heat * (TYRE_HEAT[car.spec?.key] ?? 1), warm });
+    const c = TYRES[compoundId] ?? COMPOUNDS.medium;
+    for (const w of car.wheels) w.tyre = createTyre(car.setup.pressure, { compound: c.id, gripScale: c.grip, wearScale: c.wear * this.cal.wearScale * (car.spec.tyreWear ?? 1), optimum: c.optimum, heat: c.heat * (TYRE_HEAT[car.spec?.key] ?? 1), warm, wetHold: c.wetHold ?? 0, aqV: c.aqV ?? 38 });
   }
   reset() {
     const track = this.track, start = track.scenario?.start;
@@ -102,8 +134,8 @@ export class EnduranceRace {
       c.fuel = quali ? Math.min(TANK_LITRES, (TANK_LITRES / this.cal.fuelLaps) * (QUALI_LAPS + 1.6)) : TANK_LITRES;
       // All-AI teams pick their own start tyre; a human team starts on the chosen one.
       const allAi = e.team.drivers.every((d) => d.kind === 'ai');
-      if (quali) { this.fitTyres(c, 'soft', true); fitHybrid(c, 1); c.hybrid && (c.hybrid.playerMode = 'qual'); }
-      else { this.fitTyres(c, allAi ? e.strategist.startCompound(this.cal.fuelLaps) : this.startCompound); fitHybrid(c); }
+      if (quali) { const call = wetCall(track.wetness); this.fitTyres(c, call === 'slick' ? 'soft' : call, true); fitHybrid(c, 1); c.hybrid && (c.hybrid.playerMode = 'qual'); }
+      else { e.strategist.env ??= { track, weather: this.weather }; this.fitTyres(c, allAi ? e.strategist.startCompound(this.cal.fuelLaps) : this.startCompound); fitHybrid(c); }
       c.race = { progress: rolling ? -back : -gridToFinish - back, previousS: c.s, lap: 1, lastLap: null, bestLap: null, lapStart: 0, sector: 0, valid: true, sectors: [], secMark: 0, secValid: true, secCur: [null, null, null], secState: [null, null, null], secBest: [null, null, null], finishTime: null, offtrack: 0, pitLap: false };
       e.pit = null; e.pitPlan = null; e.retired = null; e.stints = [{ driver: e.active, fromLap: 1, toLap: null }];
       for (const b of e.bridges) b.reset?.({ cars: this.cars, track, line: this.lineFor(c) });
@@ -189,7 +221,7 @@ export class EnduranceRace {
     }
     if (this.phase !== 'racing') return;
     this.time += dt;
-    this.weather.step(dt); this.weather.apply(this.track);
+    this.weather.step(dt); this.stepWater(dt); this.weather.apply(this.track); this.stepVisibility();
     const track = this.track, cars = this.cars, lane = this.lane;
     const projections = new Map(cars.map((c) => [c.id, track.nearest(c.x, c.z)]));
     const order = this.order();
@@ -212,6 +244,7 @@ export class EnduranceRace {
       // Strategy call once per lap, just before the approach point.
       if (this.session !== 'qualifying' && !e.pit && c.race.finishTime === null && c.race.progress > 0 && e.decidedLap !== c.race.lap && lane.inWindow(s, wrap(lane.approach - 120, lane.L), lane.approach)) {
         e.decidedLap = c.race.lap;
+        e.strategist.env ??= { track, weather: this.weather };
         e.pitPlan = e.strategist.decide(c, this.lapsLeft(c), e.team.drivers[e.active]?.kind !== 'human', caution && this.caution.pitsOpen ? (this.caution.sc ? 'sc' : 'fcy') : false);
         if (e.pitPlan) this.log('strategy', e, `${e.team.short} · BOX THIS LAP · ${e.strategist.reason}`);
         // Race control overrides strategy: a drive-through comes first, and the
@@ -341,7 +374,7 @@ export class EnduranceRace {
         this.log('swap', e, `${e.team.short} · ${e.team.drivers[prev].name} → ${this.activeDriver(e).name}`);
       }
       e.strategist.stopDone(plan);
-      this.log('pit', e, `${e.team.short} · ${p.serviceTotal.toFixed(1)}s${plan.litres > 0.5 ? ` · +${plan.litres.toFixed(0)}L` : ''}${plan.tyres ? ` · ${COMPOUNDS[plan.compound].label}` : ''}${plan.repair ? ' · REPAIR' : ''}`);
+      this.log('pit', e, `${e.team.short} · ${p.serviceTotal.toFixed(1)}s${plan.litres > 0.5 ? ` · +${plan.litres.toFixed(0)}L` : ''}${plan.tyres ? ` · ${TYRES[plan.compound].label}` : ''}${plan.repair ? ' · REPAIR' : ''}`);
       e.pitStopTime += p.serviceTotal;
     }
     // Unsafe-release guard: wait while another car is about to pass the box.

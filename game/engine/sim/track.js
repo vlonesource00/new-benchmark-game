@@ -1,6 +1,7 @@
 import { clamp, lerp, wrap } from './math.js';
 import { HARBOR_RING } from './harbor-ring.js';
 import { CIRCUITS } from './circuits.js';
+import { wetFrac } from './water.js';
 
 // Original 2.96 km circuit. Local +Z is forward; positive lateral is right.
 const CONTROL = [
@@ -89,13 +90,22 @@ export class Track {
     const pit = this.inPitLane(p.s, p.lateral);
     const zone = pit ? 'asphalt' : this.zoneAt(l);
     const base = { asphalt: 1, kerb: 0.88, gravel: 0.52, grass: 0.42 }[zone];
-    return { ...p, zone, pit, rubber, grip: base * (1 + rubber * 0.10) * (1 - this.wetness * (0.36 + rubber * 0.2)) * this.tempGrip, bump: zone === 'kerb' ? 0.028 + Math.sin(p.s * 4) * 0.012 : 0, resistance: zone === 'gravel' ? 0.09 : zone === 'grass' ? 0.06 : 0.013 };
+    // Water: the local film once a water field runs (rain, puddles, the dry line), else the old uniform wetness.
+    // Off the asphalt grid (kerbs, run-off) the nearest edge lane stands in. Rubber on a wet road is slippery.
+    const water = this.water?.live ? this.water.depth[p.index * 13 + lane] : 0, wet = this.water?.live ? wetFrac(water) : this.wetness;
+    const wetLoss = wet * (0.36 + rubber * 0.2);
+    return { ...p, zone, pit, rubber, water, wet, wetLoss, grip: base * (1 + rubber * 0.10) * (1 - wetLoss) * this.tempGrip, bump: zone === 'kerb' ? 0.028 + Math.sin(p.s * 4) * 0.012 : 0, resistance: zone === 'gravel' ? 0.09 : zone === 'grass' ? 0.06 : 0.013 };
   }
-  deposit(surface, slipEnergy, load, dt) {
-    if (surface.zone !== 'asphalt' || surface.pit || load < 10) return;
+  // Returns the water (mm) the tyre squeezed out of the cell, which the car throws up as spray.
+  deposit(surface, slipEnergy, load, dt, speed = 0) {
+    if (surface.zone !== 'asphalt' || surface.pit || load < 10) return 0;
     const lane = this.laneAt(surface.lateral), index = surface.index * 13 + lane;
     this.rubber[index] = clamp(this.rubber[index] + dt * (0.0005 + Math.min(slipEnergy, 30000) * 0.0000001), 0, 1);
+    return this.water?.live && speed > 2 ? this.water.clear(index, dt, speed) : 0;
   }
+  /** Wetness 0..1 of one grid cell (node index, rubber lane): planners read it to price the dry line against the puddles. */
+  wetAt(index, lane) { return this.water?.live ? wetFrac(this.water.depth[index * 13 + lane]) : this.wetness; }
+  waterAt(index, lane) { return this.water?.live ? this.water.depth[index * 13 + lane] : 0; }
   // Game fork: an asphalt pit corridor [{from,to,lateral,halfWidth}] in metres
   // of track distance; `from` may exceed `to` when the lane crosses the line.
   setPitLane(segments){this.pitLane=segments;}

@@ -1,6 +1,7 @@
 import { clamp, damp, angle } from './math.js';
 import { createTyre, tyreForce } from './tyre.js';
 import { CAR_CLASSES, carSpecFor } from './car-specs.js';
+import { aquaplane } from './water.js';
 
 export const SPEC = CAR_CLASSES.gt;
 
@@ -73,6 +74,7 @@ export class Vehicle {
     const rearSlip = Math.max(this.wheels[drivenStart].tyre.kappa, this.wheels[drivenStart+1].tyre.kappa);
     const tc = this.setup.tc > 0 && !reversing ? clamp(1 - Math.max(0, rearSlip - (0.14 - this.setup.tc * 0.009)) * this.setup.tc * 0.7, 0.18, 1) : 1;
     this.tcActive = tc < 0.92; this.absActive = false;
+    let sprayed = 0;
     this.wheels.forEach((w, i) => {
       const front = i < 2;
       // Ackermann follows the turn centre; outside wheel uses less lock.
@@ -93,11 +95,17 @@ export class Vehicle {
       const driven=front===(SPEC.drive==='front');
       const diff = driven ? clamp((this.wheels[i^1].omega - w.omega) * 12, -130, 130) : 0;
       const wheelDrive = driven ? (drive + (reversing ? 0 : this.hybridForce ?? 0) * SPEC.radius) * tc * 0.5 + diff - (throttle < 0.02 ? Math.sign(this.u) * 22 * ratio : 0) : 0;
+      // Treaded tyres keep most of their grip on a wet road (wetHold) and clear deeper water before they float.
+      const ty = w.tyre, hold = ty.wetHold ?? 0, loss = surface.wetLoss ?? 0;
+      let grip = surface.grip * SPEC.tyreGrip;
+      if (hold > 0 && loss > 0) grip *= (1 - loss * (1 - hold)) / (1 - loss);
+      w.aqua = surface.water > 0.5 ? aquaplane(surface.water, this.speed, ty.aqV ?? 38, ty.wear) : 0;
+      grip *= 1 - 0.75 * w.aqua;
       let avgFx = 0, avgFy = 0;
       // Wheel rotation and relaxation solve at 480 Hz, chassis at 120 Hz.
       for (let sub = 0; sub < 4; sub++) {
         const h = dt / 4;
-        tyreForce(w.tyre, { vx: tyreVx, vy: tyreVy, omega: w.omega, radius: SPEC.radius, load: w.load, grip: surface.grip*SPEC.tyreGrip, ambient: track.ambient ?? 24 }, h);
+        tyreForce(w.tyre, { vx: tyreVx, vy: tyreVy, omega: w.omega, radius: SPEC.radius, load: w.load, grip, ambient: track.ambient ?? 24, wet: surface.wet ?? 0 }, h);
         const unbraked = w.omega + (wheelDrive - w.tyre.fx * SPEC.radius) / SPEC.wheelInertia * h;
         const brakeStep = brakeTorque / SPEC.wheelInertia * h;
         w.omega = Math.sign(unbraked) * Math.max(0, Math.abs(unbraked) - brakeStep);
@@ -108,8 +116,10 @@ export class Vehicle {
       fx += forceX; fz += forceZ - surface.resistance * w.load * Math.tanh(this.u * 2);
       moment += forceX * w.z - forceZ * w.x;
       w.brakeTemp = clamp(w.brakeTemp + (brakeTorque * Math.abs(w.omega) * 0.00009 - (w.brakeTemp - 24) * (0.02 + this.speed * 0.0007)) * dt, 24, 1000);
-      track.deposit(surface, w.tyre.slipPower, w.load, dt);
+      sprayed += track.deposit(surface, w.tyre.slipPower, w.load, dt, this.speed);
     });
+    // Spray 0..1: the water the tyres threw up this step, at speed (a heavy-rain flat-out GTP saturates it).
+    this.spray = damp(this.spray ?? 0, clamp(sprayed / Math.max(dt, 1e-4) * this.speed / 500, 0, 1), 4, dt);
     this.ax = damp(this.ax, fz / mass, 16, dt); this.ay = damp(this.ay, fx / mass, 16, dt);
     this.vx += (fx * c + fz * s) / mass * dt;
     this.vz += (-fx * s + fz * c) / mass * dt;

@@ -66,7 +66,8 @@ export class PerformanceModel {
     const surfaceBase=offset=>({asphalt:1,kerb:.88,gravel:.52,grass:.42}[this.track.zoneAt(offset)]);
     const footprint=SPEC.track/2+.2;
     const base=(surfaceBase(lateral-footprint)+surfaceBase(lateral+footprint))*.5;
-    const surface=(1+rubber*.1)*(1-this.track.wetness*(.36+rubber*.2))*(this.track.tempGrip??1)*base;
+    const wet=this.track.wetAt?this.track.wetAt(p.index,lane):this.track.wetness;
+    const surface=(1+rubber*.1)*(1-wet*(.36+rubber*.2))*(this.track.tempGrip??1)*base;
     const lateralFraction=.78+(PACE.lateralReserve-.78)*this.paceBlend;
     const balanceReserve=Math.min(this.frontFactor,this.rearFactor)/this.tyreFactor;
     const lateralCapacity=mu*surface*(9.81+downforce/mass)*lateralFraction*balanceReserve;

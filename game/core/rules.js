@@ -8,6 +8,20 @@ export const COMPOUNDS = Object.freeze({
   hard:   Object.freeze({ id: 'hard',   label: 'HARD',   short: 'H', color: '#f2f2f2', grip: 0.985, wear: 0.58, optimum: 99, heat: 0.9 })
 });
 export const COMPOUND_IDS = Object.freeze(Object.keys(COMPOUNDS));
+// Treaded rain tyres. wetHold = share of the wet-road grip loss they recover (slicks 0); aqV = how fast their tread
+// still clears 1 mm of water (m/s) before they start to float (slicks 38). On a dry road they run hot and wear fast:
+// lower optimum, more heat. Kept out of COMPOUNDS so dry-tyre planners (and their baked tables) are untouched.
+export const WET_COMPOUNDS = Object.freeze({
+  intermediate: Object.freeze({ id: 'intermediate', label: 'INTER', short: 'I', color: '#3bd16f', grip: 0.95, wear: 1.5, optimum: 68, heat: 1.3, wetHold: 0.55, aqV: 54, wet: true }),
+  wet:          Object.freeze({ id: 'wet',          label: 'WET',   short: 'W', color: '#3b8bff', grip: 0.89, wear: 1.25, optimum: 56, heat: 1.5, wetHold: 0.74, aqV: 72, wet: true })
+});
+export const WET_COMPOUND_IDS = Object.freeze(Object.keys(WET_COMPOUNDS));
+export const TYRES = Object.freeze({ ...COMPOUNDS, ...WET_COMPOUNDS });
+export const TYRE_IDS = Object.freeze(Object.keys(TYRES));
+// Crossover points on the mean road wetness (track.wetness): below SLICK_MAX slicks are quicker, above WET_MIN full wets.
+export const CROSSOVER = Object.freeze({ slickMax: 0.3, wetMin: 0.72 });
+/** The tyre family a road wetness calls for: 'slick' | 'intermediate' | 'wet'. */
+export const wetCall = (wet) => wet < CROSSOVER.slickMax ? 'slick' : wet < CROSSOVER.wetMin ? 'intermediate' : 'wet';
 
 // Heat into the tread from sliding, per car class. Measured with scripts/strategy/stint-rig.mjs (RAZOR at race pace):
 // at the raw rate a stint drove every compound 25-50 C past its window (GTP cores 125-138 C), so softs and mediums

@@ -115,6 +115,8 @@ export class AsyncSeats {
           type: 'step', slot, seq: this.seq, dt: Math.min(0.1, this.pendingDt), time: context.time, laps: context.totalLaps,
           cars: seats.cars(race), wetness: race.track.wetness, tempGrip: race.track.tempGrip,
           rubber: this.seq % RUBBER_EVERY === 1 ? race.track.rubber : undefined,
+          water: this.seq % RUBBER_EVERY === 1 && race.track.water?.live ? race.track.water.depth : undefined,
+          weather: this.seq % RUBBER_EVERY === 1 ? race.track.weatherInfo : undefined,
           ...(driver.id==='next-racer'?{state:nextRacerState(race,race.cars[index]),
             ambient:race.track.ambient,epoch:this.epoch,controlDelay:this.controlDelay,feedbackPeriod:1/120}:{}),
           ...(driver.id === 'apex' ? { state: apexState(race, race.cars[index]) } : {}),

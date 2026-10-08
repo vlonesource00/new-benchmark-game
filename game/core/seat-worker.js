@@ -3,6 +3,7 @@
 // bridge and answers with controls. The race never waits for it: the car holds
 // its last controls until the next answer lands, like a human's reaction time.
 import { Track } from '../engine/sim/track.js';
+import { WaterField } from '../engine/sim/water.js';
 import { Vehicle } from '../engine/sim/vehicle.js';
 import { RacingLine } from '../engine/sim/ai.js';
 import { carSpecFor } from '../engine/sim/car-specs.js';
@@ -60,6 +61,8 @@ self.onmessage = ({ data }) => {
     if (data.type !== 'step') return;
     if (data.rubber) track.rubber.set(data.rubber);
     if (data.wetness !== undefined) track.wetness = data.wetness;
+    if (data.water) { track.water ??= new WaterField(track); track.water.depth.set(data.water); track.water.live = true; }
+    if (data.weather) track.weatherInfo = data.weather;
     if (data.tempGrip !== undefined) track.tempGrip = data.tempGrip;
     // Optional driver envelope. Restore the legacy ambient for legacy seats
     // sharing this worker so their numerical contract remains unchanged.

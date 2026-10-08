@@ -2,6 +2,7 @@
 // Battle routes, native validation and lifecycle belong to SPEARHEAD.
 import { tyreGrip } from '../../../game/engine/sim/tyre.js';
 import { clamp, angle } from './math.js';
+import { tyreWet } from '../../../game/engine/sim/water.js';
 
 export const POLICY_DEFAULTS = Object.freeze({
   lookahead: .55, poseLead: .02, betaGain: 1.7, yawGain: .15,
@@ -45,7 +46,7 @@ export class ForceControl {
     const share = start === 0 ? spec.frontWeight : 1 - spec.frontWeight;
     const downforce = car.aero?.downforce ?? 0;
     let lo = 0, hi = start === 2 ? (this.o.rearSlipLimit ?? this.o.slipLimit) : this.o.slipLimit;
-    const wet = clamp(((this.track.wetness ?? 0) - .08) / .14, 0, 1);
+    const wet = clamp((tyreWet(this.track, car) - .08) / .14, 0, 1);
     if (start === 2) hi += (Math.min(hi, .16) - hi) * wet;
     const tyres = [car.wheels[start], car.wheels[start + 1]];
     const peaks = tyres.map(w => {
@@ -94,7 +95,7 @@ export class ForceControl {
     // Force feasibility protects replacement tyres as soon as they heat up.
     // Its gate is independent of the stricter temperature AND wear gate for
     // deliberately sliding the rear: a fresh warm set still needs braking.
-    const wet = clamp(((this.track.wetness ?? 0) - .08) / .14, 0, 1);
+    const wet = clamp((tyreWet(this.track, car) - .08) / .14, 0, 1);
     // Sparse controls and wet grip need the force reserve before a fresh set
     // reaches its thermal threshold. Extra rear rotation retains its own gate.
     const warmForce = Math.max(wet, clamp(plan.forceGuard ?? 0, 0, 1),

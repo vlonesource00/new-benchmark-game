@@ -27,7 +27,7 @@ import { drawTeams, mulberry32, AI_DRIVERS, TEAM_LIVERIES } from './core/teams.j
 import { assignClasses, gridFromQualifying, RACE_CLASSES } from './core/classes.js';
 import { DEPLOY_MODES, MODE_ORDER } from './core/hybrid.js';
 import { FORMATS } from './core/rules.js';
-import { Weather } from './core/weather.js';
+import { Weather, RAIN_MM_H } from './core/weather.js';
 import { PlayerInput } from './ui/input.js';
 import { renderMenu, renderSetup, renderDrivers, renderSettings, renderLoading, setLoading, renderResults, renderQualifying, renderDuel, seatPool } from './ui/menus.js';
 import { Hud } from './ui/hud.js';
@@ -95,7 +95,7 @@ function buildWorld(trackId) {
   world = new World(scene, renderer, track); world.setQuality?.(settings.quality);
   if (!finish) { finish = new VisualFinish(renderer, scene, camera); finish.setQuality(settings.quality); }
   effects ??= new CarEffects(scene);
-  rain ??= new WeatherEffects(scene, 900);
+  rain ??= new WeatherEffects(scene);
   worldTrackId = trackId;
   const pts = [];
   for (let i = 0; i < 160; i += 1) { const p = track.at(track.length * i / 160); pts.push([p.x, p.z]); }
@@ -597,9 +597,9 @@ function frame(ms, pumped = false) {
       const hour = raceHour(), sky = snap?.weather;
       // The race clock's sun warms the track; the render track mirrors the sim's wetness.
       race.weather.sun = Math.max(0, Math.sin(Math.PI * (hour - 6.5) / 13));
-      track.wetness = race.track.wetness;
+      track.wetness = race.track.wetness; track.water = race.track.water;
       world.setTimeOfDay(hour, sky?.cloud ?? 0, sky?.rain ?? 0); setHeadlights(world.lamps);
-      rain.update(camera.position, paused ? 0 : delta, .5 + (sky?.rain ?? 0) / 1.65);
+      rain.update(camera.position, paused ? 0 : delta, race.weather.rainAt ? race.weather.rainAt(camera.position.x, camera.position.z) / RAIN_MM_H : (sky?.rain ?? 0) * 2, sky?.wind);
       world.update(car, replay ? replay.t : snap?.time ?? 0, snap?.phase === 'countdown' ? snap.countdown : 0, false);
       world.setCarLights?.(cars, car);
       if (!replay) world.crews?.update(snap, cars, paused ? 0 : delta, camera.position);
@@ -624,7 +624,7 @@ function frame(ms, pumped = false) {
       // The menu previews the chosen weather's opening sky.
       if (menuWeather?.id !== (setup.weather ?? 'clear')) menuWeather = new Weather(setup.weather, setup.seed);
       world.setTimeOfDay(startHour(), menuWeather.cloud, menuWeather.rain);
-      track.wetness = menuWeather.wet; rain.update(camera.position, delta, .5 + menuWeather.rain / 1.65);
+      track.wetness = menuWeather.wet; track.water = null; rain.update(camera.position, delta, menuWeather.rain * 2, menuWeather.wind);
       world.update(menuProbe, now, 0, true);
       camera.position.set(p.x + Math.cos(menuAngle) * 95, 38, p.z + Math.sin(menuAngle) * 95);
       camera.lookAt(p.x, 4, p.z);

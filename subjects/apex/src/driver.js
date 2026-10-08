@@ -5,6 +5,7 @@ import { clamp, angle } from './math.js';
 import { PitGuide } from './pit.js';
 import { Field } from './field.js';
 import { Combat } from './combat.js';
+import { tyreWet } from '../../../game/engine/sim/water.js';
 
 /**
  * APEX driver. Writes only `car.controls` (and, for the GTP energy manager, `car.intent`).
@@ -92,7 +93,7 @@ export class ApexDriver {
   refresh(car) {
     const o = this.options, lg = liveGrip(car);
     // A rear that is weaker than the front turns a limit corner into oversteer: take extra margin for the imbalance.
-    const g = lg.grip * (1 - (o.balanceK ?? 0) * Math.max(0, lg.imbalance)) * (1 - (this.track.wetness ?? 0) * 0.36) * (this.track.tempGrip ?? 1);
+    const g = lg.grip * (1 - (o.balanceK ?? 0) * Math.max(0, lg.imbalance)) * (1 - tyreWet(this.track, car) * 0.36) * (this.track.tempGrip ?? 1);
     this.balance = lg.imbalance;
     // Thermal governor: the core is the slow variable. Past the compound's window every extra degree costs grip twice
     // (temperature and pressure) and wears the tread faster, so the push eases off before the tyres are cooked.

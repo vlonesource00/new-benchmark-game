@@ -4,9 +4,9 @@ import { clamp, damp } from './math.js';
 // working window (`optimum` core temperature) and heat build-up (`heat`, on
 // slip power); `wearScale` also carries the per-race wear multiplier so short
 // races still force a tyre decision.
-export function createTyre(pressure = 1.65, { compound = 'medium', gripScale = 1, wearScale = 1, optimum = 85, heat = 1, warm = false } = {}) {
+export function createTyre(pressure = 1.65, { compound = 'medium', gripScale = 1, wearScale = 1, optimum = 85, heat = 1, warm = false, wetHold = 0, aqV = 38 } = {}) {
   const t = warm ? 88 : 72;
-  return { compound, gripScale, wearScale, optimum, heat, surface: t + 4, core: t, inner: t + 5, outer: t + 3, coldPressure: pressure, pressure: pressure, wear: 0, alpha: 0, kappa: 0, fx: 0, fy: 0, utilisation: 0, slipPower: 0 };
+  return { compound, gripScale, wearScale, optimum, heat, wetHold, aqV, surface: t + 4, core: t, inner: t + 5, outer: t + 3, coldPressure: pressure, pressure: pressure, wear: 0, alpha: 0, kappa: 0, fx: 0, fy: 0, utilisation: 0, slipPower: 0 };
 }
 
 // Gentle linear fade, then a cliff past ~72% wear.
@@ -22,7 +22,7 @@ export function tyreGrip(t, load) {
 
 // Transient combined-slip tyre, SI forces and velocities, bar gauge pressures.
 // Analytic saturation + relaxation lengths; no proprietary tyre measurements.
-export function tyreForce(t, { vx, vy, omega, radius, load, grip, camber = -0.035, ambient = 24 }, dt) {
+export function tyreForce(t, { vx, vy, omega, radius, load, grip, camber = -0.035, ambient = 24, wet = 0 }, dt) {
   const speed = Math.max(2.5, Math.abs(vx));
   t.kappa = damp(t.kappa, clamp((omega * radius - vx) / speed, -2, 2), speed / 0.32, dt);
   t.alpha = damp(t.alpha, Math.atan2(vy, speed), speed / 0.45, dt);
@@ -41,13 +41,14 @@ export function tyreForce(t, { vx, vy, omega, radius, load, grip, camber = -0.03
   const rolling = load * Math.abs(vx) * 0.012;
   // Convective cooling sized so a stint at racing pace settles the core near
   // its window (~95 °C on mediums) instead of climbing all stint.
-  const cooling = (t.surface - ambient) * (46 + Math.abs(vx) * 2.2);
+  // A wet road cools the tread hard: slicks cannot hold their window in the rain, wets need it to survive.
+  const cooling = (t.surface - ambient) * (46 + Math.abs(vx) * 2.2) * (1 + 1.6 * wet);
   t.surface = clamp(t.surface + (t.slipPower * 0.55 * (t.heat ?? 1) + rolling - cooling - (t.surface - t.core) * 75) / 6000 * dt, ambient, 210);
   t.core = clamp(t.core + ((t.surface - t.core) * 75 + rolling * 0.3 - (t.core - ambient) * 4) / 18000 * dt, ambient, 170);
   t.inner = t.surface + Math.abs(camber) * 75;
   t.outer = t.surface - Math.abs(camber) * 45;
   // Ideal gas law must use absolute pressure and absolute temperature.
   t.pressure = (t.coldPressure + 1.01325) * ((t.core + 273.15) / (ambient + 273.15)) - 1.01325;
-  t.wear = clamp(t.wear + (t.wearScale ?? 1) * t.slipPower * dt * 1.7e-10 * (1 + Math.max(0, t.surface - 115) / 35), 0, 1);
+  t.wear = clamp(t.wear + (t.wearScale ?? 1) * t.slipPower * dt * 1.7e-10 * (1 + Math.max(0, t.surface - 115) / 35) * (1 - 0.55 * wet), 0, 1);
   return t;
 }

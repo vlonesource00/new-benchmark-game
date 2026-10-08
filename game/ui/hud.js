@@ -233,7 +233,8 @@ export class Hud {
     if (wx) {
       const sky = wx.rain > .3 ? 'RAIN' : wx.rain > .03 ? 'DRIZZLE' : wx.cloud > .6 ? 'CLOUD' : 'SUN';
       const track = wx.wet > .4 ? 'WET' : wx.wet > .08 ? 'DAMP' : 'DRY';
-      this.q('wx').textContent = `${sky} · AIR ${Math.round(wx.air)}° · TRACK ${Math.round(wx.track)}° ${track}`;
+      const rate = (wx.mmh ?? 0) >= .5 ? ` ${wx.mmh.toFixed(0)} mm/h` : '';
+      this.q('wx').textContent = `${sky}${rate} · AIR ${Math.round(wx.air)}° · TRACK ${Math.round(wx.track)}° ${track}${wx.wet > .08 ? ` ${Math.round(wx.wet * 100)}%` : ''}`;
     }
 
     // Pit service bar.

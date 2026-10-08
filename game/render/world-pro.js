@@ -476,6 +476,13 @@ export class World {
     }
     const rg = new THREE.BufferGeometry(); rg.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3)); rg.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
     this.rubberMesh = add(this.root, rg, new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, opacity: .3, blending: THREE.MultiplyBlending, depthWrite: false, side: THREE.DoubleSide, ...decal(3) }), 0, 0, 0, false);
+    // Standing water on the same lane cells: a dark mirror film whose alpha follows the host's water depth, so the
+    // drying racing line, the puddles in dips and along the edges and the rain front's wet patches all show.
+    const pg = new THREE.BufferGeometry(), pp = rg.attributes.position.array.slice();
+    for (let i = 1; i < pp.length; i += 3) pp[i] = .04;
+    pg.setAttribute('position', new THREE.Float32BufferAttribute(pp, 3)); pg.setAttribute('color', new THREE.Float32BufferAttribute(new Float32Array(pp.length / 3 * 4).fill(1), 4)); pg.setAttribute('normal', new THREE.Float32BufferAttribute(new Float32Array(pp.length).map((_, i) => i % 3 === 1 ? 1 : 0), 3));
+    this.puddleMesh = add(this.root, pg, new THREE.MeshStandardMaterial({ color: '#0d1013', roughness: .06, metalness: 0, envMapIntensity: 1.1, vertexColors: true, transparent: true, depthWrite: false, side: THREE.DoubleSide, ...decal(4) }), 0, 0, 0, false);
+    this.puddleMesh.visible = false;
 
     // Start/finish chequer and grid boxes.
     const p = t.at(t.finishS), start = new THREE.Group(); start.position.set(p.x, .03, p.z); start.rotation.y = p.heading; this.root.add(start);
@@ -1272,12 +1279,22 @@ export class World {
     const sx = centre.dot(this.shadowRight), sy = centre.dot(this.shadowUp);
     centre.addScaledVector(this.shadowRight, Math.round(sx / texel) * texel - sx).addScaledVector(this.shadowUp, Math.round(sy / texel) * texel - sy);
     this.sun.position.copy(centre).addScaledVector(dir, 160); this.sun.target.position.copy(centre); this.sun.target.updateMatrixWorld();
-    const wet = this.track.wetness || 0;
+    // With a live water map the overlay carries the local detail, so the base road only takes part of the sheen.
+    const wet = (this.track.wetness || 0) * (this.track.water?.live ? .6 : 1);
     if (wet !== this.visualWetness) {
       const s = wetSurface(wet); if ((this.roadMaterial.clearcoat > 0) !== (s.clearcoat > 0)) this.roadMaterial.needsUpdate = true;
       this.roadMaterial.roughness = s.roughness; this.roadMaterial.clearcoat = s.clearcoat; this.roadMaterial.color.setScalar(s.darken); this.visualWetness = wet;
     }
     this.startLights.forEach((l) => { const i = Math.floor(this.startLights.indexOf(l) / 2), on = countdown > 0 && countdown < 4 - i * .45; l.material.color.set(on ? '#ff2a12' : '#2a1412'); if (l.material.userData.glow) l.material.userData.glow.material.opacity = on ? .9 : 0; });
+    const water = this.track.water;
+    if (water?.live && Math.floor(time * 3) !== this.waterTick) {
+      this.waterTick = Math.floor(time * 3); const col = this.puddleMesh.geometry.attributes.color, arr = col.array, depth = water.depth; let any = false;
+      for (let i = 0; i < depth.length; i++) {
+        const d = depth[i], a = d < .04 ? 0 : Math.min(.8, .22 * (1 - Math.exp(-d / .35)) + .55 * clamp((d - .6) / 1.6, 0, 1));
+        if (a > 0) any = true; for (let v = 0; v < 6; v++) arr[i * 24 + v * 4 + 3] = a;
+      }
+      col.needsUpdate = true; this.puddleMesh.visible = any;
+    } else if (!water?.live && this.puddleMesh.visible) this.puddleMesh.visible = false;
     // Rubber shading: rewrite and upload only the lane cells whose value moved.
     if (Math.floor(time * 2) !== this.rubberTick) {
       this.rubberTick = Math.floor(time * 2); const color = this.rubberMesh.geometry.attributes.color, arr = color.array, rubber = this.track.rubber;

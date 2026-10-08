@@ -149,7 +149,9 @@ export function offloadField(field, { session, track, scenario = 'harbor-ring', 
         type: 'step', seq, dt, cars,
         time: session.time + dt, laps: session.laps, mode: session.mode, paceObjective: session.paceObjective,
         wetness: track.wetness,
-        rubber: seq % RUBBER_EVERY === 1 ? track.rubber : undefined
+        rubber: seq % RUBBER_EVERY === 1 ? track.rubber : undefined,
+        water: seq % RUBBER_EVERY === 1 && track.water?.live ? track.water.depth : undefined,
+        weather: seq % RUBBER_EVERY === 1 ? track.weatherInfo : undefined
       };
       const waits = [];
       for (const proxy of proxies) {

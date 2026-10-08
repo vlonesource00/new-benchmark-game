@@ -4,7 +4,7 @@ import { smokeTexture } from './textures.js';
 
 // Contact-patch tyre marks plus two particle pools: soft lit smoke/dust/spray
 // (alpha-blended, textured, rotating) and hot sparks/embers (additive).
-const SMOKE = 700, SPARK = 500;
+const SMOKE = 1400, SPARK = 500;
 
 function pool(count, attributes) {
   const g = new THREE.BufferGeometry();
@@ -123,7 +123,14 @@ export class CarEffects {
             const back = i >= 2 ? 1 : .5;
             if (surface.zone === 'gravel') { this.emit(point.x, .2, point.z, [.62, .54, .42], .9, 2.4, car.vx * .08, car.vz * .08, .7, .34); if (Math.random() < .5) this.spark(point.x, .1, point.z, car.vx * .3 + (Math.random() - .5) * 3, 2 + Math.random() * 3, car.vz * .3 + (Math.random() - .5) * 3, .5, [.25, .2, .15], .06); }
             else if (surface.zone === 'grass') this.emit(point.x, .15, point.z, [.45, .42, .28], .6, 1.4, car.vx * .05, car.vz * .05, .3, .2);
-            else if (wet > .15 && car.speed > 12) this.emit(point.x, .2, point.z, [.8, .86, .9], .4 + wet * .9, .6 + wet * .5, -car.vx * .1 + car.vx * .15 * back, -car.vz * .1 + car.vz * .15 * back, .6, .18 + wet * .15);
+            else if ((surface.wet ?? wet) > .12 && car.speed > 12) {
+              // Spray from the water actually under the tyre: rears throw the tall rooster tail that hangs behind a
+              // car (and blinds the one following), fronts a low fan; standing water adds a heavier splash.
+              const lw = surface.wet ?? wet, mm = surface.water ?? lw, v = Math.min(1, car.speed / 70), rear = back === 1;
+              if (rear || Math.random() < .5) this.emit(point.x, .2 + (rear ? .25 : 0), point.z, [.82, .87, .92], (.45 + lw * 1.1 + Math.min(1.5, mm) * .3) * (rear ? 1.5 : .9), .6 + lw * .9 * v + (rear ? .5 : 0),
+                car.vx * (rear ? .12 : .05), car.vz * (rear ? .12 : .05), .5 + v * (rear ? 1.6 : .5), (.12 + lw * .22) * (.4 + v * .6));
+              if (mm > .9 && Math.random() < .35) this.emit(point.x + (Math.random() - .5) * .6, .12, point.z + (Math.random() - .5) * .6, [.88, .92, .96], .3 + mm * .15, .35, car.vx * .3, car.vz * .3, 2.4, .35);
+            }
             else if (slip > .2 && w.tyre.slipPower > 2500) this.emit(point.x, .22, point.z, [.86, .87, .88], .45 + slip * .8, 2.2, car.vx * .05, car.vz * .05, .55, clamp(slip * .55, .1, .45));
             // Kerb strikes throw a few sparks off the floor.
             if (surface.zone === 'kerb' && car.speed > 25 && Math.random() < .12) for (let k = 0; k < 3; k++) this.spark(point.x, .06, point.z, car.vx * .75 + (Math.random() - .5) * 4, .6 + Math.random() * 1.8, car.vz * .75 + (Math.random() - .5) * 4);

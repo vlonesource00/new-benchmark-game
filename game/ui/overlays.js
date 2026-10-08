@@ -1,6 +1,6 @@
 // Pit-call and pause overlays.
 import { esc, compound } from './format.js';
-import { COMPOUND_IDS, TANK_LITRES } from '../core/rules.js';
+import { TYRE_IDS, TANK_LITRES } from '../core/rules.js';
 
 const $$ = (el, s) => [...el.querySelectorAll(s)];
 
@@ -8,7 +8,7 @@ const $$ = (el, s) => [...el.querySelectorAll(s)];
 export function pitOptions(car) {
   const need = Math.max(0, TANK_LITRES - car.fuel);
   return {
-    compound: [...COMPOUND_IDS, 'none'].map((c) => [c, c === 'none' ? 'Keep' : compound(c).label]),
+    compound: [...TYRE_IDS, 'none'].map((c) => [c, c === 'none' ? 'Keep' : compound(c).label]),
     fuel: [[null, 'Auto'], [Math.round(need / 2), `+${Math.round(need / 2)} L`], [Math.round(need), `Full +${Math.round(need)} L`]],
     swap: [[null, 'Auto'], [true, 'Swap'], [false, 'Stay']]
   };

@@ -2,6 +2,7 @@
 // replica host Vehicles, rebuilds the exact driver context the host session
 // would hand the driver, runs the unmodified bridge, and replies with controls.
 import { Track } from '../engine/sim/track.js';
+import { WaterField } from '../engine/sim/water.js';
 import { Vehicle } from '../engine/sim/vehicle.js';
 import { plain, assignDeep } from './remote-sync.js';
 
@@ -65,6 +66,8 @@ self.onmessage = async ({ data }) => {
 
   if (data.rubber) track.rubber.set(data.rubber);
   if (data.wetness !== undefined) track.wetness = data.wetness;
+  if (data.water) { track.water ??= new WaterField(track); track.water.depth.set(data.water); track.water.live = true; }
+  if (data.weather) track.weatherInfo = data.weather;
   const active = replica(data.cars);
   const car = active[data.index];
   const projections = new Map(active.map((c) => [c.id, track.nearest(c.x, c.z)]));

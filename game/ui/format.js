@@ -1,5 +1,5 @@
 // Small formatting helpers shared by every screen.
-import { COMPOUNDS, WEAR_CLIFF } from '../core/rules.js';
+import { COMPOUNDS, TYRES, WEAR_CLIFF } from '../core/rules.js';
 
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
@@ -22,7 +22,7 @@ export function fmtGap(g, position, lapsDown = 0) {
   return `+${g.toFixed(g < 10 ? 3 : 1)}`;
 }
 
-export const compound = (id) => COMPOUNDS[id] ?? COMPOUNDS.medium;
+export const compound = (id) => TYRES[id] ?? COMPOUNDS.medium;
 export const compoundBadge = (id, size = 22) => {
   const c = compound(id);
   return `<span class="compound" style="border-color:${c.color};width:${size}px;height:${size}px">${c.short}</span>`;

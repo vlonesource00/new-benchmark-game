@@ -5,6 +5,7 @@ import { carSpecFor } from '../../../game/engine/sim/car-specs.js';
 import baked from '../data/lines.json' with { type: 'json' };
 import { projectCourse,advanceCourse,geometryCourse } from './course.js';
 import { optimizeFlow } from './line-optimizer.js';
+import { tyreWet } from '../../../game/engine/sim/water.js';
 
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
 const wrap = (x, n) => ((x % n) + n) % n;
@@ -102,8 +103,8 @@ function modelFor(track, car, driveSlip = .18) {
     tyres: [0, 1, 2, 3].map(i => tyreState(car, i)),
     wing: setup.wing ?? 6, bias: setup.brakeBias ?? spec.brakeBias,
     damage: clamp(car.damage ?? 0, 0, 1), wake: clamp(car.aero?.wake ?? 0, 0, .95),
-    surface: (track.tempGrip ?? 1) * (1 - (track.wetness ?? 0) * .36),
-    wetness: track.wetness ?? 0, driveSlip
+    surface: (track.tempGrip ?? 1) * (1 - tyreWet(track, car) * .36),
+    wetness: tyreWet(track, car), driveSlip
   };
 }
 

@@ -3,6 +3,7 @@
 // the default strategist makes: start compound, box or stay, what the stop contains. Without a stint table for the track and
 // class, or with a human in the team, every call falls through to the default strategist.
 import { TeamStrategist, maxWear } from '../../../game/core/strategy.js';
+import { WET_COMPOUNDS } from '../../../game/core/rules.js';
 import { TANK_LITRES, serviceTime } from '../../../game/core/rules.js';
 import config from '../config.json' with { type: 'json' };
 import { StintModel, COMPOUND_IDS, WARM, COLD } from './stintmodel.js';
@@ -78,8 +79,11 @@ export class ApexStrategist extends TeamStrategist {
     const r = this.model.roll(c, n + 2, { age0: this.stintLaps + 1, wear0, core0: coreOf(car), warm: this.stops > 0 });
     return { c, t: r.t, wear: r.wear, wear0 };
   }
+  // Weather: the baked dry-stint model has no rain tyres, so a wet road (or a car on rain tyres) runs the shared
+  // weather-aware planner, which calls the crossovers.
+  wetRoad(car) { return Boolean(WET_COMPOUNDS[car?.wheels[0].tyre.compound]) || (this.env?.track?.wetness ?? 0) > 0.08 || (car && (this.weatherNeed(car)?.call ?? 'slick') !== 'slick'); }
   startCompound() {
-    if (!this.usable) return super.startCompound();
+    if (!this.usable || this.wetRoad(null)) return super.startCompound();
     const n = this.cal.laps, fuelLaps = Math.floor(TANK_LITRES / this.fuelPerLap - 0.15);
     let best = { cost: INF, c: 'medium' };
     for (const c of COMPOUND_IDS) {
@@ -93,7 +97,7 @@ export class ApexStrategist extends TeamStrategist {
     return best.c;
   }
   decide(car, lapsLeft, aiDriving = true, caution = false) {
-    if (!this.usable || !aiDriving || this.request || car.race.lap < 1) return super.decide(car, lapsLeft, aiDriving, caution);
+    if (!this.usable || !aiDriving || this.request || car.race.lap < 1 || this.wetRoad(car)) { this.chosen = null; return super.decide(car, lapsLeft, aiDriving, caution); }
     if (lapsLeft <= 1) { this.boxThisLap = false; this.reason = 'FINAL LAP'; return (this.plan = null); }
     const n = lapsLeft, fuelLaps = Math.floor(car.fuel / this.fuelPerLap - 0.15);
     const cur = this.curSet(car, n), r = this.root({ n, cur, fuelLaps, stops: this.stops, swaps: this.swaps });
@@ -129,7 +133,7 @@ export class ApexStrategist extends TeamStrategist {
   observeLap(car, clean) {
     const before = this.lapMark?.wear ?? null;
     super.observeLap(car, clean);
-    if (!this.usable || !clean || before === null) return;
+    if (!this.usable || !clean || before === null || WET_COMPOUNDS[car.wheels[0].tyre.compound]) return;
     const now = maxWear(car), dw = now - before, id = car.wheels[0].tyre.compound, age = this.stintLaps;
     const pred = this.model.roll(id, 1, { age0: age - 1, wear0: before, core0: coreOf(car), warm: this.stops > 0 });
     const dwPred = pred.wear[0] - before;

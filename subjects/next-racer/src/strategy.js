@@ -12,7 +12,7 @@ export class SpearheadStrategist extends TeamStrategist {
     super(previous.team,previous.cal,previous.format);
     Object.assign(this,previous);
     this.wearFloor=Object.fromEntries(Object.entries(previous.wearPerLap)
-      .map(([id,rate])=>[id,rate*WEAR_SCALE[classId][id]]));
+      .map(([id,rate])=>[id,rate*(WEAR_SCALE[classId][id]??2.4)]));
     this.wearPerLap={...this.wearFloor};
     // Native Harbor GT3 hard stints consume about 5.69 L/lap, below the
     // base calibration prior. Live native observations replace
