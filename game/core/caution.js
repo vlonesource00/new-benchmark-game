@@ -32,6 +32,7 @@ export const CAUTION = {
   maxPerRace: 3,
   fcyMin: 20,           // shortest FCY (s)
   fcyPits: 6,           // pit lane opens this long into a plain FCY
+  scPits: 6,            // ...and this long after the safety car is on track (it leaves the pit exit first)
   clearFor: 6,          // track clear this long before race control ends a caution
   ending: 5,            // "FCY ending" warning (s)
   giveBack: 10          // seconds to hand back a position gained under caution
@@ -194,7 +195,7 @@ export class RaceControl {
       if (t >= CAUTION.ending) return this.green('GREEN FLAG · RACING RESUMES');
     } else if (this.phase === 'sc') {
       if (!this.formed && this.queueFormed()) { this.formed = true; race.log('flag', null, 'FIELD QUEUED · PIT LANE OPEN'); }
-      if (!this.pitsOpen && (this.formed || t > 60)) {
+      if (!this.pitsOpen && (this.formed || t > CAUTION.scPits)) {
         this.pitsOpen = true; if (!this.formed) race.log('flag', null, 'PIT LANE OPEN');
         // Every strategist gets a fresh call this lap now that a cheap stop is on.
         for (const e of race.entries) if (!e.pit) e.decidedLap = 0;
