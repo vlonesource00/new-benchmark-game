@@ -57,7 +57,7 @@ export class Arbiter {
       const busy = !o.neverPlan && (o.alwaysPlan || field.list.some((r) => r.ds > -35 && r.ds < reach) || (d.track.water?.live && (d.track.wetness ?? 0) > 0.05 && o.wetRoute !== false));
       const p = busy ? d.lattice.plan(car, me, field.list, forecast, this.plan, { defend: o.defend !== false, anchor: this.anchor(me) }) : null;
       if (p) this.decide(p, me, car, field, now);
-      else { this.plan = null; this.release(); this.path = null; this.state = 'PACE'; this.first = -1; this.fresh = false; }
+      else { this.plan = null; this.release(); this.path = null; this.state = 'PACE'; this.first = -1; this.fresh = false; this.focus = null; this.cands = null; this.lead = null; }
       const ms = (d.clockMs?.() ?? 0) - t0; this.stats.sumMs += ms; this.stats.maxMs = Math.max(this.stats.maxMs, ms);
       this.stats.plans++;
       this.track(field, now);
@@ -129,6 +129,11 @@ export class Arbiter {
     const routeGate = o.routeGate ?? -1;   // off by default: measured worse (4.67 at 0.5, 5.58 at 1.5 vs 4.33 off)
     if (lineEv && best !== lineEv && best.passes <= 0 && p.defend == null && lineEv.contact < routeGate && best.maxDev > 1.2 && !(best.p.hold && this.state === 'ATTACK')) best = lineEv;
     this.lastEvs = evs;
+    // for the debugger: every option against the chosen one, and how far the kept path leads its best challenger
+    const holdEv = evs.find((e) => e.p.hold), rival = evs.reduce((m, e) => (e.p.hold || (m && m.score <= e.score) ? m : e), null);
+    this.lead = holdEv && rival ? rival.score - holdEv.score : null;
+    this.cands = evs.map((e) => ({ kind: e.p.hold ? 'keep' : e.p.beside ? `beside ${e.p.beside.side > 0 ? '+' : '−'}` : e === lineEv ? 'racing line' : OFFSETS[e.p.first] === 0 ? 'line (lattice)' : `lane ${OFFSETS[e.p.first] > 0 ? '+' : ''}${OFFSETS[e.p.first]} m`,
+      s: e.score, passes: e.passes, chosen: e === best }));
     // books: does the lattice agree with the executor about its own favourite?
     const dp = evs.find((e) => !e.p.hold);
     if (Number.isFinite(dp.tH) && Number.isFinite(dp.p.tK)) { const g = dp.p.tK - dp.tH; this.stats.dpGap += g; this.stats.dpGapAbs += Math.abs(g); this.stats.dpN++; }
@@ -155,7 +160,7 @@ export class Arbiter {
       side: best.p.hold ? this.plan.side : best.p.beside?.side ?? 0, target: best.p.hold ? this.plan.target : best.p.beside?.id ?? null, d: lay.d, t: lay.t, cap: lay.cap, first: best.p.first, last: best.p.last,
       passes: best.passes, tow: best.p.tow, defend: p.defend, score: best.score, edges: p.edges, ids: best.ids }, d.track.length);
     this.first = best.p.first; this.fresh = false;
-    this.label(best, p, field, now);
+    this.label(best, p, field, now, lineEv);
     // a prediction to check: where the executor says the car will be 1.5 s from now
     const L = d.track.length;
     for (let k = 1; k <= p.K; k++) if (lay.t[k] >= 1.5) { this.pending.push({ s: (p.s0 + k * p.dS) % L, due: now + lay.t[k], state: this.state }); break; }
@@ -176,11 +181,36 @@ export class Arbiter {
     for (const [id, a] of this.attempts) if (now - a.t0 > 8) { this.attempts.delete(id); this.stats.attempt.failed++; }
     for (const [id, c] of this.covers) if (now - c.t0 > 6) { this.covers.delete(id); this.stats.defence.held++; }
   }
-  label(ev, p, field, now) {
-    const prev = this.state;
-    const dev = ev.maxDev;
-    this.state = ev.passes > 0 ? 'ATTACK' : p.defend != null ? 'DEFEND' : ev.p.tow > 0.35 ? 'TOW' : 'PACE';
-    if (this.state === 'PACE' && dev > 1.2 && field.list.some((r) => r.ds > 0 && r.ds < 120)) this.state = 'ROUTE';
+  /**
+   * The state names the committed manoeuvre, not the latest re-score: holding a path keeps its name, and a new name
+   * for the same path has to persist (labelDwell) before it is taken. The controller reads the state (the braking
+   * envelope is used off PACE), so a name that flickers every decision moves the pedals with it.
+   * ROUTE is leaving the line because the line is blocked (contact on it, or a much slower or stopped car ahead);
+   * TOW is leaving the line for the tow. Following a car on the line is PACE.
+   */
+  label(ev, p, field, now, lineEv) {
+    const prev = this.state, dev = ev.maxDev, o = this.driver.options, me = field.me;
+    const slow = field.list.some((r) => r.ds > 0 && r.ds < 120 && (r.hazard || r.v < (me?.v ?? 0) - (o.routeSlow ?? 8)));
+    const blocked = slow || (lineEv && lineEv !== ev && lineEv.contact > (o.routeContact ?? 0.3));
+    let want = ev.passes > 0 ? 'ATTACK' : p.defend != null ? 'DEFEND' : ev.p.tow > 0.35 && dev > 0.5 ? 'TOW' : dev > 1.2 && blocked ? 'ROUTE' : 'PACE';
+    if (o.stableLabels !== false) {
+      if (!ev.p.hold || prev == null || prev === 'PIT') this.want = null;
+      else if (want !== prev) {
+        // the same path, a different name: taken only once it has held (a pass completing, a defence ending)
+        if (this.want !== want) { this.want = want; this.wantT = now; }
+        if (now - this.wantT < (o.labelDwell ?? 0.4)) want = prev; else this.want = null;
+      } else this.want = null;
+    }
+    this.state = want;
+    // who the manoeuvre is about, and why (shown by the debugger; nothing reads it back)
+    const ahead = (f) => field.list.filter((r) => r.ds > 0 && r.ds < 150 && f(r)).sort((x, y) => x.ds - y.ds)[0] ?? null;
+    let fr = null, why = '';
+    if (want === 'ATTACK') { fr = field.list.find((r) => r.id === (ev.who ?? this.plan?.target)) ?? ahead((r) => r.target && !r.mate); why = 'pass'; }
+    else if (want === 'DEFEND') { fr = field.list.find((r) => r.id === p.defend) ?? null; why = 'cover'; }
+    else if (want === 'TOW') { fr = ahead(() => true); why = 'tow'; }
+    else if (want === 'ROUTE') { fr = ahead((r) => r.hazard || r.v < (me?.v ?? 0) - (o.routeSlow ?? 8)); why = fr ? (fr.hazard ? 'stopped' : 'slower') : 'contact'; fr ??= ahead(() => true); }
+    else { fr = ahead((r) => r.ds < 60); why = fr ? 'follow' : ''; }
+    this.focus = fr ? { id: fr.id, name: fr.car?.name ?? `#${fr.id}`, gap: fr.ds, dv: (me?.v ?? 0) - fr.v, why } : why ? { why } : null;
     if (this.state === 'ATTACK' && prev !== 'ATTACK') {
       this.stats.attacks++;
       // the rival the attack is for: the nearest same-class car ahead

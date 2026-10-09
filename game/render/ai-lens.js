@@ -64,8 +64,8 @@ export class AiLens {
     g.textBaseline = 'middle'; g.textAlign = 'left';
     g.font = '700 26px "JetBrains Mono", monospace'; g.fillStyle = theme; g.fillText(name, 34, 34);
     g.font = 'italic 900 44px system-ui, sans-serif'; g.fillStyle = tone; g.fillText(String(m.intent ?? '—').toUpperCase().slice(0, 18), 32, 76);
-    g.font = '600 22px "JetBrains Mono", monospace'; g.fillStyle = 'rgba(255,255,255,.82)';
-    g.fillText(String(focusText || m.sub || '').slice(0, 36), 34, 113);
+    g.font = '600 20px "JetBrains Mono", monospace'; g.fillStyle = 'rgba(255,255,255,.82)';
+    g.fillText(String(focusText || m.sub || '').slice(0, 40), 34, 113);
     this.tagTex.needsUpdate = true;
   }
 
@@ -183,6 +183,13 @@ export class AiLens {
         seg({ x: blk.x - fx * r, y: by - r, z: blk.z - fz * r }, { x: blk.x + fx * r, y: by + r, z: blk.z + fz * r }, RED, 1);
         seg({ x: blk.x + fx * r, y: by - r, z: blk.z + fz * r }, { x: blk.x - fx * r, y: by + r, z: blk.z - fz * r }, RED, 1);
       }
+      // Marks an AI reports on the ground (TEMPEST: where its path leaves the racing line and where it rejoins): a post and a ring.
+      for (const k of m.marks ?? []) {
+        if (!Number.isFinite(k.x)) continue;
+        const mc = col(k.color ?? '#ffffff'), h = k.kind === 'out' ? 2.4 : 1.6;
+        seg({ x: k.x, y: y0, z: k.z }, { x: k.x, y: y0 + h, z: k.z }, mc, 1);
+        ring(k.x, k.z, 1.1, mc, .95, y0 + .12, 16); ring(k.x, k.z, .5, mc, .95, y0 + h, 10);
+      }
       // Chevrons on the side it is going for (host lateral convention, from the track normal).
       if (m.side) {
         const p = race.track.at(car.s, 0), h = Math.atan2(p.tx ?? Math.sin(p.heading ?? 0), p.tz ?? Math.cos(p.heading ?? 0));
@@ -201,7 +208,7 @@ export class AiLens {
       ring(car.x, car.z, 2.4, tone, .7, y0 + .08, 32);
       // Intent tag above the car.
       const fname = other ? race.entries[f.index]?.team?.short ?? `#${f.index + 1}` : '';
-      this.drawTag(m, name, other ? `${FOCUS_WORD[f.kind] ?? 'ON'} ${fname}${f.declared ? '' : ' (inferred)'}` : '');
+      this.drawTag(m, name, m.tagText ?? (other ? `${FOCUS_WORD[f.kind] ?? 'ON'} ${fname}${f.declared ? '' : ' (inferred)'}` : ''));
       this.tag.visible = true;
       this.tag.position.set(car.x, (car.y ?? 0) + 1.6, car.z);
     } else this.tag.visible = false;

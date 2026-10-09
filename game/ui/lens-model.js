@@ -183,7 +183,33 @@ PROFILES.apex = (d, v) => {
 };
 PROFILES['phantom-v2'] = PROFILES.phantom;
 PROFILES.razor = razorLens;
-PROFILES.tempest = razorLens;
+// TEMPEST: one committed path; the options are its rollouts in seconds behind the chosen one, the lead is how far the
+// kept path is ahead of its best challenger (it switches only when that goes negative), and the marks are where the
+// path leaves the racing line and where it rejoins it.
+PROFILES.tempest = (d, v) => {
+  const cb = d.combat ?? {}, st = cb.stats ?? {}, f = d.focus ?? null, mv = d.move ?? null, st0 = d.intent ?? 'INIT';
+  const rows = Array.isArray(d.cands) ? d.cands : [], chosen = rows.find((c) => c.chosen), s0 = chosen?.s ?? 0;
+  const kind = { ATTACK: 'attack', DEFEND: 'defend', TOW: 'follow' }[st0] ?? (f?.why === 'follow' ? 'follow' : null);
+  const lead = num(d.lead);
+  return {
+    intent: st0, sub: d.sub ?? '', tagText: d.sub ?? '', suppressInference: true,
+    focus: f?.id != null && kind ? { id: f.id, kind } : null, block: st0 === 'ROUTE' && f?.id != null ? f.id : null,
+    side: st0 === 'ATTACK' || st0 === 'DEFEND' ? d.side ?? 0 : 0,
+    cands: rows.map((c) => ({ label: c.kind + (c.passes > 0 ? ` · +${c.passes}` : ''), score: -(c.s - s0), chosen: c.chosen, note: c.chosen ? 'chosen' : `+${(c.s - s0).toFixed(2)} s` })),
+    candNote: 'rolled to the horizon · seconds lost against the chosen',
+    gauges: [
+      gauge('commitment', lead == null ? null : clamp01(0.5 + lead / 0.6), lead == null ? 'fresh plan' : `${lead >= 0 ? 'keeps by' : 'switching by'} ${Math.abs(lead).toFixed(2)} s`, lead != null && lead < 0.05 ? '#ff8f3d' : '#3ddc84'),
+      gauge('stability', num(d.stability), num(d.stability) == null ? '' : pct(d.stability), d.stability < .5 ? '#ff4d4d' : '#3ddc84'),
+      gauge('dirty air', num(d.wake), pct(clamp01(d.wake)), '#9aa4b2'),
+      gauge('traction', num(d.tcCap), num(d.tcCap) == null ? '' : pct(d.tcCap), '#c77dff'),
+      gauge('off the line', mv ? clamp01(mv.peak / 6) : 0, mv ? `${mv.peak.toFixed(1)} m · out ${mv.out.toFixed(0)} m${mv.back != null ? ` · back ${mv.back.toFixed(0)} m` : ''}` : 'on the line', '#ffb02e')
+    ],
+    counters: [counter('attacks', st.attacks ?? cb.stats?.attempt?.open), counter('passes', st.passes), counter('passed by', st.lost), counter('path changes', st.changes), counter('kept', st.kept)],
+    tags: [d.pending && `→ ${d.pending} pending`, f?.why === 'stopped' && 'stopped car ahead', f?.why === 'slower' && 'slower car ahead', f?.why === 'contact' && 'contact on the line', d.wake > .3 && 'in the wake', d.water?.active && 'wet'].filter(Boolean),
+    log: (cb.events ?? []).slice().reverse().map((e) => `${e.t.toFixed(0)} s  ${e.kind === 'pass' ? '▲ PASS' : '▼ PASSED BY'} #${e.id}  in ${e.state}`),
+    marks: Array.isArray(v?.marks) ? v.marks : null
+  };
+};
 
 /** Infer who a car is racing when its AI does not say: the nearest car ahead, else one closing from behind. */
 function inferFocus(race, idx) {

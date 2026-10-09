@@ -154,15 +154,15 @@ export class Rollout {
       cost += pc; contact += pc;
     }
     // outcome at the horizon, as in the lattice
-    let passes = 0, lost = 0;
+    let passes = 0, lost = 0, who = null;
     for (const f of plan.fs) {
       const r = f.r; if (!r.target || r.mate) continue;
       const g0 = r.ds, gE = at(f.ds, tH) - H, Ls = HALF_LEN + r.halfLength;
-      if (g0 > -Ls && gE < -0.6 * Ls) passes++;
+      if (g0 > -Ls && gE < -0.6 * Ls) { passes++; if (who == null || g0 < who.g) who = { id: r.id, g: g0 }; }
       else if (g0 < 0 && gE > -0.3 * Ls) lost++;
     }
     const score = t + cost - B * (passes - lost);
-    const ev = { lane, i0, n, score, t, tH, passes, lost, contact, maxDev, p };
+    const ev = { lane, i0, n, score, t, tH, passes, lost, contact, maxDev, p, who: who?.id ?? null };
     ev.lay = this.layers(ev, me);
     return ev;
   }

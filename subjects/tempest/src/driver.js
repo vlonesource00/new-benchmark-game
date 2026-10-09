@@ -155,7 +155,7 @@ export class TempestDriver {
     this.path = path;
     const nose = this.noseCap(me, path, car.speed); this.lastNose = nose.cap;
     const nb = this.control.neighbor(me, field, car.speed);
-    const st = this.arbiter.state;
+    const st = this.arbiter.state; this.wake = car.aero?.wake ?? 0;
     this.control.step(real, car, path, c, dt, {
       nb, cap: planCap, cap2: planCap2, nose: nose.cap, noseBrake: nose.brake, pitCap, pitCap2,
       freeThrust: o.freeThrust ?? (st !== 'PACE' || (car.aero?.wake ?? 0) > 0.05),
@@ -198,22 +198,41 @@ export class TempestDriver {
     }
     this.lapClean = true; this.slipPeak.fill(0);
   }
+  /** Where the committed path leaves the racing line and where it comes back, in metres ahead (debugger only). */
+  move() {
+    const path = this.path, line = this.line, c = this.c;
+    if (!path || path === line || !c) return null;
+    const n = 110; let out = null, back = null, peak = 0;
+    for (let j = 0; j <= n; j++) {
+      const i = path.idx(c.i + j), dev = Math.hypot(path.px[i] - line.px[i], path.pz[i] - line.pz[i]);
+      peak = Math.max(peak, dev);
+      if (out == null) { if (dev > 0.5) out = j; }
+      else if (dev < 0.3) { back = j; break; }
+    }
+    if (out == null) return null;
+    const at = (j) => { const i = path.idx(c.i + j); return { x: +path.px[i].toFixed(2), z: +path.pz[i].toFixed(2) }; };
+    return { out: out * path.ds, back: back == null ? null : back * path.ds, peak, outPt: out > 0 ? at(out) : null, backPt: back == null ? null : at(back) };
+  }
   describe() {
-    const a = this.arbiter, p = a?.plan, st = this.intent;
+    const a = this.arbiter, p = a?.plan, st = this.intent, f = a?.focus, mv = this.move();
     if (st === 'PIT') return 'pit entry';
     if (st === 'RECOVER') return 'catching a slide';
-    if (!p) return this.water?.active ? 'wet grip map' : 'racing line';
-    if (st === 'ATTACK') return `outcome +${p.passes} place${p.passes > 1 ? 's' : ''} by the horizon`;
-    if (st === 'DEFEND') return 'covering the inside of the next braking zone';
-    if (st === 'TOW') return `in the tow (${(p.tow * 100).toFixed(0)} %)`;
-    if (st === 'ROUTE') return 'routing through traffic';
+    const who = f?.name ? `${f.name} ${Math.abs(f.gap).toFixed(0)} m` : '';
+    const where = mv ? (mv.out > 3 ? ` · out ${mv.out.toFixed(0)} m` : '') + (mv.back != null ? ` · rejoin ${mv.back.toFixed(0)} m` : '') : '';
+    if (st === 'ATTACK') return `pass ${who || 'ahead'}${where}`;
+    if (st === 'DEFEND') return `cover ${who || 'behind'}`;
+    if (st === 'TOW') return `slipstream ${who}${where}`;
+    if (st === 'ROUTE') return `around ${f?.why === 'contact' ? 'blocked line' : f?.why ?? ''} ${who}${where}`;
+    if (mv && mv.peak > 1.2) return `${mv.peak.toFixed(1)} m off line${who ? ` · behind ${who}` : ''}${where}`;
+    if (f?.why === 'follow') return `following ${who} on the line`;
     return this.water?.active ? 'wet grip map' : 'racing line';
   }
   debug() {
     const a = this.arbiter, p = a?.plan, ctl = this.control;
     return {
       architecture: 'TEMPEST', intent: this.intent, sub: this.sub, mode: ctl?.mode, targetSpeed: ctl?.targetSpeed, stability: ctl?.stability,
-      grip: this.model?.grip, push: this.push, hot: this.hot, share: ctl?.share, tcCap: ctl?.tcCap, latHold: ctl?.guard ?? false,
+      grip: this.model?.grip, push: this.push, hot: this.hot, share: ctl?.share, tcCap: ctl?.tcCap, latHold: ctl?.guard ?? false, wake: this.wake ?? 0,
+      focus: a?.focus ?? null, side: p?.side ?? 0, move: this.move(), lead: a?.lead ?? null, pending: a?.want ?? null, cands: a?.cands ?? null,
       plan: p ? { horizon: +(p.K * p.dS).toFixed(0), passes: p.passes, tow: +p.tow.toFixed(2), defend: p.defend, score: +p.score.toFixed(3), edges: p.edges, first: p.first, last: p.last } : null,
       combat: a ? { state: a.state, side: 0, stats: { ...a.books(), recovers: ctl?.recovers ?? 0, slides: this.slides }, events: a.events.slice(-6) } : null,
       water: this.water?.debug()
@@ -226,6 +245,10 @@ export class TempestDriver {
     for (let j = 0; j <= n; j += 2) { const i = path.idx(i0 + j); pts.push({ x: +path.px[i].toFixed(2), z: +path.pz[i].toFixed(2), v: +path.v[i].toFixed(1) }); }
     const Lp = clamp(0.32 * this.cur.v + 7, 9, 32), ai = path.idx(i0 + Math.round(Lp / path.ds));
     const tone = { ATTACK: '#ff4d6d', TOW: '#ffb02e', DEFEND: '#3ad6ff', ROUTE: '#ff8f3d', PIT: '#c77dff', RECOVER: '#ffffff' }[this.intent];
-    return { trackingPoint: { x: path.px[ai], z: path.pz[ai] }, selectedTrajectory: { points: pts, mode: this.intent, ...(tone ? { color: tone } : {}) }, candidates: [] };
+    // posts on the ground: where the move leaves the racing line and where it rejoins it
+    const mv = this.move(), marks = [];
+    if (mv?.outPt) marks.push({ ...mv.outPt, color: tone ?? '#ffffff', kind: 'out' });
+    if (mv?.backPt) marks.push({ ...mv.backPt, color: '#3ddc84', kind: 'back' });
+    return { trackingPoint: { x: path.px[ai], z: path.pz[ai] }, selectedTrajectory: { points: pts, mode: this.intent, ...(tone ? { color: tone } : {}) }, candidates: [], marks };
   }
 }
