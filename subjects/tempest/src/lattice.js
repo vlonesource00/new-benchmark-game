@@ -1,5 +1,5 @@
 import { clamp } from '../../apex/src/math.js';
-import { at } from './forecast.js';
+import { at, atDs, validAt } from './forecast.js';
 import { HALF_LEN } from './perception.js';
 import { OFFSETS, LINE_LANE } from './atlas.js';
 import { wetFrac, aquaplane } from '../../../game/engine/sim/water.js';
@@ -123,7 +123,7 @@ export class Lattice {
       let tb = ta + arc / Math.max(1, 0.5 * (va + Math.min(vb + e, vAcc)));
       let cost = 0, wake = 0, cap = Infinity;
       for (const f of fs) {
-        const r = f.r, g = at(f.ds, tb) - kb * dS, rd = at(f.lat, tb), sg = at(f.sig, tb), sgs = at(f.sigS, tb), rv = at(f.v, tb);
+        const r = f.r, g = atDs(f, tb) - kb * dS, rd = at(f.lat, tb), sg = at(f.sig, tb), sgs = at(f.sigS, tb), rv = at(f.v, tb);
         const Ls = HALF_LEN + r.halfLength, c = Math.abs(dB - rd) - (wE + r.across);
         if (Math.abs(g) < Ls + 0.5 * sgs) {
           const need = 0.15 + sg;
@@ -215,9 +215,10 @@ export class Lattice {
     for (let b = 0; b < M; b++) {
       const idx = K * M + b; if (J[idx] === Infinity) continue;
       let jt = J[idx]; const tK = T[idx];
-      for (const f of fs) {
+      // no place is taken or lost beyond the forecast: the horizon outcome counts only where the rivals are predicted
+      if (validAt(tK)) for (const f of fs) {
         const r = f.r; if (!r.target || r.mate) continue;
-        const g0 = r.ds, gE = at(f.ds, tK) - K * dS, Ls = HALF_LEN + r.halfLength;
+        const g0 = r.ds, gE = atDs(f, tK) - K * dS, Ls = HALF_LEN + r.halfLength;
         if (g0 > -Ls && gE < -0.6 * Ls) jt -= B;              // a place taken
         else if (g0 < 0 && gE > -0.3 * Ls) jt += B;           // a place lost
       }

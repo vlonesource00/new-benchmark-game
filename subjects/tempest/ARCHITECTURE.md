@@ -191,6 +191,19 @@ prediction was right (−0.1 s per 1.5 s) and the game never changed its pedals.
 the lattice also checked contact against that frozen car. Behind a slower rival the time is lost on corner exits in
 its wake, where TEMPEST's own traction governor cuts the throttle.
 
+Forecast validity: the forecast now spans 10 s; past it a rival keeps moving at its last forecast speed (never parked,
+never gone), the rollout checks rivals over its whole horizon (it ignored them past 4.4 s), and neither the lattice nor
+the rollout scores a pass or a lost place that resolves beyond the span. Per TEMPEST car-race, four-track bench:
+
+| | Place | Declared | Started | Overlap | Completed | Retained | Places lost | Incidents | Damage |
+|---|---|---|---|---|---|---|---|---|---|
+| Stage 0 baseline | 4.17 | 19.9 | 12.3 | 2.9 | 0.83 | 0.75 | 1.83 | 1.3 | 3.3 % |
+| 10 s span + validity | 5.04 | 6.4 | 3.7 | 3.2 | 0.67 | 0.63 | 2.46 | 2.9 | 8.3 % |
+
+(10 s span alone, rollout still blind past 4.4 s: place 4.50.) Phantom attacks are gone and most started attacks now
+reach the overlap, but the car does not convert them (stalled alongside 23 against 12) and defends worse. The
+clearances, margins and pass value were tuned against the frozen forecast; retuning them around the rule is Stage 1.
+
 ## 7. Open work
 
 - Rain damage (12.7 %) and rain pace

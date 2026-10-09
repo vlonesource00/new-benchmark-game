@@ -12,7 +12,7 @@
 import { Track } from '../../game/engine/sim/track.js';
 import { EnduranceRace, FIXED_DT } from '../../game/core/race.js';
 import { FORMATS } from '../../game/core/rules.js';
-import { at, FSTEPS, FDT } from '../../subjects/tempest/src/forecast.js';
+import { at, FSPAN as SPAN } from '../../subjects/tempest/src/forecast.js';
 
 const args = process.argv.slice(2), flag = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
 const trackName = flag('track', 'harbor-ring'), cls = flag('cls', 'lmdh'), rival = flag('rival', 'apex'), seed = Number(flag('seed', 7));
@@ -37,7 +37,7 @@ const me = race.cars[ti], him = race.cars[ri];
 const rows = [], limits = {}, attackLimits = {}; let k = 0, gov = 0, govN = 0, lastPlan = -1;
 // forecast check: at each decision, where the planner's forecast puts the rival 1.5 s and 3 s later (road metres from
 // our position at the decision), against where it then is; positive error = the rival got further than forecast
-const FSPAN = (FSTEPS - 1) * FDT, claims = { n: 0, beyond: 0, tH: [] };
+const FSPAN = SPAN, claims = { n: 0, beyond: 0, tH: [] };
 const fc = [], fcErr = { 1.5: [], 3: [] }, wrapL = (x) => ((x + track.length * 1.5) % track.length) - track.length / 2;
 while (race.time < T && race.phase !== 'finished') {
   race.step(FIXED_DT);

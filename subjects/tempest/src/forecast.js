@@ -1,7 +1,8 @@
 import { clamp } from '../../apex/src/math.js';
 import { CarModel, liveGrip } from '../../apex/src/model.js';
 
-export const FDT = 0.1, FSTEPS = 46;          // 4.5 s of forecast
+export const FDT = 0.1, FSTEPS = 101;         // 10 s of forecast: the planner judges passes at its horizon, up to ~8 s out
+export const FSPAN = (FSTEPS - 1) * FDT;
 
 // How much each architecture moves across to cover a car in its tow before a braking zone (metres).
 // Read from their documents and code: RAZOR makes one smooth cover, APEX never closes a door, SPEARHEAD keeps
@@ -9,7 +10,7 @@ export const FDT = 0.1, FSTEPS = 46;          // 4.5 s of forecast
 const COVER = { razor: 1.3, apex: 0, 'next-racer': 0.4, tempest: 0.9, solstice: 0.5, 'claude-revolution': 0.6 };
 
 /**
- * Rival forecasts in the planner's frame: for t = 0 .. 4.5 s, where the car will be along the road (metres ahead
+ * Rival forecasts in the planner's frame: for t = 0 .. 10 s, where the car will be along the road (metres ahead
  * of our present position), across it, how fast, and how unsure we are about where its body is.
  * Speed follows the rival's class line with its present pace ratio fading toward the line; the lateral offset from
  * that line decays; a defender is moved toward an attacker sitting in its tow. Uncertainty grows with time, more for
@@ -62,6 +63,15 @@ export class Forecast {
     return f;
   }
 }
+
+/**
+ * Where the forecast puts the rival along the road at time t. Past the span it keeps moving at its last forecast
+ * speed: a car is never parked at the end of its forecast, and never gone from the road. Nothing past the span is
+ * evidence of a pass (see validAt).
+ */
+export function atDs(f, t) { return t <= FSPAN ? at(f.ds, t) : f.ds[FSTEPS - 1] + f.v[FSTEPS - 1] * (t - FSPAN); }
+/** A pass or a lost place may only be scored where the forecast reaches. */
+export const validAt = (t) => t <= FSPAN;
 
 /** Linear sample of a forecast array at time t. */
 export function at(arr, t) {

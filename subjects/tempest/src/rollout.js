@@ -1,5 +1,5 @@
 import { clamp } from '../../apex/src/math.js';
-import { at } from './forecast.js';
+import { at, atDs, validAt } from './forecast.js';
 import { HALF_LEN } from './perception.js';
 import { OFFSETS } from './atlas.js';
 import { blend, changeLength, join } from './lattice.js';
@@ -123,8 +123,8 @@ export class Rollout {
       const i = line.idx(i0 + j), x = wrap(i * ds - me.s, L), seg = lane.len[line.idx(i - 1)] * clamp((x - xPrev) / ds, 0, 1);
       const dB = lane.lat[i];
       let vp = lane.v[i], cap = Infinity, wake = 0;
-      if (x > 0 && t < 4.4) for (let q = 0; q < plan.fs.length; q++) {
-        const f = plan.fs[q], r = f.r, g = at(f.ds, t) - x, rd = at(f.lat, t), sg = at(f.sig, t), sgs = at(f.sigS, t), rv = at(f.v, t);
+      if (x > 0) for (let q = 0; q < plan.fs.length; q++) {
+        const f = plan.fs[q], r = f.r, g = atDs(f, t) - x, rd = at(f.lat, t), sg = at(f.sig, t), sgs = at(f.sigS, t), rv = at(f.v, t);
         const Ls = HALF_LEN + r.halfLength, c = Math.abs(dB - rd) - (wE + r.across);
         // the game's wake cone behind every car: less downforce in the corners, less drag on the straights
         if (useWake && g > 1.5 && g < 110 && !r.hazard) { const cw = 2.4 + 0.05 * g, la = Math.abs(dB - rd); if (la < cw) wake = Math.max(wake, Math.exp(-g / 55) * (1 - (la / cw) ** 2)); }
@@ -161,9 +161,9 @@ export class Rollout {
     }
     // outcome at the horizon, as in the lattice
     let passes = 0, lost = 0, who = null;
-    for (const f of plan.fs) {
+    if (validAt(tH)) for (const f of plan.fs) {
       const r = f.r; if (!r.target || r.mate) continue;
-      const g0 = r.ds, gE = at(f.ds, tH) - H, Ls = HALF_LEN + r.halfLength;
+      const g0 = r.ds, gE = atDs(f, tH) - H, Ls = HALF_LEN + r.halfLength;
       if (g0 > -Ls && gE < -0.6 * Ls) { passes++; if (who == null || g0 < who.g) who = { id: r.id, g: g0 }; }
       else if (g0 < 0 && gE > -0.3 * Ls) lost++;
     }
