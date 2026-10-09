@@ -31,6 +31,8 @@ export class Arbiter {
   constructor(driver) { this.driver = driver; this.rollout = new Rollout(driver); this.reset(); }
   reset() {
     this.plan = null; this.path = null; this.clock = Infinity; this.state = 'PACE'; this.events = []; this.first = -1;
+    // a reset (green flag, pit exit) hands over a car that may be metres off the line: the first plan joins from it
+    this.fresh = true;
     this.rollout?.reset();
     this.stats = { plans: 0, rolled: 0, attacks: 0, passes: 0, defends: 0, avoids: 0, lost: 0, maxMs: 0, sumMs: 0,
       // decision books
@@ -55,7 +57,7 @@ export class Arbiter {
       const busy = !o.neverPlan && (o.alwaysPlan || field.list.some((r) => r.ds > -35 && r.ds < reach) || (d.track.water?.live && (d.track.wetness ?? 0) > 0.05 && o.wetRoute !== false));
       const p = busy ? d.lattice.plan(car, me, field.list, forecast, this.plan, { defend: o.defend !== false, anchor: this.anchor(me) }) : null;
       if (p) this.decide(p, me, car, field, now);
-      else { this.plan = null; this.release(); this.path = null; this.state = 'PACE'; this.first = -1; }
+      else { this.plan = null; this.release(); this.path = null; this.state = 'PACE'; this.first = -1; this.fresh = false; }
       const ms = (d.clockMs?.() ?? 0) - t0; this.stats.sumMs += ms; this.stats.maxMs = Math.max(this.stats.maxMs, ms);
       this.stats.plans++;
       this.track(field, now);
@@ -68,7 +70,8 @@ export class Arbiter {
     const pl = path.sample(path.lat, i, f, 0), ll = line.sample(line.lat, i, f, 0);
     // displaced (contact, an avoided car) and back under control: plan from the car, with a gentle start; a car that
     // is sliding is the controller's to catch, and its drift must not become the plan
-    if (this.path && Math.abs(me.d - pl) > (this.driver.options.anchorTol ?? 6) && this.driver.control.stability > 0.8) {
+    const far = this.path ? Math.abs(me.d - pl) > (this.driver.options.anchorTol ?? 6) : this.fresh && this.driver.options.freshJoin !== false && Math.abs(me.d - pl) > 1.5;
+    if (far && this.driver.control.stability > 0.8) {
       this.stats.reanchor = (this.stats.reanchor ?? 0) + 1;
       const v = Math.max(8, me.v), sl = (line.sample(line.lat, i, f, 4) - line.sample(line.lat, i, f, -4)) / 8;
       return { d0: me.d - ll, p0: clamp(me.vl / v - sl, -0.08, 0.08), c0: 0, keep: null };
@@ -151,7 +154,7 @@ export class Arbiter {
     this.plan = new Committed({ s0: p.s0, dS: p.dS, K: p.K, firstEnd: best.p.hold ? this.plan.firstEnd : best.p.beside ? (me.s + best.p.beside.entry) % d.track.length : (p.s0 + best.p.segs[0].k1 * p.dS) % d.track.length,
       side: best.p.hold ? this.plan.side : best.p.beside?.side ?? 0, target: best.p.hold ? this.plan.target : best.p.beside?.id ?? null, d: lay.d, t: lay.t, cap: lay.cap, first: best.p.first, last: best.p.last,
       passes: best.passes, tow: best.p.tow, defend: p.defend, score: best.score, edges: p.edges, ids: best.ids }, d.track.length);
-    this.first = best.p.first;
+    this.first = best.p.first; this.fresh = false;
     this.label(best, p, field, now);
     // a prediction to check: where the executor says the car will be 1.5 s from now
     const L = d.track.length;
