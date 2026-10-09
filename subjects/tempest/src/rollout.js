@@ -73,22 +73,22 @@ export class Rollout {
    * a small clearance), ride there while the pass plays out, then blend back to the line. The library lanes are fixed
    * offsets from the line; a rival off the line has no library lane beside it.
    */
-  besideAt(p, x, i, start, v0) {
+  besideAt(p, x, i, start, tOf) {
     const b = p.beside, line = this.driver.line, f = b.f;
-    const want = (xx) => { const t = clamp(xx / v0, 0, 4.4); return at(f.lat, t) + b.side * b.gap - line.lat[i]; };
+    const want = (xx) => at(f.lat, tOf(xx)) + b.side * b.gap - line.lat[i];
     // a delayed move rides the line first and leaves it at b.delay: the same pass, later off the fast line
     const dl = b.delay ?? 0;
     if (dl > 0 && x <= dl) return join(start, 0, dl, clamp(x / dl, 0, 1));
     if (x <= dl + b.entry) return join(dl > 0 ? ON_LINE : start, want(x), b.entry, clamp((x - dl) / b.entry, 0, 1));
     if (x <= dl + b.entry + b.hold) return want(x);
-    const xe = dl + b.entry + b.hold, t = clamp(xe / v0, 0, 4.4), se = at(f.lat, t) + b.side * b.gap - line.lat[i];
+    const xe = dl + b.entry + b.hold, se = at(f.lat, tOf(xe)) + b.side * b.gap - line.lat[i];
     return se * (1 - blend(clamp((x - xe) / b.rejoin, 0, 1)));
   }
   /**
    * Builds the lane for proposal p into a pooled Line and scores it. Returns { lane, score, tH, passes, contact,
    * caps per layer, lat per layer, t per layer } — the controller's own path, ready to drive.
    */
-  evaluate(p, plan, me, car, keep) {
+  evaluate(p, plan, me, car, keep, tFix = null) {
     const d = this.driver, line = d.line, model = d.model, o = d.options, ds = line.ds, L = d.track.length;
     const st0 = line.stationOf(me.s), i0 = Math.floor(st0) - 1;
     const H = p.K * p.dS, v0 = Math.max(8, me.v);
@@ -99,11 +99,30 @@ export class Rollout {
     const iH = line.idx(i0 + Math.ceil((H + wrap(i0 * ds - me.s, L)) / ds));
     const rejoin = changeLength(Math.abs(lastOff[iH]), Math.max(8, line.v[iH]), o.rejoinA ?? 4);
     const hw = p.hold?.window, N = line.N;
+    // when the car reaches a distance ahead, for placing it beside the rival's forecast. besideTime: the line's profile
+    // limited by what the drive adds from the present speed (the drive below uses the same model). Otherwise the
+    // present speed held, cut at 4.4 s: it reads the rival's lateral too early wherever the car brakes
+    let tOf = (xx) => clamp(xx / v0, 0, 4.4);
+    const xs = (this.xs ??= new Float64Array(4096)), ts = (this.ts ??= new Float64Array(4096));
+    if (p.beside) {
+      let v = Math.max(1, car.speed), t = 0, xp = wrap(line.idx(i0) * ds - me.s, L); xs[0] = xp; ts[0] = 0;
+      const mass = car.spec.mass + car.fuel * 0.75;
+      for (let j = 1; j <= n; j++) {
+        const i = line.idx(i0 + j), x = wrap(i * ds - me.s, L), seg = line.len[line.idx(i - 1)] * clamp((x - Math.max(0, xp)) / ds, 0, 1);
+        const vn = Math.max(1, Math.min(line.v[i], Math.sqrt(v * v + 2 * seg * Math.max(0.5, model.drive(v, mass)))));
+        if (x > 0) { t += seg / Math.max(1, 0.5 * (v + vn)); v = vn; }
+        xs[j] = x; ts[j] = t; xp = x;
+      }
+      const lookup = (arr) => (xx) => { let lo = 0, hi = n; if (xx <= xs[0]) return arr[0]; if (xx >= xs[n]) return arr[n]; while (hi - lo > 1) { const m = (lo + hi) >> 1; if (xs[m] <= xx) lo = m; else hi = m; } return arr[lo] + (arr[hi] - arr[lo]) * (xx - xs[lo]) / Math.max(1e-9, xs[hi] - xs[lo]); };
+      if (tFix) tOf = lookup(tFix);
+      else if (o.besideTime === true || o.besideTime === 'drive') tOf = lookup(ts);
+      this.tLookup = lookup;
+    }
     for (let j = 0; j <= n; j++) {
       const i = line.idx(i0 + j), x = wrap(i * ds - me.s, L);
       let s;
       // the committed path, as it stands: its own shift where its window reaches, the line beyond (it already rejoined)
-      if (p.beside) s = this.besideAt(p, x, i, plan.start, v0);
+      if (p.beside) s = this.besideAt(p, x, i, plan.start, tOf);
       else if (hw) { const c = (i - hw.i0 + 2 * N) % N; s = c <= hw.n ? p.hold.lat[i] - line.lat[i] : 0; }
       else if (x <= 0) s = plan.start.d0;
       else if (x <= H) s = this.shiftAt(p, x, i, plan.start);
@@ -133,7 +152,7 @@ export class Rollout {
     let t, v, cost, contact, tH, maxDev, out, xPrev;
     for (let pass = 0; pass < nPass; pass++) {
     if (pass) { env[n] = caps[n]; for (let j = n - 1; j >= 1; j--) env[j] = Math.min(caps[j], Math.sqrt(env[j + 1] * env[j + 1] + 2 * bEnv * segA[j + 1])); }
-    t = 0; v = Math.max(1, car.speed); cost = 0; contact = 0; tH = NaN; maxDev = 0; out = -1; xPrev = wrap(line.idx(i0) * ds - me.s, L); peak.fill(0, 0, plan.fs.length);
+    t = 0; tAt[0] = 0; v = Math.max(1, car.speed); cost = 0; contact = 0; tH = NaN; maxDev = 0; out = -1; xPrev = wrap(line.idx(i0) * ds - me.s, L); peak.fill(0, 0, plan.fs.length);
     for (let j = 1; j <= n; j++) {
       const i = line.idx(i0 + j), x = wrap(i * ds - me.s, L), seg = lane.len[line.idx(i - 1)] * clamp((x - xPrev) / ds, 0, 1);
       const dB = lane.lat[i];
@@ -186,6 +205,10 @@ export class Rollout {
     }
     const score = t + cost - B * (passes - lost);
     const ev = { lane, i0, n, score, t, tH, passes, lost, contact, maxDev, p, who: who?.id ?? null, out, unified, prof: prof === lane.vbrk ? 'vbrk' : 'v' };
+    // the time used to place the end of the beside hold, against the time this drive reaches it (diagnostic)
+    if (p.beside) { const b = p.beside, xe = (b.delay ?? 0) + b.entry + b.hold; ev.bt = { used: tOf(xe), held: clamp(xe / v0, 0, 4.4), drive: this.tLookup(tAt)(xe) }; }
+    // besideTime 'drive': place the lane again on the times this drive took (one fixed-point step)
+    if (p.beside && o.besideTime === 'drive' && !tFix) { this.busy.delete(lane); return this.evaluate(p, plan, me, car, keep, Float64Array.from(tAt.subarray(0, n + 1))); }
     ev.lay = this.layers(ev, me);
     return ev;
   }
