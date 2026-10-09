@@ -122,7 +122,7 @@ export class TempestDriver {
     // the next held interval, instead of extrapolating a yaw acceleration that far
     if (held && dt + (this.controlDelay ?? 0) > (o.holdPhysical ?? 0.045)) {
       this.lastR = car.yawRate; this.lastDt = dt;
-      return heldPose(car, this.track, this.delay = clamp((this.controlDelay ?? 0) + 0.5 * dt, 0.008, o.holdPhysicalCap ?? 0.06));
+      return heldPose(car, this.track, this.delay = clamp((this.controlDelay ?? 0) + 0.5 * dt, 0.008, o.holdPhysicalCap ?? 0.1));
     }
     const delay = clamp((this.controlDelay ?? 0) + (held ? (o.holdLead ?? 1.5) * dt : 0), 0, o.holdCap ?? 0.045);
     const r0 = car.yawRate, dr = this.lastR === undefined ? 0 : clamp((r0 - this.lastR) / Math.max(1e-3, this.lastDt ?? dt), -8, 8);

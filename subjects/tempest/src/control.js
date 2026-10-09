@@ -80,6 +80,22 @@ export class Controller {
     if (wk > 0.05) {
       const ws = model.wakeSpeed(v, wk), lim = (j) => path.vmax[path.idx(i + j)] < path.v[path.idx(i + j)] + 2;
       if (lim(1) || lim(Math.round(look / path.ds) + 2)) { lower('wake', vt * ws); vt2 *= ws; }
+      // the corners ahead are slower in dirty air, and the braking for them is shorter on what downforce is left. The
+      // profile's envelope assumed clean air, so the car learnt it at the corner and braked while turning in (half the
+      // slides past 5 m in traffic). Brake from each slowed corner speed with the wake-reduced deceleration, over the
+      // stopping distance from here
+      if (o.wakeEnvelope !== false) {
+        const bw = model.brake(v) * (1 - 0.16 * Math.min(0.95, wk) * model.dfShare(v)), reach = v * v / (2 * bw) + d2;
+        let env = Infinity, env2 = Infinity;
+        for (let x = path.ds; x <= reach; x += path.ds) {
+          const j = path.idx(i + Math.round(x / path.ds)), vc = path.v[j];
+          if (!(path.vmax[j] < vc + 2)) continue;   // only where grip limits the speed
+          const c2 = (vc * model.wakeSpeed(vc, wk)) ** 2;
+          env = Math.min(env, Math.sqrt(c2 + 2 * bw * Math.max(0, x - look)));
+          env2 = Math.min(env2, Math.sqrt(c2 + 2 * bw * Math.max(0, x - look - d2)));
+        }
+        lower('wake-envelope', env); vt2 = Math.min(vt2, env2);
+      }
     }
     lower('plan-cap', ctx.cap ?? Infinity); lower('nose', ctx.nose ?? Infinity); lower('pit', ctx.pitCap ?? Infinity);
     vt2 = Math.min(vt2, ctx.cap2 ?? Infinity, ctx.nose ?? Infinity, ctx.pitCap2 ?? Infinity);
