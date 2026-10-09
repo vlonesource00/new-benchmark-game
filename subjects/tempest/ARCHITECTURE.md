@@ -178,7 +178,7 @@ under 0.9 and whose projected fade stays under 3 s. It is capped at 1/margin (th
 Nothing is spent on a set's first lap, before its wear rate is measured: spending on an unmeasured prior hit the wall
 on GT lap 1. Solo, Harbor: LMDh 52.70 / 52.72 / 52.90 s, GT3 62.04 / 62.18 s, against RAZOR 52.74 / 52.82 / 53.01 and
 62.07 / 62.17 s. On the fuel-fixed field bench (four tracks, seeds 7–9, native) it still loses: base 5.04, clean-air PACE
-only 5.08, spent everywhere 5.50 (incident points 1.0 → 1.7–2.4). It stays opt-in.
+only 5.08, spent everywhere 5.50 (incident points 1.0 → 1.7–2.4). Over 12 laps in the field (Harbor, Alpine, seeds 7–9) it is neutral too: place 4.83 → 4.92, incidents 3.0 → 3.5, damage 3.9 → 3.4 %. It stays opt-in. Regression checks: `node --import ./scripts/json-loader.mjs subjects/tempest/tools/check.mjs` (perception, bridge, pit + swap, SC, FCY, rain, changeable weather; ~35 s).
 
 Bench note: `--opts` go in after `prepare()`, so keys baked there (`brakeExp`, `gears`, `notch*`) never take effect
 through `--opts`; per-class config is merged in `prepare()` and overrides earlier options.
