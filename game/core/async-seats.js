@@ -115,12 +115,15 @@ export class AsyncSeats {
       post(context) {
         if (this.inFlight) return;
         this.inFlight = true; this.seq = ++seats.seq; this.sentAt = performance.now();
+        // surface and weather go out on this seat's own count: the shared reply counter interleaves the seats, so a
+        // modulo of it could skip some seats for good
+        const refresh = (this.sent = (this.sent ?? 0) + 1) % RUBBER_EVERY === 1;
         host.worker.postMessage({
           type: 'step', slot, seq: this.seq, dt: Math.min(0.1, this.pendingDt), time: context.time, laps: context.totalLaps,
           cars: seats.cars(race), wetness: race.track.wetness, tempGrip: race.track.tempGrip,
-          rubber: this.seq % RUBBER_EVERY === 1 ? race.track.rubber : undefined,
-          water: this.seq % RUBBER_EVERY === 1 && race.track.water?.live ? race.track.water.depth : undefined,
-          weather: this.seq % RUBBER_EVERY === 1 ? race.track.weatherInfo : undefined,
+          rubber: refresh ? race.track.rubber : undefined,
+          water: refresh && race.track.water?.live ? race.track.water.depth : undefined,
+          weather: refresh ? race.track.weatherInfo : undefined,
           ...(driver.id==='next-racer'?{state:nextRacerState(race,race.cars[index]),
             ambient:race.track.ambient,epoch:this.epoch,controlDelay:this.controlDelay,feedbackPeriod:1/120}:{}),
           ...(driver.id === 'apex' ? { state: apexState(race, race.cars[index]) } : {}),
@@ -135,7 +138,7 @@ export class AsyncSeats {
       reset() {
         this.epoch++;this.controlTime=null;this.preview=null;
         if(driver.id==='next-racer'){this.lastDebug=null;seats.snap=null;seats.snapTime=-1;resetFeedback(race.cars[index]);}
-        this.controls = null; this.inFlight = false; this.pendingDt = 0; this.seq = -1;
+        this.controls = null; this.inFlight = false; this.pendingDt = 0; this.seq = -1; this.sent = 0;
         local?.reset?.({ cars: race.cars, track: race.track, line: race.lineFor(race.cars[index]) });
         if (!host.failed && host.initialised) host.worker.postMessage({ type: 'reset', slot, cars: race.cars.map(snapshotCar) });
       },
