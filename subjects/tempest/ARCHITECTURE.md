@@ -110,6 +110,28 @@ Rejected after measurement:
 - harder braking caps: 4.54
 - lane jerk limit: no effect
 
+Four-track bench (Harbor, Solenne, Alpine, Desert; seeds 7–9; 12 races). The
+baseline is 4.00 and repeats exactly.
+
+The two prediction fixes below make the rollout more accurate, but they lose
+races. The clearances and margins were calibrated against the old biased
+predictions, so these fixes need a joint re-tune, not a drop-in.
+
+| Change | Mean place |
+|---|---|
+| LMDh `brakeExp` 2 instead of 1.85 (solo −0.04 s/lap) | 4.71 |
+| Forecast arc length converted to road distance (rival error at 1.5 s: 3.5 → 1.2 m) | 5.04 |
+| Rollout clock started at the car instead of 1–2 stations behind (PACE bias −0.08 → 0.01 s per 1.5 s) | 4.88 |
+| Both prediction fixes | 4.42 |
+| Both prediction fixes + `clearSig` 0.7 | 5.00 |
+
+Envelope profile only in a real tow (not in every non-PACE state): duel −1.32 s,
+against a −1.17 s baseline.
+
+What the corrected rollout shows: ATTACK lanes over-promise by 0.1–0.24 s per
+1.5 s whenever the traction governor or the stability layer acts. That is the
+next target.
+
 Solo pace with a forced plan matches the line: 52.26 s against 52.25 s.
 
 Deterministic baseline, 12 seeds:
@@ -127,5 +149,6 @@ Deterministic baseline, 12 seeds:
 - Early braking behind slowing cars on straights
 - Start and first-lap routing
 - Defence: passed 2.4 times a race, against 0.5 for RAZOR
+- Duels against RAZOR (`scripts/bench/tempest-duel.mjs`): 0–1 wins of 8, about −1.1 s. Following RAZOR loses time to failed attacks into slow corners and to corners taken in heavy wake on lap 1
 - Own strategist and lens profile
 - Other tracks
