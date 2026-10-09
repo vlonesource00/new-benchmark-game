@@ -4,16 +4,30 @@
 // For TEMPEST also its clearance outcomes (subjects/tempest/src/outcomes.js): attacks declared > started > overlap >
 // completed > retained, race passes completed/retained, race places lost, traffic passed.
 // TEMPEST's --opts go in after the drivers prepare (per-class config would overwrite them) and are checked.
+// --path worker drives every seat through the game's seat workers (async-seats + seat-worker, replies held to frame
+// boundaries by scripts/bench/lockstep-workers.mjs), as the browser does; --frameSteps/--lagFrames set the cadence.
 // usage: node --import ./scripts/json-loader.mjs scripts/bench/tempest-field.mjs [--tracks harbor-ring,solenne,alpine]
 //        [--laps 5] [--seeds 7,8] [--weather clear|rain] [--cls lmdh] [--jobs 3] [--opts '{"key":value}'] [--ais tempest,razor,next-racer,apex]
-//   worker: ... tempest-field.mjs --run <track> <laps> <seed> <weather> <cls> <optsJSON> <ais>
+//        [--path native|worker] [--frameSteps 2] [--lagFrames 0]
+//   worker: ... tempest-field.mjs --run <track> <laps> <seed> <weather> <cls> <optsJSON> <ais> <path> <frameSteps> <lagFrames>
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import os from 'node:os';
 
 const args = process.argv.slice(2), flag = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
 
-async function work([trackName, lapsArg, seedArg, weather, cls, optsArg, aisArg]) {
+async function work([trackName, lapsArg, seedArg, weather, cls, optsArg, aisArg, pathArg = 'native', fsArg = '2', lagArg = '0']) {
+  const shim = pathArg === 'worker' ? (await import('./lockstep-workers.mjs')).installWorkerShim({ frameSteps: Number(fsArg), lagFrames: Number(lagArg) }) : null;
+  // on the worker path the drivers live inside the worker modules: find TEMPEST's by its class, and keep Spearhead's
+  // wall-clock search budget off there too
+  const found = [];
+  if (shim) {
+    const { TempestDriver } = await import('../../subjects/tempest/src/driver.js'), { SpearheadDriver } = await import('../../subjects/next-racer/src/driver.js');
+    // both teammates' seats build a driver: the books are the ones of drivers that drove
+    const u1 = TempestDriver.prototype.update; TempestDriver.prototype.update = function (...x) { if (!found.includes(this)) found.push(this); return u1.apply(this, x); };
+    const u0 = SpearheadDriver.prototype.update; SpearheadDriver.prototype.update = function (...x) { if (this.o) this.o.planBudgetMs = Infinity; return u0.apply(this, x); };
+  }
+  const seats = shim ? new (await import('../../game/core/async-seats.js')).AsyncSeats(trackName) : null;
   const { Track } = await import('../../game/engine/sim/track.js');
   const { EnduranceRace, FIXED_DT } = await import('../../game/core/race.js');
   const { FORMATS } = await import('../../game/core/rules.js');
@@ -27,23 +41,29 @@ async function work([trackName, lapsArg, seedArg, weather, cls, optsArg, aisArg]
     drivers: [{ kind: 'ai', id, name: id, short: short(id) }, { kind: 'ai', id, name: id, short: short(id) }], grid: t }));
   // one car per entry: two entries per AI (teammates), as in the browser field
   const entries = ids.map((id, i) => ({ ...teams[Math.floor(i / 2)], id: 'e' + i, index: i, grid: i, name: short(id) + i, short: short(id) + i }));
-  const race = new EnduranceRace({ track, teams: entries, format: { ...FORMATS.custom, mandatoryStops: 0, mandatorySwap: false }, laps, startCompound: 'hard', startType: 'rolling', seed, weatherSeed: seed, weather });
+  const race = new EnduranceRace({ track, teams: entries, format: { ...FORMATS.custom, mandatoryStops: 0, mandatorySwap: false }, laps, startCompound: 'hard', startType: 'rolling', seed, weatherSeed: seed, weather, ...(seats ? { makeBridge: seats.factory() } : {}) });
+  if (seats) { const ready = seats.start(race); await shim.settle(); await ready; if (seats.hosts.some((h) => h?.failed)) throw new Error('seat worker failed'); }
+  const step = () => { race.step(FIXED_DT); shim?.step(); };
   race.start();
   const tyre = weather === 'rain' ? 'wet' : 'hard';
   for (const c of race.cars) race.fitTyres(c, tyre, true);
   for (const e of race.entries) e.strategist.decide = () => null;
+  // no pit stops here, so one tank must last the distance (the race sizes it for ~0.68 of the laps and expects a stop)
+  for (const c of race.cars) c.fuelScale = race.cal.fuelScale * race.cal.fuelLaps / (laps + 1);
   // Spearhead stops its search on a wall-clock budget; parallel bench jobs would make it (and the race) nondeterministic
   race.entries.forEach((e, i) => { const d = e.bridges[0]?.driver; if (d && ids[i] === 'next-racer' && d.o) d.o.planBudgetMs = Infinity; });
-  const mine = race.entries.map((e, i) => (ids[i] === 'tempest' ? e.bridges[0]?.driver : null)).filter(Boolean);
+  let mine = race.entries.map((e, i) => (ids[i] === 'tempest' ? e.bridges[0]?.driver : null)).filter(Boolean);
+  if (shim) { step(); mine = found;   // filled as the drivers drive (same array)
+    if (seats.hosts.some((h) => h?.failed)) throw new Error('seat worker failed'); }
   if (Object.keys(opts).length) {
-    race.step(FIXED_DT);
+    step();
     for (const d of mine) { Object.assign(d.options, opts); d.forceRefresh = true; }
     for (const d of mine) for (const [k, v] of Object.entries(opts)) if (JSON.stringify(d.options[k]) !== JSON.stringify(v)) throw new Error(`option ${k} did not take`);
   }
   const n = race.cars.length, made = new Array(n).fill(0), lost = new Array(n).fill(0);
   let prev = null, tick = 0; const cap = 140 * laps * Math.max(1, track.length / 3000) + 200, t0 = performance.now();
   while (race.phase !== 'finished' && race.time < cap) {
-    race.step(FIXED_DT);
+    step();
     if (race.formation || ++tick % 60) continue;
     const ord = race.order().map((c) => race.cars.indexOf(c)), pos = new Array(n); ord.forEach((ci, p) => { pos[ci] = p; });
     if (prev) for (let i = 0; i < n; i++) { if (pos[i] < prev[i]) made[i] += prev[i] - pos[i]; else if (pos[i] > prev[i]) lost[i] += pos[i] - prev[i]; }
@@ -54,7 +74,8 @@ async function work([trackName, lapsArg, seedArg, weather, cls, optsArg, aisArg]
   const rows = race.cars.map((c, i) => { const st = race.stewards.of(race.entries[i]); return { ai: ids[i], grid: i + 1, place: ord.indexOf(c) + 1, made: made[i], lost: lost[i], best: c.race.bestLap,
     inc: st.inc, dq: st.dq, kinds: st.log.reduce((m, l) => (m[l.kind] = (m[l.kind] ?? 0) + l.points, m), {}), t42: st.log.find((l, k, a) => a.slice(0, k + 1).reduce((s, x) => s + x.points, 0) >= 41)?.time, dmg: +(c.damage * 100).toFixed(1), assoc: race.entries[i].bridges[0]?.driver?.combat?.stats?.associatedPasses ?? null }; });
   const out = mine.map((d) => d.arbiter?.outcomes?.books()).filter(Boolean);
-  console.log(JSON.stringify({ track: trackName, seed, weather, finished: race.phase === 'finished', contacts: race.contacts, severe: race.collisionStats.severeContacts, rows, out }));
+  if (seats?.hosts.some((h) => h?.failed)) throw new Error('seat worker failed');
+  console.log(JSON.stringify({ track: trackName, seed, weather, path: pathArg, finished: race.phase === 'finished', contacts: race.contacts, severe: race.collisionStats.severeContacts, rows, out }));
 }
 
 if (args[0] === '--run') { await work(args.slice(1)); process.exit(0); }
@@ -62,7 +83,9 @@ if (args[0] === '--run') { await work(args.slice(1)); process.exit(0); }
 const tracks = flag('tracks', 'harbor-ring,solenne,alpine').split(','), laps = flag('laps', '5'), seeds = flag('seeds', '7,8').split(',');
 const weather = flag('weather', 'clear'), cls = flag('cls', 'lmdh'), jobs = Number(flag('jobs', 3)), opts = flag('opts', '{}');
 const ais = flag('ais', 'tempest,razor,next-racer,apex'), self = fileURLToPath(import.meta.url);
-const tasks = []; for (const t of tracks) for (const sd of seeds) tasks.push([t, laps, sd, weather, cls, opts, ais]);
+const path = flag('path', 'native'), frameSteps = flag('frameSteps', '2'), lagFrames = flag('lagFrames', '0');
+const tasks = []; for (const t of tracks) for (const sd of seeds) tasks.push([t, laps, sd, weather, cls, opts, ais, path, frameSteps, lagFrames]);
+console.log(`path ${path}${path === 'worker' ? ` (${frameSteps} steps/frame, +${lagFrames} frames)` : ''}, opts ${opts}`);
 const run = (task) => new Promise((resolve) => {
   const p = spawn('node', ['--import', './scripts/json-loader.mjs', self, '--run', ...task], { stdio: ['ignore', 'pipe', 'pipe'] });
   try { os.setPriority(p.pid, os.constants.priority.PRIORITY_LOW); } catch {}

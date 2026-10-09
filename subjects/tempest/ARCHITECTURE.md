@@ -204,6 +204,28 @@ the rollout scores a pass or a lost place that resolves beyond the span. Per TEM
 reach the overlap, but the car does not convert them (stalled alongside 23 against 12) and defends worse. The
 clearances, margins and pass value were tuned against the frozen forecast; retuning them around the rule is Stage 1.
 
+**Both rows above are suspect.** The field bench disables pit stops, but a 5-lap race gives each car a tank for about
+3 laps (`calibrate`: `fuelLaps` = 0.68 of the distance, then a stop). Every car ran dry on lap 4, coasted to a halt,
+and was "recovered by marshals" for incident points. The bench now gives each car a tank for the whole distance (its
+`fuelScale` divided by laps + 1 over `fuelLaps`). With that change an 8-car, 5-lap race finishes on both paths with
+about 20 L left. Places must be re-baselined before any comparison. The pass fixture runs a 20-lap race, which carries
+fuel for 9 laps, so its 90–120 s runs were never affected.
+
+### The worker path
+
+In the browser every AI seat runs in a Worker (`game/core/async-seats.js` → `game/core/seat-worker.js`). The car keeps
+its last controls until a reply arrives, and the driver sees the reply delay as `controlDelay` and the held interval
+as `dt`. `scripts/bench/lockstep-workers.mjs` stands in for the Worker in Node:
+- it runs the unmodified seat-worker module, one instance per seat;
+- it structured-clones the messages;
+- it holds each reply to a frame boundary (2 physics steps per 60 fps frame), plus `lagFrames` whole frames of extra
+  delay for a planner slower than a frame.
+
+The shim is deterministic: two runs give identical output. Both benches take `--path worker [--frameSteps 2]
+[--lagFrames 0]`. At zero lag the worker path matches native (behind APEX, 120 s: −39.6 m against −37.7 m, same
+outcomes). TEMPEST's update takes 0.15 ms on average and 5.4 ms at most in Node. That does not prove a browser worker
+never overruns a frame.
+
 ## 7. Open work
 
 - Rain damage (12.7 %) and rain pace
