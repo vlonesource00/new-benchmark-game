@@ -54,6 +54,29 @@ if (rd?.options) { Object.assign(rd.options, rivalOpts); rd.forceRefresh = true;
 for (const [who, d, o] of [['tempest', td, opts], [rival, rd, rivalOpts]]) for (const [key, val] of Object.entries(o))
   if (JSON.stringify(d?.options?.[key]) !== JSON.stringify(val)) throw new Error(`${who} option ${key} did not take: ${JSON.stringify(d?.options?.[key])}`); if (rival === 'next-racer' && rd?.o) rd.o.planBudgetMs = Infinity;
 const me = race.cars[ti], him = race.cars[ri];
+// handoff check: what the controller receives against the plan that was scored. geometry: the path is the chosen lane
+// (or the line when the plan stays on it); lane: the chosen lane's speeds in its window are still the ones it was built
+// with; demand: the profile the controller drives (braking envelope or speed profile) is the one the rollout scored;
+// cap: the committed plan's cap reaches the controller. Mismatches after the label changed are counted apart
+const hand = { n: 0, relabel: 0, geometry: 0, lane: 0, demand: 0, demandRelabel: 0, cap: 0 };
+let handPlan = -1, handState = '', handSum = 0;
+const laneSum = (l, i0, n) => { let x = 0; for (let j = 0; j <= n; j++) x += l.v[td.line.idx(i0 + j)] * (j + 1); return x; };
+{
+  const ctl = td.control, step0 = ctl.step;
+  ctl.step = function (real, car, path, c, dt, ctx) {
+    const a = td.arbiter, b = a.chosen, plan = a.plan;
+    if (b && plan && td.options.combat !== false) {
+      if (a.planT !== handPlan) { handPlan = a.planT; handState = a.state; handSum = a.path ? laneSum(a.path, b.i0, b.n) : 0; }
+      hand.n++; const relabel = a.state !== handState; if (relabel) hand.relabel++;
+      if (path !== (a.path ?? td.line)) hand.geometry++;
+      if (a.path && laneSum(a.path, b.i0, b.n) !== handSum) hand.lane++;
+      const used = ctx.freeThrust || (car.aero?.wake ?? 0) > 0.05 ? 'vbrk' : 'v';
+      if (b.prof && used !== b.prof) { hand.demand++; if (relabel) hand.demandRelabel++; }
+      if (ctx.cap !== plan.capAt(td.field.me.s + car.speed * 0.1)) hand.cap++;
+    }
+    return step0.call(this, real, car, path, c, dt, ctx);
+  };
+}
 
 const rows = [], limits = {}, attackLimits = {}; let k = 0, gov = 0, govN = 0, lastPlan = -1;
 // forecast check: at each decision, where the planner's forecast puts the rival 1.5 s and 3 s later (road metres from
@@ -118,6 +141,7 @@ for (const w of pick) {
 { const u = upd.slice(200).sort((x, y) => x - y), pq = (f) => u[Math.min(u.length - 1, Math.floor(u.length * f))].toFixed(2);
   console.log(`TEMPEST update wall time (ms, this machine): n ${u.length} mean ${(u.reduce((x, y) => x + y, 0) / u.length).toFixed(2)} p50 ${pq(0.5)} p90 ${pq(0.9)} p99 ${pq(0.99)} max ${u.at(-1).toFixed(1)}; over 16.7 ms ${u.filter((x) => x > 16.7).length}`); }
 const ord = race.order();
+console.log(`handoff (controller steps under a committed plan): ${JSON.stringify(hand)}`);
 console.log(`\nat ${race.time.toFixed(0)} s: TEMPEST P${ord.indexOf(me) + 1}, gap ${(me.race.progress - him.race.progress).toFixed(1)} m, contacts ${race.contacts}, damage ${(me.damage * 100).toFixed(1)}/${(him.damage * 100).toFixed(1)} %, pedals changed by the game after the driver ${gov}/${govN} rows`);
 if (args.includes('--timeline')) {
   // --timeline N: N rows a second (1 by default, 10 for every trace row), from --from when given
