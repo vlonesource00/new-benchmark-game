@@ -60,13 +60,15 @@ export class FormationPilot {
     // Pure pursuit to the lane, as the pit autopilot.
     const look = clamp(4 + c.speed * 0.6, 8, 24), t = track.at(s + look, lat);
     const dx = t.x - c.x, dz = t.z - c.z, lx = dx * Math.cos(c.yaw) - dz * Math.sin(c.yaw);
-    const budget = Math.atan(c.spec.wheelbase * 18 / Math.max(1, c.speed * c.speed));
+    // in the wet the steering budget and the drive follow the grip, or the pursuit winds itself into a slide
+    const wet = clamp(track.wetness ?? 0, 0, 1);
+    const budget = Math.atan(c.spec.wheelbase * 18 * (1 - 0.5 * wet) / Math.max(1, c.speed * c.speed));
     const angle = clamp(Math.atan2(2 * c.spec.wheelbase * lx, Math.max(12, dx * dx + dz * dz)), -budget, budget) + Math.atan2(c.v, Math.max(4, c.u)) * 0.5;
     st.steer += (clamp(angle / c.spec.steeringLock, -1, 1) - st.steer) * Math.min(1, dt * 10);
     // Speed hold: a slow integrator carries the cruise throttle, P on top.
     const error = target - c.speed;
     st.hold = clamp(st.hold + error * dt * 0.04, 0, 0.6);
-    const traction = clamp(0.3 + c.speed / 25, 0.3, 1) * (1 - 0.5 * Math.abs(st.steer));
+    const traction = clamp(0.3 + c.speed / 25, 0.3, 1) * (1 - 0.5 * Math.abs(st.steer)) * (1 - 0.45 * wet);
     c.automatic = true;
     c.controls = { steer: st.steer, throttle: error > -0.8 ? clamp(st.hold + error * 0.2, 0, traction) : 0, brake: error < -0.8 ? clamp(-error * 0.12, 0, 0.7) : 0 };
   }
