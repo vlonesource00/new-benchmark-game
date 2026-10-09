@@ -23,8 +23,8 @@ const args = process.argv.slice(2), flag = (k, d) => { const i = args.indexOf(`-
 const trackName = flag('track', 'harbor-ring'), cls = flag('cls', 'lmdh'), rival = flag('rival', 'apex'), seed = Number(flag('seed', 7));
 const rivalOpts = JSON.parse(flag('rivalOpts', '{"margin":0.94}')), opts = JSON.parse(flag('opts', '{}')), T = Number(flag('time', 120));
 const ahead = flag('ahead', 'rival'), traceMode = flag('trace', 'failed'), from = Number(flag('from', 25));
-const path = flag('path', 'native'), frameSteps = Number(flag('frameSteps', 2)), lagFrames = Number(flag('lagFrames', 0));
-const shim = path === 'worker' ? installWorkerShim({ frameSteps, lagFrames }) : null;
+const path = flag('path', 'native'), frameSteps = Number(flag('frameSteps', 2)), lagFrames = Number(flag('lagFrames', 0)), lagJitter = Number(flag('lagJitter', 0)), frameJitter = Number(flag('frameJitter', 0));
+const shim = path === 'worker' ? installWorkerShim({ frameSteps, lagFrames, lagJitter, frameJitter, seed }) : null;
 const { AsyncSeats } = shim ? await import('../../game/core/async-seats.js') : {};
 // every driver instance, wherever it runs (on the worker path they live inside the worker module)
 const made = [];
@@ -97,7 +97,9 @@ const fc = [], fcErr = { 1.5: [], 3: [] }, wrapL = (x) => ((x + track.length * 1
 const laps = [], hisLaps = []; let lapAt = null, lapN = me.race.lap, hisAt = null, hisN = him.race?.lap;
 const NSEC = 24, secLen = track.length / NSEC, secs = []; let sec = null;
 const refPath = flag('ref', ''), savePath = flag('saveRef', ''), ref = refPath ? JSON.parse((await import('node:fs')).readFileSync(refPath, 'utf8')) : null;
-const trk = { n: 0, e2: 0, eMax: 0, beta: 0, off: 0, rev: 0, dir: 1, ext: 0 };
+const trk = { n: 0, e2: 0, eMax: 0, beta: 0, off: 0, rev: 0, dir: 1, ext: 0, bMax: 0 };
+// the same, only while braking (pedal > 0.2) in wake (> 0.15): where one frame of reply lag made the steering oscillate
+const bw = { n: 0, e2: 0, eMax: 0, rev: 0, dir: 1, ext: 0, beta: 0 };
 const cut = { cause: 'spin', all: {}, exit: {}, overlap: 0, overlapExit: 0, exitT: 0, exitWake: 0 };
 while (race.time < T && race.phase !== 'finished') {
   step();
@@ -125,11 +127,17 @@ while (race.time < T && race.phase !== 'finished') {
   }
   // tracking quality, every physics step: distance to the path being driven, steering reversals (a swing of more
   // than 0.2 back the other way), time off the asphalt, sideslip
+  let pathErr = NaN;
   {
     const pth = td.path ?? td.line, cl = pth.closest(me.x, me.z, td.c?.i ?? -1), sg = me.controls.steer ?? 0, tn = track.nearest(me.x, me.z);
-    trk.n++; trk.e2 += cl.d2; trk.eMax = Math.max(trk.eMax, Math.sqrt(cl.d2));
+    pathErr = Math.sqrt(cl.d2); trk.n++; trk.e2 += cl.d2; trk.eMax = Math.max(trk.eMax, Math.sqrt(cl.d2));
     trk.beta += Math.abs(Math.atan2(me.v ?? 0, Math.max(2, me.u ?? me.speed)));
     if (track.zoneAt(tn.lateral) !== 'asphalt') trk.off += FIXED_DT;
+    const bt = Math.abs(Math.atan2(me.v ?? 0, Math.max(2, me.u ?? me.speed))); trk.bMax = Math.max(trk.bMax, bt);
+    if ((me.controls.brake ?? 0) > 0.2 && (me.aero?.wake ?? 0) > 0.15) {
+      bw.n++; bw.e2 += cl.d2; bw.eMax = Math.max(bw.eMax, Math.sqrt(cl.d2)); bw.beta = Math.max(bw.beta, bt);
+      if (bw.dir * (sg - bw.ext) < -0.2) { bw.rev++; bw.dir = -bw.dir; bw.ext = sg; } else if (bw.dir * (sg - bw.ext) > 0) bw.ext = sg;
+    }
     if (trk.dir * (sg - trk.ext) < -0.2) { trk.rev++; trk.dir = -trk.dir; trk.ext = sg; } else if (trk.dir * (sg - trk.ext) > 0) trk.ext = sg;
   }
   const ctl = td.control, a = td.arbiter, why = ctl.why ?? {}, req = ctl.raw ?? {}, sent = ctl.sent ?? {}, ex = me.controls;
@@ -147,7 +155,7 @@ while (race.time < T && race.phase !== 'finished') {
   }
   if (++k % 6) continue;   // 0.1 s rows
   const r = td.field.byId.get(him.id), p = a.lastPred && a.lastPred.t > race.time - 0.1 ? a.lastPred : null;
-  rows.push({ t: race.time, st: a.state, age: race.time - a.planT, ds: r?.ds, dd: r ? r.d - td.field.me.d : NaN, v: me.speed, vr: him.speed, vt: ctl.targetSpeed,
+  rows.push({ e: pathErr, guard: ctl.guard, t: race.time, st: a.state, age: race.time - a.planT, ds: r?.ds, dd: r ? r.d - td.field.me.d : NaN, v: me.speed, vr: him.speed, vt: ctl.targetSpeed,
     src: why.src, cap: why.cap, cut: why.cut, rt: req.throttle, rb: req.brake, st2: sent.throttle, sb: sent.brake, xt: ex.throttle, xb: ex.brake, steer: ex.steer, yr: me.yawRate, stab: ctl.stability, beta: Math.atan2(me.v, Math.max(2, me.u)), pred: p ? p.err : null, wake: me.aero?.wake ?? 0,
     hy: `${me.hybrid?.mode?.[0] ?? '-'}${him.hybrid?.mode?.[0] ?? '-'}`, lim: `${why.cap}/${why.cut}`,
     all: [...Object.entries(why.caps ?? {}).map(([n, x]) => `${n}-${x.toFixed(1)}`), ...Object.entries(why.cuts ?? {}).map(([n, x]) => `${n}-${x.toFixed(2)}`)].join(' '),
@@ -156,7 +164,7 @@ while (race.time < T && race.phase !== 'finished') {
   govN++; if (Math.abs((sent.throttle ?? 0) - ex.throttle) > 0.02 || Math.abs((sent.brake ?? 0) - ex.brake) > 0.02) gov++;
 }
 const O = td.arbiter.outcomes, B = O.books(), f1 = (x) => (Number.isFinite(x) ? x.toFixed(1) : '  -');
-console.log(`[${path}${shim ? ` ${frameSteps} steps/frame, +${lagFrames} frames` : ''}] ${trackName} ${cls} TEMPEST ${JSON.stringify(opts)} behind ${rival} ${JSON.stringify(rivalOpts)} (effective, checked after prepare) seed ${seed}, ${race.time.toFixed(0)} s`);
+console.log(`[${path}${shim ? ` ${frameSteps} steps/frame, +${lagFrames} frames${lagJitter || frameJitter ? ` (+0..${lagJitter} per reply, long frames ${frameJitter})` : ''}` : ''}] ${trackName} ${cls} TEMPEST ${JSON.stringify(opts)} behind ${rival} ${JSON.stringify(rivalOpts)} (effective, checked after prepare) seed ${seed}, ${race.time.toFixed(0)} s`);
 console.log('outcomes', JSON.stringify(B));
 console.log('legacy books: attacks', td.arbiter.stats.attacks, 'order-change passes', td.arbiter.stats.passes, 'pred by state', JSON.stringify(td.arbiter.books().predByState));
 const top = (o) => Object.entries(o).sort((x, y) => y[1] - x[1]).slice(0, 6).map(([kk, v]) => `${kk} ${v.toFixed(1)}s`).join(', ');
@@ -197,6 +205,39 @@ if (ref) {
   console.log('  worst sectors (k: loss s over n crossings, mean wake, mean metres off the line): ' + by.map((b, k) => ({ k, ...b })).filter((b) => b.n).sort((a, b) => b.loss - a.loss).slice(0, 6).map((b) => `${b.k}: ${b.loss.toFixed(2)}/${b.n} wake ${(b.wake / b.n).toFixed(2)} off ${(b.off / b.n).toFixed(1)}`).join(' | '));
 }
 console.log(`laps (s): ${laps.map((x) => x.toFixed(2)).join(' ') || 'none complete'} (first line ${laps.first?.toFixed(2) ?? 'not reached'})${solo ? '' : ` | rival (first line ${hisLaps.first?.toFixed(2) ?? 'not reached'}) ${hisLaps.map((x) => x.toFixed(2)).join(' ')}`}`);
+// every departure from the path (error past 3 m after under 1.5 m), one line each: the conditions over the second
+// before it (peak sideslip, wake, brake, speed), the plan's age at onset, and the peak error over the next 3 s
+{
+  let armed = false;   // armed once the car is on its path: the rolling start leaves it on its grid slot
+  for (let k = 0; k < rows.length; k++) {
+    const r = rows[k];
+    if (r.e < 1.5) armed = true;
+    if (!(armed && r.e > 3)) continue;
+    armed = false;
+    let beta = 0, wake = 0, brake = 0, peak = 0, rev = 0, dir = 0, ext = 0;
+    for (let j = k; j >= 0 && rows[j].t > r.t - 1; j--) { const x = rows[j]; beta = Math.max(beta, Math.abs(x.beta)); wake = Math.max(wake, x.wake); brake = Math.max(brake, x.xb ?? 0); }
+    for (let j = k; j < rows.length && rows[j].t < r.t + 3; j++) peak = Math.max(peak, rows[j].e);
+    for (let j = k; j >= 0 && rows[j].t > r.t - 1.5; j--) { const sg = rows[j].steer ?? 0; if (dir * (sg - ext) < -0.2) { rev++; dir = -dir; ext = sg; } else if (!dir) { dir = 1; ext = sg; } else if (dir * (sg - ext) > 0) ext = sg; }
+    console.log(`onset ${r.t.toFixed(2)} st ${r.st} v ${r.v.toFixed(1)} beta ${beta.toFixed(3)} wake ${wake.toFixed(2)} brake ${brake.toFixed(2)} planAge ${(r.age ?? NaN).toFixed(2)} rev1.5 ${rev} peak ${peak.toFixed(1)} ds ${(r.ds ?? NaN).toFixed(1)}`);
+  }
+}
+// --excursions: every departure from the path (error past 3 m after under 1.5 m), the 2 s before it and 1 s after
+if (args.includes('--excursions')) {
+  let armed = false, last = -Infinity;
+  for (const r of rows) {
+    if (r.e < 1.5) armed = true;
+    if (!(armed && r.e > 3)) continue;
+    armed = false; console.log(`excursion at ${r.t.toFixed(2)} s:`);
+    console.log('      t st         e m     v brake  thr  wake  steer  yaw r   beta stab g     ds    dd');
+    for (const x of rows) {
+      if (x.t <= r.t - 2 || x.t >= r.t + 1 || x.t - last < 0.099) continue;
+      last = x.t;
+      console.log(`  ${x.t.toFixed(1).padStart(5)} ${String(x.st).padEnd(9)} ${x.e.toFixed(1).padStart(4)} ${x.v.toFixed(1).padStart(5)} ${(x.xb ?? 0).toFixed(2)} ${(x.xt ?? 0).toFixed(2)} ${x.wake.toFixed(2)} ${(x.steer ?? 0).toFixed(3).padStart(6)} ${x.yr.toFixed(3).padStart(6)} ${x.beta.toFixed(3).padStart(6)} ${(x.stab ?? 1).toFixed(2)} ${x.guard ? 'G' : '.'} ${(x.ds ?? NaN).toFixed(1).padStart(6)} ${(x.dd ?? NaN).toFixed(1).padStart(5)}`);
+    }
+  }
+}
+console.log(`braking in wake: ${(bw.n * FIXED_DT).toFixed(1)} s, path error rms ${Math.sqrt(bw.e2 / Math.max(1, bw.n)).toFixed(2)} m, max ${bw.eMax.toFixed(1)} m, steering reversals ${(bw.rev / Math.max(1e-9, bw.n * FIXED_DT)).toFixed(2)}/s, max |sideslip| ${bw.beta.toFixed(3)} rad`);
+console.log(`max |sideslip| ${trk.bMax.toFixed(3)} rad`);
 console.log(`tracking: path error rms ${Math.sqrt(trk.e2 / Math.max(1, trk.n)).toFixed(2)} m, max ${trk.eMax.toFixed(1)} m, off the asphalt ${trk.off.toFixed(1)} s, steering reversals ${(trk.rev / Math.max(1e-9, trk.n * FIXED_DT)).toFixed(2)}/s, mean |sideslip| ${(trk.beta / Math.max(1, trk.n)).toFixed(3)} rad`);
 { const f = (o) => Object.entries(o).sort((x, y) => y[1] - x[1]).map(([k, v]) => `${k} ${v.toFixed(2)}`).join(', ');
   console.log(`throttle cuts (pedal-s), whole run: ${f(cut.all)}`);
