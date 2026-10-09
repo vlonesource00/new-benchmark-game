@@ -204,12 +204,26 @@ the rollout scores a pass or a lost place that resolves beyond the span. Per TEM
 reach the overlap, but the car does not convert them (stalled alongside 23 against 12) and defends worse. The
 clearances, margins and pass value were tuned against the frozen forecast; retuning them around the rule is Stage 1.
 
-**Both rows above are suspect.** The field bench disables pit stops, but a 5-lap race gives each car a tank for about
+**Both rows above are invalid**, and so is every field ranking made on the fuel-starved bench (the tread budget's
+included; tread stays off). The field bench disables pit stops, but a 5-lap race gives each car a tank for about
 3 laps (`calibrate`: `fuelLaps` = 0.68 of the distance, then a stop). Every car ran dry on lap 4, coasted to a halt,
 and was "recovered by marshals" for incident points. The bench now gives each car a tank for the whole distance (its
 `fuelScale` divided by laps + 1 over `fuelLaps`). With that change an 8-car, 5-lap race finishes on both paths with
 about 20 L left. Places must be re-baselined before any comparison. The pass fixture runs a 20-lap race, which carries
 fuel for 9 laps, so its 90–120 s runs were never affected.
+
+Fresh baselines with the full tank, four tracks × seeds 7, 8 and 9, 24 cars per AI (place, best lap):
+
+| | native | worker, zero lag |
+|---|---|---|
+| RAZOR | 2.25, 57.88 s | 2.25, 58.11 s |
+| TEMPEST | 4.71, 58.37 s | 5.04, 58.45 s |
+| APEX | 5.21, 58.23 s | 5.46, 58.29 s |
+| Spearhead | 5.83, 58.86 s | 5.25, 58.82 s |
+
+TEMPEST per car-race, native: declared 6.38, started 4.04, overlap 3.25, completed 0.96, retained 0.88, places lost
+2.42, incidents 1.3, damage 4.7 %. Worker: declared 7.54, started 4.88, overlap 4.00, completed 1.21, retained 1.04,
+lost 3.13, incidents 3.2.
 
 ### The worker path
 
@@ -252,14 +266,24 @@ Matched worker runs behind RAZOR, 90 s (gap, + = ahead):
 Behind APEX 0.94 with one frame of lag: −416 m → −40.8 m. At 4× speed both cars still fall apart; this remains an
 open limit.
 
-In the one-lag run, TEMPEST retained a race pass at 62.6 s. The contact came earlier, at 58.4 s, and was not part of an
-attack:
+In the one-lag run, TEMPEST retained a race pass at 62.6 s. **That pass was made by the contact, so it is not gate
+evidence.** The fixture's `--ghost 57,61` drops collisions only in that window (armed from the race's ghost setter to
+the end of the step, so both drivers still see each other). The runs are identical to 58.0 s. Without the collision
+RAZOR exits at 25–33 m/s and TEMPEST ends 20.2 m behind; with it RAZOR is held to 16–22 m/s. The contact, at 58.4 s,
+was not part of an attack:
 - TEMPEST was routing behind RAZOR into a braking zone and was 3 m/s faster at a 6.4 m gap.
 - In 0.8 s it moved 7 m sideways onto RAZOR's line.
 - It released the brake while its target speed (18.3 m/s, lane envelope, no cap) ignored the car ahead in the lane it
   joined.
 
 The fix for that is a following cap on the chosen lane (Step 2).
+
+Why it was off its line: from 52.8 s, braking 65 → 27 m/s in RAZOR's wake (0.3–0.7) with one frame of lag, the steering
+oscillated (±0.3–0.46, a sign change about every 0.3 s), sideslip reached 0.32 rad and stability 0–0.3. The car
+reached the kerb at 56.0 s and the gravel at 56.2 s, 13.8 m off its path, and rejoined across RAZOR's line. Halving
+`slideGain` (5 → 2.5) or `yawGain` (0.45 → 0.3) still ends in contact; this needs a delay-aware steering law,
+judged on tracking over several runs, not on one gap. The fixture now prints the tracking (path error, time off the
+asphalt, steering reversals per second, mean sideslip).
 
 ### Scoring against execution (Step 2, opt-in)
 
@@ -299,8 +323,47 @@ The loss behind RAZOR comes from one corner (40–45 s). With `capEnvelope`, TEM
 they say: they put the car closer. Being closer costs more on the exit than it gains, because the rollout does not
 price lost exit grip in wake. Corner exits in wake (Step 4) come before these options can be judged.
 
+**The gap alone misjudges these options.** Over 180 s, lap times for both cars (worker, zero lag):
+
+| | TEMPEST laps | RAZOR laps | first line, TEMPEST / RAZOR | gap |
+|---|---|---|---|---|
+| baseline | 53.58, 53.67 | 53.58, 53.55 | 69.70 / 69.15 s | −34.7 m |
+| `freeThrust` | 53.60, 53.22 | 52.94, 52.97 | 69.83 / 68.69 s | −137.5 m |
+
+TEMPEST close behind costs RAZOR about 0.6 s a lap; once TEMPEST drops back on lap 1, RAZOR runs free. TEMPEST's own
+time against a solo reference (24 sectors, best of a 240 s solo run: laps 52.93, 52.99, 53.20) is the cleaner measure:
+lost 3.38 s (baseline), 3.53 s (`capEnvelope`), 3.13 s (`freeThrust`), 3.10 s (all three), of which 1.74, 2.32, 0.84
+and 1.43 s in sectors run in wake. Single runs; the worst sectors are the same in all four (20, 21, 0, 12).
+
+### Corner exits (Step 4, measured)
+
+Throttle cuts are applied in order: grip share (cap), traction (cap: combined slip `hypot(10.5κ, 8.6 tan α)` against
+about 2.1, falling at 10·excess + 1 per second, recovering at 2.5/s), slip protection (multiplier: lateral slip over
+2.15, or the rear looser than the front), stability (multiplier). A rear slide can be cut by three layers at once. The
+game's own TC (`setup.tc` 3) acts gently above κ 0.113. On exits behind RAZOR (pedal-seconds over 90 s): traction
+spin 1.67, slip 1.11, stability 0.96, traction lateral 0.66, both 0.31; two or more layers cut together for 4.0 s. In
+clean air spin is 2.38: wheelspin dominates with or without wake.
+
+Pedal-seconds are not lost time. A predictive traction cap (bisect the pedal on the game's own `Vehicle` stepped
+0.12 s ahead) cut more (7.22 against 5.39) and gave the same solo laps (52.94, 53.03, 53.22 against 52.93, 52.99,
+53.20). Traction control is not the clean-air bottleneck, so the change was not kept. The exit loss is in wake, which
+points at the planner (follow closely or not) rather than the limiter.
+
+### Beside-lane timing (Step 3, opt-in)
+
+The beside lane reads the rival's forecast lateral at the time the car reaches each point. It used x / v0 (present
+speed held, cut at 4.4 s), which is too early wherever the car brakes. Against the rollout's own drive time at the end
+of the hold, 90 s behind RAZOR (native): held speed p50 1.16 s, p90 5.41 s, max 7.38 s off. `besideTime: true` (line
+profile limited by the drive from the present speed) halves the tail but stays early (mean −0.72 s: the drive is capped
+behind the rival). `besideTime: 'drive'` places the lane once, drives it, and places it again on the drive's times:
+p50 0.36 s, p90 1.31 s. Update cost is unchanged (p99 1.55 ms). Behaviour over 180 s duels is inconclusive (1–2
+attacks a run; APEX −60.9 → −60.1 m, RAZOR −34.7 → −92.3 m on one slow lap). Off by default until a field run.
+
 ## 7. Open work
 
+- Delay-aware steering under one frame of lag (braking in wake oscillates; see the worker path)
+- Price dirty-air exit loss in the planner: following close against another route
+- `besideTime: 'drive'` on the field bench
 - 4× time scale through the worker path: the delayed replies span several physics steps and the car still loses control
 
 - Rain damage (12.7 %) and rain pace
