@@ -16,7 +16,7 @@ export function installTempestStrategy(race, car, { enabled = true } = {}) {
   if (!e || e.strategist instanceof TempestStrategist || e.strategist.stintLaps > 0 || e.strategist.stops > 0) return false;
   if (!e.team.drivers.every(d => d.kind === 'ai' && d.id === 'tempest')) return false;
   e.strategist = new TempestStrategist(e.strategist, race.track.id, car.classId,
-    { currentStints: race.track.id === 'harbor-ring' && race.weather.id === 'clear' });
+    { currentStints: race.weather.id === 'clear' });
   e.strategist.race = race;
   return true;
 }
