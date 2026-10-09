@@ -171,6 +171,18 @@ Alpine 60.79 s, Solenne 50.16 s at cap 1.05), but every field variant lost place
 The pace gap to RAZOR is its stint budget (margin 0.97 → ~0.999 by lap 3 on clear tracks), not the speed profile:
 with `brakeExp` 2 the two profiles are identical.
 
+The budget was rebuilt on RAZOR's StintBudget pattern (b8f54c6). Wear was measured against push (margin 0.97 → 0.999:
+−0.23 s a lap, +6 % wear a metre, so wear ∝ 1 + 2·(push − 1)). The window is what the set must last: the race,
+the planned tyre stop or the fuel window. The push is bisected to the largest value whose projected end wear stays
+under 0.9 and whose projected fade stays under 3 s. It is capped at 1/margin (the force peak: past it the car slides).
+Nothing is spent on a set's first lap, before its wear rate is measured: spending on an unmeasured prior hit the wall
+on GT lap 1. Solo, Harbor: LMDh 52.70 / 52.72 / 52.90 s, GT3 62.04 / 62.18 s, against RAZOR 52.74 / 52.82 / 53.01 and
+62.07 / 62.17 s. On the fuel-fixed field bench (four tracks, seeds 7–9, native) it still loses: base 5.04, clean-air PACE
+only 5.08, spent everywhere 5.50 (incident points 1.0 → 1.7–2.4). It stays opt-in.
+
+Bench note: `--opts` go in after `prepare()`, so keys baked there (`brakeExp`, `gears`, `notch*`) never take effect
+through `--opts`; per-class config is merged in `prepare()` and overrides earlier options.
+
 ### Outcome books and the pass fixture
 
 `src/outcomes.js` books passes by body clearance (our rear past the rival's nose), retention as clearance held through
@@ -358,6 +370,34 @@ profile limited by the drive from the present speed) halves the tail but stays e
 behind the rival). `besideTime: 'drive'` places the lane once, drives it, and places it again on the drive's times:
 p50 0.36 s, p90 1.31 s. Update cost is unchanged (p99 1.55 ms). Behaviour over 180 s duels is inconclusive (1–2
 attacks a run; APEX −60.9 → −60.1 m, RAZOR −34.7 → −92.3 m on one slow lap). Off by default until a field run.
+
+### The rolling start (measured, nothing kept)
+
+Of the places lost on the field bench, 39 of 68 go within 20 s of the green. Place at green + 10 s, 12 races paired by
+seed (two TEMPEST cars each), is cheap and less noisy than the finish: base 4.08. By grid slot the loss sits on the car
+that starts a few metres behind its own teammate (slots 3 and 5: 6.0 and 6.75 at green + 10 s, against RAZOR 4.5 /
+5.0 and Spearhead 3.5 / 6.0 from the same slots); the other car matches them. Traced case (Alpine, seed 8, slot 3):
+the plan changes six or more times in 3 s (lane −6, −3, line, −1.5, beside +, −4.5 m). Each start join is C2 with the
+committed path but can reverse its curvature within a few metres. The jerk-limited steering keeps turning on the old
+curvature: heading error 0.25 rad, 8 m off the path, a rear slide, the slip and stability layers lifting for 2 s. The
+committed path then carries curvature 0.01 at the car, and every candidate's lateral-jerk speed limit dips to about
+40 m/s while it unwinds, against about 52 m/s for the cars around it.
+
+Measured and rejected (green + 10 s place; field place / incident points where run):
+
+| Variant | Start place | Field |
+|---|---|---|
+| Base | 4.08 | 5.04 / 1.0 |
+| `startLine` (no planner for the first seconds) | 3.58 | 4.88, damage 7.5 % (teammate and side merges) |
+| Beside lane on the smoothed outer envelope of the rival's track (0.5 / 1 s) | 4.00 / 3.96 | – |
+| Side guard only on overlapping cars ahead (margin 1.5 → 0.3 m) | 4.13 | – |
+| Start join sized to the steering jerk (65 / 100 m/s³) | 4.13 / 4.17 | 5.08 / 3.7 |
+| Plan caps, traction governor or stability lift off; follow-first contact window; direct line | no gain | – |
+
+The join sizing fixes the traced case (63 against 48 m/s at green + 6 s, path error 3 against 8 m) but longer joins
+make every lateral move slower and contacts rose. Also measured without gain at the start: gearbox, forecast acceleration, change length and
+share, hold margin, wake envelope. The start is a plan-stability problem in a dense pack:
+the next lever is committing to one side through the first corners rather than re-choosing every 0.1 s.
 
 ## 7. Open work
 
