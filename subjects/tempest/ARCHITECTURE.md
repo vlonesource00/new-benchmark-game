@@ -125,13 +125,13 @@ predictions, so these fixes need a joint re-tune, not a drop-in.
 | Both prediction fixes | 4.42 |
 | Both prediction fixes + `clearSig` 0.7 | 5.00 |
 
-Behaviour bench (, 6 field races; place, lane changes per minute), after stable labels:
+Behaviour bench (`scripts/bench/tp-behave.mjs`, 6 field races; place, lane changes per minute), after stable labels:
 
 | Change | Place | Lane changes/min |
 |---|---|---|
 | Stable labels (baseline) | 4.67 | 20.2 |
 | ATTACK named only when the move starts (kept; field 4.17 vs 4.13) | 4.42 | 18.8 |
-| Delayed beside candidates (, off) | 5.42 | 26.8 |
+| Delayed beside candidates (`besideDelay`, off) | 5.42 | 26.8 |
 | Lattice wake = the game's cone (rejected: a wider cone needs a bigger sidestep, taken more often) | 4.92 | 22.5 |
 
 Per-state 1.5 s prediction bias is negative everywhere (PACE -0.063, TOW -0.045, ATTACK -0.036 s): TOW is not chosen
