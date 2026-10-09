@@ -1,8 +1,9 @@
 import { ApexStrategist } from '../../apex/src/strategy.js';
 import { RazorStintModel } from './stint-model.js';
 
-// Clear Harbor uses RAZOR's own current-physics stint priors. Other weather
-// retains the existing inherited policy; live clean-lap learning remains active.
+// Dry races may use only RAZOR's current-physics stint priors. Tracks without
+// measured priors fall through to the game's live planner; inherited APEX
+// tables were recorded before the class heat and wear-cliff changes.
 export class RazorStrategist extends ApexStrategist {
   constructor(previous, trackId, classId, options = {}) {
     super(previous, trackId, classId, options);
@@ -44,7 +45,7 @@ export function installRazorStrategy(race, car, { enabled = true } = {}) {
   if (!e || e.strategist instanceof RazorStrategist || e.strategist.stintLaps > 0 || e.strategist.stops > 0) return false;
   if (!e.team.drivers.every(d => d.kind === 'ai' && d.id === 'razor')) return false;
   e.strategist = new RazorStrategist(e.strategist, race.track.id, car.classId,
-    { currentStints: race.track.id === 'harbor-ring' && race.weather.id === 'clear' });
+    { currentStints: race.weather.id === 'clear' });
   e.strategist.race = race;
   return true;
 }

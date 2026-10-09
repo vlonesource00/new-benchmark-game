@@ -12,6 +12,10 @@
   "steerJerk": 65,
   "overlapPedalCap": false,
   "physicalPrediction": true,
+  "smoothPedals": false,
+  "reachableTarget": true,
+  "longitudinalGain": 10,
+  "adaptiveTyres": true,
   "tractionSlip": 2.05,
   "thermalK": 0.002,
   "thermalHot": 18,
@@ -23,7 +27,8 @@
   "recoveryHold": 0.18,
   "strategy": true,
   "tracks": {
-    "nurburgring": { "margin": 0.8 },
+    "nurburgring": { "margin": 0.8, "smoothPedals": true, "maxTyrePush": 1.1,
+      "perClass": { "gt": { "trackingGain": 2 } } },
     "harbor-ring": { "perClass": { "gt": { "yawGain": 0.7, "heldYawGain": 0.8, "passClearance": 0.24, "predictionJerk": 65 } } }
   }
 }
