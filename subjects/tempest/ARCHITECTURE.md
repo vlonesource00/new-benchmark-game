@@ -125,6 +125,21 @@ predictions, so these fixes need a joint re-tune, not a drop-in.
 | Both prediction fixes | 4.42 |
 | Both prediction fixes + `clearSig` 0.7 | 5.00 |
 
+Behaviour bench (, 6 field races; place, lane changes per minute), after stable labels:
+
+| Change | Place | Lane changes/min |
+|---|---|---|
+| Stable labels (baseline) | 4.67 | 20.2 |
+| ATTACK named only when the move starts (kept; field 4.17 vs 4.13) | 4.42 | 18.8 |
+| Delayed beside candidates (, off) | 5.42 | 26.8 |
+| Lattice wake = the game's cone (rejected: a wider cone needs a bigger sidestep, taken more often) | 4.92 | 22.5 |
+
+Per-state 1.5 s prediction bias is negative everywhere (PACE -0.063, TOW -0.045, ATTACK -0.036 s): TOW is not chosen
+on an over-promise. Off-line time is mostly ROUTE (3.6 m mean) and TOW (1.9 m).
+
+Strategy: the current-physics stint model on every clear race (was Harbor only): Alpine 12 laps 814-818 -> 803 s,
+Solenne 10 laps 583-585 -> 577 s.
+
 Envelope profile only in a real tow (not in every non-PACE state): duel −1.32 s,
 against a −1.17 s baseline.
 
@@ -150,5 +165,5 @@ Deterministic baseline, 12 seeds:
 - Start and first-lap routing
 - Defence: passed 2.4 times a race, against 0.5 for RAZOR
 - Duels against RAZOR (`scripts/bench/tempest-duel.mjs`): 0–1 wins of 8, about −1.1 s. Following RAZOR loses time to failed attacks into slow corners and to corners taken in heavy wake on lap 1
-- Own strategist and lens profile
+- Own strategist
 - Other tracks
