@@ -3,6 +3,7 @@ import { Line } from '../../apex/src/line.js';
 import { PitGuide } from '../../apex/src/pit.js';
 import { clamp } from '../../apex/src/math.js';
 import { tyreWet } from '../../../game/engine/sim/water.js';
+import { Vehicle } from '../../../game/engine/sim/vehicle.js';
 import { Atlas } from './atlas.js';
 import { Perception, HALF_LEN } from './perception.js';
 import { Forecast } from './forecast.js';
@@ -19,6 +20,20 @@ const now = () => globalThis.performance?.now?.() ?? 0;   // planner cost statis
  * Shared libraries only: APEX's identified vehicle model, the Line geometry container and the baked lines.
  * Writes car.controls and nothing else.
  */
+/** The car stepped on its held controls by the game's own vehicle model, on a road it cannot rubber in. */
+function heldPose(car, track, delay) {
+  const pose = Object.assign(Object.create(Vehicle.prototype), car);
+  pose.controls = { ...car.controls }; pose.setup = { ...car.setup }; pose.aero = { ...car.aero };
+  pose.wheels = car.wheels.map((w) => ({ ...w, tyre: { ...w.tyre } }));
+  if (car.hybrid) pose.hybrid = { ...car.hybrid };
+  const road = Object.create(track); road.deposit = () => 0;   // no rubber laid, no spray thrown (the model adds the return value)
+  const n = Math.max(1, Math.ceil(delay * 120));
+  for (let i = 0; i < n; i++) pose.step(delay / n, road, car.aero?.wake ?? 0);
+  const sn = Math.sin(pose.yaw), cs = Math.cos(pose.yaw);
+  pose.u = pose.vx * sn + pose.vz * cs; pose.v = pose.vx * cs - pose.vz * sn; pose.speed = Math.hypot(pose.u, pose.v);
+  return pose;
+}
+
 export class TempestDriver {
   constructor(track, options = {}) {
     this.track = track; this.options = options; this.line = null; this.intent = 'INIT'; this.sub = '';
@@ -102,7 +117,14 @@ export class TempestDriver {
   }
   /** Seat-worker delay: carry the pose forward to when the controls will act. */
   predict(car, dt) {
-    const delay = clamp((this.controlDelay ?? 0) + (dt > 0.0125 ? 1.5 * dt : 0), 0, 0.09);
+    const o = this.options, held = dt > 0.0125;
+    // a long hold (slow seat replies, a sped-up sim): run the car itself on the controls it is holding to the middle of
+    // the next held interval, instead of extrapolating a yaw acceleration that far
+    if (held && dt + (this.controlDelay ?? 0) > (o.holdPhysical ?? 0.045)) {
+      this.lastR = car.yawRate; this.lastDt = dt;
+      return heldPose(car, this.track, this.delay = clamp((this.controlDelay ?? 0) + 0.5 * dt, 0.008, o.holdPhysicalCap ?? 0.06));
+    }
+    const delay = clamp((this.controlDelay ?? 0) + (held ? (o.holdLead ?? 1.5) * dt : 0), 0, o.holdCap ?? 0.045);
     const r0 = car.yawRate, dr = this.lastR === undefined ? 0 : clamp((r0 - this.lastR) / Math.max(1e-3, this.lastDt ?? dt), -8, 8);
     this.lastR = r0; this.lastDt = dt; this.delay = delay;
     if (!(delay > 0)) return car;

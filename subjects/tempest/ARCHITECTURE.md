@@ -226,7 +226,44 @@ The shim is deterministic: two runs give identical output. Both benches take `--
 outcomes). TEMPEST's update takes 0.15 ms on average and 5.4 ms at most in Node. That does not prove a browser worker
 never overruns a frame.
 
+**Held controls.** The old delay compensation caused a steering limit cycle (±0.6 steer at about 3 Hz) under held
+controls:
+- it led the pose by `controlDelay` + 1.5·dt (cap 0.09 s);
+- it extrapolated the yaw rate;
+- the stability layer then cut the throttle.
+
+`predict` now works like this:
+- It caps the lead at 0.045 s.
+- When dt + `controlDelay` is longer than that, it steps the game's own `Vehicle` on the held controls instead
+  (`heldPose`), over `controlDelay` + 0.5·dt (cap 0.06 s).
+- `heldPose` uses a road copy whose `deposit` returns 0, so no rubber or spray reaches the live track.
+- The live car and track are unchanged in clear weather and rain.
+- Native output is byte-identical.
+
+Matched worker runs behind RAZOR, 90 s (gap, + = ahead):
+
+| | old hold | new hold |
+|---|---|---|
+| zero lag | −37.4 m | −24.2 m (native −23.8 m) |
+| one frame of lag | −392.6 m | +19.9 m, 1 contact, 4 % damage each |
+| two frames of lag | −1019 m | −92.7 m |
+| 2× speed (new only) | | −19.8 m |
+
+Behind APEX 0.94 with one frame of lag: −416 m → −40.8 m. At 4× speed both cars still fall apart; this remains an
+open limit.
+
+In the one-lag run, TEMPEST retained a race pass at 62.6 s. The contact came earlier, at 58.4 s, and was not part of an
+attack:
+- TEMPEST was routing behind RAZOR into a braking zone and was 3 m/s faster at a 6.4 m gap.
+- In 0.8 s it moved 7 m sideways onto RAZOR's line.
+- It released the brake while its target speed (18.3 m/s, lane envelope, no cap) ignored the car ahead in the lane it
+  joined.
+
+The fix for that is a following cap on the chosen lane (Step 2).
+
 ## 7. Open work
+
+- 4× time scale through the worker path: the delayed replies span several physics steps and the car still loses control
 
 - Rain damage (12.7 %) and rain pace
 - Early braking behind slowing cars on straights
