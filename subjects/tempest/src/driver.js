@@ -207,7 +207,10 @@ export class TempestDriver {
    */
   learnStep(car, i, onLine, t) {
     const o = this.options, line = this.line, N = line.N;
-    if (o.slideLearn !== false && onLine && this.control.stability < 0.5 && !(t < (this.slideAt ?? -9) + 1.5)) {
+    // a slide in another car's wake says nothing about the clean-air line (the wake took the downforce; the profile
+    // already slows for it): trimming the line for it would slow every later lap in clean air
+    const dirty = (car.aero?.wake ?? 0) > (o.slideLearnWake ?? 0.05);
+    if (o.slideLearn !== false && onLine && !dirty && this.control.stability < 0.5 && !(t < (this.slideAt ?? -9) + 1.5)) {
       this.slideAt = t; const back = Math.round((o.slideBack ?? 60) / line.ds), fwd = Math.round(12 / line.ds);
       for (let j = -back; j <= fwd; j++) { const k = line.idx(i + j); line.btrim[k] = Math.max(o.slideFloor ?? 0.85, line.btrim[k] * (1 - (o.slideBrake ?? 0.03))); }
       for (let j = -fwd; j <= 2 * fwd; j++) { const k = line.idx(i + j); line.trim[k] = Math.max(o.slideFloor ?? 0.85, line.trim[k] * (1 - (o.slideCorner ?? 0.015))); }
