@@ -223,6 +223,7 @@ export class TempestDriver {
     if (st === 'DEFEND') return `cover ${who || 'behind'}`;
     if (st === 'TOW') return `slipstream ${who}${where}`;
     if (st === 'ROUTE') return `around ${f?.why === 'contact' ? 'blocked line' : f?.why ?? ''} ${who}${where}`;
+    if (p?.passes > 0 && mv) return `pass ${who || 'ahead'} planned${where}`;
     if (mv && mv.peak > 1.2) return `${mv.peak.toFixed(1)} m off line${who ? ` · behind ${who}` : ''}${where}`;
     if (f?.why === 'follow') return `following ${who} on the line`;
     return this.water?.active ? 'wet grip map' : 'racing line';

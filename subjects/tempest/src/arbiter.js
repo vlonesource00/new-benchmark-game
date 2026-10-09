@@ -97,6 +97,11 @@ export class Arbiter {
       if (entry + hold > p.K * p.dS + 200) continue;
       const lane = OFFSETS.reduce((bi, x, k) => Math.abs(x - off) < Math.abs(OFFSETS[bi] - off) ? k : bi, 0);
       out.push({ beside: { f, side, gap, entry, hold, rejoin, id: r.id }, K: p.K, dS: p.dS, first: lane, last: LINE_LANE, tow: 0, segs: null });
+      // the same move started later, from the line: leaving now has to beat staying on the fast line a while longer
+      // off by default: measured worse (behaviour bench 5.42 vs 4.67; more lane changes, attacks started further back)
+      const delay = (o.besideDelay ?? 0) * v;
+      if (delay > 0 && Math.abs(p.start.d0) < 0.5 && delay + entry + hold <= p.K * p.dS + 200)
+        out.push({ beside: { f, side, gap, entry, hold, rejoin, id: r.id, delay }, K: p.K, dS: p.dS, first: LINE_LANE, last: LINE_LANE, tow: 0, segs: null });
     }
     return out;
   }
@@ -132,7 +137,7 @@ export class Arbiter {
     // for the debugger: every option against the chosen one, and how far the kept path leads its best challenger
     const holdEv = evs.find((e) => e.p.hold), rival = evs.reduce((m, e) => (e.p.hold || (m && m.score <= e.score) ? m : e), null);
     this.lead = holdEv && rival ? rival.score - holdEv.score : null;
-    this.cands = evs.map((e) => ({ kind: e.p.hold ? 'keep' : e.p.beside ? `beside ${e.p.beside.side > 0 ? '+' : '−'}` : e === lineEv ? 'racing line' : OFFSETS[e.p.first] === 0 ? 'line (lattice)' : `lane ${OFFSETS[e.p.first] > 0 ? '+' : ''}${OFFSETS[e.p.first]} m`,
+    this.cands = evs.map((e) => ({ kind: e.p.hold ? 'keep' : e.p.beside ? `beside ${e.p.beside.side > 0 ? '+' : '−'}${e.p.beside.delay ? ' later' : ''}` : e === lineEv ? 'racing line' : OFFSETS[e.p.first] === 0 ? 'line (lattice)' : `lane ${OFFSETS[e.p.first] > 0 ? '+' : ''}${OFFSETS[e.p.first]} m`,
       s: e.score, passes: e.passes, chosen: e === best }));
     // books: does the lattice agree with the executor about its own favourite?
     const dp = evs.find((e) => !e.p.hold);
@@ -192,10 +197,13 @@ export class Arbiter {
     const prev = this.state, dev = ev.maxDev, o = this.driver.options, me = field.me;
     const slow = field.list.some((r) => r.ds > 0 && r.ds < 120 && (r.hazard || r.v < (me?.v ?? 0) - (o.routeSlow ?? 8)));
     const blocked = slow || (lineEv && lineEv !== ev && lineEv.contact > (o.routeContact ?? 0.3));
-    let want = ev.passes > 0 ? 'ATTACK' : p.defend != null ? 'DEFEND' : ev.p.tow > 0.35 && dev > 0.5 ? 'TOW' : dev > 1.2 && blocked ? 'ROUTE' : 'PACE';
+    // an attack is named when its move starts (within attackNear seconds) or when it passes on the line; a pass planned
+    // further ahead keeps the car on the line under PACE until then
+    const near = ev.out < 0 || ev.out < (o.attackNear ?? 0.8) * Math.max(10, me?.v ?? 0);
+    let want = ev.passes > 0 && near ? 'ATTACK' : p.defend != null ? 'DEFEND' : ev.p.tow > 0.35 && dev > 0.5 ? 'TOW' : dev > 1.2 && blocked ? 'ROUTE' : 'PACE';
     if (o.stableLabels !== false) {
       if (!ev.p.hold || prev == null || prev === 'PIT') this.want = null;
-      else if (want !== prev) {
+      else if (want !== prev && !(want === 'ATTACK' && prev === 'PACE')) {   // a move starting is taken at once
         // the same path, a different name: taken only once it has held (a pass completing, a defence ending)
         if (this.want !== want) { this.want = want; this.wantT = now; }
         if (now - this.wantT < (o.labelDwell ?? 0.4)) want = prev; else this.want = null;

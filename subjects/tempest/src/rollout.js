@@ -4,6 +4,8 @@ import { HALF_LEN } from './perception.js';
 import { OFFSETS } from './atlas.js';
 import { blend, changeLength, join } from './lattice.js';
 
+const ON_LINE = { d0: 0, p0: 0, c0: 0 };
+
 const wrap = (x, L) => ((x + L * 1.5) % L) - L / 2;
 
 /**
@@ -74,9 +76,12 @@ export class Rollout {
   besideAt(p, x, i, start, v0) {
     const b = p.beside, line = this.driver.line, f = b.f;
     const want = (xx) => { const t = clamp(xx / v0, 0, 4.4); return at(f.lat, t) + b.side * b.gap - line.lat[i]; };
-    if (x <= b.entry) return join(start, want(x), b.entry, clamp(x / b.entry, 0, 1));
-    if (x <= b.entry + b.hold) return want(x);
-    const xe = b.entry + b.hold, t = clamp(xe / v0, 0, 4.4), se = at(f.lat, t) + b.side * b.gap - line.lat[i];
+    // a delayed move rides the line first and leaves it at b.delay: the same pass, later off the fast line
+    const dl = b.delay ?? 0;
+    if (dl > 0 && x <= dl) return join(start, 0, dl, clamp(x / dl, 0, 1));
+    if (x <= dl + b.entry) return join(dl > 0 ? ON_LINE : start, want(x), b.entry, clamp((x - dl) / b.entry, 0, 1));
+    if (x <= dl + b.entry + b.hold) return want(x);
+    const xe = dl + b.entry + b.hold, t = clamp(xe / v0, 0, 4.4), se = at(f.lat, t) + b.side * b.gap - line.lat[i];
     return se * (1 - blend(clamp((x - xe) / b.rejoin, 0, 1)));
   }
   /**
@@ -111,7 +116,7 @@ export class Rollout {
     lane.speedsWindow(model, i0, n, car.speed, line.v[iE], { ...d.sopt, mass, vbrkEnd: line.vbrk[iE], jerk: o.laneJerk ?? model.jerk });
     // drive it: time and speed station by station, against the forecasts
     const wE = me.halfWidth ?? 0.98, colC = o.contactCost ?? 3, B = o.passValue ?? 0.45;
-    let t = 0, v = Math.max(1, car.speed), cost = 0, contact = 0, tH = NaN, maxDev = 0, xPrev = wrap(line.idx(i0) * ds - me.s, L);
+    let t = 0, v = Math.max(1, car.speed), cost = 0, contact = 0, tH = NaN, maxDev = 0, out = -1, xPrev = wrap(line.idx(i0) * ds - me.s, L);
     const caps = this.cap, tAt = this.tAt, latA = this.lat, peak = (this.peak ??= new Float64Array(64)).fill(0, 0, plan.fs.length);
     const event = (o.contactMode ?? 'event') === 'event', behind = o.behindShare ?? 0.4, useWake = o.rolloutWake !== false, capB = o.capBrake ?? 0.55;
     for (let j = 1; j <= n; j++) {
@@ -146,6 +151,7 @@ export class Rollout {
       if (dz && x > dz.from && x < dz.to) cost += (o.defendCost ?? 0.03) * clamp((d.atlas.bound - dB * dz.inside - 2.4) / 2.5, 0, 1) * seg / p.dS;
       caps[j] = cap; tAt[j] = t; latA[j] = dB;
       if (x <= H) maxDev = Math.max(maxDev, Math.abs(this.shift[j]));
+      if (out < 0 && x > 0 && Math.abs(this.shift[j]) > 0.5) out = x;
       if (Number.isNaN(tH) && x >= H) tH = t;
     }
     // contact is an event, not a distance: the worst moment against each car, shared with a car that is behind
@@ -162,7 +168,7 @@ export class Rollout {
       else if (g0 < 0 && gE > -0.3 * Ls) lost++;
     }
     const score = t + cost - B * (passes - lost);
-    const ev = { lane, i0, n, score, t, tH, passes, lost, contact, maxDev, p, who: who?.id ?? null };
+    const ev = { lane, i0, n, score, t, tH, passes, lost, contact, maxDev, p, who: who?.id ?? null, out };
     ev.lay = this.layers(ev, me);
     return ev;
   }
