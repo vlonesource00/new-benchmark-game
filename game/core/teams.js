@@ -8,6 +8,7 @@ export const AI_DRIVERS = Object.freeze([
   { id: 'next-racer',        name: 'SPEARHEAD',     short: 'SPH', arch: 'Maneuver outcomes · committed exits', anyTrack: true, manage: false, governor: false },
   { id: 'apex',              name: 'APEX',          short: 'APX', arch: 'Identified g-g-v · baked line · resource planner', anyTrack: true, manage: false, governor: false },
   { id: 'razor',             name: 'RAZOR',         short: 'RZR', arch: 'Wake pursuit · committed corridors · close combat', anyTrack: true, manage: false, governor: false },
+  { id: 'tempest',           name: 'TEMPEST',       short: 'TMP', arch: 'Lane lattice · rollout-scored combat · wake + water aware', anyTrack: true, manage: false, governor: false },
   { id: 'phantom',           name: 'PHANTOM',      short: 'PHM', arch: 'Ghost imitation · plant model',        anyTrack: true },
   { id: 'phantom-v2',        name: 'PHANTOM v2',   short: 'PH2', arch: 'Ghost v2 · adaptive plant',            anyTrack: true },
   { id: 'solinator-6.1',     name: 'SOLINATOR 6.1', short: 'SL6', arch: 'Gate arrivals · physical transfers',  anyTrack: true }

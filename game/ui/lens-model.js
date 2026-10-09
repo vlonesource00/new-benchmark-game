@@ -45,7 +45,8 @@ const THEMES = {
   'phantom-v2': { color: '#b388ff', mind: 'Ghost tape v2 with an adaptive plant model' },
   'solinator-6.1': { color: '#ffce45', mind: 'Gate-to-gate arrivals; full-plant transfer graph' },
   apex: { color: '#00e0b8', mind: 'Identified g-g-v limit line; shadow lanes rolled out against predicted rivals' },
-  razor: { color: '#ff6238', mind: 'Fast line to the wake; committed open-space attacks with smooth joins' }
+  razor: { color: '#ff6238', mind: 'Fast line to the wake; committed open-space attacks with smooth joins' },
+  tempest: { color: '#3ad6ff', mind: 'Rolls every lane forward against forecast rivals, their wake and the water; commits only when it beats the held line' }
 };
 
 // CRV packs its scored lanes as "kind*:score ..." in debug() and as geometry in visualDebug().
@@ -182,6 +183,7 @@ PROFILES.apex = (d, v) => {
 };
 PROFILES['phantom-v2'] = PROFILES.phantom;
 PROFILES.razor = razorLens;
+PROFILES.tempest = razorLens;
 
 /** Infer who a car is racing when its AI does not say: the nearest car ahead, else one closing from behind. */
 function inferFocus(race, idx) {

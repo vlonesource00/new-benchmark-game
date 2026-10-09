@@ -19,6 +19,7 @@ function run(wx) {
     const p = track.nearest(c.x, c.z); wet += track.wetAt(p.index, track.laneAt(p.lateral)); core += c.wheels.reduce((a, w) => a + w.tyre.core, 0) / 4;
     if (c.race.lap !== lap) { out.push(`${c.race.lastLap.toFixed(2)}`); lap = c.race.lap; }
   }
+  const wd = race.entries[0].bridges[0].driver?.water?.debug?.(); if (wd) console.log('water', JSON.stringify(wd));
   return `${wx.padEnd(10)} ${tyre} laps ${out.join(' ')} | road ${track.wetness.toFixed(2)} under-car ${(wet / n).toFixed(2)} core ${(core / n).toFixed(0)}C aqua ${(100 * aq / n).toFixed(1)}% off ${c.zone}`;
 }
 for (const wx of weather === 'both' ? ['clear', 'rain'] : [weather]) console.log(run(wx));

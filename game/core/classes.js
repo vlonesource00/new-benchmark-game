@@ -5,7 +5,7 @@ import { PACE_PROFILES } from './pace-profiles.js';
 import { AI_DRIVERS } from './teams.js';
 
 export const RACE_CLASSES = Object.freeze({
-  gtp: { id: 'gtp', label: 'GTP', name: 'GTP HYBRID PROTOTYPE', car: 'lmdh', color: '#f2c230', fg: '#111', pace: 1.14, ai: ['solstice', 'gemini-supreme-v4', 'claude-revolution', 'next-racer', 'apex', 'razor'] },
+  gtp: { id: 'gtp', label: 'GTP', name: 'GTP HYBRID PROTOTYPE', car: 'lmdh', color: '#f2c230', fg: '#111', pace: 1.14, ai: ['solstice', 'gemini-supreme-v4', 'claude-revolution', 'next-racer', 'apex', 'razor', 'tempest'] },
   gt3: { id: 'gt3', label: 'GT3', name: 'GT3', car: 'gt', color: '#e0443a', fg: '#fff', pace: 1, ai: null }
 });
 export const classOf = (team) => RACE_CLASSES[team?.raceClass] ?? RACE_CLASSES.gt3;

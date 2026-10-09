@@ -1,0 +1,42 @@
+{
+  "version": 2,
+  "name": "TEMPEST",
+  "margin": 0.97,
+  "jerk": 40,
+  "throttleAllow": 2.4,
+  "preview": 0.24,
+  "slideGain": 5,
+  "slideBand": 0.02,
+  "useTrim": false,
+  "steerJerk": 65,
+  "tractionSlip": 2.1,
+  "thermalK": 0.002,
+  "thermalHot": 18,
+  "pushMin": 0.9,
+  "planPeriod": 0.1,
+  "horizonT": 3.4,
+  "passValue": 0.45,
+  "contactCost": 3,
+  "commit": 0.01,
+  "defendCost": 0.03,
+  "waterSense": true,
+  "wetLine": false,
+  "strategy": true,
+  "classes": {
+    "lmdh": {
+      "brakeExp": 1.85
+    }
+  },
+  "tracks": {
+    "nurburgring": {
+      "margin": 0.8
+    },
+    "harbor-ring": {
+      "perClass": {
+        "gt": {
+          "yawGain": 0.7
+        }
+      }
+    }
+  }
+}

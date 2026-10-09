@@ -1,0 +1,72 @@
+// TEMPEST field bench: two-car same-AI teams (TEMPEST, RAZOR, Spearhead, APEX), APEX on the last two grid slots and
+// the other pairs rotated by seed, rolling start, hard tyres (wets in rain). Per AI: finishing place, passes made and
+// suffered on track (sampled order changes), best lap, incident points, damage.
+// usage: node --import ./scripts/json-loader.mjs scripts/bench/tempest-field.mjs [--tracks harbor-ring,solenne,alpine]
+//        [--laps 5] [--seeds 7,8] [--weather clear|rain] [--cls lmdh] [--jobs 3] [--opts '{"key":value}'] [--ais tempest,razor,next-racer,apex]
+//   worker: ... tempest-field.mjs --run <track> <laps> <seed> <weather> <cls> <optsJSON> <ais>
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import os from 'node:os';
+
+const args = process.argv.slice(2), flag = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
+
+async function work([trackName, lapsArg, seedArg, weather, cls, optsArg, aisArg]) {
+  const { Track } = await import('../../game/engine/sim/track.js');
+  const { EnduranceRace, FIXED_DT } = await import('../../game/core/race.js');
+  const { FORMATS } = await import('../../game/core/rules.js');
+  const { AI_DRIVERS } = await import('../../game/core/teams.js');
+  const laps = Number(lapsArg), seed = Number(seedArg), track = new Track(trackName), opts = JSON.parse(optsArg || '{}');
+  const ais = aisArg.split(','), last = ais.includes('apex') ? 'apex' : null, front = ais.filter((a) => a !== last);
+  const rot = seed % front.length, order = [...front.slice(rot), ...front.slice(0, rot), ...(last ? [last] : [])];
+  const ids = order.flatMap((id) => [id, id]);
+  const short = (id) => AI_DRIVERS.find((d) => d.id === id)?.short ?? id;
+  const teams = order.map((id, t) => ({ id: 't' + t, name: short(id), short: short(id), color: '#fff', index: t, starter: 0, classId: cls, raceClass: cls === 'lmdh' ? 'gtp' : 'gt3',
+    drivers: [{ kind: 'ai', id, name: id, short: short(id) }, { kind: 'ai', id, name: id, short: short(id) }], grid: t }));
+  // one car per entry: two entries per AI (teammates), as in the browser field
+  const entries = ids.map((id, i) => ({ ...teams[Math.floor(i / 2)], id: 'e' + i, index: i, grid: i, name: short(id) + i, short: short(id) + i }));
+  const race = new EnduranceRace({ track, teams: entries, format: { ...FORMATS.custom, mandatoryStops: 0, mandatorySwap: false }, laps, startCompound: 'hard', startType: 'rolling', seed, weatherSeed: seed, weather });
+  race.start();
+  const tyre = weather === 'rain' ? 'wet' : 'hard';
+  for (const c of race.cars) race.fitTyres(c, tyre, true);
+  for (const e of race.entries) e.strategist.decide = () => null;
+  // Spearhead stops its search on a wall-clock budget; parallel bench jobs would make it (and the race) nondeterministic
+  race.entries.forEach((e, i) => { const d = e.bridges[0]?.driver; if (!d) return; if (ids[i] === 'tempest') Object.assign(d.options, opts); if (ids[i] === 'next-racer' && d.o) d.o.planBudgetMs = Infinity; });
+  const n = race.cars.length, made = new Array(n).fill(0), lost = new Array(n).fill(0);
+  let prev = null, tick = 0; const cap = 140 * laps * Math.max(1, track.length / 3000) + 200, t0 = performance.now();
+  while (race.phase !== 'finished' && race.time < cap) {
+    race.step(FIXED_DT);
+    if (race.formation || ++tick % 60) continue;
+    const ord = race.order().map((c) => race.cars.indexOf(c)), pos = new Array(n); ord.forEach((ci, p) => { pos[ci] = p; });
+    if (prev) for (let i = 0; i < n; i++) { if (pos[i] < prev[i]) made[i] += prev[i] - pos[i]; else if (pos[i] > prev[i]) lost[i] += pos[i] - prev[i]; }
+    prev = pos;
+    if (performance.now() - t0 > 570000) break;
+  }
+  const ord = race.order();
+  const rows = race.cars.map((c, i) => { const st = race.stewards.of(race.entries[i]); return { ai: ids[i], grid: i + 1, place: ord.indexOf(c) + 1, made: made[i], lost: lost[i], best: c.race.bestLap,
+    inc: st.inc, dq: st.dq, kinds: st.log.reduce((m, l) => (m[l.kind] = (m[l.kind] ?? 0) + l.points, m), {}), t42: st.log.find((l, k, a) => a.slice(0, k + 1).reduce((s, x) => s + x.points, 0) >= 41)?.time, dmg: +(c.damage * 100).toFixed(1), assoc: race.entries[i].bridges[0]?.driver?.combat?.stats?.associatedPasses ?? null }; });
+  console.log(JSON.stringify({ track: trackName, seed, weather, finished: race.phase === 'finished', contacts: race.contacts, severe: race.collisionStats.severeContacts, rows }));
+}
+
+if (args[0] === '--run') { await work(args.slice(1)); process.exit(0); }
+
+const tracks = flag('tracks', 'harbor-ring,solenne,alpine').split(','), laps = flag('laps', '5'), seeds = flag('seeds', '7,8').split(',');
+const weather = flag('weather', 'clear'), cls = flag('cls', 'lmdh'), jobs = Number(flag('jobs', 3)), opts = flag('opts', '{}');
+const ais = flag('ais', 'tempest,razor,next-racer,apex'), self = fileURLToPath(import.meta.url);
+const tasks = []; for (const t of tracks) for (const sd of seeds) tasks.push([t, laps, sd, weather, cls, opts, ais]);
+const run = (task) => new Promise((resolve) => {
+  const p = spawn('node', ['--import', './scripts/json-loader.mjs', self, '--run', ...task], { stdio: ['ignore', 'pipe', 'pipe'] });
+  try { os.setPriority(p.pid, os.constants.priority.PRIORITY_LOW); } catch {}
+  let out = '', err = ''; p.stdout.on('data', (d) => { out += d; }); p.stderr.on('data', (d) => { err += d; });
+  p.on('close', () => { try { resolve(JSON.parse(out.trim().split('\n').pop())); } catch { resolve({ task, error: err.trim().split('\n').slice(-3).join(' | ') }); } });
+});
+const queue = [...tasks], results = [];
+await Promise.all(Array.from({ length: Math.min(jobs, queue.length) }, async () => { while (queue.length) { const t = queue.shift(); results.push(await run(t)); console.error(`done ${t.slice(0, 4).join(' ')}`); } }));
+for (const f of results.filter((r) => r.error)) console.log('FAILED', f.task.join(' '), f.error);
+const ok = results.filter((r) => !r.error), agg = {};
+for (const r of ok) {
+  console.log(`${r.track.padEnd(12)} ${r.seed} ${r.weather} ${r.finished ? '' : 'UNFINISHED '}contacts ${r.contacts} severe ${r.severe} | ` + r.rows.slice().sort((a, b) => a.place - b.place).map((w) => `P${w.place} ${w.ai.slice(0, 4)}(g${w.grid} +${w.made}/-${w.lost} i${w.inc} d${w.dmg})`).join(' '));
+  for (const w of r.rows) { const a = (agg[w.ai] ??= { n: 0, place: 0, made: 0, lost: 0, inc: 0, dmg: 0, best: 0, bn: 0, wins: 0 }); a.n++; a.place += w.place; a.made += w.made; a.lost += w.lost; a.inc += w.inc; a.dmg += w.dmg; if (w.best) { a.best += w.best; a.bn++; } if (w.place === 1) a.wins++; }
+}
+console.log('\nAI          cars  place  wins  passes+  passed-  inc   dmg%  best');
+for (const [ai, a] of Object.entries(agg).sort((x, y) => x[1].place / x[1].n - y[1].place / y[1].n))
+  console.log(`${ai.padEnd(11)} ${String(a.n).padStart(4)}  ${(a.place / a.n).toFixed(2)}  ${String(a.wins).padStart(4)}  ${(a.made / a.n).toFixed(2).padStart(7)}  ${(a.lost / a.n).toFixed(2).padStart(7)}  ${(a.inc / a.n).toFixed(1).padStart(4)}  ${(a.dmg / a.n).toFixed(1).padStart(4)}  ${a.bn ? (a.best / a.bn).toFixed(2) : '-'}`);
