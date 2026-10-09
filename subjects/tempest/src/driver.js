@@ -93,18 +93,19 @@ export class TempestDriver {
     if (!this.forceRefresh && Math.abs(g - this.model.grip) < 0.004 && Math.abs(total - this.pushApplied) < 0.004) return;
     this.forceRefresh = false; this.pushApplied = total;
     this.model.margin = (o.margin ?? 1) * total; this.model.grip = g;
-    // the tread budget is spent on the racing line only, where the slide learner trims it; a lane is planned and driven
-    // at the unspent margin (corner speed goes with the square root of the margin)
-    this.laneMargin = (o.margin ?? 1) * this.push; this.laneScale = 1 / Math.sqrt(this.spend);
+    // treadScope "clean": the tread budget is spent on the racing line only, where the slide learner trims it, and a lane
+    // is planned and driven at the unspent margin (corner speed goes with the square root of the margin); "all": lanes too
+    const lanes = o.treadScope === 'all';
+    this.laneMargin = (o.margin ?? 1) * this.push * (lanes ? this.spend : 1); this.laneScale = lanes ? 1 : 1 / Math.sqrt(this.spend);
     const L = this.line, sh = Object.create(L);
     Object.assign(sh, { v: L.v.slice(), vmax: L.vmax.slice(), vbrk: L.vbrk.slice(), vfree: L.vfree.slice(), cap: L.cap.slice(), kept: L.kept, notches: L.notches });
     this.rebuild = { sh, gen: sh.speedsGen(this.model, { ...this.sopt, mass: car.spec.mass + car.fuel * 0.75 }) };
     this.stepRebuild();
   }
-  /** Tread is spent in clean air only (off by default, `tread: true`: every variant measured worse than none, see ARCHITECTURE.md). */
+  /** The tread budget (`tread: true`): in clean-air PACE only (treadScope "clean"), or everywhere ("all"). */
   spendNow() {
     const o = this.options; if (o.tread !== true) return 1;
-    return o.treadClean === false || (this.intent === 'PACE' && (this.wake ?? 0) < 0.03) ? this.tread.push : 1;
+    return o.treadScope === 'all' || (this.intent === 'PACE' && (this.wake ?? 0) < 0.03) ? this.tread.push : 1;
   }
   stepRebuild() {
     const R = this.rebuild;
@@ -160,7 +161,7 @@ export class TempestDriver {
     const car = this.predict(real, dt), line = this.line, o = this.options, t = context.time ?? 0;
     this.refreshClock += dt;
     if (this.rebuild) this.stepRebuild();
-    if (this.refreshClock > 0.25) { this.refreshClock = 0; this.water.update(car, 0.25); if (o.tread === true) { this.tread.o = o; this.tread.update(real, context.state ?? {}); } this.refresh(car); }
+    if (this.refreshClock > 0.25) { this.refreshClock = 0; this.water.update(car, 0.25); if (o.tread === true) { this.tread.o = o; this.tread.update(real, context.state ?? {}, o.margin ?? 1); } this.refresh(car); }
     let c = line.closest(car.x, car.z, this.cursor);
     if (c.d2 > 400) c = line.closest(car.x, car.z, -1);
     this.cursor = c.i;
