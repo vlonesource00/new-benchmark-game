@@ -25,13 +25,18 @@ function parse(out) {
     bwT: num(/wake: ([\d.]+) s/, bw), bwRms: num(/rms ([\d.]+)/, bw), bwMax: num(/max ([\d.]+) m/, bw), bwRev: num(/reversals ([\d.]+)/, bw), bwSlip: num(/sideslip\| ([\d.]+)/, bw),
     contacts: num(/contacts (\d+)/, end), damage: num(/damage ([\d.]+)\//, end), gap: num(/gap (-?[\d.]+) m/, end),
     onsets: [...out.matchAll(/^onset .*$/gm)].map((m) => Object.fromEntries([...m[0].matchAll(/(\w[\w.]*) (-?[\d.]+|NaN|[A-Z]+)/g)].map((x) => [x[1], isNaN(+x[2]) ? x[2] : +x[2]]))),
+    first: num(/^laps \(s\):[^(]*\(first line ([\d.]+)\)/m, out), rFirst: num(/rival \(first line ([\d.]+)\)/, out),
+    laps: (out.match(/^laps \(s\): ([\d. ]+)\(/m)?.[1] ?? '').trim().split(/\s+/).filter(Boolean).map(Number),
+    rLaps: (out.match(/rival \(first line [^)]*\) ([\d. ]+)$/m)?.[1] ?? '').trim().split(/\s+/).filter(Boolean).map(Number),
+    dmg2: num(/damage [\d.]+\/([\d.]+) %/, end), place: num(/TEMPEST P(\d)/, end),
+    outcomes: (() => { try { return JSON.parse(out.match(/^outcomes (\{.*\})$/m)?.[1] ?? 'null'); } catch { return null; } })(),
     threw: num(/TEMPEST threw (\d+)/, out) || 0, err: /Error/.test(out) && !end,
   };
 }
 function run(r) {
   return new Promise((resolve) => {
     const a = ['--import', './scripts/json-loader.mjs', 'scripts/bench/tempest-pass.mjs', '--path', 'worker', ...(r.lag === 'v' ? ['--lagFrames', '0', '--lagJitter', '2', '--frameJitter', '0.2'] : ['--lagFrames', r.lag]), '--track', r.track, '--cls', r.cls, '--seed', r.seed,
-      '--ahead', r.ahead, '--rival', r.rival, '--rivalOpts', RIVAL_OPTS[r.rival] ?? '{}', '--opts', opts, '--time', T, '--trace', 'none'];
+      '--ahead', r.ahead, '--rival', r.rival, '--rivalOpts', RIVAL_OPTS[r.rival] ?? '{}', '--opts', opts, '--time', T, '--trace', 'none', ...(args.includes('--file') ? ['--file'] : [])];
     const ch = spawn(process.execPath, a, { stdio: ['ignore', 'pipe', 'pipe'] });
     try { os.setPriority(ch.pid, os.constants.priority.PRIORITY_BELOW_NORMAL); } catch { /* not permitted: run at normal priority */ }
     let out = ''; ch.stdout.on('data', (d) => { out += d; }); ch.stderr.on('data', (d) => { out += d; });
@@ -63,3 +68,16 @@ for (const cls of [...new Set(results.map((r) => r.cls)), 'all']) for (const lag
   console.log(`${cls.padEnd(4)} lag ${lag}: rms ${f(mean(g.map((r) => r.rms)))} m, max ${f(Math.max(...g.map((r) => r.max)), 1)} m, off ${f(mean(g.map((r) => r.off)), 1)} s, rev ${f(mean(g.map((r) => r.rev)))}/s, ` +
     `brake-in-wake rms ${f(mean(g.map((r) => r.bwRms)))} m rev ${f(mean(g.map((r) => r.bwRev)))}/s, runs past 5 m ${g.filter((r) => r.max > 5).length}, runs with contact ${g.filter((r) => r.contacts > 0).length}/${g.length}, gap mean ${f(mean(g.map((r) => r.gap)), 0)} m`);
 }
+// race pace over the runs: the first line (start and lap 1) against the rival's, lap times for both cars, damage
+{
+  const ok = results.filter((r) => !r.err);
+  for (const cls of [...new Set(ok.map((r) => r.cls))]) {
+    const lp = ok.filter((r) => r.cls === cls), g = lp.filter((r) => Number.isFinite(r.first) && Number.isFinite(r.rFirst));
+    const pair = lp.flatMap((r) => r.laps.map((x, q) => (Number.isFinite(r.rLaps[q]) ? x - r.rLaps[q] : NaN))).filter(Number.isFinite);
+    console.log(`race ${cls}: first line minus rival's ${f(mean(g.map((r) => r.first - r.rFirst)))} s (n ${g.length}, ahead at it ${g.filter((r) => r.first < r.rFirst).length}), ` +
+      `lap minus rival's ${f(mean(pair))} s (n ${pair.length}), mean lap ${f(mean(lp.flatMap((r) => r.laps)))} / rival ${f(mean(lp.flatMap((r) => r.rLaps)))}, ` +
+      `damage ${f(mean(lp.map((r) => r.damage)), 1)} / ${f(mean(lp.map((r) => r.dmg2)), 1)} %, runs past 2 % damage ${lp.filter((r) => r.damage > 2).length}`);
+  }
+}
+// --json file: every run's parsed numbers, for paired comparisons between configurations
+if (args.includes('--json')) (await import('node:fs')).writeFileSync(flag('json'), JSON.stringify(results.map(({ raw, onsets, ...r }) => r)));
