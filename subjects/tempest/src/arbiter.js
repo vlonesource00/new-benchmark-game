@@ -2,6 +2,7 @@ import { clamp } from '../../apex/src/math.js';
 import { OFFSETS, LINE_LANE } from './atlas.js';
 import { Rollout } from './rollout.js';
 import { changeLength } from './lattice.js';
+import { Outcomes } from './outcomes.js';
 
 const wrap = (x, L) => ((x + L * 1.5) % L) - L / 2;
 
@@ -40,11 +41,13 @@ export class Arbiter {
       pred: { n: 0, err: 0, abs: 0 }, predByState: {},
       attempt: { open: 0, made: 0, failed: 0, time: 0 }, defence: { open: 0, held: 0, broken: 0 } };
     this.order = new Map(); this.pending = []; this.attempts = new Map(); this.covers = new Map();
+    this.outcomes = new Outcomes(this.driver); this.planT = -Infinity; this.lastPred = null;
   }
   update(now, car, me, field, forecast, dt) {
     const d = this.driver, o = d.options, line = d.line;
     this.clock += dt;
     this.settle(now, me);
+    this.outcomes.update(now, field, this.state);
     // a slide is no time to change the plan: hold it until the controller has the car again
     const sliding = d.control.stability < 0.5 && this.plan;
     if (sliding) this.stats.held = (this.stats.held ?? 0) + 1;
@@ -154,8 +157,9 @@ export class Arbiter {
     if (onLine) { R.busy.delete(lane); this.path = null; }
     else {
       const iE = line.idx(best.i0 + best.n), mass = car.spec.mass + car.fuel * 0.75;
+      const m0 = d.model.margin; d.model.margin = d.laneMargin ?? m0;
       lane.speedsWindow(d.model, best.i0, best.n, Math.max(car.speed, line.v[line.idx(best.i0)]), line.v[iE], { ...d.sopt, mass, vbrkEnd: line.vbrk[iE], jerk: o.laneJerk ?? d.model.jerk });
-      this.path = lane;
+      d.model.margin = m0; this.path = lane;
     }
     const lay = best.lay;
     // a cap is a speed at a place: the car has to be able to brake to it, so every earlier layer is capped too
@@ -164,7 +168,7 @@ export class Arbiter {
     this.plan = new Committed({ s0: p.s0, dS: p.dS, K: p.K, firstEnd: best.p.hold ? this.plan.firstEnd : best.p.beside ? (me.s + best.p.beside.entry) % d.track.length : (p.s0 + best.p.segs[0].k1 * p.dS) % d.track.length,
       side: best.p.hold ? this.plan.side : best.p.beside?.side ?? 0, target: best.p.hold ? this.plan.target : best.p.beside?.id ?? null, d: lay.d, t: lay.t, cap: lay.cap, first: best.p.first, last: best.p.last,
       passes: best.passes, tow: best.p.tow, defend: p.defend, score: best.score, edges: p.edges, ids: best.ids }, d.track.length);
-    this.first = best.p.first; this.fresh = false;
+    this.first = best.p.first; this.fresh = false; this.planT = now; this.chosen = best;
     this.label(best, p, field, now, lineEv);
     // a prediction to check: where the executor says the car will be 1.5 s from now
     const L = d.track.length;
@@ -179,7 +183,7 @@ export class Arbiter {
       if (dx < 0 && now - e.due < 4) continue;
       this.pending.splice(q, 1);
       if (dx < 0 || dx > 30) continue;   // never reached (pit, spin, off) or skipped over: no evidence either way
-      const err = now - e.due; P.n++; P.err += err; P.abs += Math.abs(err);
+      const err = now - e.due; this.lastPred = { t: now, s: e.s, due: e.due, err, state: e.state }; P.n++; P.err += err; P.abs += Math.abs(err);
       const b = (this.stats.predByState[e.state] ??= { n: 0, err: 0, abs: 0 }); b.n++; b.err += err; b.abs += Math.abs(err);
     }
     // attempts and covers that ran out
@@ -220,7 +224,7 @@ export class Arbiter {
     else { fr = ahead((r) => r.ds < 60); why = fr ? 'follow' : ''; }
     this.focus = fr ? { id: fr.id, name: fr.car?.name ?? `#${fr.id}`, gap: fr.ds, dv: (me?.v ?? 0) - fr.v, why } : why ? { why } : null;
     if (this.state === 'ATTACK' && prev !== 'ATTACK') {
-      this.stats.attacks++;
+      this.stats.attacks++; this.outcomes.declare(now, field, ev.who ?? this.plan?.target ?? null);
       // the rival the attack is for: the nearest same-class car ahead
       const r = field.list.find((x) => x.target && !x.mate && x.ds > 0 && x.ds < 60);
       if (r && !this.attempts.has(r.id)) { this.attempts.set(r.id, { t0: now }); this.stats.attempt.open++; }
@@ -258,7 +262,7 @@ export class Arbiter {
       pred: { n: P.n, bias: f(P.err / Math.max(1, P.n)), abs: f(P.abs / Math.max(1, P.n)) },
       predByState: Object.fromEntries(Object.entries(s.predByState).map(([k, b]) => [k, { n: b.n, bias: f(b.err / b.n), abs: f(b.abs / b.n) }])),
       attempt: { ...s.attempt, time: f(s.attempt.time / Math.max(1, s.attempt.made)) }, defence: s.defence,
-      passes: s.passes, lost: s.lost
+      passes: s.passes, lost: s.lost, outcomes: this.outcomes.books()
     };
   }
 }

@@ -73,36 +73,46 @@ export class Controller {
     const look = v * 0.1, d2 = Math.max(4, v * 0.25), wk = car.aero?.wake ?? 0;
     const prof = ctx.freeThrust || wk > 0.05 ? path.vbrk : path.v;
     let vt = path.sample(prof, i, f, look), vt2 = path.sample(prof, i, f, look + d2);
+    // why the demand is what it is (trace only, nothing reads it back): the profile it came from, every constraint that
+    // lowered the target speed (m/s taken) and every layer that cut the pedal (pedal taken); cap/cut name the largest
+    const why = { src: (path === d.line ? 'line' : 'lane') + (prof === path.vbrk ? '-envelope' : ''), caps: {}, cuts: {}, cap: 'none', cut: 'none' };
+    const lower = (name, x) => { if (x < vt) { if (x < vt - 0.05) why.caps[name] = vt - x; vt = x; } };
     if (wk > 0.05) {
       const ws = model.wakeSpeed(v, wk), lim = (j) => path.vmax[path.idx(i + j)] < path.v[path.idx(i + j)] + 2;
-      if (lim(1) || lim(Math.round(look / path.ds) + 2)) { vt *= ws; vt2 *= ws; }
+      if (lim(1) || lim(Math.round(look / path.ds) + 2)) { lower('wake', vt * ws); vt2 *= ws; }
     }
-    const cap = Math.min(ctx.cap ?? Infinity, ctx.nose ?? Infinity), cap2 = Math.min(ctx.cap2 ?? Infinity, ctx.nose ?? Infinity);
-    vt = Math.min(vt, cap); vt2 = Math.min(vt2, cap2);
-    if (ctx.pitCap < Infinity) { vt = Math.min(vt, ctx.pitCap); vt2 = Math.min(vt2, ctx.pitCap2); }
+    lower('plan-cap', ctx.cap ?? Infinity); lower('nose', ctx.nose ?? Infinity); lower('pit', ctx.pitCap ?? Infinity);
+    vt2 = Math.min(vt2, ctx.cap2 ?? Infinity, ctx.nose ?? Infinity, ctx.pitCap2 ?? Infinity);
+    for (const [k, x] of Object.entries(why.caps)) if (x > 0.5 && x > (why.caps[why.cap] ?? 0)) why.cap = k;
     const aProf = (vt2 * vt2 - vt * vt) / (2 * d2);
     this.targetSpeed = vt;
     let throttle = 0, brake = 0; const err = vt - v;
     if (err > 0.4 || (err > -0.2 && aProf > -1)) throttle = clamp(0.4 + err * 0.9 + aProf * 0.1, 0, 1);
     else if (-err < 2 && -aProf < 3) throttle = 0;
     else { brake = clamp(Math.max(0, -aProf) / model.brake(v) + (v - vt) * 0.18, 0, 1); if (v < vt - 0.5) brake *= 0.3; }
-    if (ctx.noseBrake > 0) { throttle = 0; brake = Math.max(brake, ctx.noseBrake); }
+    const cut = (name, t) => { const x = throttle - t; if (x > 0.005) { why.cuts[name] = x; if (x > 0.02 && x > (why.cuts[why.cut] ?? 0)) why.cut = name; } return t; };
+    this.raw = { throttle, brake };
+    if (ctx.noseBrake > 0) { cut('nose-brake', 0); throttle = 0; brake = Math.max(brake, ctx.noseBrake); }
     const phys = model.lat(v) / Math.max(0.5, (model.margin ?? 1) * (line.trim[i] ?? 1));
     const use = clamp(Math.max(Math.abs(v * v * kp), Math.abs(car.ay) * 0.9) / Math.max(1, phys), 0, 1);
     const share = Math.sqrt(Math.max(0, 1 - use * use)); this.share = share;
     if (brake > 0) brake = Math.min(brake, Math.max(o.brakeFloor ?? 0.12, share * (o.brakeAllow ?? 1.15)));
-    throttle = Math.min(throttle, Math.max(o.throttleFloor ?? 0.2, share * (o.throttleAllow ?? 2.4)));
+    throttle = cut('grip-share', Math.min(throttle, Math.max(o.throttleFloor ?? 0.2, share * (o.throttleAllow ?? 2.4))));
     // traction governor on the driven axle, tightened by heat and age
     const di = car.spec.drive === 'front' ? 0 : 2, rs = Math.max(comb(car.wheels[di].tyre), comb(car.wheels[di + 1].tyre));
     const S = ctx.tractionSlip ?? o.tractionSlip ?? 2.05;
     this.tcCap = clamp(this.tcCap + dt * (rs > S ? -10 * (rs - S) - 1 : 2.5), 0.1, 1);
-    throttle = Math.min(throttle, this.tcCap);
+    // what the governor saw on the worse driven wheel: wheelspin and lateral slip, the two parts of its combined slip
+    const tw = comb(car.wheels[di].tyre) >= comb(car.wheels[di + 1].tyre) ? car.wheels[di].tyre : car.wheels[di + 1].tyre;
+    why.slip = { comb: rs, spin: Math.abs(tw.kappa) * 10.5, lat: latSlip(tw), limit: S };
+    throttle = cut('traction', Math.min(throttle, this.tcCap));
     const sF = Math.max(latSlip(car.wheels[0].tyre), latSlip(car.wheels[1].tyre)), sR = Math.max(latSlip(car.wheels[2].tyre), latSlip(car.wheels[3].tyre));
     const hi = o.slipHi ?? 2.15, tooFar = Math.max(0, Math.max(sF, sR) - hi), loose = Math.max(0, sR - sF - (o.looseBand ?? 0.35));
     const protect = clamp((1 - (o.protectGain ?? 2) * tooFar) * (1 - (o.looseGain ?? 1.2) * loose), 0.15, 1);
-    throttle *= protect; if (sR > hi) brake *= protect;
-    brake *= this.stability; throttle *= this.stability;
+    throttle = cut('slip', throttle * protect); if (sR > hi) brake *= protect;
+    brake *= this.stability; throttle = cut('stability', throttle * this.stability);
+    this.why = why;
     this.mode = brake > 0 ? 'BRAKE' : throttle > 0.95 || (Math.abs(this.ayReq) < 4 && throttle > 0.5) ? 'PUSH' : 'CORNER';
-    real.controls = { throttle, brake, steer: this.steer };
+    real.controls = this.sent = { throttle, brake, steer: this.steer };
   }
 }

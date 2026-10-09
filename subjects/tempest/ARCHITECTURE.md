@@ -125,7 +125,7 @@ predictions, so these fixes need a joint re-tune, not a drop-in.
 | Both prediction fixes | 4.42 |
 | Both prediction fixes + `clearSig` 0.7 | 5.00 |
 
-Behaviour bench (`scripts/bench/tp-behave.mjs`, 6 field races; place, lane changes per minute), after stable labels:
+Behaviour bench (a local field script, not in the repository: 6 field races; place, lane changes per minute), after stable labels:
 
 | Change | Place | Lane changes/min |
 |---|---|---|
@@ -157,6 +157,39 @@ Deterministic baseline, 12 seeds:
 | TEMPEST | 3.88 |
 | SPEARHEAD | 5.54 |
 | APEX | 6.58 |
+
+Tread budget (`src/tread.js`, off by default, `tread: true`): spend the set's life as grip margin, with the push
+solved so the projected end wear lands on a cap under the wear cliff. Solo it beats RAZOR's best laps (Harbor 52.42 s,
+Alpine 60.79 s, Solenne 50.16 s at cap 1.05), but every field variant lost places (four-track bench, 4.17 without):
+
+| Variant | Mean place |
+|---|---|
+| Spent everywhere, cap 1.05 / 1.03 | 5.29 / 5.54 |
+| Racing line only (lanes at the unspent margin) | 4.83 |
+| Clean-air PACE only | 4.75 |
+
+The pace gap to RAZOR is its stint budget (margin 0.97 → ~0.999 by lap 3 on clear tracks), not the speed profile:
+with `brakeExp` 2 the two profiles are identical.
+
+### Outcome books and the pass fixture
+
+`src/outcomes.js` books passes by body clearance (our rear past the rival's nose), retention as clearance held through
+the whole interval (1 s), race passes apart from traffic and hazards, and every attack as declared → started (moved
+toward a corridor) → overlap → completed, or failed with its reason. The controller records every constraint that
+lowered the target speed and every layer that cut the pedal, and the worse driven wheel's spin and lateral slip.
+`scripts/bench/tempest-pass.mjs` replays one encounter (TEMPEST behind one rival) with those traces, the rival forecast
+error and when each claimed pass would resolve. The field bench reports these outcomes; its ranks columns are sampled
+order changes, not passes.
+
+Baseline outcomes (four-track bench, 24 TEMPEST car-races, place 4.17 reproduced exactly with the books on), per
+car-race: attacks declared 19.9 → started 12.3 → overlap 2.9 → completed 0.83 → retained 0.75; race passes 0.96
+(retained 0.88), race places lost 1.83. Of 293 failed attacks, 223 started and never reached the overlap.
+
+First fixture (Harbor, behind APEX): 15 attacks declared, 1 reached the overlap, 0 completed. TEMPEST's own arrival
+prediction was right (−0.1 s per 1.5 s) and the game never changed its pedals. The rival forecast covered 4.5 s, but
+87 % of the passes the chosen plan claimed resolved later (median 6.0 s), against a rival frozen at its 4.5 s point;
+the lattice also checked contact against that frozen car. Behind a slower rival the time is lost on corner exits in
+its wake, where TEMPEST's own traction governor cuts the throttle.
 
 ## 7. Open work
 

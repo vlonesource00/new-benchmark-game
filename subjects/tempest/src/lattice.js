@@ -84,7 +84,7 @@ export class Lattice {
         sh[k * M + m] = s;
         // path metres per metre of track on that lane (the line cuts corners, an outside lane runs long)
         LF[k * M + m] = (line.len[i] / line.ds) * (L.lenR[i] * (1 - f) + L.lenR[j] * f);
-        let v = lay.v[k] * (L.ratio[i] * (1 - f) + L.ratio[j] * f);
+        let v = lay.v[k] * (L.ratio[i] * (1 - f) + L.ratio[j] * f) * (L.off ? d.laneScale ?? 1 : 1);
         if (wet && k > 0) {
           // water grip under that lane, relative to what the live profile already assumes
           const c = atlas.cell[i] * 13 + track.laneAt(clamp(lay.lat[k] + s, -atlas.bound, atlas.bound)), mm = track.water.depth[c], rub = track.rubber?.[c] ?? 0;

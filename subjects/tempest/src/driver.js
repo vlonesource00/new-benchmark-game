@@ -10,6 +10,7 @@ import { Lattice } from './lattice.js';
 import { Arbiter } from './arbiter.js';
 import { Controller } from './control.js';
 import { WaterSense } from './water.js';
+import { TreadBudget } from './tread.js';
 
 const now = () => globalThis.performance?.now?.() ?? 0;   // planner cost statistics only, never a decision input
 
@@ -21,7 +22,7 @@ const now = () => globalThis.performance?.now?.() ?? 0;   // planner cost statis
 export class TempestDriver {
   constructor(track, options = {}) {
     this.track = track; this.options = options; this.line = null; this.intent = 'INIT'; this.sub = '';
-    this.cursor = -1; this.push = 1; this.pushApplied = 1; this.clockMs = now;
+    this.cursor = -1; this.push = 1; this.pushApplied = 1; this.clockMs = now; this.tread = new TreadBudget(track, options);
   }
   prepare(car) {
     if (this.line && this.classId === car.classId) return;
@@ -71,14 +72,24 @@ export class TempestDriver {
     let hot = 0; for (const w of car.wheels) hot = Math.max(hot, w.tyre.core - (w.tyre.optimum ?? 90));
     const target = clamp(1 - (o.thermalK ?? 0) * Math.max(0, hot - (o.thermalHot ?? 10)), o.pushMin ?? 0.8, 1);
     this.push += (target - this.push) * 0.2; this.hot = hot;
+    this.spend = (this.spend ?? 1) + (this.spendNow() - (this.spend ?? 1)) * 0.2;
+    const total = this.push * this.spend;
     if (this.rebuild) return;
-    if (!this.forceRefresh && Math.abs(g - this.model.grip) < 0.004 && Math.abs(this.push - this.pushApplied) < 0.004) return;
-    this.forceRefresh = false; this.pushApplied = this.push;
-    this.model.margin = (o.margin ?? 1) * this.push; this.model.grip = g;
+    if (!this.forceRefresh && Math.abs(g - this.model.grip) < 0.004 && Math.abs(total - this.pushApplied) < 0.004) return;
+    this.forceRefresh = false; this.pushApplied = total;
+    this.model.margin = (o.margin ?? 1) * total; this.model.grip = g;
+    // the tread budget is spent on the racing line only, where the slide learner trims it; a lane is planned and driven
+    // at the unspent margin (corner speed goes with the square root of the margin)
+    this.laneMargin = (o.margin ?? 1) * this.push; this.laneScale = 1 / Math.sqrt(this.spend);
     const L = this.line, sh = Object.create(L);
     Object.assign(sh, { v: L.v.slice(), vmax: L.vmax.slice(), vbrk: L.vbrk.slice(), vfree: L.vfree.slice(), cap: L.cap.slice(), kept: L.kept, notches: L.notches });
     this.rebuild = { sh, gen: sh.speedsGen(this.model, { ...this.sopt, mass: car.spec.mass + car.fuel * 0.75 }) };
     this.stepRebuild();
+  }
+  /** Tread is spent in clean air only (off by default, `tread: true`: every variant measured worse than none, see ARCHITECTURE.md). */
+  spendNow() {
+    const o = this.options; if (o.tread !== true) return 1;
+    return o.treadClean === false || (this.intent === 'PACE' && (this.wake ?? 0) < 0.03) ? this.tread.push : 1;
   }
   stepRebuild() {
     const R = this.rebuild;
@@ -127,7 +138,7 @@ export class TempestDriver {
     const car = this.predict(real, dt), line = this.line, o = this.options, t = context.time ?? 0;
     this.refreshClock += dt;
     if (this.rebuild) this.stepRebuild();
-    if (this.refreshClock > 0.25) { this.refreshClock = 0; this.water.update(car, 0.25); this.refresh(car); }
+    if (this.refreshClock > 0.25) { this.refreshClock = 0; this.water.update(car, 0.25); if (o.tread === true) { this.tread.o = o; this.tread.update(real, context.state ?? {}); } this.refresh(car); }
     let c = line.closest(car.x, car.z, this.cursor);
     if (c.d2 > 400) c = line.closest(car.x, car.z, -1);
     this.cursor = c.i;
@@ -236,6 +247,7 @@ export class TempestDriver {
       focus: a?.focus ?? null, side: p?.side ?? 0, move: this.move(), lead: a?.lead ?? null, pending: a?.want ?? null, cands: a?.cands ?? null,
       plan: p ? { horizon: +(p.K * p.dS).toFixed(0), passes: p.passes, tow: +p.tow.toFixed(2), defend: p.defend, score: +p.score.toFixed(3), edges: p.edges, first: p.first, last: p.last } : null,
       combat: a ? { state: a.state, side: 0, stats: { ...a.books(), recovers: ctl?.recovers ?? 0, slides: this.slides }, events: a.events.slice(-6) } : null,
+      tread: { push: this.tread.push, spend: this.spend ?? 1, why: this.tread.why, endWear: this.tread.endWear, rate: this.tread.rate },
       water: this.water?.debug()
     };
   }
