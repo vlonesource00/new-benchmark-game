@@ -155,6 +155,7 @@ export class Arbiter {
     const snap = o.lineSnap ?? 0.3, onLine = best.maxDev < snap && Math.abs(p.start.d0) < snap;
     if (this.path && this.path !== lane) R.busy.delete(this.path);
     if (onLine) { R.busy.delete(lane); this.path = null; }
+    else if (best.unified) this.path = lane;
     else {
       const iE = line.idx(best.i0 + best.n), mass = car.spec.mass + car.fuel * 0.75;
       const m0 = d.model.margin; d.model.margin = d.laneMargin ?? m0;

@@ -113,16 +113,31 @@ export class Rollout {
     const lane = this.take(keep);
     this.window(this.shift.subarray(0, n + 1), i0, n, lane);
     const iE = line.idx(i0 + n), mass = car.spec.mass + car.fuel * 0.75;
-    lane.speedsWindow(model, i0, n, car.speed, line.v[iE], { ...d.sopt, mass, vbrkEnd: line.vbrk[iE], jerk: o.laneJerk ?? model.jerk });
-    // drive it: time and speed station by station, against the forecasts
+    // unifiedLane: the lane is built once, as the controller will drive it (its margin, its demand from the line's speed
+    // or faster); the drive below still starts from the car's own speed and adds only what the engine can
+    const unified = o.unifiedLane === true, m0 = model.margin;
+    if (unified) model.margin = d.laneMargin ?? m0;
+    lane.speedsWindow(model, i0, n, unified ? Math.max(car.speed, line.v[line.idx(i0)]) : car.speed, line.v[iE], { ...d.sopt, mass, vbrkEnd: line.vbrk[iE], jerk: o.laneJerk ?? model.jerk });
+    model.margin = m0;
+    // drive it: time and speed station by station, against the forecasts. With freeThrust the controller drives the
+    // braking envelope (full throttle until it must brake), so that is the demand scored
+    const prof = o.freeThrust === true ? lane.vbrk : lane.v;
     const wE = me.halfWidth ?? 0.98, colC = o.contactCost ?? 3, B = o.passValue ?? 0.45;
-    let t = 0, v = Math.max(1, car.speed), cost = 0, contact = 0, tH = NaN, maxDev = 0, out = -1, xPrev = wrap(line.idx(i0) * ds - me.s, L);
-    const caps = this.cap, tAt = this.tAt, latA = this.lat, peak = (this.peak ??= new Float64Array(64)).fill(0, 0, plan.fs.length);
+    const caps = this.cap, tAt = this.tAt, latA = this.lat, peak = (this.peak ??= new Float64Array(64));
+    const env = (this.env ??= new Float64Array(4096)), segA = (this.segA ??= new Float64Array(4096));
     const event = (o.contactMode ?? 'event') === 'event', behind = o.behindShare ?? 0.4, useWake = o.rolloutWake !== false, capB = o.capBrake ?? 0.55;
+    // capEnvelope: a following cap is a speed at a place, and the controller brakes to it beforehand (the committed
+    // plan's cap envelope). A first pass finds the caps; the second drives against their braking envelope instead of
+    // slowing at the cap itself
+    const nPass = o.capEnvelope === true ? 2 : 1, bEnv = (o.envBrake ?? 0.6) * model.brake(30);
+    let t, v, cost, contact, tH, maxDev, out, xPrev;
+    for (let pass = 0; pass < nPass; pass++) {
+    if (pass) { env[n] = caps[n]; for (let j = n - 1; j >= 1; j--) env[j] = Math.min(caps[j], Math.sqrt(env[j + 1] * env[j + 1] + 2 * bEnv * segA[j + 1])); }
+    t = 0; v = Math.max(1, car.speed); cost = 0; contact = 0; tH = NaN; maxDev = 0; out = -1; xPrev = wrap(line.idx(i0) * ds - me.s, L); peak.fill(0, 0, plan.fs.length);
     for (let j = 1; j <= n; j++) {
       const i = line.idx(i0 + j), x = wrap(i * ds - me.s, L), seg = lane.len[line.idx(i - 1)] * clamp((x - xPrev) / ds, 0, 1);
       const dB = lane.lat[i];
-      let vp = lane.v[i], cap = Infinity, wake = 0;
+      let vp = prof[i], cap = Infinity, wake = 0;
       if (x > 0) for (let q = 0; q < plan.fs.length; q++) {
         const f = plan.fs[q], r = f.r, g = atDs(f, t) - x, rd = at(f.lat, t), sg = at(f.sig, t), sgs = at(f.sigS, t), rv = at(f.v, t);
         const Ls = HALF_LEN + r.halfLength, c = Math.abs(dB - rd) - (wE + r.across);
@@ -143,7 +158,8 @@ export class Rollout {
       }
       if (wake > 0.02) vp = Math.min(vp, lane.vmax[i] * model.wakeSpeed(lane.vmax[i], wake));
       const vAcc = Math.sqrt(v * v + 2 * seg * Math.max(0.5, model.drive(v, mass) + (wake > 0 ? model.towGain(v, wake) : 0)));
-      const vn = Math.max(1, Math.min(vp, cap, vAcc));
+      const vn = Math.max(1, Math.min(vp, cap, pass ? env[j] : Infinity, vAcc));
+      segA[j] = seg;
       const dtS = seg / Math.max(1, 0.5 * (v + vn));
       t += dtS; v = vn; xPrev = x;
       if (x > 0) cost += (o.offline ?? 0.004) * Math.abs(this.shift[j]) * dtS;
@@ -153,6 +169,7 @@ export class Rollout {
       if (x <= H) maxDev = Math.max(maxDev, Math.abs(this.shift[j]));
       if (out < 0 && x > 0 && Math.abs(this.shift[j]) > 0.5) out = x;
       if (Number.isNaN(tH) && x >= H) tH = t;
+    }
     }
     // contact is an event, not a distance: the worst moment against each car, shared with a car that is behind
     if (event) for (let q = 0; q < plan.fs.length; q++) {
@@ -168,7 +185,7 @@ export class Rollout {
       else if (g0 < 0 && gE > -0.3 * Ls) lost++;
     }
     const score = t + cost - B * (passes - lost);
-    const ev = { lane, i0, n, score, t, tH, passes, lost, contact, maxDev, p, who: who?.id ?? null, out };
+    const ev = { lane, i0, n, score, t, tH, passes, lost, contact, maxDev, p, who: who?.id ?? null, out, unified, prof: prof === lane.vbrk ? 'vbrk' : 'v' };
     ev.lay = this.layers(ev, me);
     return ev;
   }

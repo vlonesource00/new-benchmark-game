@@ -261,6 +261,44 @@ attack:
 
 The fix for that is a following cap on the chosen lane (Step 2).
 
+### Scoring against execution (Step 2, opt-in)
+
+The pass fixture now checks, on every controller step under a committed plan, that what the controller receives matches
+the plan that was scored. It checks four things:
+- **Geometry:** the path is the chosen lane, or the line.
+- **Lane:** the lane's speeds in its window are unchanged since it was built.
+- **Cap:** the plan's cap reaches the controller.
+- **Demand:** the controller drives the profile the rollout scored.
+
+Geometry, lane and cap never mismatched. Demand did, on 73 % of the steps behind RAZOR: the rollout scores the speed
+profile (`lane.v`), but outside PACE, or in wake, the controller drives the braking envelope (`lane.vbrk`). The label
+changes only when a new plan is chosen, so no mismatch appears between decisions.
+
+Three options, all off by default:
+- **`unifiedLane`:** the rollout builds the lane the controller will drive (its margin, its demand starting from the
+  line's speed or faster), and the arbiter keeps it instead of rebuilding it.
+- **`capEnvelope`:** the rollout drives in two passes. The first pass finds the following caps. The second drives the
+  whole loop again against their braking envelope, so rival encounter times, contact and caps are recomputed at the
+  new arrival times.
+- **`freeThrust: true`:** the controller always drives the envelope, and the rollout now scores the envelope too.
+
+Worker fixtures, 90 s, gap (− = behind):
+
+| | behind RAZOR | behind APEX 0.94 | demand mismatches (RAZOR) |
+|---|---|---|---|
+| baseline | −24.2 | −22.8 | 3488 / 4749 |
+| `unifiedLane` | −41.7 | −22.8 | 3222 |
+| `capEnvelope` | −51.2 | −51.2 | 2868 |
+| `freeThrust` | −51.0 | −60.6 | 0 |
+| all three | −65.3 | −46.1 | 0 |
+
+None of them improves on the baseline, so none went to the field bench.
+
+The loss behind RAZOR comes from one corner (40–45 s). With `capEnvelope`, TEMPEST arrives 14–16 m behind instead of
+22–25 m. It then exits 3–5 m/s slower, in RAZOR's wake, 5–7 m to the side, under traction cuts. The options do what
+they say: they put the car closer. Being closer costs more on the exit than it gains, because the rollout does not
+price lost exit grip in wake. Corner exits in wake (Step 4) come before these options can be judged.
+
 ## 7. Open work
 
 - 4× time scale through the worker path: the delayed replies span several physics steps and the car still loses control
