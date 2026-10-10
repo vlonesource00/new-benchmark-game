@@ -1,7 +1,7 @@
 // Qualifying bench: every AI in one ghosted qualifying session (soft tyres, light fuel, out lap + timed laps), per
 // track and class. Prints each AI's best lap and its timed laps. TEMPEST options via --opts.
 //   node --import ./scripts/json-loader.mjs scripts/bench/quali-bench.mjs [--tracks harbor-ring,solenne,alpine,desert]
-//        [--classes lmdh,gt] [--ais tempest,razor,apex,next-racer] [--opts '{}'] [--weather clear]
+//        [--classes lmdh,gt] [--ais tempest,razor,apex,next-racer] [--opts '{}'] [--weather clear] [--tyre soft]
 import { Track } from '../../game/engine/sim/track.js';
 import { EnduranceRace, FIXED_DT } from '../../game/core/race.js';
 import { FORMATS } from '../../game/core/rules.js';
@@ -10,7 +10,7 @@ import { AI_DRIVERS } from '../../game/core/teams.js';
 const args = process.argv.slice(2);
 const flag = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i + 1] : d; };
 const tracks = flag('tracks', 'harbor-ring,solenne,alpine,desert').split(','), classes = flag('classes', 'lmdh,gt').split(',');
-const ais = flag('ais', 'tempest,razor,apex,next-racer').split(','), opts = JSON.parse(flag('opts', '{}')), weather = flag('weather', 'clear');
+const ais = flag('ais', 'tempest,razor,apex,next-racer').split(','), opts = JSON.parse(flag('opts', '{}')), weather = flag('weather', 'clear'), tyre = flag('tyre', null);
 const short = (id) => AI_DRIVERS.find((d) => d.id === id)?.short ?? id;
 const best = {};
 for (const trackName of tracks) for (const cls of classes) {
@@ -19,6 +19,7 @@ for (const trackName of tracks) for (const cls of classes) {
     drivers: [{ kind: 'ai', id, name: id, short: short(id) }] }));
   const race = new EnduranceRace({ track, teams, format: { ...FORMATS.custom, mandatoryStops: 0, mandatorySwap: false }, session: 'qualifying', seed: 7, weatherSeed: 7, weather });
   race.start();
+  if (tyre) for (const c of race.cars) race.fitTyres(c, tyre, true);
   race.step(FIXED_DT);
   race.entries.forEach((e, i) => { const d = e.bridges[0]?.driver; if (ais[i] === 'tempest' && d) { Object.assign(d.options, opts); d.forceRefresh = true; } if (ais[i] === 'next-racer' && d?.o) d.o.planBudgetMs = Infinity; });
   const laps = ais.map(() => []), lastLap = ais.map(() => null);
