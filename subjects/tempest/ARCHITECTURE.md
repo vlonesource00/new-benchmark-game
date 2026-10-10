@@ -501,3 +501,27 @@ the margins it interacts with (routeGate, holdMargin, contact weights) re-set fo
 - Duels against RAZOR (`scripts/bench/tempest-duel.mjs`): 0–1 wins of 8, about −1.1 s. Following RAZOR loses time to failed attacks into slow corners and to corners taken in heavy wake on lap 1
 - Own strategist
 - Other tracks
+
+### Routing through other-class traffic (default: `zoneFollow: "traffic"`, `gateProgress: "traffic"`)
+
+Fixture `scripts/bench/tempest-traffic.mjs --scene gt3`: TEMPEST (LMDh) at the back of a rolling single file behind
+three RAZOR GT3s, 80 s on Harbor. Before: 1/3 cleared, 53 s to clear the one it passed, laggy routes that left late
+and wide. Two causes:
+
+- The line gate held the racing line unless a lane completed a same-class pass inside the 3.4 s horizon. GT3 traffic
+  never counts as a pass, so the car only left the line ahead of a heavy (>6 m/s closing) impact: late, and out at
+  the edge. `gateProgress` lets a lane through the gate when it clears or draws alongside a car ahead and beats the
+  line on time plus contact (by 0.05 s).
+- Inside the contact zone the rollout had no following cap, so the line run drove into the car ahead on paper and
+  booked a squeeze-pass and a large contact cost for what the controller's nose cap really does: follow.
+  `zoneFollow` applies the nose cap in the rollout (clearance under 0.15 m, 0.6 m for hazards).
+
+Both on: 3/3 cleared at 20.5 s each, progress 2787 → 3007 m (solo 3507), contacts 55 → 61. Applied to every car
+(`true`) the same-class field went 3.58 → 3.78 (seeds 7–9, noise ±0.15), so the default (`"traffic"`) applies them to
+other-class cars only (not teammates or hazards): a same-class race is bit-identical to before (A/B on Harbor seed 7).
+
+Open: a slow, weaving same-class car is still followed rather than passed (`--scene slow`). The forecast fades the
+rival's pace ratio (0.82 at the time) back to ours within ~2.5 s and brakes it ~5 m late, so every rollout sees it
+escape through the braking zone; the beside lane rides the rival's weave (≈1 s slower geometry). Measured without
+effect: `roadCap` (follow the rival's road progress, not its path speed), wider `besideClear` (0.8, 1.3), a partial
+progress value for being part-way through a pass.

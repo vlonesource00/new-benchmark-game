@@ -144,7 +144,7 @@ export class Rollout {
     const wE = me.halfWidth ?? 0.98, colC = o.contactCost ?? 3, B = o.passValue ?? 0.45;
     const caps = this.cap, tAt = this.tAt, latA = this.lat, peak = (this.peak ??= new Float64Array(64)), peakH = (this.peakH ??= new Float64Array(64));
     const env = (this.env ??= new Float64Array(4096)), segA = (this.segA ??= new Float64Array(4096));
-    const event = (o.contactMode ?? 'event') === 'event', behind = o.behindShare ?? 0.4, useWake = o.rolloutWake !== false, capB = o.capBrake ?? 0.55, zoneCap = o.capZone === true;
+    const event = (o.contactMode ?? 'event') === 'event', behind = o.behindShare ?? 0.4, useWake = o.rolloutWake !== false, capB = o.capBrake ?? 0.55, zoneCap = o.capZone === true, zoneFollow = o.zoneFollow === true || o.zoneFollow === 'traffic', roadCap = o.roadCap === true, noseClear = o.noseClear ?? 0.15;
     // capEnvelope: a following cap is a speed at a place, and the controller brakes to it beforehand (the committed
     // plan's cap envelope). A first pass finds the caps; the second drives against their braking envelope instead of
     // slowing at the cap itself
@@ -160,6 +160,9 @@ export class Rollout {
       if (x > 0) for (let q = 0; q < plan.fs.length; q++) {
         const f = plan.fs[q], r = f.r, g = atDs(f, t) - x, rd = at(f.lat, t), sg = at(f.sig, t), sgs = at(f.sigS, t), rv = at(f.v, t);
         const Ls = HALF_LEN + r.halfLength, c = Math.abs(dB - rd) - (wE + r.across);
+        // roadCap: a following cap matches the rival's progress along the road, in our own path's metres. Its path speed
+        // overstates its progress when it weaves or runs a longer line, and matching that closed the gap into its body
+        const rc = roadCap ? Math.max(0, (atDs(f, t + 0.1) - atDs(f, Math.max(0, t - 0.1))) / (t + 0.1 - Math.max(0, t - 0.1))) * lane.len[line.idx(i - 1)] / ds : rv;
         // the game's wake cone behind every car: less downforce in the corners, less drag on the straights
         if (useWake && g > 1.5 && g < 110 && !r.hazard) { const cw = 2.4 + 0.05 * g, la = Math.abs(dB - rd); if (la < cw) wake = Math.max(wake, Math.exp(-g / 55) * (1 - (la / cw) ** 2)); }
         if (Math.abs(g) < Ls + 0.5 * sgs) {
@@ -172,11 +175,14 @@ export class Rollout {
             if (r.hazard || r.done || Math.abs(v - rv) > (o.heavyClosing ?? 6)) peakH[q] = Math.max(peakH[q], sev);
             else { const pc = colC * sev * (seg / p.dS); cost += pc; contact += pc; }
           }
+          // zoneFollow: the controller's nose cap holds the car behind a car ahead it would touch (clearance under
+          // noseClear), so the rollout cannot drive past it either: no squeezing through on paper, and no pass booked for it
+          if (zoneFollow && (o.zoneFollow === true || (!r.target && !r.mate && !r.hazard)) && g > 0 && c < (r.hazard ? 0.6 : noseClear)) cap = Math.min(cap, rc + Math.sqrt(2 * capB * model.brake(Math.max(8, rc)) * Math.max(0, g - Ls - 0.8)));
         } else if (g > 0 && g < 90 && c < 0.35 + 0.4 * sg) {
           // capZone: follow to the edge of the contact zone, so that a car the cap keeps in line is not also charged
           // contact for the same metres (the zone grows with the forecast's spread along the road, 0.5 sigma)
-          const room = g - Ls - 0.8 - (zoneCap ? 0.5 : 0.25) * sgs - 0.15 * Math.max(0, vp - rv);
-          cap = Math.min(cap, rv + Math.sqrt(2 * capB * model.brake(Math.max(8, rv)) * Math.max(0, room)));
+          const room = g - Ls - 0.8 - (zoneCap ? 0.5 : 0.25) * sgs - 0.15 * Math.max(0, vp - rc);
+          cap = Math.min(cap, rc + Math.sqrt(2 * capB * model.brake(Math.max(8, rc)) * Math.max(0, room)));
         }
       }
       if (wake > 0.02) vp = Math.min(vp, lane.vmax[i] * model.wakeSpeed(lane.vmax[i], wake));
@@ -207,8 +213,16 @@ export class Rollout {
       if (g0 > -Ls && gE < -0.6 * Ls) { passes++; if (who == null || g0 < who.g) who = { id: r.id, g: g0 }; }
       else if (g0 < 0 && gE > -0.3 * Ls) lost++;
     }
+    // progress on every car ahead of any class (traffic too): cleared by the horizon, or drawn alongside it
+    // progress through cars ahead at the horizon (gateProgress): cleared, or drawn alongside; T counts other-class traffic
+    let clears = 0, along = 0, clearsT = 0, alongT = 0;
+    if (validAt(tH)) for (const f of plan.fs) {
+      const r = f.r; if (r.mate || r.hazard || r.ds <= 0) continue;
+      const gE = atDs(f, tH) - H, Ls = HALF_LEN + r.halfLength;
+      if (gE < -0.6 * Ls) { clears++; if (!r.target) clearsT++; } else if (gE < 0.5 * Ls && gE < r.ds - 3) { along++; if (!r.target) alongT++; }
+    }
     const score = t + cost - B * (passes - lost);
-    const ev = { lane, i0, n, score, t, tH, passes, lost, contact, heavy, maxDev, p, who: who?.id ?? null, out, unified, prof: prof === lane.vbrk ? 'vbrk' : 'v' };
+    const ev = { lane, i0, n, score, t, tH, passes, lost, clears, along, clearsT, alongT, contact, heavy, maxDev, p, who: who?.id ?? null, out, unified, prof: prof === lane.vbrk ? 'vbrk' : 'v' };
     // the time used to place the end of the beside hold, against the time this drive reaches it (diagnostic)
     if (p.beside) { const b = p.beside, xe = (b.delay ?? 0) + b.entry + b.hold; ev.bt = { used: tOf(xe), held: clamp(xe / v0, 0, 4.4), drive: this.tLookup(tAt)(xe) }; }
     // besideTime 'drive': place the lane again on the times this drive took (one fixed-point step)

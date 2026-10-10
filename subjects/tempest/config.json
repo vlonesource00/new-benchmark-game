@@ -20,6 +20,8 @@
   "commit": 0.01,
   "defendCost": 0.03,
   "routeGate": 1000,
+  "zoneFollow": "traffic",
+  "gateProgress": "traffic",
   "routeHeavy": 0.3,
   "defend": false,
   "waterSense": true,

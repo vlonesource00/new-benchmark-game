@@ -141,7 +141,10 @@ export class Arbiter {
     // deliver: traffic-only gating gave 5.08 vs 4.29 on seeds 10-12); on a wet road a lane taken for water is left alone.
     // routeHeavy: an impact on the line (closing, a hazard, a finished car) still lets the car leave it; rubbing does not
     const routeGate = o.routeGate ?? -1, wetRoad = d.track.water?.live && (d.track.wetness ?? 0) > 0.01;
-    if (lineEv && best !== lineEv && best.passes <= 0 && p.defend == null && (lineEv.contact > 0 || !wetRoad) && lineEv.contact < routeGate && !(lineEv.heavy > (o.routeHeavy ?? Infinity)) && best.maxDev > 1.2 && !(best.p.hold && this.state === 'ATTACK')) best = lineEv;
+    // gateProgress: a lane that clears or draws alongside a car ahead (any class: GT3 traffic too) and beats the line on time
+    // is a pass under way, not a cap escape; the gate's evidence was routes that went nowhere
+    const gp = o.gateProgress, progress = !!gp && lineEv && (gp === 'traffic' ? best.clearsT > 0 || best.alongT > 0 : best.clears > 0 || best.along > 0) && best.t + best.contact < lineEv.t + lineEv.contact - (o.progressMargin ?? 0.05);
+    if (lineEv && best !== lineEv && best.passes <= 0 && !progress && p.defend == null && (lineEv.contact > 0 || !wetRoad) && lineEv.contact < routeGate && !(lineEv.heavy > (o.routeHeavy ?? Infinity)) && best.maxDev > 1.2 && !(best.p.hold && this.state === 'ATTACK')) best = lineEv;
     this.lastEvs = evs;
     // for the debugger: every option against the chosen one, and how far the kept path leads its best challenger
     const holdEv = evs.find((e) => e.p.hold), rival = evs.reduce((m, e) => (e.p.hold || (m && m.score <= e.score) ? m : e), null);
