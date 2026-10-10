@@ -22,8 +22,18 @@ export const TEAM_LIVERIES = Object.freeze([
   { id: 'nocturne', name: 'NOCTURNE GT',        short: 'NOC', color: '#8b5cf6', accent: '#f2e9ff' },
   { id: 'harbor',   name: 'HARBOR LIGHTS',      short: 'HBL', color: '#23c7d9', accent: '#10232a' },
   { id: 'ember',    name: 'EMBER DYNAMICS',     short: 'EMB', color: '#ff7a1a', accent: '#1f1206' },
-  { id: 'glacier',  name: 'GLACIER SQUADRA',    short: 'GLC', color: '#e8eef5', accent: '#27313d' }
+  { id: 'glacier',  name: 'GLACIER SQUADRA',    short: 'GLC', color: '#e8eef5', accent: '#27313d' },
+  { id: 'crimson',  name: 'CRIMSON LINE',       short: 'CRL', color: '#b3122e', accent: '#f6e7ea' },
+  { id: 'meridian', name: 'MERIDIAN RACING',    short: 'MER', color: '#1d3f8f', accent: '#ffd23f' },
+  { id: 'lumen',    name: 'LUMEN AUTOSPORT',    short: 'LUM', color: '#f5e04a', accent: '#17181c' },
+  { id: 'pinecrest',name: 'PINECREST ENDURANCE',short: 'PNC', color: '#14593d', accent: '#e6d9a8' },
+  { id: 'rosso',    name: 'ROSSO VELOCE',       short: 'RSV', color: '#ff3d7f', accent: '#1a0a12' },
+  { id: 'onyx',     name: 'ONYX MOTORWORKS',    short: 'ONX', color: '#2a2d33', accent: '#7cf0d0' },
+  { id: 'saffron',  name: 'SAFFRON GT',         short: 'SAF', color: '#e8902a', accent: '#2a1404' },
+  { id: 'tidewater',name: 'TIDEWATER RACING',   short: 'TDW', color: '#0f8f8a', accent: '#fff4e0' }
 ]);
+/** Largest field the setup screen offers: one livery, one pit box and one seat worker per car. */
+export const MAX_CARS = TEAM_LIVERIES.length;
 
 export function mulberry32(seed) {
   let a = seed >>> 0;

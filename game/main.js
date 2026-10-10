@@ -24,12 +24,12 @@ import { EnduranceRace, FIXED_DT } from './core/race.js';
 import { AsyncSeats } from './core/async-seats.js';
 import { TRACKS, trackById } from './core/tracks.js';
 import { drawTeams, mulberry32, AI_DRIVERS, TEAM_LIVERIES } from './core/teams.js';
-import { assignClasses, gridFromQualifying, RACE_CLASSES } from './core/classes.js';
+import { assignClasses, gridFromQualifying, RACE_CLASSES, classProfile } from './core/classes.js';
 import { DEPLOY_MODES, MODE_ORDER } from './core/hybrid.js';
 import { FORMATS } from './core/rules.js';
-import { Weather, RAIN_MM_H } from './core/weather.js';
+import { Weather, RAIN_MM_H, forecastWeather } from './core/weather.js';
 import { PlayerInput } from './ui/input.js';
-import { renderMenu, renderSetup, renderDrivers, renderSettings, renderLoading, setLoading, renderResults, renderQualifying, renderDuel, seatPool } from './ui/menus.js';
+import { renderMenu, renderSetup, renderDrivers, renderSettings, renderLoading, setLoading, renderResults, renderQualifying, renderDuel, renderPrerace, seatPool } from './ui/menus.js';
 import { Hud } from './ui/hud.js';
 import { AiDebugPanel } from './ui/ai-debug.js';
 import { AiLens } from './render/ai-lens.js';
@@ -131,11 +131,56 @@ let teams = [], teamsById = {}, cars = [], models = [], race = null, seats = nul
 const START_HOURS = { morning: 8.5, afternoon: 14.5, sunset: 18.4, night: 22 };
 const startHour = () => START_HOURS[setup.startTime] ?? world.theme.hour ?? 15;
 let debugHour = null, debugClock = 0;
+// Each event rolls its own sky: one random weather seed shared by its qualifying, race and restarts,
+// re-rolled for the next event (or by New forecast on the briefing). The menu previews its opening sky.
+const rollSeed = () => (Math.random() * 2 ** 31) | 0;
+let weatherSeed = rollSeed();
+const hourSpan = (laps) => Math.max(1, Math.min(8, laps * .35));
+const sunHeight = (hour) => Math.max(0, Math.sin(Math.PI * (hour - 6.5) / 13));
+const planTracks = new Map();
+/**
+ * Expected length of the race (s) for the weather's time scale: the formation run plus the laps at the
+ * leading class's reference pace (a touch slower for race traffic), so Changeable's fronts are spread
+ * over the race actually being run. Same numbers for the forecast and the race.
+ */
+function weatherPlan(s = cfg()) {
+  const def = trackById(s.trackId);
+  if (!planTracks.has(def.id)) planTracks.set(def.id, new Track(def.scenario));
+  const tr = planTracks.get(def.id), lead = (s.field ?? 'multi') === 'gt3' ? 'gt' : 'lmdh';
+  const lap = (classProfile(def, lead)?.lap ?? tr.length / 50) * 1.03;
+  const formation = (s.startType ?? 'rolling') === 'rolling' ? 35 : 0;
+  return { def, track: tr, lap, formation, laps: s.laps, span: formation + s.laps * lap, seed: weatherSeed, id: s.weather ?? 'clear' };
+}
+/** Forecast rows by lap (grouped past 30 laps) and by time (1–30 min steps, at most ~24 rows). */
+function forecast(s = cfg()) {
+  const plan = weatherPlan(s), { lap, formation, laps, span } = plan;
+  const sunAt = (t) => sunHeight(s.dayCycle === false ? startHour() : startHour() + hourSpan(laps) * Math.min(1, Math.max(0, (t - formation) / (span - formation))));
+  const run = (edges) => forecastWeather({ id: plan.id, seed: plan.seed, track: plan.track, span, edges, sunAt });
+  const group = laps > 30 ? Math.ceil(laps / 24) : 1, lapEdges = [0];
+  for (let l = group; l < laps; l += group) lapEdges.push(formation + l * lap);
+  lapEdges.push(span);
+  const byLap = run(lapEdges).map((r, i) => ({ ...r, from: i * group + 1, to: Math.min(laps, (i + 1) * group) }));
+  const step = [60, 120, 300, 600, 900, 1800, 3600].find((x) => span / x <= 24) ?? 3600, timeEdges = [];
+  for (let t = 0; t < span; t += step) timeEdges.push(t);
+  timeEdges.push(span);
+  return { ...plan, step, byLap, byTime: run(timeEdges), hour: startHour() };
+}
+let preraceView = 'lap', preraceBack = 'menu';
+function showPrerace() {
+  renderPrerace($('#screen-prerace'), forecast(), preraceView, preraceNav);
+  show('prerace');
+}
+const preraceNav = {
+  view(v) { preraceView = v; showPrerace(); },
+  reroll() { weatherSeed = rollSeed(); showPrerace(); },
+  back() { nav.go(preraceBack); },
+  start() { mode = 'race'; startRace(); }
+};
 function raceHour() {
   if (debugHour !== null) return debugHour;
   if (!setup.dayCycle || !snap?.cars.length || !trackLength) return startHour();
   const lead = snap.cars.reduce((a, c) => (c.progress > a.progress ? c : a));
-  return startHour() + Math.max(1, Math.min(8, snap.laps * .35)) * Math.max(0, Math.min(1, lead.progress / (snap.laps * trackLength)));
+  return startHour() + hourSpan(snap.laps) * Math.max(0, Math.min(1, lead.progress / (snap.laps * trackLength)));
 }
 let focusId = 0, playerTeamId = null, simScale = 1, paused = false, raceActive = false, camModes = ['chase', 'bonnet', 'elevated'], camIndex = 0;
 let recorder = null, replay = null, rain = null;
@@ -157,7 +202,7 @@ function setOverlay(name) {
 
 const humans = () => (setup.drive ? [{ id: PLAYER_ID, name: setup.playerName || 'YOU' }] : []);
 function redraw() {
-  teams = mode === 'duel' ? duelTeams() : applyPicks(assignClasses(drawTeams({ teamCount: setup.teamCount, humans: humans(), seed: setup.seed, coDriver: setup.coDriver }), setup.field ?? 'multi', setup.playerClass ?? 'gtp', mulberry32(setup.seed ^ 0x5eed)));
+  teams = mode === 'duel' ? duelTeams() : applyPicks(assignClasses(drawTeams({ teamCount: setup.teamCount, humans: humans(), seed: setup.seed, coDriver: setup.coDriver }), setup.field ?? 'multi', setup.playerClass ?? 'gtp', mulberry32(setup.seed ^ 0x5eed), setup.gtpCars));
   teamsById = Object.fromEntries(teams.map((t) => [t.id, t]));
 }
 const aiSeat = (ai) => ({ kind: 'ai', id: ai.id, name: ai.name, short: ai.short, arch: ai.arch });
@@ -186,7 +231,7 @@ function duelTeams() {
 const nav = {
   version: VERSION, career, setup, outlines,
   /** A lobby event: its preset over the setup, then the briefing. */
-  event(preset) { Object.assign(setup, preset); nav.go('setup'); },
+  event(preset) { Object.assign(setup, { gtpCars: null }, preset); nav.go('setup'); },
   go(name) {
     save('pe.setup', setup);
     if (name === 'menu') { stopRace(); renderMenu($('#screen-menu'), nav); }
@@ -218,7 +263,8 @@ const nav = {
     if ('quality' in patch) { finish?.setQuality(settings.quality); world?.setQuality?.(settings.quality); }
     if ('pixelRatio' in patch) { renderer.setPixelRatio(pixelRatio()); resize(); }
   },
-  start: () => { mode = 'race'; startRace(); }
+  // Go racing / Race now: a fresh sky for the event, then the pre-race briefing with its forecast.
+  start: () => { mode = 'race'; preraceBack = screen === 'setup' ? 'setup' : 'menu'; weatherSeed = rollSeed(); showPrerace(); }
 };
 const duelNav = {
   go: nav.go,
@@ -226,7 +272,7 @@ const duelNav = {
     Object.assign(duel, patch); save('pe.duel', duel);
     renderDuel($('#screen-duel'), duel, outlines, duelNav);
   },
-  start: () => { save('pe.duel', duel); mode = 'duel'; startRace({ session: 'race' }); }
+  start: () => { save('pe.duel', duel); mode = 'duel'; weatherSeed = rollSeed(); startRace({ session: 'race' }); }
 };
 
 // ---------- race lifecycle ----------
@@ -266,7 +312,7 @@ async function startRace({ session = (cfg().qualifying ?? true) ? 'qualifying' :
   try {
     seats = new AsyncSeats(def.id); seats.wantDebug = aiDebug.open;
     const duelRun = mode === 'duel';
-    race = new EnduranceRace({ track: new Track(def.scenario), teams, format: duelRun ? { ...FORMATS.custom, mandatoryStops: 0, mandatorySwap: false } : FORMATS[setup.formatId] ?? FORMATS.custom, laps: duelRun ? 12 : setup.laps, startCompound: setup.startCompound ?? 'medium', difficulty: difficultyById(raceDifficulty()).k, weather: setup.weather ?? 'clear', seed: setup.seed, weatherSeed: setup.weather === 'changeable' ? (Math.random() * 2 ** 31) | 0 : setup.seed, makeBridge: seats.factory(), session, startType: setup.startType ?? 'rolling', caution: duelRun ? 'off' : setup.caution ?? 'full' });
+    race = new EnduranceRace({ track: new Track(def.scenario), teams, format: duelRun ? { ...FORMATS.custom, mandatoryStops: 0, mandatorySwap: false } : FORMATS[setup.formatId] ?? FORMATS.custom, laps: duelRun ? 12 : setup.laps, startCompound: setup.startCompound ?? 'medium', difficulty: difficultyById(raceDifficulty()).k, weather: setup.weather ?? 'clear', seed: setup.seed, weatherSeed, weatherSpan: weatherPlan(setup).span, makeBridge: seats.factory(), session, startType: setup.startType ?? 'rolling', caution: duelRun ? 'off' : setup.caution ?? 'full' });
     if (duelRun) race.laps = setup.laps;
     await seats.start(race);
     world.setPitBoxes?.(race.lane, teams);
@@ -596,7 +642,7 @@ function frame(ms, pumped = false) {
       }
       const hour = raceHour(), sky = snap?.weather;
       // The race clock's sun warms the track; the render track mirrors the sim's wetness.
-      race.weather.sun = Math.max(0, Math.sin(Math.PI * (hour - 6.5) / 13));
+      race.weather.sun = sunHeight(hour);
       track.wetness = race.track.wetness; track.water = race.track.water;
       world.setTimeOfDay(hour, sky?.cloud ?? 0, sky?.rain ?? 0); setHeadlights(world.lamps);
       rain.update(camera.position, paused ? 0 : delta, race.weather.rainAt ? race.weather.rainAt(camera.position.x, camera.position.z) / RAIN_MM_H : (sky?.rain ?? 0) * 2, sky?.wind);
@@ -622,7 +668,7 @@ function frame(ms, pumped = false) {
         menuProbe.place(track, track.length * 0.02);
       }
       // The menu previews the chosen weather's opening sky.
-      if (menuWeather?.id !== (setup.weather ?? 'clear')) menuWeather = new Weather(setup.weather, setup.seed);
+      if (menuWeather?.id !== (setup.weather ?? 'clear') || menuWeather.seed !== weatherSeed) { menuWeather = new Weather(setup.weather, weatherSeed); menuWeather.seed = weatherSeed; }
       world.setTimeOfDay(startHour(), menuWeather.cloud, menuWeather.rain);
       track.wetness = menuWeather.wet; track.water = null; rain.update(camera.position, delta, menuWeather.rain * 2, menuWeather.wind);
       world.update(menuProbe, now, 0, true);

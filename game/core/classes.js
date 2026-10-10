@@ -18,6 +18,9 @@ export const FIELDS = Object.freeze({
   multi: { id: 'multi', label: 'GTP + GT3', classes: ['gtp', 'gt3'] }
 });
 
+/** GTP cars in a multiclass field of n: the chosen count, else ~40%; at least one car in each class. */
+export const gtpSplit = (n, gtpCount = null) => Math.max(1, Math.min(n - 1, Math.round(gtpCount ?? n * 0.4)));
+
 /** Reference speed profile for a class: the GT reference scaled to the class's pace. */
 export function classProfile(track, carClass) {
   const base = PACE_PROFILES[track.id ?? track.name]; if (!base) return null;
@@ -27,17 +30,17 @@ export function classProfile(track, carClass) {
 }
 
 /**
- * Splits drawn teams into classes. In a multiclass field the first ~40% of
- * teams (at least one) are GTP and grid ahead. GTP seats are driven only by AIs
+ * Splits drawn teams into classes. In a multiclass field `gtpCount` teams (by
+ * default ~40%, always at least one of each class) are GTP and grid ahead. GTP seats are driven only by AIs
  * that drive a prototype properly; the player's own team runs the class picked.
  */
-export function assignClasses(teams, fieldId = 'gt3', playerClass = 'gt3', rand = Math.random) {
+export function assignClasses(teams, fieldId = 'gt3', playerClass = 'gt3', rand = Math.random, gtpCount = null) {
   const field = FIELDS[fieldId] ?? FIELDS.gt3;
   const human = (t) => t.drivers.some((d) => d.kind === 'human');
   let out;
   if (field.classes.length === 1) out = teams.map((t) => ({ ...t, raceClass: field.classes[0] }));
   else {
-    const nGtp = Math.max(1, Math.round(teams.length * 0.4));
+    const nGtp = gtpSplit(teams.length, gtpCount);
     const player = teams.find(human);
     const order = [...teams].sort((a, b) => a.grid - b.grid);
     const gtp = new Set();

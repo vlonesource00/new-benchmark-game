@@ -4,11 +4,11 @@
 import { TRACKS, trackById } from '../core/tracks.js';
 import { licenseById, meetsLicense, FORMAT_LICENSE, difficultyForRating, licenseText } from '../core/career.js';
 import { FORMATS, TYRES as COMPOUNDS, TYRE_IDS as COMPOUND_IDS } from '../core/rules.js';
-import { AI_DRIVERS } from '../core/teams.js';
+import { AI_DRIVERS, MAX_CARS } from '../core/teams.js';
 import { DIFFICULTIES, difficultyById } from '../core/difficulty.js';
 import { PACE_PROFILES } from '../core/pace-profiles.js';
 import { esc, fmtLap, fmtClock } from './format.js';
-import { RACE_CLASSES, FIELDS } from '../core/classes.js';
+import { RACE_CLASSES, FIELDS, gtpSplit } from '../core/classes.js';
 import { EVENTS } from './events.js';
 
 const $ = (root, sel) => root.querySelector(sel);
@@ -30,7 +30,8 @@ const HOURS = { track: 'Circuit time', morning: 'Morning', afternoon: 'Afternoon
 const CAUTIONS = { full: 'Safety car', fcy: 'FCY only', off: 'No cautions' };
 const FIELD_LABEL = (f) => FIELDS[f ?? 'multi']?.label ?? 'Multiclass';
 /** One-line description of a race setup, as chips. */
-const chips = (s) => [`${s.laps} laps`, `${s.teamCount} cars`, FIELD_LABEL(s.field), HOURS[s.startTime ?? 'track'], WEATHER[s.weather ?? 'clear'], CAUTIONS[s.caution ?? 'full']]
+const carsChip = (s) => ((s.field ?? 'multi') === 'multi' ? `${gtpSplit(s.teamCount, s.gtpCars)} GTP + ${s.teamCount - gtpSplit(s.teamCount, s.gtpCars)} GT3` : `${s.teamCount} cars`);
+const chips = (s) => [`${s.laps} laps`, carsChip(s), FIELD_LABEL(s.field), HOURS[s.startTime ?? 'track'], WEATHER[s.weather ?? 'clear'], CAUTIONS[s.caution ?? 'full']]
   .map((c) => `<span class="ev-chip">${esc(c)}</span>`).join('');
 
 /**
@@ -114,6 +115,15 @@ function stepper(name, value, suffix = '') {
   return `<div class="stepper" data-step="${name}"><button data-d="-1">−</button><output>${value}${suffix}</output><button data-d="1">+</button></div>`;
 }
 
+/** Car-count steppers: the whole field, or one class of a multiclass field (the other class keeps its count). */
+function carCount(s, key, d) {
+  const n = s.teamCount, g = gtpSplit(n, s.gtpCars);
+  if (key === 'teamCount') { const m = Math.max(4, Math.min(MAX_CARS, n + d)); return { teamCount: m, gtpCars: s.gtpCars == null ? null : gtpSplit(m, s.gtpCars) }; }
+  if (n + d < 2 || n + d > MAX_CARS) return {};
+  if (key === 'gtpCars') return g + d >= 1 ? { teamCount: n + d, gtpCars: g + d } : {};
+  return n - g + d >= 1 ? { teamCount: n + d, gtpCars: g } : {};
+}
+
 let openDrawer = null;
 export function renderSetup(el, s, teams, outlines, act, career = null) {
   const fmt = FORMATS[s.formatId];
@@ -136,9 +146,12 @@ export function renderSetup(el, s, teams, outlines, act, career = null) {
             <div class="row"><label>Format<span class="hint">${fmt.mandatoryStops} mandatory stop${fmt.mandatoryStops > 1 ? 's' : ''}${fmt.mandatorySwap ? ' · driver swap required' : ''}${career ? ` · official needs ${FORMAT_LICENSE[s.formatId]} licence` : ''}</span></label>${seg('formatId', Object.values(FORMATS).map((f) => [f.id, f.label]), s.formatId)}</div>
             <div class="row"><label>Rivals<span class="hint">${official ? `Official field matched to your iRating: ${esc(difficultyById(matched).label)}` : esc(aiHint(s))}</span></label>${seg('difficulty', DIFFICULTIES.map((d) => [d.id, d.label]), official ? matched : difficultyById(s.difficulty).id)}</div>
           </div>
-          ${drawer('race', 'Race', `${s.laps} laps · ${s.teamCount} cars · ${esc(FIELD_LABEL(field))}${field === 'multi' && s.drive ? ` · you in ${(s.playerClass ?? 'gtp').toUpperCase()}` : ''}`, `
+          ${drawer('race', 'Race', `${s.laps} laps · ${esc(carsChip(s))} · ${esc(FIELD_LABEL(field))}${field === 'multi' && s.drive ? ` · you in ${(s.playerClass ?? 'gtp').toUpperCase()}` : ''}`, `
             <div class="row"><label>Laps<span class="hint">Any number (1–${MAX_LAPS}); fuel and tyres scale with distance</span></label>${stepper('laps', s.laps)}</div>
-            <div class="row"><label>Cars<span class="hint">Two drivers per car</span></label>${stepper('teamCount', s.teamCount)}</div>
+            ${field === 'multi'
+              ? `<div class="row"><label>GTP cars<span class="hint">Hybrid prototypes, gridded ahead · ${s.teamCount} cars in all (up to ${MAX_CARS})</span></label>${stepper('gtpCars', gtpSplit(s.teamCount, s.gtpCars))}</div>
+            <div class="row"><label>GT3 cars<span class="hint">GT3, gridded behind the prototypes · two drivers per car</span></label>${stepper('gt3Cars', s.teamCount - gtpSplit(s.teamCount, s.gtpCars))}</div>`
+              : `<div class="row"><label>Cars<span class="hint">Two drivers per car · up to ${MAX_CARS}</span></label>${stepper('teamCount', s.teamCount)}</div>`}
             <div class="row"><label>Field<span class="hint">${field === 'gt3' ? 'GT3 only' : field === 'gtp' ? 'GTP hybrid prototypes only' : 'GTP hybrids start ahead, GT3 behind · classified per class'}</span></label>${seg('field', Object.values(FIELDS).map((f) => [f.id, f.label]), field)}</div>
             ${field === 'multi' && s.drive ? `<div class="row"><label>Your class<span class="hint">${s.playerClass === 'gt3' ? 'GT3: ABS, traction control, watch your mirrors' : 'GTP: 1030 kg, hybrid deploy (H cycles mode), carbon brakes'}</span></label>${seg('playerClass', [['gtp', 'GTP'], ['gt3', 'GT3']], s.playerClass ?? 'gtp')}</div>` : ''}`)}
           ${drawer('conditions', 'Conditions', `${esc(HOURS[s.startTime ?? 'track'])} · ${esc(WEATHER[s.weather ?? 'clear'])} · day cycle ${yes(s.dayCycle ?? true).toLowerCase()}`, `
@@ -192,7 +205,7 @@ export function renderSetup(el, s, teams, outlines, act, career = null) {
   $$(el, '[data-step]').forEach((g) => $$(g, 'button').forEach((b) => b.addEventListener('click', () => {
     const key = g.dataset.step, d = Number(b.dataset.d);
     if (key === 'laps') act.set({ laps: clampLaps(s.laps + d), formatId: 'custom' });
-    else act.set({ teamCount: Math.max(4, Math.min(8, s.teamCount + d)) });
+    else act.set(carCount(s, key, d));
   })));
   $(el, '[data-laps]')?.addEventListener('change', (e) => act.set({ laps: clampLaps(Number(e.target.value) || s.laps), formatId: 'custom' }));
   $(el, '[data-name]').addEventListener('change', (e) => act.set({ playerName: e.target.value.trim().toUpperCase() || 'YOU' }, true));
@@ -291,6 +304,49 @@ const TIPS = [
   'While your AI teammate drives, you can fast-forward from the pause menu.',
   'Drop out of the car and an Astra co-driver keeps it on track until you are back.'
 ];
+
+const ROAD = (wet) => (wet < .05 ? 'Dry' : wet < .25 ? 'Damp' : wet < .6 ? 'Wet' : 'Soaked');
+const SKY_ICON = { Sunny: '☀', 'Partly cloudy': '⛅', Cloudy: '☁', Overcast: '☁', 'Light rain': '🌦', Rain: '🌧', 'Heavy rain': '⛈' };
+const clockAt = (hour) => { const h = ((hour % 24) + 24) % 24; return `${String(Math.floor(h)).padStart(2, '0')}:${String(Math.floor((h % 1) * 60)).padStart(2, '0')}`; };
+
+/**
+ * Pre-race briefing: the event at a glance and its weather forecast, by lap or by race time.
+ * f: forecast() from main.js ({ def, laps, lap, span, formation, step, byLap, byTime, hour, id, seed }).
+ * act: { view(v), reroll(), back(), start() }
+ */
+export function renderPrerace(el, f, view, act) {
+  const rows = view === 'time' ? f.byTime : f.byLap;
+  // Rain spells by lap: contiguous runs of rows with rain.
+  const spells = [];
+  for (const r of f.byLap) if (r.peak >= .6) { const last = spells.at(-1); if (last && last.to === r.from - 1) last.to = r.to; else spells.push({ from: r.from, to: r.to }); }
+  const verdict = !spells.length ? 'Dry race expected' : spells.length === 1 && spells[0].from === 1 && spells[0].to === f.laps ? 'Wet from start to finish'
+    : `Rain ${spells.slice(0, 4).map((x) => (x.from === x.to ? `lap ${x.from}` : `laps ${x.from}–${x.to}`)).join(', ')}${spells.length > 4 ? ' …' : ''}`;
+  const max = Math.max(12, ...f.byTime.map((r) => r.peak));
+  // Timeline strip: rain (bars) and cloud (line) across the race.
+  const W = 600, H = 70, x = (t) => (t / f.span) * W;
+  const bars = f.byTime.map((r) => `<rect x="${x(r.t0).toFixed(1)}" y="${(H - (r.peak / max) * H).toFixed(1)}" width="${Math.max(1, x(r.t1) - x(r.t0) - 1).toFixed(1)}" height="${((r.peak / max) * H).toFixed(1)}" fill="#2f7bff" opacity=".75"/>`).join('');
+  const cloud = f.byTime.map((r, i) => `${i ? 'L' : 'M'}${x((r.t0 + r.t1) / 2).toFixed(1)},${(H - r.cloud * H).toFixed(1)}`).join(' ');
+  const label = (r) => (view === 'time' ? `${fmtClock(r.t0)}–${fmtClock(r.t1)}` : r.from === r.to ? `Lap ${r.from}` : `Laps ${r.from}–${r.to}`);
+  el.innerHTML = `
+    <div class="panel-wrap">
+      <div class="panel-head"><div><div class="kicker">Pre-race briefing · ${esc(f.def.place ?? '')}</div><h2>${esc(f.def.name)}</h2></div>
+        <div style="display:flex;gap:12px"><button class="back" data-back>← Back</button><button class="cta" data-start>Start</button></div></div>
+      <div class="load-facts"><div>Laps<b>${f.laps}</b></div><div>Race length<b>~${fmtClock(f.span)}</b></div><div>Lap<b>~${fmtLap(f.lap).replace(/\.\d+$/, '')}</b></div><div>Start<b>${clockAt(f.hour)}</b></div><div>Weather<b>${esc(WEATHER[f.id] ?? f.id)}</b></div></div>
+      <div class="block">
+        <div class="fc-head"><h3>Forecast · ${esc(verdict)}</h3>
+          <div style="display:flex;gap:12px;align-items:center">${seg('fcview', [['lap', 'By lap'], ['time', 'By time']], view)}<button class="back" data-reroll title="Roll a new sky for this event">⟳ New forecast</button></div></div>
+        <svg class="fc-strip" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${bars}<path d="${cloud}" fill="none" stroke="#c9cdd6" stroke-width="1.5" opacity=".7"/></svg>
+        <div class="fc-legend"><span><i style="background:#2f7bff"></i>Peak rain</span><span><i style="background:#c9cdd6"></i>Cloud cover</span><span>${view === 'time' ? `Every ${f.step / 60} min of race time` : f.byLap[0] && f.byLap[0].to > 1 ? `Grouped ${f.byLap[0].to} laps per row` : 'Lap by lap'} · lap 1 includes the ${f.formation ? 'formation lap' : 'standing start'}</span></div>
+        <div class="fc-scroll"><table class="results-table fc-table">
+          <thead><tr><th>${view === 'time' ? 'Race time' : 'Laps'}</th><th>Sky</th><th>Rain mm/h</th><th>Cloud</th><th>Air</th><th>Track</th><th>Road</th></tr></thead>
+          <tbody>${rows.map((r) => `<tr class="${r.peak >= .6 ? 'fc-wet' : ''}"><td>${label(r)}</td><td>${SKY_ICON[r.sky] ?? ''} ${esc(r.sky)}</td><td>${r.peak < .1 ? '—' : `${r.mmh.toFixed(1)} <small>(peak ${r.peak.toFixed(1)})</small>`}</td><td>${Math.round(r.cloud * 100)}%</td><td>${r.air.toFixed(0)}°C</td><td>${r.track.toFixed(0)}°C</td><td>${ROAD(r.wet)}</td></tr>`).join('')}</tbody></table></div>
+      </div>
+    </div>`;
+  $(el, '[data-back]').addEventListener('click', () => act.back());
+  $(el, '[data-start]').addEventListener('click', () => act.start());
+  $(el, '[data-reroll]').addEventListener('click', () => act.reroll());
+  $$(el, '[data-seg="fcview"] button').forEach((b) => b.addEventListener('click', () => act.view(b.dataset.v)));
+}
 
 export function renderLoading(el, track, s) {
   el.innerHTML = `

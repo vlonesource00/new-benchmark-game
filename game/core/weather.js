@@ -12,6 +12,11 @@ import { clamp, random } from '../engine/sim/math.js';
 // building in, showers of varying strength and clearing skies, a few minutes
 // each, so a 12-lap race sees two or three real changes. Its start phase is
 // random too, so it is not always the same overcast-then-rain afternoon.
+// The fronts' timing is relative to the race: given the race's expected length
+// (span, seconds) every phase stretches or shrinks with it, so a sprint and a
+// 40-lap race both see the weather evolve through their whole distance instead
+// of a sprint seeing one fixed shower and an endurance race cycling every few
+// minutes. Without a span the timing is the 12-lap reference (SPAN_REF).
 export const WEATHER = {
   clear: { label: 'Clear', air: 24, cloud: [0, .25], rain: 0 },
   hot: { label: 'Hot', air: 33, cloud: [0, .1], rain: 0 },
@@ -26,9 +31,14 @@ export const tempGrip = (t) => 1 - .045 * Math.min(1, ((t - 35) / 25) ** 2);
 // Rain rate (mm/h) of a full-intensity downpour; light drizzle is a few mm/h.
 export const RAIN_MM_H = 24;
 
+// Race length (s) the front timings were written for: about 12 laps of a 75 s lap.
+export const SPAN_REF = 900;
+
 export class Weather {
-  constructor(id = 'clear', seed = 7) {
+  constructor(id = 'clear', seed = 7, { span = SPAN_REF } = {}) {
     this.preset = WEATHER[id] ?? WEATHER.clear; this.id = WEATHER[id] ? id : 'clear';
+    // Time scale of the sky: phases and drift last k times their reference length; cloud moves in over sqrt(k).
+    this.k = clamp((span ?? SPAN_REF) / SPAN_REF, 0.35, 6); this.kRate = 1 / Math.sqrt(this.k);
     this.rng = random(seed);
     // Wind carries the rain across the circuit: a front's edge sweeps over one end of the lap before the other,
     // and steady rain arrives in heavier and lighter bands. Direction and strength are seeded.
@@ -63,11 +73,12 @@ export class Weather {
     if (phase === 'building') { this.phaseLeft = 40 + 50 * r(); this.target = .88 + .12 * r(); this.intensity = .3 + .7 * r() ** .8; }
     if (phase === 'shower') { this.phaseLeft = 60 + 150 * r(); this.target = .95 + .05 * r(); }
     if (phase === 'clearing') { this.phaseLeft = 35 + 45 * r(); this.target = .25 + .35 * r(); }
+    this.phaseLeft *= this.k;
   }
   stepFront(dt) {
     if ((this.phaseLeft -= dt) <= 0) this.enterPhase({ dry: 'building', building: 'shower', shower: 'clearing', clearing: this.rng() < .2 ? 'building' : 'dry' }[this.phase]);
     // Fronts move in fast: cloud closes in or breaks up over half a minute or so.
-    this.cloud += clamp(this.target - this.cloud, -.022 * dt, .022 * dt);
+    this.cloud += clamp(this.target - this.cloud, -.022 * this.kRate * dt, .022 * this.kRate * dt);
   }
   airFor() { return this.preset.air + 3 * (this.sun - .5); }
   trackTarget() { return this.air + 22 * Math.max(0, this.sun) * (1 - .8 * this.cloud) - 10 * this.wet; }
@@ -98,8 +109,8 @@ export class Weather {
     const [lo, hi] = this.preset.cloud;
     if (this.phase) this.stepFront(dt);
     else {
-      if ((this.retarget -= dt) <= 0) { this.target = lo + this.rng() * (hi - lo); this.retarget = 60 + this.rng() * 90; }
-      this.cloud += clamp(this.target - this.cloud, -.006 * dt, .006 * dt);
+      if ((this.retarget -= dt) <= 0) { this.target = lo + this.rng() * (hi - lo); this.retarget = (60 + this.rng() * 90) * this.k; }
+      this.cloud += clamp(this.target - this.cloud, -.006 * this.kRate * dt, .006 * this.kRate * dt);
     }
     const rain = this.rain;
     // With a water field the race sets this.wet from the road itself; the old scalar model stays for bare tracks.
@@ -117,4 +128,33 @@ export class Weather {
     const local = this.rainAt(this.centre.x, this.centre.z) / RAIN_MM_H;
     return { id: this.id, label: this.preset.label, air: this.air, track: this.trackTemp, wet: this.wet, rain: this.rain, rainHere: local, mmh: local * RAIN_MM_H, cloud: this.cloud, phase: this.phase ?? null,
       wind: { dx: this.wind.dx, dz: this.wind.dz, speed: this.wind.speed }, edge: this.edge, tail: Number.isFinite(this.tail) ? this.tail : null, centre: this.centre }; }
+}
+
+/** Sky label for a forecast row: rain rate first, then cloud. */
+export function skyLabel(mmh, cloud) {
+  if (mmh >= 12) return 'Heavy rain';
+  if (mmh >= 5) return 'Rain';
+  if (mmh >= 0.6) return 'Light rain';
+  return cloud > .8 ? 'Overcast' : cloud > .45 ? 'Cloudy' : cloud > .2 ? 'Partly cloudy' : 'Sunny';
+}
+
+/**
+ * Forecast: the same seeded sky the race will run (same preset, seed, span and circuit), stepped ahead of time.
+ * edges: bucket boundaries in race seconds (ascending); sunAt(t): sun height 0..1 at race time t.
+ * Each bucket reports mean and peak rain (mm/h over the circuit), mean cloud and temperatures, and the road's
+ * wetness at the bucket's end (the scalar estimate; the race's own road also has puddles and a drying line).
+ */
+export function forecastWeather({ id, seed, track, span = SPAN_REF, edges, sunAt = () => .6, dt = 0.5 }) {
+  const w = new Weather(id, seed, { span }); w.bind(track);
+  const out = []; let t = 0;
+  for (let b = 0; b + 1 < edges.length; b++) {
+    const t1 = edges[b + 1]; let n = 0, rain = 0, peak = 0, cloud = 0, temp = 0, air = 0;
+    while (t < t1) {
+      w.sun = sunAt(t); w.step(dt); t += dt;
+      const r = w.rain * RAIN_MM_H; n++; rain += r; peak = Math.max(peak, r); cloud += w.cloud; temp += w.trackTemp; air += w.air;
+    }
+    n = Math.max(1, n);
+    out.push({ t0: edges[b], t1, mmh: rain / n, peak, cloud: cloud / n, track: temp / n, air: air / n, wet: w.wet, sky: skyLabel(rain / n, cloud / n) });
+  }
+  return out;
 }

@@ -30,14 +30,14 @@ export const QUALI_LAPS = 2, QUALI_SPACING = 260, QUALI_RUNUP = 250, QUALI_TIME_
  * render is in `snapshot()`; nothing outside this class mutates race state.
  */
 export class EnduranceRace {
-  constructor({ track, teams, format = FORMATS.classic, laps = format.laps, classId = 'gt', startCompound = 'medium', makeBridge = createSeatBridge, difficulty = 1, weather = 'clear', seed = 7, weatherSeed = seed, session = 'race', startType = 'standing', caution = 'off' }) {
+  constructor({ track, teams, format = FORMATS.classic, laps = format.laps, classId = 'gt', startCompound = 'medium', makeBridge = createSeatBridge, difficulty = 1, weather = 'clear', seed = 7, weatherSeed = seed, weatherSpan = undefined, session = 'race', startType = 'standing', caution = 'off' }) {
     this.track = track; this.teams = teams;
     // 'qualifying': lone qualifying, iRacing-style. Every car runs an out lap and
     // QUALI_LAPS timed laps as a ghost; the best clean lap sets its grid slot.
     this.session = session;
     // 'rolling': formation behind the leader, two-wide, green at the start zone (core/formation.js).
     this.startType = session === 'race' ? startType : 'standing';
-    this.weather = new Weather(weather, weatherSeed); this.weather.bind(track);
+    this.weather = new Weather(weather, weatherSeed, { span: weatherSpan }); this.weather.bind(track);
     // Surface water: rain fills a depth map over the road, puddles hold, tyres clear a dry line (engine/sim/water.js).
     track.water = new WaterField(track, weatherSeed); this.weather.waterDriven = true; this.waterClock = 0;
     this.prefillWater();
