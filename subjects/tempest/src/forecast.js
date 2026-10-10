@@ -67,6 +67,9 @@ export class Forecast {
       cover = side * amount;
     }
     const spray = r.spray ?? 0;
+    // sigScale: the dry spread of the forecast (lateral and along the road). At 1 the spread reaches 3 m across and 12 m
+    // along by the 3.4 s horizon: every lane beside a car, and following it, read as contact
+    const sigK = d.options.sigScale ?? 1;
     let x = 0, sp = r.v;
     const learn = d.options.paceLearn === true && !r.box, kl0 = learn ? this.paceAt(r.id, r.s) : 1;
     // the gearbox carried forward from the gear the car is in (it upshifts at 7450 rpm): from the top gear down, an
@@ -78,8 +81,8 @@ export class Forecast {
       const lk = line.sample(line.lat, i0, f0, x), drift = k === 0 ? 0 : clamp(r.vl - (line.sample(line.lat, i0, f0, 5) - line.sample(line.lat, i0, f0, -5)) * r.v / 10, -3, 3) * Math.min(t, 0.5);
       let dl = r.hazard ? r.d + r.vl * Math.min(t, 0.7) : lk + off0 * Math.exp(-t / tau) + drift + cover * clamp(t / 0.8, 0, 1);
       lat[k] = clamp(dl, -track.halfWidth - 1, track.halfWidth + 1);
-      sig[k] = Math.min(3, 0.15 + 0.32 * t + 0.08 * t * t + (r.hazard ? 0.8 : 0) + spray * (0.3 + 0.4 * t));
-      sigS[k] = Math.min(12, 0.4 + 1.1 * t + 0.25 * t * t + spray * 2 * t);
+      sig[k] = Math.min(3, (0.15 + 0.32 * t + 0.08 * t * t) * sigK + (r.hazard ? 0.8 : 0) + spray * (0.3 + 0.4 * t));
+      sigS[k] = Math.min(12, (0.4 + 1.1 * t + 0.25 * t * t) * sigK + spray * 2 * t);
       if (r.hazard) { const a = Math.min(0, r.a); x += Math.max(0, sp * FDT + 0.5 * a * FDT * FDT); sp = Math.max(0, sp + a * FDT); continue; }
       // the present pace ratio fades toward what this car has shown at that part of the road (or our pace, unseen)
       const kl = learn ? this.paceAt(r.id, r.s + x) : 1, k1 = kl + (k0 - kl0) * Math.exp(-t / 2.5);

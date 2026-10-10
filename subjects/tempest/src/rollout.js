@@ -75,13 +75,16 @@ export class Rollout {
    */
   besideAt(p, x, i, start, tOf) {
     const b = p.beside, line = this.driver.line, f = b.f;
-    const want = (xx) => at(f.lat, tOf(xx)) + b.side * b.gap - line.lat[i];
+    // besideFixed: a lane parallel to the line at the rival's present offset from it plus the gap (clamped to the road),
+    // not its forecast weave: riding a weaving car's track is a slow, twisting path that never reaches its side
+    const bd = this.driver.atlas.bound;
+    const want = b.rel != null ? () => clamp(b.rel + b.side * b.gap, -bd - line.lat[i], bd - line.lat[i]) : (xx) => at(f.lat, tOf(xx)) + b.side * b.gap - line.lat[i];
     // a delayed move rides the line first and leaves it at b.delay: the same pass, later off the fast line
     const dl = b.delay ?? 0;
     if (dl > 0 && x <= dl) return join(start, 0, dl, clamp(x / dl, 0, 1));
     if (x <= dl + b.entry) return join(dl > 0 ? ON_LINE : start, want(x), b.entry, clamp((x - dl) / b.entry, 0, 1));
     if (x <= dl + b.entry + b.hold) return want(x);
-    const xe = dl + b.entry + b.hold, se = at(f.lat, tOf(xe)) + b.side * b.gap - line.lat[i];
+    const xe = dl + b.entry + b.hold, se = b.rel != null ? want(xe) : at(f.lat, tOf(xe)) + b.side * b.gap - line.lat[i];
     return se * (1 - blend(clamp((x - xe) / b.rejoin, 0, 1)));
   }
   /**
@@ -145,13 +148,19 @@ export class Rollout {
     const caps = this.cap, tAt = this.tAt, latA = this.lat, peak = (this.peak ??= new Float64Array(64)), peakH = (this.peakH ??= new Float64Array(64));
     const env = (this.env ??= new Float64Array(4096)), segA = (this.segA ??= new Float64Array(4096));
     const event = (o.contactMode ?? 'event') === 'event', behind = o.behindShare ?? 0.4, useWake = o.rolloutWake !== false, capB = o.capBrake ?? 0.55, zoneCap = o.capZone === true, zoneFollow = o.zoneFollow === true || o.zoneFollow === 'traffic', roadCap = o.roadCap === true, noseClear = o.noseClear ?? 0.15;
+    // followPhys: the speed from which the car can still stop behind a rival holding rc within the room, sqrt(rc² + 2b·room).
+    // The default adds the room term to rc instead, which allows more closing speed than braking can take back
+    const followCap = (rc, room) => { const b2 = 2 * capB * model.brake(Math.max(8, rc)) * Math.max(0, room); return o.followPhys === true ? Math.sqrt(rc * rc + b2) : rc + Math.sqrt(b2); };
     // capEnvelope: a following cap is a speed at a place, and the controller brakes to it beforehand (the committed
     // plan's cap envelope). A first pass finds the caps; the second drives against their braking envelope instead of
     // slowing at the cap itself
-    const nPass = o.capEnvelope === true ? 2 : 1, bEnv = (o.envBrake ?? 0.6) * model.brake(30);
+    // wakeEnv: a corner taken slower in a car's wake is braked for beforehand, as the controller's wake envelope does;
+    // applied only at the corner, a lane still in the wake read as fast as the clean line and lost 10-14 m when driven
+    const wakeEnv = o.wakeEnv === true, capEnv = o.capEnvelope === true, wcap = (this.wcap ??= new Float64Array(4096));
+    const nPass = capEnv || wakeEnv ? 2 : 1, bEnv = (o.envBrake ?? 0.6) * model.brake(30);
     let t, v, cost, contact, heavy, tH, maxDev, out, xPrev;
     for (let pass = 0; pass < nPass; pass++) {
-    if (pass) { env[n] = caps[n]; for (let j = n - 1; j >= 1; j--) env[j] = Math.min(caps[j], Math.sqrt(env[j + 1] * env[j + 1] + 2 * bEnv * segA[j + 1])); }
+    if (pass) { env[n] = wcap[n]; for (let j = n - 1; j >= 1; j--) env[j] = Math.min(wcap[j], Math.sqrt(env[j + 1] * env[j + 1] + 2 * bEnv * segA[j + 1])); }
     t = 0; tAt[0] = 0; v = Math.max(1, car.speed); cost = 0; contact = 0; heavy = 0; tH = NaN; maxDev = 0; out = -1; xPrev = wrap(line.idx(i0) * ds - me.s, L); peak.fill(0, 0, plan.fs.length); peakH.fill(0, 0, plan.fs.length);
     for (let j = 1; j <= n; j++) {
       const i = line.idx(i0 + j), x = wrap(i * ds - me.s, L), seg = lane.len[line.idx(i - 1)] * clamp((x - xPrev) / ds, 0, 1);
@@ -177,15 +186,16 @@ export class Rollout {
           }
           // zoneFollow: the controller's nose cap holds the car behind a car ahead it would touch (clearance under
           // noseClear), so the rollout cannot drive past it either: no squeezing through on paper, and no pass booked for it
-          if (zoneFollow && (o.zoneFollow === true || (!r.target && !r.mate && !r.hazard)) && g > 0 && c < (r.hazard ? 0.6 : noseClear)) cap = Math.min(cap, rc + Math.sqrt(2 * capB * model.brake(Math.max(8, rc)) * Math.max(0, g - Ls - 0.8)));
+          if (zoneFollow && (o.zoneFollow === true || (!r.target && !r.mate && !r.hazard)) && g > 0 && c < (r.hazard ? 0.6 : noseClear)) cap = Math.min(cap, followCap(rc, g - Ls - 0.8));
         } else if (g > 0 && g < 90 && c < 0.35 + 0.4 * sg) {
           // capZone: follow to the edge of the contact zone, so that a car the cap keeps in line is not also charged
           // contact for the same metres (the zone grows with the forecast's spread along the road, 0.5 sigma)
           const room = g - Ls - 0.8 - (zoneCap ? 0.5 : 0.25) * sgs - 0.15 * Math.max(0, vp - rc);
-          cap = Math.min(cap, rc + Math.sqrt(2 * capB * model.brake(Math.max(8, rc)) * Math.max(0, room)));
+          cap = Math.min(cap, followCap(rc, room));
         }
       }
-      if (wake > 0.02) vp = Math.min(vp, lane.vmax[i] * model.wakeSpeed(lane.vmax[i], wake));
+      let wc = Infinity;
+      if (wake > 0.02) { wc = lane.vmax[i] * model.wakeSpeed(lane.vmax[i], wake); vp = Math.min(vp, wc); }
       const vAcc = Math.sqrt(v * v + 2 * seg * Math.max(0.5, model.drive(v, mass) + (wake > 0 ? model.towGain(v, wake) : 0)));
       const vn = Math.max(1, Math.min(vp, cap, pass ? env[j] : Infinity, vAcc));
       segA[j] = seg;
@@ -195,6 +205,7 @@ export class Rollout {
       const dz = plan.defendZone;
       if (dz && x > dz.from && x < dz.to) cost += (o.defendCost ?? 0.03) * clamp((d.atlas.bound - dB * dz.inside - 2.4) / 2.5, 0, 1) * seg / p.dS;
       caps[j] = cap; tAt[j] = t; latA[j] = dB;
+      if (!pass) wcap[j] = Math.min(capEnv ? cap : Infinity, wakeEnv && lane.vmax[i] < prof[i] + 2 ? wc : Infinity);
       if (x <= H) maxDev = Math.max(maxDev, Math.abs(this.shift[j]));
       if (out < 0 && x > 0 && Math.abs(this.shift[j]) > 0.5) out = x;
       if (Number.isNaN(tH) && x >= H) tH = t;

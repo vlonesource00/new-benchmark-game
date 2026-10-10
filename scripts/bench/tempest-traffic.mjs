@@ -5,7 +5,7 @@
 // how long it sat within 25 m behind (stuck). Progress at the end is compared with TEMPEST alone (--solo run).
 // usage: node --import ./scripts/json-loader.mjs scripts/bench/tempest-traffic.mjs [--scene gt3|slow] [--n 3]
 //        [--rival razor] [--rivalOpts '{"margin":0.85}'] [--track harbor-ring] [--time 90] [--seed 7] [--opts '{}']
-//        [--path native|worker] [--lagFrames 0] [--solo] [--trace]
+//        [--path native|worker] [--lagFrames 0] [--solo] [--trace] [--attacker tempest]  (another AI as the reference attacker)
 import { Track } from '../../game/engine/sim/track.js';
 import { EnduranceRace, FIXED_DT } from '../../game/core/race.js';
 import { FORMATS } from '../../game/core/rules.js';
@@ -16,7 +16,7 @@ const args = process.argv.slice(2), flag = (k, d) => { const i = args.indexOf(`-
 const scene = flag('scene', 'gt3'), nT = Number(flag('n', 3)), rival = flag('rival', 'razor'), trackName = flag('track', 'harbor-ring');
 const T = Number(flag('time', 90)), seed = Number(flag('seed', 7)), opts = JSON.parse(flag('opts', '{}')), solo = args.includes('--solo');
 const rivalOpts = JSON.parse(flag('rivalOpts', scene === 'slow' ? '{"margin":0.85}' : '{}'));
-const path = flag('path', 'native'), lagFrames = Number(flag('lagFrames', 0));
+const attacker = flag('attacker', 'tempest'), path = flag('path', 'native'), lagFrames = Number(flag('lagFrames', 0));
 const shim = path === 'worker' ? installWorkerShim({ frameSteps: 2, lagFrames, seed }) : null;
 const { AsyncSeats } = shim ? await import('../../game/core/async-seats.js') : {};
 const made = [], ms = [];
@@ -24,9 +24,9 @@ const made = [], ms = [];
 { const u0 = TempestDriver.prototype.update; TempestDriver.prototype.update = function (...x) { const t0 = performance.now(); try { return u0.apply(this, x); } finally { ms.push(performance.now() - t0); } }; }
 
 const track = new Track(trackName), myCls = 'lmdh', theirCls = scene === 'gt3' ? 'gt' : 'lmdh';
-const ids = solo ? ['tempest'] : [...Array(nT).fill(rival), 'tempest'];
+const ids = solo ? [attacker] : [...Array(nT).fill(rival), attacker];
 const teams = ids.map((id, i) => {
-  const cls = id === 'tempest' && i === ids.length - 1 ? myCls : theirCls;
+  const cls = i === ids.length - 1 ? myCls : theirCls;
   return { id: 'p' + i, name: id + i, short: id.slice(0, 3) + i, color: '#fff', index: i, starter: 0, classId: cls, raceClass: cls === 'lmdh' ? 'gtp' : 'gt3',
     drivers: [{ kind: 'ai', id, name: id + i, short: id.slice(0, 3) }], grid: i };
 });
@@ -40,8 +40,8 @@ for (const e of race.entries) e.strategist.decide = () => null;
 const step = () => { race.step(FIXED_DT); shim?.step(); };
 step();
 const ti = ids.length - 1, me = race.cars[ti];
-const td = shim ? made[0] : race.entries[ti].bridges[0].driver;
-Object.assign(td.options, opts); td.forceRefresh = true;
+const td = shim ? made[0] : race.entries[ti].bridges[0].driver, isT = td instanceof TempestDriver;
+if (td?.options) { Object.assign(td.options, opts); td.forceRefresh = true; }
 for (let q = 0; q < ti; q++) { const d = race.entries[q].bridges[0].driver; if (d?.options) { Object.assign(d.options, rivalOpts); if (rivalOpts.margin != null && d.baseMargin !== undefined) d.baseMargin = rivalOpts.margin; d.forceRefresh = true; } }
 const L = track.length, wrap = (x) => ((x + L * 1.5) % L) - L / 2, prog = (c) => c.race.progress ?? (c.race.lap * L + c.s);
 const book = race.cars.slice(0, ti).map((c) => ({ id: c.id, t0: null, t1: null, dev: 0, off: 0, edge: 0, stuck: 0, states: {} }));
@@ -52,7 +52,7 @@ while (race.time < T && race.phase !== 'finished') {
   step();
   if (race.formation) continue;
   if (greenT === null) { greenT = race.time; msGreen = ms.length; }
-  const lat = track.nearest(me.x, me.z).lateral, cl = td.line.closest(me.x, me.z, td.cursor ?? -1), dev = Math.sqrt(cl.d2);
+  const lat = track.nearest(me.x, me.z).lateral, dev = isT ? Math.sqrt(td.line.closest(me.x, me.z, td.cursor ?? -1).d2) : 0;
   const edge = Math.abs(lat) > hw - 1.3;
   if (edge) edgeAll += FIXED_DT; if (dev > 2.5) offAll += FIXED_DT;
   for (let q = 0; q < ti; q++) {
@@ -62,15 +62,15 @@ while (race.time < T && race.phase !== 'finished') {
     if (b.t0 === null) continue;
     b.dev = Math.max(b.dev, dev); if (dev > 2.5) b.off += FIXED_DT; if (edge) b.edge += FIXED_DT;
     if (g > 0 && g < 25) b.stuck += FIXED_DT;
-    const st = td.arbiter.state; b.states[st] = (b.states[st] ?? 0) + FIXED_DT;
+    const st = isT ? td.arbiter.state : '-'; b.states[st] = (b.states[st] ?? 0) + FIXED_DT;
     if (g < -9.5) b.t1 = race.time;
   }
-  if (trace && ++k % 12 === 0) {
+  if (trace && isT && ++k % 12 === 0) {
     const near = race.cars.slice(0, ti).map((c) => prog(c) - prog(me)).filter((g) => g > -10 && g < 60).map((g) => g.toFixed(0)).join(',');
     console.log(`${race.time.toFixed(1)} v ${me.speed.toFixed(1)} lat ${lat.toFixed(1)} dev ${dev.toFixed(1)} ${td.arbiter.state} ${td.sub} | gaps ${near} | ${(td.arbiter.lastEvs ?? []).map((e, q) => { const c = td.arbiter.cands[q]; return `${c.kind}${c.chosen ? '*' : ''} ${e.score.toFixed(1)}=t${e.t.toFixed(1)}+c${e.contact.toFixed(1)}${e.heavy ? 'h' + e.heavy.toFixed(1) : ''}${e.passes ? ' p' + e.passes : ''} dev${e.maxDev.toFixed(1)}`; }).join(' / ')}`);
   }
 }
-const f = (x, n = 1) => (x == null ? '-' : x.toFixed(n)), msG = ms.slice(msGreen).sort((a, b) => a - b), B = td.arbiter.books();
+const f = (x, n = 1) => (x == null ? '-' : x.toFixed(n)), msG = ms.slice(msGreen).sort((a, b) => a - b), B = isT ? td.arbiter.books() : {};
 console.log(`[${path}${shim ? ` +${lagFrames}` : ''}] ${trackName} ${scene} n${nT} ${rival} ${JSON.stringify(rivalOpts)} TEMPEST ${JSON.stringify(opts)} seed ${seed} ${T}s`);
 console.log(`progress after green ${f(prog(me) - (greenT ? 0 : 0))} m (${f(prog(me), 0)}) · damage ${f(me.damage * 100)}% · contacts ${race.contacts} · edge ${f(edgeAll)}s · >2.5 m off line ${f(offAll)}s`);
 console.log(`update ms p50 ${f(msG[Math.floor(msG.length / 2)], 2)} p99 ${f(msG[Math.floor(msG.length * 0.99)], 2)} max ${f(msG.at(-1), 1)} · plan meanMs ${B.meanMs} maxMs ${B.maxMs} plans ${B.plans} changes ${B.changes} kept ${B.kept}`);

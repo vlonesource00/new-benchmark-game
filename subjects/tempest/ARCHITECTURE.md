@@ -525,3 +525,25 @@ rival's pace ratio (0.82 at the time) back to ours within ~2.5 s and brakes it ~
 escape through the braking zone; the beside lane rides the rival's weave (≈1 s slower geometry). Measured without
 effect: `roadCap` (follow the rival's road progress, not its path speed), wider `besideClear` (0.8, 1.3), a partial
 progress value for being part-way through a pass.
+
+### Following and passing a slow same-class car (measured, opt-in)
+
+References in the slow scene (`tempest-traffic.mjs --scene slow --attacker <id>`, RAZOR at margin 0.85, 80 s, seed 7):
+RAZOR passes by contact (355 contacts, 17 % damage), SPEARHEAD does not pass, INTERCEPT passes at 50 s with 0.6 %
+damage after sitting 5–10 m behind through every corner and taking the outside when the rival slowed. TEMPEST
+settles about 20 m back. Traced at matched road positions, the distance goes in lane changes while following: twice a
+chosen lane stayed in the rival's wake, where the controller's wake envelope braked 10–14 m away that the rollout
+had not priced (it applied the wake only at the corner itself).
+
+3-seed traffic score (seeds 7–9, slow + GT3 scenes; base slow 9430 m 0/3, GT3 8834 m 8/9):
+
+| Option | Slow | GT3 | Field (s7–9, base 3.58) |
+|---|---|---|---|
+| `besideFixed`: beside lane parallel to the line at the rival's present offset, not its forecast weave | 9657, dmg 15.6 → 4.2 % | = | – |
+| `zoneFollow: true` (same-class too) | 9509 | = | – |
+| both | 9979, dmg 2.0 % | = | **4.17** (rejected) |
+| both + `wakeEnv` (wake corner speed braked for in the rollout) | 9657 | 8474, 6/9 | – |
+| `sigScale` 0.5 / 0.25 (forecast spread) | single run: no pass | 19.0 / 19.2 s | – |
+| `followPhys` (cap sqrt(rc² + 2b·room)) | single run: 2448 m, 10.7 % | 23.5 s | – |
+
+The slow scene does not predict the field: the better slow-scene option lost 0.6 of a place. All stay off.

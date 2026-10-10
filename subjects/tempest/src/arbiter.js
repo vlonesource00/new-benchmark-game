@@ -94,13 +94,15 @@ export class Arbiter {
     const r = f.r, v = Math.max(12, me.v), aT = o.besideA ?? 5, line = d.line, st = line.stationOf(me.s);
     const ll = line.sample(line.lat, Math.floor(st), st % 1, 0);
     for (const side of [-1, 1]) {
-      const gap = wE + r.across + (o.besideClear ?? 0.25), off = r.d + side * gap - ll;
+      const gap = wE + r.across + (o.besideClear ?? 0.25);
+      const rel = o.besideFixed === true ? r.d - line.sample(line.lat, Math.floor(line.stationOf(r.s)), line.stationOf(r.s) % 1, 0) : null;
+      const off = rel != null ? rel + side * gap : r.d + side * gap - ll;
       if (Math.abs(off) > d.atlas.bound + 0.5) continue;   // no road on that side
       const entry = clamp(changeLength(Math.max(0.5, Math.abs(r.d + side * gap - me.d)), v, aT), 25, 160);
       const hold = Math.max(70, v * 2.3, Math.max(0, r.ds) + v), rejoin = changeLength(3, v, o.rejoinA ?? 4);
       if (entry + hold > p.K * p.dS + 200) continue;
       const lane = OFFSETS.reduce((bi, x, k) => Math.abs(x - off) < Math.abs(OFFSETS[bi] - off) ? k : bi, 0);
-      out.push({ beside: { f, side, gap, entry, hold, rejoin, id: r.id }, K: p.K, dS: p.dS, first: lane, last: LINE_LANE, tow: 0, segs: null });
+      out.push({ beside: { f, side, gap, entry, hold, rejoin, id: r.id, rel }, K: p.K, dS: p.dS, first: lane, last: LINE_LANE, tow: 0, segs: null });
       // the same move started later, from the line: leaving now has to beat staying on the fast line a while longer
       // off by default: measured worse (behaviour bench 5.42 vs 4.67; more lane changes, attacks started further back)
       const delay = (o.besideDelay ?? 0) * v;
