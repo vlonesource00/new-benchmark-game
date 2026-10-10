@@ -65,7 +65,7 @@ export class InterceptDriver {
       observed:this.observer?.list.slice(0,6).map(q=>({id:q.id,kind:q.kind,s:q.s,gap:q.ds,lateral:q.d,speed:q.v,closing:(this.lastCar?.speed??0)-q.v,
         acceleration:q.ax,lateralSpeed:q.vd,headingError:q.psi,eligible:q.eligible,physical:q.physical,hazard:q.hazard,pit:q.pit,boxing:q.approaching,offroad:q.off,reenter:q.reenter,
         forecast:[.5,1.5].map(t=>({t,...this.observer.at(q,t)}))})),
-      cands:this.battle?.candidates.map(q=>({kind:q.kind,key:q.path?.key??'course',side:q.side,score:q.score,progress:q.progress,exit:q.exit,risk:q.risk,blocked:q.blocked,clear:q.cleared,finalGap:q.finalGap,fits:q.fits,chosen:q.path===this.path})),
+      cands:this.battle?.candidates.map(q=>({kind:q.kind,key:q.path?.key??'course',side:q.side,score:q.score,progress:q.progress,exit:q.exit,risk:q.risk,blocked:q.blocked,routeTax:q.routeTax,profileFloor:q.path?.profileFloor,clear:q.cleared,finalGap:q.finalGap,fits:q.fits,chosen:q.path===this.path})),
       sub:r?`${this.battle.state.toLowerCase()} #${r.id} ${r.ds.toFixed(1)} m`:c?.mode?.toLowerCase()??'priming'};
   }
   visualDebug(){const p=this.path,c=this.controller?.cur;if(!p||!c)return null;const pts=[];

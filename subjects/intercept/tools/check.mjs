@@ -14,11 +14,21 @@ import { RivalMotion } from '../src/motion.js';
 import { createInterceptBridge } from '../../../game/bridges/intercept-bridge.js';
 import { interceptState } from '../../../game/bridges/intercept-state.js';
 import config from '../config.json' with {type:'json'};
+import { settingsFor } from '../src/settings.js';
 
 let count=0;
 function test(name,fn){fn();count++;console.log(`ok ${name}`);}
 const track=new Track('harbor-ring'),me=new Vehicle(0,'me','#fff','lmdh'),other=new Vehicle(1,'other','#f00','lmdh');
 me.place(track,250,0,50);other.place(track,265,0,40);const observer=new Observer(track);
+test('circuit class overrides preserve the inherited executor and route settings',()=>{
+ for(const id of ['harbor-ring','solenne','alpine','desert','nurburgring']){
+   const o=settingsFor(id);assert.equal(o.perClass.lmdh.evadeYawGain,2);assert.equal(o.perClass.gt.routeMargin,.96);
+ }
+ assert.equal(settingsFor('solenne').perClass.lmdh.preview,.18);assert.equal(settingsFor('nurburgring').perClass.gt.margin,.97);
+ assert.equal(settingsFor('harbor-ring',{perClass:{gt:{yawGain:.9}}}).perClass.gt.brakeExp,2);
+ const bridge=createInterceptBridge({hostTrack:track});bridge.reset({cars:[me]});
+ assert.equal(bridge.driver.controller.options.evadeYawGain,2);
+});
 test('pit and box-called cars are bodies but not race or tow targets',()=>{
  for(const meta of [{id:1,boxCalled:true},{id:1,pit:'approach'},{id:1,pit:'service'}]){observer.update(me,[me,other],{rivals:[meta]},0);assert.equal(observer.list[0].eligible,false);}
 });
@@ -42,6 +52,17 @@ test('a retired car on the road remains an obstacle without earning a pass or to
 test('near rear clearance remains guarded even at a small closing speed',()=>{
  const q=new Course(track,config);q.prepare(me);me.place(track,250,0,40);other.place(track,254.6,0,39.8);observer.update(me,[me,other],{},4);
  const nose=noseConstraint(me,observer,q.model);assert.ok(Number.isFinite(nose.cap));assert.equal(nose.blocker.id,1);
+});
+
+test('a lateral release requires measured escape; an early-braking nose and hazards remain guarded',()=>{
+ const car=new Vehicle(0,'nose','#fff','lmdh'),rival=new Vehicle(1,'leader','#fff','gt'),q=new Course(track,config);q.prepare(car);
+ car.place(track,250,0,60);rival.place(track,270,0,50);const o=new Observer(track);o.update(car,[car,rival]);
+ const constant=noseConstraint(car,o,q.model,{lateralEscape:true});assert.ok(Number.isFinite(constant.cap));
+ rival.controls={throttle:0,brake:1,steer:0};o.update(car,[car,rival],{},.1);
+ assert.ok(noseConstraint(car,o,q.model,{lateralEscape:true}).cap<constant.cap);
+ rival.controls.brake=0;rival.place(track,270,1,50);car.vx-=3*Math.cos(car.yaw);car.vz+=3*Math.sin(car.yaw);o.update(car,[car,rival],{},.2);
+ assert.equal(noseConstraint(car,o,q.model,{lateralEscape:true}).cap,Infinity);
+ o.list[0].hazard=true;assert.ok(Number.isFinite(noseConstraint(car,o,q.model,{lateralEscape:true}).cap));
 });
 test('contact severity follows the collision normal, so matched sideways rubbing stays distinct',()=>{
  const a={x:0,z:0,h:0,vx:0,vz:60};const lateral=bodyContact(a,{x:1.9,z:0,h:0,vx:-.5,vz:65});
@@ -105,6 +126,27 @@ test('moving along the normal curved course is not maneuver evidence',()=>{
  book.update({damage:0,yaw:0},field,0,{});book.declare(r,field,0,1);field.me.d=2;r.ds=0;book.update({damage:0,yaw:0},field,.1,{});
  r.ds=-5;book.update({damage:0,yaw:0},field,.2,{});book.update({damage:0,yaw:0},field,1.3,{});
  assert.equal(book.book.started,0);assert.equal(book.book.maneuvers,0);assert.equal(book.book.pace,1);
+});
+
+test('retention restarts after overlap, and an aborted plan cannot erase contact contamination',()=>{
+ const book=new Outcomes(),r={id:1,ds:10,along:2.28,eligible:true,kind:'race'},car={damage:0,yaw:0},o={list:[r],me:{d:0,h:0},car};
+ book.update(car,o,0,{});book.declare(r,o,0,1);o.me.d=1;r.ds=0;book.update(car,o,.1,{});
+ book.update(car,o,.2,{state:'RETURN',returnReason:'abort'});car.damage=.01;book.update(car,o,.3,{});
+ r.ds=-5;book.update(car,o,.4,{});r.ds=-3;book.update(car,o,.8,{});r.ds=-5;book.update(car,o,1.1,{});
+ book.update(car,o,1.6,{});assert.equal(book.book.retained,0);book.update(car,o,2.11,{});
+ assert.equal(book.book.completed,1);assert.equal(book.book.retained,1);assert.equal(book.book.contactAssisted,1);assert.equal(book.book.pace,0);
+});
+test('an aborted attack resolves once and permits a fresh attempt on the same rival',()=>{
+ const book=new Outcomes(),r={id:1,ds:10,along:2.28,eligible:true,kind:'race'},o={list:[r],me:{d:0},car:{damage:0}};
+ book.declare(r,o,0,1);book.update({damage:0},o,1,{state:'RETURN',returnReason:'abort'});
+ book.update({damage:0},o,2,{state:'RETURN',returnReason:'abort'});assert.equal(book.book.failed,1);
+ assert.equal(book.events.at(-1).reason,'never reached');book.declare(r,o,3,-1);assert.equal(book.book.declared,2);
+});
+test('an attack that never gains on the target returns instead of staying off-line forever',()=>{
+ const a=new Vehicle(0,'stalled','#fff','lmdh'),b=new Vehicle(1,'leader','#fff','lmdh'),course=new Course(track,config);course.prepare(a);
+ a.place(track,250,0,50);b.place(track,270,0,50);const o=new Observer(track);o.reference=course.line;o.update(a,[a,b]);
+ const battle=new Battle(course,config,new Outcomes());Object.assign(battle,{state:'ATTACK',target:1,side:1,path:course.line,since:0,progressMark:{id:1,gap:o.list[0].ds,time:0}});
+ battle.update(a,o,10);assert.equal(battle.state,'RETURN');assert.equal(battle.returnReason,'abort');
 });
 test('contract arrays are detached values; controller labels cannot alter pedals',()=>{
  me.place(track,350,0,55);const course=new Course(track,config);course.prepare(me);observer.update(me,[me],{},0);
@@ -178,6 +220,13 @@ test('qualifying spends prototype grip margin but preserves the measured GT cont
    car.race={lap:1,progress:0};resources.update(car,{time:1,totalLaps:3,session:'qualifying'},o,1);
    assert.ok(Math.abs(resources.allowance-(cls==='gt'?1:1/config.margin))<1e-8);
  }
+});
+test('spending tyres cannot cancel a circuit tracking reserve',()=>{
+ const car=new Vehicle(0,'reserve','#fff','lmdh'),o=new Observer(track),resources=new Resources({...config,margin:.8});
+ car.race={lap:1,progress:0};resources.update(car,{time:1,totalLaps:3,session:'qualifying'},o,1);
+ assert.equal(resources.allowance,config.maxGripSpend);assert.ok(resources.trace.profileMargin<.83);
+ const unbudgeted=new Resources({margin:.8});unbudgeted.update(car,{time:1,totalLaps:3,session:'qualifying'},o,1);
+ assert.equal(unbudgeted.allowance,1);
 });
 test('combat boost is reserved for a close eligible rival and executable acceleration in open space',()=>{
  const car=new Vehicle(0,'energy','#fff','lmdh'),r=new Resources(config),battle={target:1,state:'ALONGSIDE',side:1};

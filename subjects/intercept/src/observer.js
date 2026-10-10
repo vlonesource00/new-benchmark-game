@@ -45,7 +45,18 @@ export class Observer {
         hazard: done || Math.abs(psi) > .65 || v < 7 || (!eligible&&physical), kind: eligible ? other.classId === car.classId ? 'race' : 'traffic' : 'hazard' };
       if(this.reference){const line=this.reference;let c=line.closest(other.x,other.z,old?.referenceIndex??-1,Math.max(14,Math.ceil(Math.max(0,elapsed)*other.speed/line.ds)+8));
         if(c.d2>225)c=line.closest(other.x,other.z,-1);const d=line.sample(line.lat,c.i,c.f),slope=(line.lat[line.idx(c.i+2)]-line.lat[line.idx(c.i-2)])/(4*line.ds);
-        r.reference=c;r.offset=q.lateral-d;r.offsetSpeed=clamp(vd-slope*v,-3,3);const h=line.heading(c.i,c.f);r.referenceSpeed=other.vx*Math.sin(h)+other.vz*Math.cos(h);}
+        const h=line.heading(c.i,c.f);r.reference=c;r.offset=c.e;r.roadOffset=q.lateral-d;
+        r.roadOffsetSpeed=clamp(vd-slope*v,-3,3);r.offsetSpeed=clamp(other.vx*Math.cos(h)-other.vz*Math.sin(h),-3,3);
+        r.referenceSpeed=other.vx*Math.sin(h)+other.vz*Math.cos(h);
+        r.coursePsi=angle(other.yaw-h);
+        r.courseAcross=Math.abs(Math.cos(r.coursePsi))*HALF_WIDTH+Math.abs(Math.sin(r.coursePsi))*HALF_LENGTH;
+        // Cutting a tight corner normally can differ greatly from the road centre's tangent.
+        // The measured racing course supplies a second alignment reference, not permission to target pit/off-road cars.
+        if(Math.abs(r.coursePsi)<.65&&r.referenceSpeed>=7){
+          r.moving=!pit&&!approaching&&!retired&&!done;
+          r.eligible=r.moving&&!off;r.hazard=!r.eligible&&physical;r.kind=r.eligible?(other.classId===car.classId?'race':'traffic'):'hazard';
+        }
+      }
       this.list.push(r); this.history.set(other.id, { time: now, v, d: q.lateral,referenceIndex:r.reference?.i });
     }
     this.list.sort((a,b) => Math.abs(a.ds)-Math.abs(b.ds));
@@ -61,7 +72,7 @@ export class Observer {
     let lateral = r.d + clamp(r.vd,-3,3)*Math.min(h,.7);
     const referenceDistance=this.reference&&r.reference?forwardMotion(r.referenceSpeed,acceleration,h).distance:0;
     if(this.reference&&!r.hazard&&!r.approaching&&r.reference){const line=this.reference,c=advance(line,r.reference.i,r.reference.f,referenceDistance);
-      road=roadSample(line,c.i,c.f,this.track.length);lateral=line.sample(line.lat,c.i,c.f)+r.offset+r.offsetSpeed*Math.min(h,.7);}
+      road=roadSample(line,c.i,c.f,this.track.length);lateral=line.sample(line.lat,c.i,c.f)+(r.roadOffset??r.offset)+(r.roadOffsetSpeed??r.offsetSpeed)*Math.min(h,.7);}
     const q=this.track.at(road),velocity=motion.velocity;
     let heading=q.heading+r.psi;
     if(this.reference&&!r.hazard&&!r.approaching&&r.reference){const c=advance(this.reference,r.reference.i,r.reference.f,referenceDistance);heading=this.reference.heading(c.i,c.f);}

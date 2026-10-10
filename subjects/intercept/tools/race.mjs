@@ -15,7 +15,8 @@ const energyPolicy=args.includes('--energy-stock')?'stock':'intercept';
 if(energyPolicy==='stock')Resources.prototype.energy=function(car){car.intent=null;};
 const follow=args.includes('--follow');
 const kinematic=args.includes('--kinematic');
-if(follow||kinematic){const prepare=InterceptDriver.prototype.prepare;InterceptDriver.prototype.prepare=function(car){prepare.call(this,car);if(follow)this.options.combat=false;if(kinematic)this.observer.motion=null;};}
+const options=JSON.parse(arg('opts','{}'));
+if(follow||kinematic||Object.keys(options).length){const prepare=InterceptDriver.prototype.prepare;InterceptDriver.prototype.prepare=function(car){prepare.call(this,car);Object.assign(this.options,options);if(follow)this.options.combat=false;if(kinematic)this.observer.motion=null;};}
 const ids=arg('ids','intercept,razor,apex').split(',');if(args.includes('--reverse'))ids.reverse();
 const teams=ids.map((id,i)=>({id:'r'+i,name:id+i,short:id.slice(0,3)+i,index:i,color:'#fc4',grid:i,classId:cls,starter:0,
  drivers:[{id,kind:'ai',name:id,short:id.slice(0,3)},{id,kind:'ai',name:id,short:id.slice(0,3)}]}));
@@ -43,7 +44,9 @@ const trace=[],tracing=args.includes('--trace'),tracePeriod=+arg('trace-period',
 if(!(tracePeriod>=1/120&&tracePeriod<=10))throw Error('trace-period must be between 1/120 and 10 seconds');
 if(seats)seats.wantDebug=tracing;
 race.start();
-while(race.phase!=='finished'&&race.time<laps*160+160){
+// A Nordschleife lap cannot fit in the short-circuit deadline. Use this race's calibrated lap reference.
+const deadline=(laps+2)*Math.max(160,...race.entries.map(e=>e.strategist.lapRef*1.7));
+while(race.phase!=='finished'&&race.time<Math.min(deadline,+arg('time',Infinity))){
  race.step(FIXED_DT);shim?.step();
  race.cars.forEach((c,i)=>{const e=race.entries[i];if(e.strategist.stops!==stops[i]){stops[i]=e.strategist.stops;stints[i]++;}
    safety[i].peakDamage=Math.max(safety[i].peakDamage,c.damage);safety[i].damageGained+=Math.max(0,c.damage-damageMark[i]);damageMark[i]=c.damage;
@@ -61,7 +64,7 @@ while(race.phase!=='finished'&&race.time<laps*160+160){
        focus:d.focus,focusGap:d.focusGap,side:d.side,planAge:d.planAge,observed:d.observed,candidates:d.planner?.cands??d.cands,
        pit:e.pit?.phase,nextTyreLap:e.strategist.nextTyreLap};})});}
 }
-const order=race.order().map(c=>c.id),result={track,cls,laps,seed,path,energyPolicy,follow,kinematic,ids,phase:race.phase,time:race.time,contacts:race.contacts,severe:race.collisionStats.severeContacts,
+const order=race.order().map(c=>c.id),result={track,cls,laps,seed,path,energyPolicy,follow,kinematic,options,ids,phase:race.phase,time:race.time,contacts:race.contacts,severe:race.collisionStats.severeContacts,
  trace:tracing?trace:undefined,cars:race.cars.map((c,i)=>({id:ids[i],place:order.indexOf(c.id)+1,finish:c.race.finishTime,best:c.race.bestLap,damage:c.damage,inc:race.stewards.of(race.entries[i]).inc,
    safety:safety[i],incidentLog:race.stewards.of(race.entries[i]).log,
    stops:race.entries[i].strategist.stops,swaps:race.entries[i].strategist.swaps,tyres:c.wheels[0].tyre.compound,fuel:c.fuel,laps:rows[i],stints:race.entries[i].stints,

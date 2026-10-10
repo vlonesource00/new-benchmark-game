@@ -5,6 +5,21 @@ import ownCourses from '../data/courses.json' with {type:'json'};
 import { tyreWet } from '../../../game/engine/sim/water.js';
 import { clamp, angle, join, ease, gap } from './math.js';
 
+/** Three bounded box passes approximate a broad smoothing kernel in linear time. */
+function softenOffsets(values,radius){
+  radius=Math.max(1,Math.min(12,Math.round(radius)));
+  const scratch=new Float64Array(values.length),last=values.length-1;
+  for(let pass=0;pass<3;pass++){
+    let sum=0;
+    for(let k=-radius;k<=radius;k++)sum+=values[clamp(k,0,last)];
+    for(let j=0;j<=last;j++){
+      scratch[j]=sum/(radius*2+1);
+      sum+=values[Math.min(last,j+radius+1)]-values[Math.max(0,j-radius)];
+    }
+    values.set(scratch);
+  }
+}
+
 /** Course geometry uses the measured APEX reference; profiles and all mutable arrays are private. */
 export class Course {
   constructor(track, options) { this.track = track; this.options = options; this.clock = 99; this.pool = []; }
@@ -54,11 +69,16 @@ export class Course {
     // creates an artificial low-speed notch; choose its physical length before compiling.
     entry=Math.max(entry,joinSpeed*Math.cbrt(60*Math.max(.1,Math.abs(offset-d0))/Math.max(20,jerk))*1.08);
     const reach=entry+hold+returnLength, n=Math.min(base.N-22,Math.ceil(reach/base.ds));
-    const shift=new Float64Array(n+1), bound=this.track.halfWidth-1.12;
+    const shift=new Float64Array(n+1), bound=this.track.halfWidth+(this.options.routeEdge??-1.12);
     // Smooth the admissible hold route itself before joining. Pointwise hard clipping is not a path join.
     const offsets=new Float64Array(n+1);
-    for(let j=0;j<=n;j++) { const i=base.idx(i0+j);offsets[j]=clamp(base.lat[i]+offset,-bound,bound)-base.lat[i]; }
-    for(let pass=0;pass<3;pass++) { const copy=offsets.slice(); for(let j=1;j<n;j++) offsets[j]=(copy[j-1]+2*copy[j]+copy[j+1])*.25; }
+    for(let j=0;j<=n;j++) {
+      const i=base.idx(i0+j),h=base.h[i],q=this.track.nearest(base.px[i]+Math.cos(h)*offset,base.pz[i]-Math.sin(h)*offset);
+      // Displacements use the course normal; road width uses the road normal. They differ substantially in a tight corner.
+      const projection=Math.max(.3,Math.cos(angle(h-this.track.at(q.s).heading)));
+      offsets[j]=offset-(q.lateral-clamp(q.lateral,-bound,bound))/projection;
+    }
+    softenOffsets(offsets,this.options.routeFilterRadius??1);
     for(let j=0;j<=n;j++) { const x=j*base.ds;
       shift[j]=x<entry ? join(d0,slope,second,offsets[j],entry,x) : x<entry+hold ? offsets[j] : offsets[j]*(1-ease((x-entry-hold)/returnLength));
     }
@@ -70,10 +90,14 @@ export class Course {
     this.reserved?.add(pool.path);
     if(pool.window) for(const key of ['px','pz','len','h','k','ks','dk','lat','vmax','v','vbrk','st']) for(let j=-14;j<=pool.window.n+16;j++) {const i=base.idx(pool.window.i0+j);pool.path[key][i]=base[key][i];}
     const path=base.laneWindow(shift,i0,n,pool.path);pool.window={i0,n};
-    path.entryLength=entry;path.targetOffset=target?.offset??target?.d;path.steerJerk=jerk;path.clearance=clearance;
+    path.entryLength=entry;path.targetOffset=target?.offset??target?.d;path.steerJerk=jerk;path.clearance=clearance;path.attackSide=side;
     for(let j=-8;j<=n;j++){const i=base.idx(i0+j),q=this.track.nearest(path.px[i],path.pz[i]);path.st[i]=q.s;path.lat[i]=q.lateral;}
     path.holdEndS=path.st[base.idx(i0+Math.min(n,Math.ceil((entry+hold)/base.ds)))];
-    path.speedsWindow(this.model,i0,n,95,base.vbrk[base.idx(i0+n)],{mass:car.spec.mass+car.fuel*.75,brakeExp:this.options.brakeExp,jerk,notch:false,vbrkEnd:base.vbrk[base.idx(i0+n)]});
+    const routeModel=Object.create(this.model);routeModel.margin*=this.options.routeMargin??1;
+    path.speedsWindow(routeModel,i0,n,95,base.vbrk[base.idx(i0+n)],{mass:car.spec.mass+car.fuel*.75,brakeExp:this.options.brakeExp,jerk,notch:false,vbrkEnd:base.vbrk[base.idx(i0+n)]});
+    path.timeTax=0;path.profileFloor=null;
+    for(let j=0;j<n;j++){const i=base.idx(i0+j);path.timeTax+=path.len[i]/Math.max(8,path.vbrk[i])-base.len[i]/Math.max(8,base.vbrk[i]);
+      if(!path.profileFloor||path.vmax[i]<path.profileFloor.speed)path.profileFloor={s:path.st[i],speed:path.vmax[i],k:path.ks[i],dk:path.dk[i],lateral:path.lat[i],distance:j*base.ds};}
     path.key=`${target?.id??'space'}:${side}`;
     return path;
   }

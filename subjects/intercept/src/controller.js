@@ -32,7 +32,7 @@ export function longitudinalDemand(path,c,v,model,{cap=Infinity,cap2=cap,pit=Inf
 }
 
 /** Current body ray, not a blanket cap for an opponent whose future line overlaps ours. */
-export function noseConstraint(car,observer,model) {
+export function noseConstraint(car,observer,model,{lateralEscape=false}={}) {
   let cap=Infinity,brake=0,blocker=null,details=null;
   const sy=Math.sin(car.yaw),cy=Math.cos(car.yaw),v=Math.max(0,car.speed);
   for(const r of observer.list) {
@@ -44,10 +44,25 @@ export function noseConstraint(car,observer,model) {
     const lateralClosing=(r.car.vx-car.vx)*cy-(r.car.vz-car.vz)*sy;
     const predicted=across+lateralClosing*.16;
     if(Math.abs(across)>HALF_WIDTH+halfAcross+.12 && Math.abs(predicted)>HALF_WIDTH+halfAcross+.12)continue;
-    const otherV=r.car.vx*sy+r.car.vz*cy,closing=Math.max(0,v-otherV),room=forward-HALF_LENGTH-r.along-.65;
-    if(closing<.7&&!r.hazard&&room>1.2)continue;
-    const safe=Math.sqrt(Math.max(0,otherV)**2+2*Math.max(3,model.brake(v)*.75)*Math.max(0,room));
-    if(safe<cap){cap=safe;blocker=r;details={forward,across,predictedAcross:predicted,closing,room,safe};}
+    const halfAlong=Math.abs(Math.cos(delta))*HALF_LENGTH+Math.abs(Math.sin(delta))*HALF_WIDTH;
+    const otherV=r.car.vx*sy+r.car.vz*cy,closing=Math.max(0,v-otherV),room=forward-HALF_LENGTH-halfAlong-.65;
+    const ownBrake=Math.max(3,model.brake(v)*.75);
+    const deceleration=Math.max(0,-(r.ax??0),model.brake(Math.max(5,otherV))*(r.car.controls?.brake??0)*.8);
+    if(closing<.7&&!r.hazard&&room>1.2&&deceleration<2)continue;
+    // An already moving, stable pull-out can clear before the noses meet. Require measured lateral motion,
+    // enough remaining reaction time and a body-width buffer; a merely planned lane grants no exemption.
+    const escapeTime=Math.min(1.1,deceleration>2?
+      (Math.sqrt(closing*closing+2*deceleration*Math.max(0,room))-closing)/deceleration:
+      Math.max(0,room)/Math.max(.5,closing));
+    const escapeAcross=across+lateralClosing*escapeTime;
+    if(lateralEscape&&!r.hazard&&room>Math.max(1.2,closing*.45)&&Math.abs(lateralClosing)>1&&
+      across*escapeAcross>0&&Math.abs(escapeAcross)>HALF_WIDTH+halfAcross+.45)continue;
+    // Once a rival is braking, constant-speed following underestimates the distance it will lose.
+    // Compare stopping distances and reserve the short held-control reaction interval, only on the body ray.
+    const leadStop=Math.max(0,otherV)**2*(deceleration>2?Math.min(1,ownBrake/deceleration):1);
+    const usableRoom=Math.max(0,room-(deceleration>2?closing*.15+.5*deceleration*.15**2:0));
+    const safe=Math.sqrt(leadStop+2*ownBrake*usableRoom);
+    if(safe<cap){cap=safe;blocker=r;details={forward,across,predictedAcross:predicted,closing,room,safe,deceleration,escapeTime};}
     if(room<closing*.18)brake=Math.max(brake,clamp(closing/Math.max(2,room+2),0,1));
   }
   return {cap,brake,blocker,details};
@@ -62,16 +77,16 @@ export class Controller {
     if(c.d2>225)c=path.closest(car.x,car.z,-1);
     this.cursor=c.i;this.path=path;this.cur=c;
     // A long clean-line preview countersteers before a short evasive join has displaced the body.
-    const preview=path.steerJerk>o.steerJerk?Math.min(.08,o.preview):o.preview;
+    const emergency=path.steerJerk>o.steerJerk,preview=emergency?Math.min(.08,o.preview):o.preview;
     const kp=path.sample(path.ks,c.i,c.f,v*preview),heading=path.heading(c.i,c.f),ax=axleState(car,model,kp),psi=angle(car.yaw+ax.beta-heading);
-    const emergency=path.steerJerk>o.steerJerk,look=emergency?clamp(.15*v+6,9,19):clamp(.32*v+7,9,32),fb=(emergency?.65:.45)*model.lat(v)/(v*v);
+    const look=emergency?clamp(.15*v+6,9,19):clamp(.32*v+7,9,32),fb=(emergency?.65:.45)*model.lat(v)/(v*v);
     let k=kp+clamp(-2*psi/look-c.e/(look*look),-fb,fb);
     // A continuous curvature demand, bounded by physical lateral jerk at the actual speed.
     if(Number.isFinite(this.kc)){const delta=Math.max(o.steerJerk,Math.min(240,path.steerJerk??o.steerJerk))*Math.max(0,dt)/(v*v);k=this.kc+clamp(k-this.kc,-delta,delta);}this.kc=k;
     const ay=Math.sign(k)*Math.min(Math.abs(v*v*k),.98*model.lat(v)/Math.max(.6,model.margin));
     const betaError=ax.beta-model.betaFor(ay,v),slide=Math.sign(betaError)*Math.max(0,Math.abs(betaError)-o.slideBand);
     // Steady-state sideslip maps lag a fast escape. Keep transient yaw damping, without a large countersteer from that lag.
-    let steer=clamp(model.steerFor(ay,v)+(emergency?Math.min(.3,o.yawGain):o.yawGain)*(ay/Math.max(2,v)-car.yawRate)+(emergency?Math.min(1.6,o.slideGain):o.slideGain)*slide,-1,1);
+    let steer=clamp(model.steerFor(ay,v)+(emergency?(o.evadeYawGain??Math.min(.3,o.yawGain)):o.yawGain)*(ay/Math.max(2,v)-car.yawRate)+(emergency?Math.min(1.6,o.slideGain):o.slideGain)*slide,-1,1);
     // Closing sideways beside a car is controlled by steering. It never selects a following pedal profile.
     for(const r of observer.list) {
       if(!r.physical||Math.abs(r.ds)>HALF_LENGTH+r.along+.8)continue;
@@ -80,14 +95,14 @@ export class Controller {
       if(room<.25 && drift>.35 && Math.abs(observer.me.d-dir*.5)<course.track.halfWidth-1.1)
         steer-=dir*clamp((drift-.35)*.045,0,.18);
     }
-    nose??=noseConstraint(car,observer,model);
+    nose??=noseConstraint(car,observer,model,{lateralEscape:o.noseEscape&&Math.abs(c.e)<.65&&ax.reserve>.75});
     const demand=longitudinalDemand(path,c,v,model,{cap:nose.cap,pit,wake:car.aero?.wake??0});
     // Smooth demand inside corners, without delaying an urgent brake or a newly opened exit.
     const rate=demand.acceleration<this.acceleration?100:85;
     this.acceleration+=clamp(demand.acceleration-this.acceleration,-rate*dt,rate*dt);
     let pedals=allocate(this.acceleration,v,model,ax,o);
     // A verified escape still needs lateral grip. Full emergency braking must not erase that grip.
-    const urgentBrake=nose.blocker?.hazard&&path.steerJerk>o.steerJerk?Math.min(nose.brake,Math.max(.12,ax.share*1.15)*ax.reserve):nose.brake;
+    const urgentBrake=nose.blocker?.hazard&&emergency?Math.min(nose.brake,Math.max(.12,ax.share*1.15)*ax.reserve):nose.brake;
     if(urgentBrake>pedals.brake){pedals={...pedals,throttle:0,brake:urgentBrake,reason:'blocked-nose'};}
     // The escape allocator can supply much less braking than the raw nose demand. Do not
     // store that unreachable deceleration and keep braking after the body has cleared.
@@ -100,7 +115,7 @@ export class Controller {
       acceleration:this.acceleration,allocatedAcceleration,frontSlip:ax.front,rearSlip:ax.rear,wheelspin:ax.spin,reserve:ax.reserve,use:ax.use,
       profileTarget:demand.profileTarget,wakeTarget:demand.wakeTarget,noseCap:Number.isFinite(demand.cap)?demand.cap:null,pitCap:Number.isFinite(demand.pit)?demand.pit:null,nextTarget:demand.next,
       nose:nose.blocker?.id??null,noseGeometry:nose.details,steer:car.controls.steer,throttle:car.controls.throttle,brake:car.controls.brake,
-      preview,kp,k,ay,measuredAy:car.ay,yawRate:car.yawRate,beta:ax.beta,betaError,pathHeading:heading,pathLateral:path.sample(path.lat,c.i,c.f),
+      preview,escapeTracking:Boolean(emergency),kp,k,ay,measuredAy:car.ay,yawRate:car.yawRate,beta:ax.beta,betaError,pathHeading:heading,pathLateral:path.sample(path.lat,c.i,c.f),
       physicalSpeed:v,pathError:c.e,wake:car.aero?.wake??0,gear:car.gear,hybridKw:car.hybrid?.kw??0};
     return car.controls;
   }

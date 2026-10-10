@@ -27,10 +27,16 @@ if(shim){const ready=seats.start(r);await shim.settle();await ready;}
 for(const e of r.entries)e.strategist.decide=()=>null;
 for(const c of r.cars)r.fitTyres(c,compound,true);
 if(args.includes('--file')&&r.formation)r.formation.slot=i=>({row:i,lat:0});
-r.start();let optSet=false,maxError=0,lowStraight=0,straight=0,lastPedal=0,pulses=0,lastFlip=-99;
-const trace=[];
+r.start();let maxError=0,lowStraight=0,straight=0,lastPedal=0,pulses=0,lastFlip=-99;
+const trace=[],laps=ids.map(()=>[]),lapMarks=r.cars.map(c=>c.race.lap),safety=ids.map(()=>({peakDamage:0,damageGained:0})),damageMarks=r.cars.map(c=>c.damage);
 while(r.time<duration&&r.phase!=='finished'){
   r.step(FIXED_DT);shim?.step();
+  r.cars.forEach((c,i)=>{
+    safety[i].peakDamage=Math.max(safety[i].peakDamage,c.damage);safety[i].damageGained+=Math.max(0,c.damage-damageMarks[i]);damageMarks[i]=c.damage;
+    if(c.race.lap!==lapMarks[i]){lapMarks[i]=c.race.lap;if(c.race.lastLap>0)laps[i].push({lap:c.race.lap-1,time:c.race.lastLap,
+      valid:!['red','pit'].includes(c.race.lastState),state:c.race.lastState,sectors:[...c.race.secCur],
+      wear:Math.max(...c.wheels.map(w=>w.tyre.wear)),fuel:c.fuel,soc:c.hybrid?.energy/3e6,inc:r.stewards.of(r.entries[i]).inc});}
+  });
   const c=r.cars[ids.indexOf('intercept')],d=instances.find(d=>d.lastCar?.id===c?.id&&(path!=='worker'||d.settings.executor));
   if(d&&c&&!r.formation&&r.phase==='racing'){
     maxError=Math.max(maxError,Math.abs(d.controller.e));
@@ -44,6 +50,7 @@ const q=(xs,p)=>xs.length?[...xs].sort((a,b)=>a-b)[Math.min(xs.length-1,Math.flo
 const result={track:trackId,cls,path,ids,seed,tyres:compound,options:{...opts,courses:undefined,courseFile:courseFile||undefined},time:r.time,phase:r.phase,
   cars:r.cars.map((c,i)=>({id:ids[i],best:c.race.bestLap,last:c.race.lastLap,lap:c.race.lap,progress:c.race.progress,damage:c.damage,fuel:c.fuel,
     wear:c.wheels.map(w=>w.tyre.wear),temps:c.wheels.map(w=>w.tyre.core),soc:c.hybrid?.energy/3e6,inc:r.stewards.of(r.entries[i]).inc,
+    laps:laps[i],safety:safety[i],incidentLog:r.stewards.of(r.entries[i]).log,
     errors:r.entries[i].bridges.map(b=>b.errors),lastError:r.entries[i].bridges.find(b=>b.lastError)?.lastError,
     stats:instances.find(d=>d.lastCar?.id===c.id&&(path!=='worker'||d.settings.executor))?.outcomes.book})),
   contacts:r.contacts,severe:r.collisionStats.severeContacts,maxError,straightLift:straight?lowStraight/straight:0,pulses,

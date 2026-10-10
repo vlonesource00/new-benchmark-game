@@ -1,9 +1,9 @@
 import { InterceptDriver } from '../../subjects/intercept/src/driver.js';
-import config from '../../subjects/intercept/config.json' with { type: 'json' };
+import { settingsFor } from '../../subjects/intercept/src/settings.js';
 import { interceptState } from './intercept-state.js';
 
 export function createInterceptBridge({hostTrack,index=0,options={},state=null}){
-  let driver=null;const settings={...config,...config.tracks?.[hostTrack.id],...options};
+  let driver=null;const settings=settingsFor(hostTrack.id,options);
   return {driverId:'intercept',candidateId:'intercept',native:true,errors:0,
     get driver(){return driver;},
     update(car,cars,dt,context={}){try{driver??=new InterceptDriver(hostTrack,settings);driver.lastCar=car;driver.contextEpoch=context.epoch??0;

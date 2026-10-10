@@ -18,7 +18,7 @@ const settings={driver:arg('driver','intercept'),rival:arg('rival','razor'),path
   gtLimit:+arg('limit',47),positions:arg('positions','100,180,260').split(',').map(Number),offsets:arg('offsets','0,0,0').split(',').map(Number),
   frameSteps:+arg('frameSteps',2),lagFrames:+arg('lagFrames',0),lagJitter:+arg('lagJitter',0),frameJitter:+arg('frameJitter',0),
   spikes:arg('spikes','').split(',').filter(Boolean).map(x=>{const [at,delay]=x.split(':').map(Number);return {at,delay};}),follow:args.includes('--follow'),rescueHazard:args.includes('--rescue'),
-  separation:+arg('separation',config.separation)};
+  separation:+arg('separation',config.separation),options:JSON.parse(arg('opts','{}'))};
 if(settings.positions.length!==3||settings.positions.some(x=>!Number.isFinite(x))||settings.positions.some((x,i,a)=>i&&x-a[i-1]<25))throw Error('Three increasing positions, at least 25 m apart, are required.');
 if(!['train','natural','stopped','spun'].includes(settings.mode))throw Error('mode must be train, natural, stopped or spun');
 if(!['native','worker'].includes(settings.path))throw Error('path must be native or worker');
@@ -26,7 +26,7 @@ if(settings.offsets.length!==3||settings.offsets.some(x=>!Number.isFinite(x)))th
 if(settings.spikes.some(x=>!Number.isFinite(x.at)||!Number.isFinite(x.delay)||x.at<0||x.delay<0))throw Error('spikes must be time:delay pairs in seconds');
 if(!(settings.time>0&&settings.gptSpeed>0&&settings.gtSpeed>=0&&settings.frameSteps>=1))throw Error('Positive duration, GTP speed and frameSteps are required.');
 const updates=[],executions=[],original=InterceptDriver.prototype.update,prepare=InterceptDriver.prototype.prepare;
-InterceptDriver.prototype.prepare=function(car){prepare.call(this,car);this.options.combat=!settings.follow;this.options.separation=settings.separation;};
+InterceptDriver.prototype.prepare=function(car){prepare.call(this,car);this.options.combat=!settings.follow;this.options.separation=settings.separation;Object.assign(this.options,settings.options);};
 InterceptDriver.prototype.update=function(...a){const t=performance.now();try{return original.apply(this,a);}finally{(this.settings.executor?executions:updates).push(performance.now()-t);}};
 const percentile=(a,p)=>a.length?[...a].sort((x,y)=>x-y)[Math.min(a.length-1,Math.floor(a.length*p))]:null;
 const limits=car=>{const h=car.race?car._track.at(car.s).heading:car.yaw,p=angle(car.yaw-h);return Math.abs(Math.cos(p))*2.28+Math.abs(Math.sin(p))*.98;};

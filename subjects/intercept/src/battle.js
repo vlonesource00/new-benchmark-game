@@ -3,12 +3,13 @@ import { HALF_LENGTH, HALF_WIDTH } from './observer.js';
 import { longitudinalDemand } from './controller.js';
 import { allocate } from './axles.js';
 import { bodyContact } from './body.js';
+import { deployment } from './strategy.js';
 
 /** Bounded prediction on the actual compiled demand. No frozen rivals, alternative pedal profile or plan rebuild. */
 export function evaluate(path,car,course,observer,target,horizon=3.4) {
   const model=course.model,t=course.track,L=course.line,c=path.closest(car.x,car.z);
   let i=c.i,f=c.f,v=Math.max(2,car.speed),time=0,arc=0,risk=0,blocked=0,cleared=false;
-  const startS=observer.me.s,initialGap=target?.ds??0;
+  const startS=observer.me.s,initialGap=target?.ds??0;let energy=car.hybrid?.energy??0;
   while(time<horizon) {
     const h=.10,k=path.sample(path.ks,i,f),d=path.sample(path.lat,i,f),heading=path.heading(i,f),body={x:path.sample(path.px,i,f),z:path.sample(path.pz,i,f),h:heading,vx:Math.sin(heading)*v,vz:Math.cos(heading)*v};
     const road=roadSample(path,i,f,t.length),travel=gap(road,startS,t.length),use=clamp(v*v*Math.abs(k)/Math.max(1,model.lat(v)/model.margin),0,1);
@@ -28,7 +29,12 @@ export function evaluate(path,car,course,observer,target,horizon=3.4) {
     const demand=longitudinalDemand(path,{i,f},v,model,{cap,wake});
     const pedals=allocate(demand.acceleration,v,model,{share:Math.sqrt(Math.max(0,1-use**3)),reserve:1,spin:0},course.options);
     const gear=model.gearAt(v,car.gear),drag=model.dragK*v*v+.13,drive=model.driveG(v,gear,car.spec.mass+car.fuel*.75);
-    const acceleration=pedals.throttle*(drive+drag)+model.towGain(v,wake)-drag-pedals.brake*model.brake(v);
+    const targetGap=target?gap(observer.at(target,time).s,road,t.length):Infinity;
+    const fight=Boolean(path.attackSide&&target?.eligible&&Math.abs(targetGap)<22);
+    const spend=deployment(energy/3e6,v,{fight,exit:demand.feed>0||demand.target>v+1,throttle:pedals.throttle,brake:pedals.brake,source:demand.source});
+    const power=car.hybrid&&pedals.throttle>.8&&v>10&&energy>0?95e3*spend.deploy:0;
+    energy=Math.max(0,energy-power*h);
+    const acceleration=pedals.throttle*(drive+drag)+power/(Math.max(12,v)*(car.spec.mass+car.fuel*.75))+model.towGain(v,wake)-drag-pedals.brake*model.brake(v);
     const next=Math.max(1,v+acceleration*h),dist=(v+next)*.5*h;v=next;time+=h;arc+=dist;
     let x=f*path.len[i]+dist;while(x>=path.len[i]){x-=path.len[i];i=path.idx(i+1);}f=x/Math.max(.01,path.len[i]);
   }
@@ -41,13 +47,13 @@ export function evaluate(path,car,course,observer,target,horizon=3.4) {
 export function corridorFits(path,base,car,target,side){
   const c=path.closest(car.x,car.z),x=path.sample(path.px,c.i,c.f,path.entryLength),z=path.sample(path.pz,c.i,c.f,path.entryLength);
   const section=base.closest(x,z);
-  return side*(section.e-(target.offset??0))>HALF_WIDTH+target.across+.02;
+  return side*(section.e-(target.offset??0))>HALF_WIDTH+(target.courseAcross??target.across)+.02;
 }
 
 /** A latched target/side with continuously refreshed timing. No tactical lane grid, no label hysteresis in pedals. */
 export class Battle {
   constructor(course,options,outcomes){this.course=course;this.options=options;this.outcomes=outcomes;this.reset();}
-  reset(){this.state='PACE';this.target=null;this.side=0;this.path=null;this.returnPath=null;this.at=-99;this.since=0;this.clearAt=null;this.returnReason=null;this.candidates=[];this.sequence=0;}
+  reset(){this.state='PACE';this.target=null;this.side=0;this.path=null;this.returnPath=null;this.at=-99;this.since=0;this.clearAt=null;this.returnReason=null;this.progressMark=null;this.candidates=[];this.sequence=0;}
   wire(){return {state:this.state,target:this.target,side:this.side,since:this.since,clearAt:this.clearAt,returnReason:this.returnReason};}
   adopt(b){
     if(!b)return;
@@ -96,9 +102,10 @@ export class Battle {
     const beside=!this.side&&observer.list.find(q=>q.eligible&&Math.abs(q.ds)<HALF_LENGTH+q.along+.4&&Math.abs(q.d-observer.me.d)<4.5);
     if(beside){
       // Grid and corner overlaps already own two lanes. Preserve our side rather than both converging on one line.
-      this.target=beside.id;this.side=Math.sign(observer.me.d-beside.d)|| (car.id<beside.id?-1:1);this.state=beside.ds>=0?'ALONGSIDE':'DEFEND';this.since=now;
+      const lateral=(observer.me.offset??observer.me.d)-(beside.offset??beside.d);
+      this.target=beside.id;this.side=Math.sign(lateral)|| (car.id<beside.id?-1:1);this.state=beside.ds>=0?'ALONGSIDE':'DEFEND';this.since=now;
       if(beside.ds>=0)this.outcomes.declare(beside,observer,now,this.side);
-      const owned=Math.max(this.options.holdSeparation,this.side*(observer.me.d-beside.d));
+      const owned=Math.max(this.options.holdSeparation,this.side*lateral);
       this.path=course.corridor(car,beside,this.side,1,{entry:Math.max(35,car.speed*.9),hold:Math.max(150,car.speed*4),returnLength:100,clearance:owned});
       return this.path;
     }
@@ -119,8 +126,15 @@ export class Battle {
       }
       this.target=null;this.side=0;this.state='PACE';return this.path=base;
     }
-    const closing=car.speed-target.v,gapTime=(target.ds-5)/Math.max(.2,closing),hazard=target.hazard;
+    const closing=car.speed-(target.referenceSpeed??target.v),gapTime=(target.ds-5)/Math.max(.2,closing),hazard=target.hazard;
     const committed=this.side!==0&&this.target===target.id;
+    if(committed&&!hazard&&target.ds>HALF_LENGTH+target.along+.35){
+      if(this.progressMark?.id!==target.id||target.ds<this.progressMark.gap-.5)this.progressMark={id:target.id,gap:target.ds,time:now};
+      // Keep a useful committed run, but never circulate indefinitely in a slower lane without reaching overlap.
+      if(now-this.since>8.5&&now-this.progressMark.time>2.5&&this.state!=='DEFEND'){
+        this.state='RETURN';this.returnReason='abort';this.clearAt=now;return this.path??base;
+      }
+    }
     if(committed&&this.path&&now-this.since<7.5){
       const held=evaluate(this.path,car,course,observer,target);
       const moved=Math.abs((target.offset??target.d)-(this.path.targetOffset??target.offset??target.d))>.4;
@@ -142,7 +156,7 @@ export class Battle {
       return this.path=base;
     }
     const entry=hazard?clamp(target.ds-8,18,55):clamp(car.speed*.75,28,70),hold=clamp(car.speed*4,150,310),
-      clearance=hazard?HALF_WIDTH+target.across+.55:['ALONGSIDE','DEFEND'].includes(this.state)?Math.max(this.options.holdSeparation,this.side*(observer.me.d-target.d)):target.kind==='traffic'?Math.max(3.3,this.options.separation):this.options.separation;
+      clearance=hazard?HALF_WIDTH+target.across+.55:['ALONGSIDE','DEFEND'].includes(this.state)?Math.max(this.options.holdSeparation,this.side*((observer.me.offset??observer.me.d)-(target.offset??target.d))):target.kind==='traffic'?Math.max(3.3,this.options.separation):this.options.separation;
     const sides=committed?[this.side]:[-1,1];
     let chosen=null;
     for(const side of sides) {

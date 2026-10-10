@@ -2,6 +2,13 @@ import { TeamStrategist, maxWear } from '../../../game/core/strategy.js';
 import { COMPOUNDS, WEAR_CLIFF } from '../../../game/core/rules.js';
 import { clamp } from './math.js';
 
+/** The planner and executor spend the same bounded battery power in an executable opening. */
+export function deployment(soc,v,{finish=false,fight=false,exit=false,throttle=0,brake=0,source='profile',green=true}={}){
+  const max=finish||fight?1:clamp(.7+(soc-.55)*2.5,.1,1),taper=clamp((78-v)/38,0,1);
+  const burst=Boolean(fight&&exit&&throttle>.75&&brake<.01&&source!=='nose'&&soc>.16&&green);
+  return {deploy:(burst?1:max*taper*(exit?1:.5))*clamp(soc/.09,0,1),burst};
+}
+
 /** Live stint model on the shared game's current compounds. No baked data from an older tyre model. */
 export class InterceptStrategist extends TeamStrategist {
   constructor(previous,trackId,classId){super(previous.team,previous.cal,previous.format);Object.assign(this,previous);
@@ -88,12 +95,14 @@ export class Resources {
     const fade=ref*.45*(.1*projected+1.2*Math.max(0,projected-.72)**2),target=observer.list.find(r=>r.eligible&&r.ds>0&&r.ds<90);
     const urgent=remaining<1.7||state.pitPlan?.tyres||target&&target.ds<40&&car.speed>target.v;
     const budget=urgent?4:3.5;
-    const ceiling=car.classId==='gt'?1:1/this.options.margin;
+    // The spendable tyre reserve and a circuit's tracking reserve are different budgets.
+    // A lower track margin must not silently grant permission to spend all of it.
+    const ceiling=car.classId==='gt'?1:Math.min(1/Math.max(.6,this.options.margin),Math.max(1,this.options.maxGripSpend??1));
     let wanted=fade<budget&&core<22 ? ceiling:clamp(1-(fade-budget)*.008, .94,1);
     // The GT controller needs its measured grip reserve even on a qualifying run.
     if(state.session==='qualifying')wanted=ceiling;
     this.allowance+=(wanted-this.allowance)*Math.min(1,dt*2);
-    this.trace={allowance:this.allowance,projectedWear:projected,projectedFade:fade,wearPerLap,toTyres,remaining,urgent:Boolean(urgent),hot:core};
+    this.trace={allowance:this.allowance,ceiling,profileMargin:this.options.margin*this.allowance,projectedWear:projected,projectedFade:fade,wearPerLap,toTyres,remaining,urgent:Boolean(urgent),hot:core};
     return this.allowance;
   }
   energy(car,state,battle,path,controller,observer){
@@ -103,11 +112,10 @@ export class Resources {
     const rival=observer?.list.find(r=>r.id===battle.target&&r.eligible),
       fight=rival&&battle.side&&Math.abs(rival.ds)<22&&['ATTACK','ALONGSIDE','DEFEND'].includes(battle.state);
     const exit=controller.trace?.feed>0||controller.targetSpeed>v+1;
-    const max=finish||fight?1:clamp(.7+(soc-.55)*2.5,.1,1),taper=clamp((78-v)/38,0,1);
     // Once space is owned, top-speed economy must not cancel the acceleration needed to finish the pass.
     // A blocked nose, braking demand or low battery still withholds the burst.
-    const burst=Boolean(fight&&exit&&car.controls.throttle>.75&&car.controls.brake<.01&&controller.trace?.source!=='nose'&&soc>.16&&!state.formation&&!state.caution);
-    const deploy=(burst?1:max*taper*(exit?1:.5))*clamp(soc/.09,0,1);
+    const {deploy,burst}=deployment(soc,v,{finish,fight,exit,throttle:car.controls.throttle,brake:car.controls.brake,
+      source:controller.trace?.source,green:!state.formation&&!state.caution});
     car.intent={deploy,harvest:soc<.35?.8:.35,ttl:.25};
     if(this.trace)this.trace.energy={deploy,burst,finish,target:rival?.id??null,gap:rival?.ds??null,soc};
   }
