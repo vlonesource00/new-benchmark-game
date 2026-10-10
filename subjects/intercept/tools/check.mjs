@@ -5,7 +5,7 @@ import { EnduranceRace, FIXED_DT } from '../../../game/core/race.js';
 import { FORMATS } from '../../../game/core/rules.js';
 import { Observer } from '../src/observer.js';
 import { Outcomes } from '../src/outcomes.js';
-import { Controller, longitudinalDemand, noseConstraint } from '../src/controller.js';
+import { Controller, longitudinalDemand, noseConstraint, brakingPose } from '../src/controller.js';
 import { Course } from '../src/course.js';
 import { InterceptStrategist, Resources } from '../src/strategy.js';
 import { bodyContact } from '../src/body.js';
@@ -81,6 +81,26 @@ test('a hazard around the executing turn is guarded, while a separated pit body 
  const nose=noseConstraint(car,o,model,{path,cursor:{i:0,f:0}});assert.ok(Number.isFinite(nose.cap));assert.equal(nose.details.predictedBlock,true);
  rival.x+=12;assert.equal(noseConstraint(car,o,model,{path,cursor:{i:0,f:0}}).cap,Infinity);
  r.pit=true;rival.x-=12;assert.equal(noseConstraint(car,o,model,{path,cursor:{i:0,f:0}}).cap,Infinity);
+});
+test('short braking occupancy covers a rival whose assumed line falsely clears the turning nose',()=>{
+ const h=.6,car={x:0,z:0,yaw:0,speed:60,vx:0,vz:60},rival={x:14*Math.sin(h),z:14*Math.cos(h),yaw:h,
+   speed:40,vx:40*Math.sin(h),vz:40*Math.cos(h),yawRate:0,controls:{brake:.8}},
+   r={id:1,car:rival,physical:true,hazard:false,pit:false,ds:14,v:40,along:2.28,ax:-18,deceleration:24},
+   path={N:2,len:[100,100],px:[0,100*Math.sin(h)],pz:[0,100*Math.cos(h)],idx:i=>Math.max(0,Math.min(1,i)),
+     heading:()=>h,sample:(a,i,f)=>a[i]+((a[i+1]??a[i])-a[i])*f},
+   o={list:[r],at:()=>({x:80,z:80,h,v:40})},model={brake:()=>20},options={path,cursor:{i:0,f:0},brakingTube:true};
+ assert.equal(noseConstraint(car,o,model,{...options,brakingTube:false}).cap,Infinity);
+ const nose=noseConstraint(car,o,model,options);assert.ok(Number.isFinite(nose.cap));assert.equal(nose.details.brakingTube,true);
+ rival.x+=12;assert.equal(noseConstraint(car,o,model,options).cap,Infinity,'An open side must not become a following speed cap');
+ rival.x-=12;r.pit=true;assert.equal(noseConstraint(car,o,model,options).cap,Infinity);
+ r.pit=false;r.ax=-10;r.deceleration=10;assert.equal(noseConstraint(car,o,model,options).cap,Infinity,'Mild corner braking uses the existing forecast');
+ r.pit=false;r.ax=0;r.deceleration=0;rival.controls.brake=0;assert.equal(noseConstraint(car,o,model,options).cap,Infinity);
+});
+test('short braking prediction stops at zero speed and retains finite turning motion',()=>{
+ const c={x:0,z:0,yaw:0,vx:0,vz:40,yawRate:0},stopped=brakingPose(c,20,3);
+ assert.equal(stopped.v,0);assert.equal(stopped.z,40);assert.equal(stopped.x,0);
+ const p=brakingPose({...c,yawRate:.4},20,.4);assert.ok(p.x>0&&p.z>0&&p.v<40);
+ assert.ok(Object.values(p).every(Number.isFinite));assert.ok(Math.abs(Math.hypot(p.vx,p.vz)-p.v)<1e-8);
 });
 test('forecast displacement agrees with velocity after the acceleration window and after stopping',()=>{
  const o=new Observer(track),r={s:250,d:0,v:40,vd:0,ax:4,psi:0,hazard:false};

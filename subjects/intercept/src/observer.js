@@ -2,6 +2,7 @@ import { angle, gap, clamp, advance, roadSample } from './math.js';
 
 export const HALF_LENGTH = 2.28;
 export const HALF_WIDTH = 0.98;
+export const ROAD_BRAKE_LIMIT = 18;
 
 function forwardMotion(v,a,time) {
   v=Math.max(0,v);const applied=Math.min(time,1,a<0?v/-a:Infinity),end=Math.max(0,v+a*applied);
@@ -28,7 +29,7 @@ export class Observer {
       const psi = angle(other.yaw - h), v = other.vx * Math.sin(h) + other.vz * Math.cos(h);
       const vd = other.vx * Math.cos(h) - other.vz * Math.sin(h), old = this.history.get(other.id);
       const elapsed = old ? now - old.time : 0;
-      const ax = elapsed > .008 && elapsed < .5 ? clamp((v - old.v) / elapsed, -18, 8) : 0;
+      const ax = elapsed > .008 && elapsed < .5 ? clamp((v - old.v) / elapsed, -ROAD_BRAKE_LIMIT, 8) : 0;
       // Road-tangent acceleration is deliberately bounded for lane prediction. Frontal braking
       // needs the actual loss of body speed; prototypes can decelerate far harder than 18 m/s².
       const bodySpeed=Math.hypot(other.vx,other.vz),deceleration=elapsed>.008&&elapsed<.5&&Number.isFinite(old?.bodySpeed)?

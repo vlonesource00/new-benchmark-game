@@ -38,7 +38,7 @@ const rows=race.cars.map(()=>[]),marks=new Array(ids.length).fill(0),stops=new A
 const books=ids.map(()=>({})),lastBooks=ids.map(()=>({})),active=new Array(ids.length).fill(0);
 const safety=ids.map(()=>({peakDamage:0,damageGained:0,formationDamageGained:0,racingDamageGained:0,contactFrames:0,contactEpisodes:0,severeContactFrames:0,peakClosing:0})),damageMark=new Array(ids.length).fill(0),contactEvents=[],pairs=new Map();
 const contactState=i=>{const c=race.cars[i],e=race.entries[i],d=e.bridges[e.active]?.debug?.()??{};
- return {carId:i,id:ids[i],classId:c.classId,lap:c.race.lap,x:c.x,z:c.z,yaw:c.yaw,vx:c.vx,vz:c.vz,speed:c.speed,
+ return {carId:i,id:ids[i],classId:c.classId,lap:c.race.lap,x:c.x,z:c.z,yaw:c.yaw,yawRate:c.yawRate,vx:c.vx,vz:c.vz,speed:c.speed,
    controls:{...c.controls},damage:c.damage,pit:e.pit?.phase,road:race.track.nearest(c.x,c.z).s,
    intent:d.intent,target:d.targetSpeed,trace:d.trace};};
 // Capture the solver's actual pairs before the stewards consume them. Pit repairs cannot erase this history.
@@ -75,14 +75,16 @@ while(race.phase!=='finished'&&race.time<Math.min(deadline,+arg('time',Infinity)
  if(tracing&&race.time-sampledAt>=tracePeriod){sampledAt=race.time;
    trace.push({time:race.time,formation:Boolean(race.formation),weather:race.weather.snapshot(),contacts:race.contacts,severe:race.collisionStats.severeContacts,cars:race.cars.map((c,i)=>{
      const e=race.entries[i],d=e.bridges[e.active]?.debug?.()??{};
-     return {id:ids[i],carId:c.id,classId:c.classId,lap:c.race.lap,road:c.race.progress,physicalRoad:race.track.nearest(c.x,c.z).s,x:c.x,z:c.z,yaw:c.yaw,lateral:c.lateral,speed:c.speed,controls:{...c.controls},damage:c.damage,fuel:c.fuel,soc:c.hybrid?.energy/3e6,
+     return {id:ids[i],carId:c.id,classId:c.classId,lap:c.race.lap,road:c.race.progress,physicalRoad:race.track.nearest(c.x,c.z).s,x:c.x,z:c.z,yaw:c.yaw,yawRate:c.yawRate,vx:c.vx,vz:c.vz,lateral:c.lateral,speed:c.speed,controls:{...c.controls},damage:c.damage,fuel:c.fuel,soc:c.hybrid?.energy/3e6,
        hybridKw:c.hybrid?.kw,hybridMode:c.hybrid?.mode,energyIntent:c.intent?{deploy:c.intent.deploy,harvest:c.intent.harvest}:null,
        tyres:c.wheels.map(w=>({wear:w.tyre.wear,core:w.tyre.core,compound:w.tyre.compound})),
        intent:d.intent,route:d.route?.key,target:d.targetSpeed,lineSpeed:d.lineSpeed,trace:d.trace,resources:d.resources,visual:ids[i]==='intercept'?e.bridges[e.active]?.visualDebug?.():undefined,
        focus:d.focus,focusGap:d.focusGap,side:d.side,returnNeighbor:d.returnNeighbor,planAge:d.planAge,observed:d.observed,candidates:d.planner?.cands??d.cands,
        pit:e.pit?.phase,nextTyreLap:e.strategist.nextTyreLap};})});}
 }
-const order=race.order().map(c=>c.id),result={track,cls,laps,seed,path,startType,weather:arg('weather','clear'),energyPolicy,legacyStrategy,follow,kinematic,options,ids,phase:race.phase,time:race.time,contacts:race.contacts,severe:race.collisionStats.severeContacts,
+const order=race.order().map(c=>c.id),result={track,cls,laps,seed,path,startType,weather:arg('weather','clear'),energyPolicy,legacyStrategy,follow,kinematic,options,ids,
+ settings:{startCompound:arg('tyres',null),mandatoryStops:+arg('stops',1),mandatorySwap:true,frameSteps:+arg('frameSteps',2),lagFrames:+arg('lagFrames',0),timeLimit:Number.isFinite(+arg('time',Infinity))?+arg('time',Infinity):null,tracePeriod:tracing?tracePeriod:null},
+ phase:race.phase,time:race.time,contacts:race.contacts,severe:race.collisionStats.severeContacts,
  trackGeometry:tracing?{id:track,length:race.track.length,halfWidth:race.track.halfWidth,geometry:Array.from({length:Math.ceil(race.track.length/15)},(_,i)=>({s:i*15,...race.track.at(i*15)}))}:undefined,
  trace:tracing?trace:undefined,cars:race.cars.map((c,i)=>({id:ids[i],classId:c.classId,place:order.indexOf(c.id)+1,classPlace:order.filter(id=>race.cars[id].classId===c.classId).indexOf(c.id)+1,finish:c.race.finishTime,best:c.race.bestLap,damage:c.damage,inc:race.stewards.of(race.entries[i]).inc,
    safety:safety[i],incidentLog:race.stewards.of(race.entries[i]).log,

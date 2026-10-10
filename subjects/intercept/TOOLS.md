@@ -127,3 +127,13 @@ The dashed following-only ghost includes the rival's reactions; it is a causal c
 `race.mjs --follow` disables INTERCEPT tactical paths; `--kinematic` selects the simpler kinematic rival forecast. `traffic.mjs --separation` changes its requested clearance for diagnostics; new GTP-to-GT3 passes retain a production minimum of 3.3 m. These switches are reported in result metadata and are not alternate production defaults.
 
 The two-car encounter fixture initializes pose from road distance, preserving speed while setting heading, and initializes the game's `previousS` progress field. Stopped/spun/off-road obstacles stay in place by default; `--rescue` restores normal marshal recovery. Older encounter measurements made before these fixture corrections must be reproduced before being used as evidence.
+
+## Experimental braking encounter
+
+```sh
+node --import ./scripts/json-loader.mjs subjects/intercept/tools/braking-check.mjs --opts '{"brakingTube":true}'
+```
+
+This diagnostic runs natural rolling-start Harbor encounters from the back of a four-car field, in both classes with normal worker delivery and one extra frame of lag. It uses ordinary collision physics and records braking-zone traces. It requires finite controls, no severe contacts and less than 10% cumulative damage; light side rubbing is allowed and reported. It does not establish a clean race or an endurance win.
+
+`brakingTube` is disabled in the saved production configuration. The command above enables it only for the experiment. Running the fixture without that option reproduces the unresolved production GTP rear-end contact and can fail the gate. The wider Changeable test regressed, so the option must not become a default without further matched validation. `race.mjs --trace` records yaw rate and body velocities for investigating the mismatch between the executed route and physical momentum.

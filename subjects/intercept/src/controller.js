@@ -1,6 +1,19 @@
 import { clamp, angle, advance } from './math.js';
 import { axleState, allocate } from './axles.js';
-import { HALF_LENGTH, HALF_WIDTH } from './observer.js';
+import { HALF_LENGTH, HALF_WIDTH, ROAD_BRAKE_LIMIT } from './observer.js';
+
+/** Short public-control prediction for a car that is actually braking. No assumed rival line. */
+export function brakingPose(car,deceleration,time) {
+  const speed=Math.hypot(car.vx,car.vz),t=Math.min(time,speed/Math.max(.01,deceleration)),
+    distance=Math.max(0,speed*t-.5*deceleration*t*t),turn=clamp(car.yawRate??0,-1.5,1.5)*t,
+    mid=turn*.5,scale=speed>0?distance/speed:0,
+    dx=(car.vx*Math.cos(mid)+car.vz*Math.sin(mid))*scale,
+    dz=(car.vz*Math.cos(mid)-car.vx*Math.sin(mid))*scale,
+    end=Math.max(0,speed-deceleration*time),ratio=speed>0?end/speed:0;
+  return {x:car.x+dx,z:car.z+dz,h:car.yaw+turn,v:end,
+    vx:(car.vx*Math.cos(turn)+car.vz*Math.sin(turn))*ratio,
+    vz:(car.vz*Math.cos(turn)-car.vx*Math.sin(turn))*ratio};
+}
 
 /** The same desired profile is sampled for scoring and driving. Labels cannot reach this function. */
 export function longitudinalDemand(path,c,v,model,{cap=Infinity,cap2=cap,pit=Infinity,wake=0}={}) {
@@ -32,7 +45,7 @@ export function longitudinalDemand(path,c,v,model,{cap=Infinity,cap2=cap,pit=Inf
 }
 
 /** Current body ray, not a blanket cap for an opponent whose future line overlaps ours. */
-export function noseConstraint(car,observer,model,{lateralEscape=false,path=null,cursor=null}={}) {
+export function noseConstraint(car,observer,model,{lateralEscape=false,path=null,cursor=null,brakingTube=false}={}) {
   let cap=Infinity,brake=0,blocker=null,details=null;
   const sy=Math.sin(car.yaw),cy=Math.cos(car.yaw),v=Math.max(0,car.speed);
   for(const r of observer.list) {
@@ -83,13 +96,37 @@ export function noseConstraint(car,observer,model,{lateralEscape=false,path=null
       break;
     }
   }
+  if(brakingTube&&path&&cursor)for(const r of observer.list){
+    if(!r.physical||r.pit||r.hazard||r.ds<5||r.ds>v*.9+12||
+      !((r.car.controls?.brake??0)>.15||r.ax< -2))continue;
+    // Use this fallback only when the road-speed predictor has saturated and measured
+    // body deceleration proves that it cannot represent the rival's braking. Mild
+    // braking is already covered without holding a rival's turning motion constant.
+    if(r.ax> -ROAD_BRAKE_LIMIT+.5||!(r.deceleration>ROAD_BRAKE_LIMIT+2))continue;
+    const deceleration=Math.max(0,-(r.ax??0),r.deceleration??0,
+      model.brake(Math.max(5,r.car.speed))*(r.car.controls?.brake??0)*.8);
+    // Beyond this immediate interval the rival's changing steering must be forecast by the
+    // route model. Holding its yaw rate longer created false frontal threats in the rain.
+    for(const time of [.2]){
+      const p=brakingPose(r.car,deceleration,time),c=advance(path,cursor.i,cursor.f,v*time),h=path.heading(c.i,c.f),
+        dx=p.x-path.sample(path.px,c.i,c.f),dz=p.z-path.sample(path.pz,c.i,c.f),
+        front=dx*Math.sin(h)+dz*Math.cos(h),side=dx*Math.cos(h)-dz*Math.sin(h),delta=angle(p.h-h),
+        across=Math.abs(Math.cos(delta))*HALF_WIDTH+Math.abs(Math.sin(delta))*HALF_LENGTH,
+        along=Math.abs(Math.cos(delta))*HALF_LENGTH+Math.abs(Math.sin(delta))*HALF_WIDTH;
+      if(front<0||front>HALF_LENGTH+along+6||Math.abs(side)>HALF_WIDTH+across+.12)continue;
+      const closing=Math.max(0,v-r.v),room=r.ds-HALF_LENGTH-r.along-1.2,ownBrake=Math.max(3,model.brake(v)*.75),
+        safe=Math.sqrt(p.v*p.v+2*ownBrake*Math.max(0,room-closing*.15));
+      if(safe<cap){cap=safe;blocker=r;details={forward:r.ds,across:side,closing,room,safe,deceleration,brakingTube:true,horizon:time};}
+      break;
+    }
+  }
   return {cap,brake,blocker,details};
 }
 
 export class Controller {
   constructor(options) {this.options=options;this.reset();}
   reset(){this.cursor=-1;this.path=null;this.kc=NaN;this.acceleration=0;this.trace={};}
-  step(car,path,course,observer,dt,{pit=Infinity,nose=null,time=0}={}) {
+  step(car,path,course,observer,dt,{pit=Infinity,nose=null,time=0,brakingTube=this.options.brakingTube}={}) {
     const model=course.model,o=this.options,v=Math.max(.5,car.speed);
     let c=path.closest(car.x,car.z,path===this.path?this.cursor:-1);
     if(c.d2>225)c=path.closest(car.x,car.z,-1);
@@ -113,7 +150,7 @@ export class Controller {
       if(room<.25 && drift>.35 && Math.abs(observer.me.d-dir*.5)<course.track.halfWidth-1.1)
         steer-=dir*clamp((drift-.35)*.045,0,.18);
     }
-    nose??=noseConstraint(car,observer,model,{path,cursor:c,lateralEscape:o.noseEscape&&path!==course.line&&path.attackSide&&Math.abs(c.e)<.65&&ax.reserve>.75});
+    nose??=noseConstraint(car,observer,model,{path,cursor:c,brakingTube,lateralEscape:o.noseEscape&&path!==course.line&&path.attackSide&&Math.abs(c.e)<.65&&ax.reserve>.75});
     const demand=longitudinalDemand(path,c,v,model,{cap:nose.cap,pit,wake:car.aero?.wake??0});
     // Smooth demand inside corners, without delaying an urgent brake or a newly opened exit.
     const rate=demand.acceleration<this.acceleration?100:85;

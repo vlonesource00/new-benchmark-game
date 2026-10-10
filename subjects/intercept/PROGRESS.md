@@ -1,6 +1,6 @@
 # INTERCEPT development evidence
 
-Independent racer on `intercept-dev`, based on `graphics-aaa`. The current work incorporates the shared tyre, energy, weather, caution and field changes through d5b86f7. The next upstream commit, 48cb344, changes only the pit-wall telemetry UI. Other drivers are preserved.
+Independent racer on `intercept-dev`, based on `graphics-aaa` through 48cb344, including the shared tyre, energy, weather, caution and field changes through d5b86f7. Other drivers are preserved. Development is paused at the user's request; no simulation campaigns are queued.
 
 Engineering readiness is approximately 85% against the gates below, not a winning probability or an ETA. INTERCEPT drives all five circuits in both classes; consistent superiority in every race remains unproven.
 
@@ -23,7 +23,7 @@ Recent eye testing identified rear-end damage behind early-braking tow targets a
 - [x] Independent control, bounded contracts, continuous joins and private buffers.
 - [x] A clean retained maneuver around a rival on the fast line, through real seat-worker/controller code, at normal delivery and one extra frame of delay. The following-only control stays behind.
 - [x] Three clean retained passes in the controlled GT3 train, including simulated reply spikes.
-- [x] Actual Chromium workers survive tested 500/250 ms holds, retain three passes and report no worker/browser errors. The latest run has one light contact (0.33% damage), so it is not three clean passes.
+- [x] Actual Chromium workers survive tested 500/250 ms holds, retain three passes and report no worker/browser errors. The latest repeat is clean; a previous repeat had one light contact (0.33% damage), so this is not an all-cadence guarantee.
 - [x] Regression coverage for pits, retired/off-road bodies, swaps, rain, Changeable weather, SC and FCY.
 - [x] Clean solo driving on all five circuits; Harbor GTP below 53 s and GT3 below 64 s; measured Harbor stint fade below 4 s.
 - [ ] Effective defense and further inside/outside/exit passes across matched grid orders, tracks and seeds.
@@ -38,7 +38,7 @@ The Harbor train starts the GTP at 20 m and three RAZOR GT3s at 100, 180 and 260
 
 Worker train: three clean retained passes, one new maneuver and two carried lanes, at 265.5 / 281.1 / 289.8 km/h. Straight delay is -0.204 s versus matched solo; drafting explains the negative delay. Simulated jitter/spikes preserve all three without damage. An early-braking target is passed at 243.6 km/h without a rear-end or straight damage. A later side rub remains in its 0.50% full-run damage total.
 
-Latest Chromium delay test: three retained passes, +0.434 s straight delay, no incidents/severe contact, 0.33% damage and one contact-assisted outcome. Maximum plan age is 1.28 simulated seconds. Headless cadence differs from laptop play; this validates the tested case, not every device or delay.
+Latest Chromium delay repeat: three clean retained passes (two new moves and one carried lane), +0.460 s straight delay, no damage, contact, incidents or worker/browser errors. A previous repeat retained three passes with +0.434 s delay, 0.33% damage and one contact-assisted outcome. Maximum plan age is 1.28 simulated seconds. Headless cadence differs from laptop play; these validate the tested cases, not every device or delay.
 
 Pinned stopped/spun bodies are cleared without damage or rescue. With two moving GT3s, straight delays are +0.402 / +0.603 s and speed recovery takes about 6.9 / 7.3 s. The 1.5 s gate stays open. An isolated spun body recovers in 0.42 s, demonstrating the need to distinguish isolated evasion from traffic.
 
@@ -80,6 +80,18 @@ Formation damage needs investigation in shared game code and remains included in
 
 The eight-car Changeable run, seed 23, has INTERCEPT GTP first and GT3 second, both with zero damage/severe contact. GTP has one early off-track incident point. Both renew intermediates on lap 3 and switch to softs on lap 6 as the surface dries. GT3 makes no retained pass in this case. The final body-deceleration diagnostic does not change the accepted pedals.
 
+## Paused experimental braking checkpoint
+
+The saved production configuration is unchanged. `brakingTube` is an opt-in experiment, absent from `config.json` and disabled by default. It supplements the existing nose guard only when a rival is actually braking harder than the road-progress prediction can represent. A short 0.2 s public-body forecast checks the executed route; pit-lane cars, mild braking and formation are excluded. Longer or less selective variants were rejected.
+
+The new natural-start braking regression covers both classes at normal worker delivery and one extra frame of lag. GTP is clean in both; GT3 has 1.14% / 1.90% light-contact damage, with no severe contact. The check permits light rubbing within the user's 10% cumulative damage budget; it does not call these GT3 runs clean.
+
+With this option enabled in the matched dry Harbor 12-lap race, seed 11, GTP wins by 2.44 s with zero damage/severe contacts, and retains one maneuver pass and one pace pass. Its own finish improves from 687.475 to 687.142 s. GT3 wins by 0.525 s with 1.14% damage and no severe contacts; its retained pass is a pace pass. These are single-seed results, not a universal advantage.
+
+The eight-car Changeable test, seed 23, prevents enabling the option: GT3 falls from second to third, finishes 4.27 s later and gains 6.76% cumulative damage with one severe contact. The severe impact involves a following TEMPEST while INTERCEPT is ahead; it remains counted and has not been assigned a definitive cause. GTP remains damage-free but finishes third rather than first amid changed field interactions. No weather or strategy retuning has been made for this experiment.
+
+Additional trace fields preserve yaw rate, body velocities and fixture settings. `braking-check.mjs` makes the corner-entry reproduction reviewable without changing any production default. See `PAUSED.md` for the save-point handoff.
+
 ## Remaining work
 
 1. Reduce rapid-braking-zone rear-end risk and recover speed through multiple hazards without giving away the fast line.
@@ -87,4 +99,4 @@ The eight-car Changeable run, seed 23, has INTERCEPT GTP first and GT3 second, b
 3. Validate large mixed-field/weather endurance, formation incidents and post-repair cumulative damage.
 4. Close the small GTP Harbor/Solenne and GT3 Desert solo gaps while retaining tracking and stint reserves.
 
-The build, 40 system checks, worker maneuver regression and controlled traffic checks pass. JSON/CSV/HTML outputs stay local and excluded from Git. `TOOLS.md` documents reproduction and visual review.
+The build and 42 system checks pass at the save point. Worker maneuver and controlled traffic regressions passed in this round; they have not been broadened into universal claims. JSON/CSV/HTML outputs stay local and excluded from Git. `TOOLS.md` documents reproduction and visual review.

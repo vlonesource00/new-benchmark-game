@@ -51,7 +51,8 @@ export class InterceptDriver {
       }else if(active){path=this.battle.update(car,this.observer,now);}
       if(!active){this.battle.state='PACE';this.remote=null;}
     }
-    this.path=path;this.controller.step(car,path,this.course,this.observer,Math.max(1/120,Math.min(.1,dt)),{pit:pitCap,time:now});
+    this.path=path;this.controller.step(car,path,this.course,this.observer,Math.max(1/120,Math.min(.1,dt)),{
+      pit:pitCap,time:now,brakingTube:this.options.brakingTube&&!state.formation&&state.phase!=='grid'&&state.phase!=='countdown'});
     this.resources.energy(car,state,this.battle,path,this.controller,this.observer);this.outcomes.update(car,this.observer,now,this.battle);
     this.sequence++;this.lastTime=now;return car.controls;
   }
