@@ -9,6 +9,7 @@ import { carSpecFor } from '../engine/sim/car-specs.js';
 import { COMPOUNDS, TYRES, FORMATS, TANK_LITRES, TYRE_HEAT, calibrate, serviceTime, wetCall } from './rules.js';
 import { WaterField } from '../engine/sim/water.js';
 import { Weather } from './weather.js';
+import { RoadOutlook } from './road-outlook.js';
 import { PitLane, PitAutopilot } from './pit.js';
 import { TeamStrategist, maxWear } from './strategy.js';
 import { createSeatBridge } from './field.js';
@@ -47,6 +48,9 @@ export class EnduranceRace {
     this.classId = carSpecFor(classId).key;
     this.lines = new Map();
     this.lane = new PitLane(track, teams.length);
+    // Weather radar and track reports the strategists plan tyre families with (core/road-outlook.js).
+    this.outlook = new RoadOutlook({ track, weather: this.weather, line: this.lineFor({ classId: this.classId }) });
+    const env = { track, weather: this.weather, outlook: this.outlook, clock: () => this.time };
     this.inputs = new Map();
     this.events = []; this.eventSeq = 0;
     this.cars = teams.map((team, i) => {
@@ -56,7 +60,7 @@ export class EnduranceRace {
     });
     this.entries = teams.map((team, i) => ({
       team, car: this.cars[i], active: team.starter ?? 0,
-      bridges: [], strategist: Object.assign(new TeamStrategist(team, this.cal, this.format, seed, i), { env: { track, weather: this.weather } }),
+      bridges: [], strategist: Object.assign(new TeamStrategist(team, this.cal, this.format, seed, i), { env }),
       pit: null, pitPlan: null, pitStopTime: 0, decidedLap: 0,
       stints: [], stintStart: 0, box: this.lane.boxes[i]
     }));
@@ -136,7 +140,7 @@ export class EnduranceRace {
       // All-AI teams pick their own start tyre; a human team starts on the chosen one.
       const allAi = e.team.drivers.every((d) => d.kind === 'ai');
       if (quali) { const call = wetCall(track.wetness); this.fitTyres(c, call === 'slick' ? 'soft' : call, true); fitHybrid(c, 1); c.hybrid && (c.hybrid.playerMode = 'qual'); }
-      else { e.strategist.env ??= { track, weather: this.weather }; this.fitTyres(c, allAi ? e.strategist.startCompound(this.cal.fuelLaps) : this.startCompound); fitHybrid(c); }
+      else { e.strategist.env ??= { track, weather: this.weather, outlook: this.outlook, clock: () => this.time }; this.fitTyres(c, allAi ? e.strategist.startCompound(this.cal.fuelLaps) : this.startCompound); fitHybrid(c); }
       c.race = { progress: rolling ? -back : -gridToFinish - back, previousS: c.s, lap: 1, lastLap: null, bestLap: null, lapStart: 0, sector: 0, valid: true, sectors: [], secMark: 0, secValid: true, secCur: [null, null, null], secState: [null, null, null], secBest: [null, null, null], finishTime: null, offtrack: 0, pitLap: false };
       e.pit = null; e.pitPlan = null; e.retired = null; e.stints = [{ driver: e.active, fromLap: 1, toLap: null }];
       for (const b of e.bridges) b.reset?.({ cars: this.cars, track, line: this.lineFor(c) });
@@ -222,7 +226,7 @@ export class EnduranceRace {
     }
     if (this.phase !== 'racing') return;
     this.time += dt;
-    this.weather.step(dt); this.stepWater(dt); this.weather.apply(this.track); this.stepVisibility();
+    this.weather.step(dt); this.stepWater(dt); this.weather.apply(this.track); this.outlook.update(this.time); this.stepVisibility();
     const track = this.track, cars = this.cars, lane = this.lane;
     const projections = new Map(cars.map((c) => [c.id, track.nearest(c.x, c.z)]));
     const order = this.order();
@@ -245,7 +249,7 @@ export class EnduranceRace {
       // Strategy call once per lap, just before the approach point.
       if (this.session !== 'qualifying' && !e.pit && c.race.finishTime === null && c.race.progress > 0 && e.decidedLap !== c.race.lap && lane.inWindow(s, wrap(lane.approach - 120, lane.L), lane.approach)) {
         e.decidedLap = c.race.lap;
-        e.strategist.env ??= { track, weather: this.weather };
+        e.strategist.env ??= { track, weather: this.weather, outlook: this.outlook, clock: () => this.time };
         e.pitPlan = e.strategist.decide(c, this.lapsLeft(c), e.team.drivers[e.active]?.kind !== 'human', caution && this.caution.pitsOpen ? (this.caution.sc ? 'sc' : 'fcy') : false);
         if (e.pitPlan) this.log('strategy', e, `${e.team.short} · BOX THIS LAP · ${e.strategist.reason}`);
         // Race control overrides strategy: a drive-through comes first, and the

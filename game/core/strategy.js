@@ -1,3 +1,4 @@
+import { RoadOutlook } from './road-outlook.js';
 import { COMPOUNDS, COMPOUND_IDS, TYRES, TYRE_IDS, WET_COMPOUNDS, TANK_LITRES, WEAR_CLIFF, CROSSOVER } from './rules.js';
 
 /**
@@ -121,8 +122,10 @@ export class TeamStrategist {
    * cars on it has a dry line well ahead of the mean, so the call goes drier. Hysteresis (0.05 past each crossover)
    * keeps a car from boxing back and forth around one. Returns null without race weather (bare tracks, rigs).
    */
-  weatherNeed(car) {
+  weatherNeed(car, laps = this.lapsHint ?? 10) {
     const env = this.env; if (!env?.track) return null;
+    const plan = this.weatherPlan(car, laps);
+    if (plan) return { call: plan.call, have: plan.have, wet: plan.now, severe: false, box: plan.box, gain: plan.gain };
     const have = WET_COMPOUNDS[car.wheels[0].tyre.compound] ? car.wheels[0].tyre.compound : 'slick';
     const mmh = env.weather?.snapshot ? env.weather.rainAt(env.weather.centre.x, env.weather.centre.z) : 0;
     const trend = (env.track.wetness ?? 0) - (this.lastWet ?? env.track.wetness ?? 0); this.lastWet = env.track.wetness;
@@ -134,12 +137,49 @@ export class TeamStrategist {
     if (coming && order.indexOf(call) < at) call = have;
     return { call, have, wet: w, severe: Math.abs(order.indexOf(call) - at) > 1 || (have === 'slick' && w > 0.55) || (have !== 'slick' && w < 0.12) };
   }
+  /**
+   * Forecast plan: the cheapest sequence of tyre families over the laps still to run, from the road outlook's
+   * predicted racing-line wetness lap by lap and the measured lap-time cost of each family on it (WET_PACE), a
+   * family change costing a full stop (or just the tyre change when a fuel or mandatory stop is due anyway).
+   * box: the plan changes family now and that beats staying out by more than WEATHER_MARGIN_S; call: the family to
+   * fit if the car stops now. Null without an outlook (bare tracks, rigs): weatherNeed falls back to the road now.
+   */
+  weatherPlan(car, laps) {
+    const o = this.env?.outlook, f = o?.forecast(this.env.clock?.() ?? 0); if (!f) return null;
+    const have = WET_COMPOUNDS[car.wheels[0].tyre.compound] ? car.wheels[0].tyre.compound : 'slick';
+    const N = Math.max(1, laps - 1), T = this.lapRef, w = [];
+    for (let j = 0; j < N; j++) w.push(RoadOutlook.mean(f, j * T, (j + 1) * T));
+    const change = this.cal.tyreChangeS ?? 6, stopT = PIT_LANE_LOSS_S + (this.cal.baseStopS ?? 4) + change + OUT_LAP_S;
+    // A stop due anyway (fuel or the rules) takes the family change for the price of the tyres, if it comes in time.
+    const fuelLaps = this.fuelPerLap > 0 ? car.fuel / this.fuelPerLap : Infinity, owed = Math.max(0, this.format.mandatoryStops - this.stops);
+    const due = owed > 0 ? N : fuelLaps < N + 0.15 ? Math.max(0, Math.floor(fuelLaps - 0.15)) : -1;
+    const fam = ['slick', 'intermediate', 'wet'];
+    // cost[b][k][c]: best cost of laps b.. on family k, c = a family change already made. Changes happen at lap boundaries.
+    const run = (first) => {
+      let next = fam.map(() => [0, 0]);
+      for (let b = N - 1; b >= 0; b--) {
+        const cur = fam.map((k, ki) => [0, 1].map((c) => {
+          const lap = T * wetPace(k, w[b]);
+          let best = next[ki][c];
+          if (b + 1 < N) for (let ji = 0; ji < 3; ji++) if (ji !== ki) best = Math.min(best, next[ji][1] + (c === 0 && b + 1 <= due ? change : stopT));
+          return lap + best;
+        }));
+        next = cur;
+      }
+      return first.map((ki) => ({ ki, cost: ki === fam.indexOf(have) ? next[ki][0] : next[ki][1] + (due >= 0 ? change : stopT) }));
+    };
+    const all = run([0, 1, 2]), stay = all[fam.indexOf(have)], go = all.filter((x) => x.ki !== fam.indexOf(have)).sort((a, b) => a.cost - b.cost)[0];
+    // Stopping now anyway: the family the plan wants from a fresh start (its change price is the same for all three).
+    const fresh = all.map((x) => ({ ki: x.ki, cost: x.cost - (x.ki === fam.indexOf(have) ? 0 : (due >= 0 ? change : stopT)) })).sort((a, b) => a.cost - b.cost)[0];
+    const gain = stay.cost - go.cost;
+    return { have, now: f.now, wet: w, gain, box: laps > 1 && gain > WEATHER_MARGIN_S, call: gain > WEATHER_MARGIN_S ? fam[go.ki] : fam[fresh.ki] };
+  }
   /** The rain tyre (or the slick for the stint) a weather stop fits. */
   weatherCompound(call, stintLaps) { return call === 'slick' ? this.pickCompound(stintLaps) : call; }
   /** Shared by subclass strategists: a plan when the weather alone says box (null otherwise). */
   weatherCall(car, lapsLeft) {
-    const need = this.weatherNeed(car);
-    if (!need || need.call === need.have || lapsLeft <= 1 || (lapsLeft <= 2 && !need.severe)) return null;
+    const need = this.weatherNeed(car, lapsLeft);
+    if (!need || need.call === need.have || lapsLeft <= 1 || need.box === false || (need.box === undefined && lapsLeft <= 2 && !need.severe)) return null;
     this.boxThisLap = true; this.reason = `WEATHER · ${need.call.toUpperCase()}`;
     const plan = this.servicePlan(car, lapsLeft - 1);
     return this.plan = { ...plan, tyres: true, compound: this.weatherCompound(need.call, Math.max(1, Math.floor(TANK_LITRES / this.fuelPerLap))) };
@@ -148,6 +188,7 @@ export class TeamStrategist {
     const fuelLaps = car.fuel / this.fuelPerLap, wear = maxWear(car);
     const id = car.wheels[0].tyre.compound;
     const reasons = [];
+    this.lapsHint = lapsLeft;
     if (lapsLeft <= 1 && !this.request) { this.boxThisLap = false; this.reason = 'FINAL LAP'; return this.plan = null; }
     // Weather first: the wrong tyre family costs seconds a lap, far more than any stint plan saves.
     if (aiDriving && !this.request) { const w = this.weatherCall(car, lapsLeft); if (w) return w; }
@@ -258,6 +299,21 @@ export const PIT_LANE_LOSS_S = 18;
 const COMPOUND_PACE = { soft: -0.016, medium: 0, hard: 0.022, intermediate: 0.05, wet: 0.09 };  // fresh-tyre pace vs medium, stint-rig 2026-10
 const WEAR_K = 0.45, WEAR_INIT = 1.1;
 const OUT_LAP_S = 1;
+// Lap time over a dry medium's by tyre family against the racing line's wetness: scripts/strategy/wet-rig.mjs, RAZOR
+// and TEMPEST, GTP and GT3, Harbor Ring (2026-10-10); spins and offs on the wrong tyre are capped at +60 %.
+const WET_W = [0, 0.116, 0.23, 0.34, 0.447, 0.55, 0.65, 0.746, 0.837, 0.923, 1];
+const WET_PACE = {
+  slick: [0, 0.026, 0.052, 0.085, 0.12, 0.2, 0.4, 0.6, 0.6, 0.6, 0.6],
+  intermediate: [0.029, 0.033, 0.039, 0.048, 0.057, 0.066, 0.078, 0.12, 0.4, 0.6, 0.6],
+  wet: [0.095, 0.092, 0.09, 0.09, 0.092, 0.094, 0.097, 0.1, 0.11, 0.2, 0.3]
+};
+export function wetPace(family, w) {
+  const p = WET_PACE[family] ?? WET_PACE.slick, x = clamp(w, 0, 1); let i = 0;
+  while (i < WET_W.length - 2 && x > WET_W[i + 1]) i++;
+  return p[i] + (p[i + 1] - p[i]) * (x - WET_W[i]) / (WET_W[i + 1] - WET_W[i]);
+}
+// A weather stop must beat staying out by this much over the forecast plan (radar and road reports are not exact).
+const WEATHER_MARGIN_S = 3;
 /** Fraction of grip lost at tread wear `w` (the tyre model's wearGrip). */
 const wearLoss = (w) => 0.10 * w + 1.2 * Math.max(0, w - 0.72) ** 2;
 const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));

@@ -36,7 +36,7 @@ export const SPAN_REF = 900;
 
 export class Weather {
   constructor(id = 'clear', seed = 7, { span = SPAN_REF } = {}) {
-    this.preset = WEATHER[id] ?? WEATHER.clear; this.id = WEATHER[id] ? id : 'clear';
+    this.preset = WEATHER[id] ?? WEATHER.clear; this.id = WEATHER[id] ? id : 'clear'; this.seed = seed; this.span = span;
     // Time scale of the sky: phases and drift last k times their reference length; cloud moves in over sqrt(k).
     this.k = clamp((span ?? SPAN_REF) / SPAN_REF, 0.35, 6); this.kRate = 1 / Math.sqrt(this.k);
     this.rng = random(seed);

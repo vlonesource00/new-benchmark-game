@@ -476,12 +476,44 @@ export class World {
     }
     const rg = new THREE.BufferGeometry(); rg.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3)); rg.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
     this.rubberMesh = add(this.root, rg, new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, opacity: .3, blending: THREE.MultiplyBlending, depthWrite: false, side: THREE.DoubleSide, ...decal(3) }), 0, 0, 0, false);
-    // Standing water on the same lane cells: a dark mirror film whose alpha follows the host's water depth, so the
-    // drying racing line, the puddles in dips and along the edges and the rain front's wet patches all show.
-    const pg = new THREE.BufferGeometry(), pp = rg.attributes.position.array.slice();
+    // Standing water over the same lane cells. The host's depth map goes up as a texture (one texel per cell, packed
+    // in bands of WATER_W nodes) and the shader reads it between cell centres, so the water has no cell edges. The
+    // depth decides how much of the ground is under water and world-space noise decides where: thin water is a
+    // patchy dark sheen, and as a dip fills its puddle grows out of the deepest noise into an irregular pool with a
+    // mirror surface, until the whole basin is flooded. Rain stipples the pools with rings.
+    const nN = t.nodes.length, WATER_W = Math.min(nN, 2048), bands = Math.ceil(nN / WATER_W);
+    const wdata = new Uint8Array(WATER_W * bands * 13), wtex = new THREE.DataTexture(wdata, WATER_W, bands * 13, THREE.RedFormat, THREE.UnsignedByteType);
+    wtex.minFilter = wtex.magFilter = THREE.NearestFilter; wtex.needsUpdate = true;
+    const pg = new THREE.BufferGeometry(), pp = rg.attributes.position.array.slice(), puv = new Float32Array(pp.length / 3 * 2);
     for (let i = 1; i < pp.length; i += 3) pp[i] = .04;
-    pg.setAttribute('position', new THREE.Float32BufferAttribute(pp, 3)); pg.setAttribute('color', new THREE.Float32BufferAttribute(new Float32Array(pp.length / 3 * 4).fill(1), 4)); pg.setAttribute('normal', new THREE.Float32BufferAttribute(new Float32Array(pp.length).map((_, i) => i % 3 === 1 ? 1 : 0), 3));
-    this.puddleMesh = add(this.root, pg, new THREE.MeshStandardMaterial({ color: '#0d1013', roughness: .06, metalness: 0, envMapIntensity: 1.1, vertexColors: true, transparent: true, depthWrite: false, side: THREE.DoubleSide, ...decal(4) }), 0, 0, 0, false);
+    for (let i = 0, v = 0; i < nN; i++) for (let lane = 0; lane < 13; lane++) for (const [di, dl] of [[0, 0], [0, 1], [1, 0], [0, 1], [1, 1], [1, 0]]) { puv[v++] = i + di; puv[v++] = lane + dl; }
+    pg.setAttribute('position', new THREE.Float32BufferAttribute(pp, 3)); pg.setAttribute('uv', new THREE.Float32BufferAttribute(puv, 2)); pg.setAttribute('normal', new THREE.Float32BufferAttribute(new Float32Array(pp.length).map((_, i) => i % 3 === 1 ? 1 : 0), 3));
+    const puddleMat = new THREE.MeshStandardMaterial({ color: '#0b0e11', roughness: .3, metalness: 0, envMapIntensity: 1.2, transparent: true, depthWrite: false, side: THREE.DoubleSide, ...decal(4) });
+    this.waterUniforms = { uWater: { value: wtex }, uRainT: { value: 0 }, uRain: { value: 0 } };
+    puddleMat.onBeforeCompile = (s) => {
+      Object.assign(s.uniforms, this.waterUniforms);
+      s.vertexShader = 'varying vec2 vCell;varying vec2 vWxz;\n' + s.vertexShader.replace('#include <uv_vertex>', '#include <uv_vertex>\nvCell=uv;')
+        .replace('#include <project_vertex>', '#include <project_vertex>\nvWxz=(modelMatrix*vec4(transformed,1.)).xz;');
+      s.fragmentShader = `varying vec2 vCell;varying vec2 vWxz;uniform sampler2D uWater;uniform float uRainT;uniform float uRain;
+        float wTex(float i,float l){i=mod(i,${nN}.);l=clamp(l,0.,12.);int ii=int(i);return texelFetch(uWater,ivec2(ii%${WATER_W},(ii/${WATER_W})*13+int(l)),0).r;}
+        float wDepth(vec2 c){vec2 f=c-.5,b=floor(f),t=f-b;float a=mix(wTex(b.x,b.y),wTex(b.x+1.,b.y),t.x),d=mix(wTex(b.x,b.y+1.),wTex(b.x+1.,b.y+1.),t.x);float r=mix(a,d,t.y);return r*r*6.6;}
+        float h21(vec2 p){p=fract(p*vec2(123.34,456.21));p+=dot(p,p+45.32);return fract(p.x*p.y);}
+        float vn(vec2 p){vec2 i=floor(p),f=p-i;f=f*f*(3.-2.*f);return mix(mix(h21(i),h21(i+vec2(1,0)),f.x),mix(h21(i+vec2(0,1)),h21(i+1.),f.x),f.y);}
+        float fbm(vec2 p){return .55*vn(p)+.3*vn(p*2.13+7.1)+.15*vn(p*4.7-3.3);}
+        ` + s.fragmentShader.replace('#include <color_fragment>', `#include <color_fragment>
+        float wd=wDepth(vCell),n1=fbm(vWxz*.15),n2=vn(vWxz*1.6);
+        float film=1.-exp(-wd/.35),pd=clamp((wd-.55)/2.3,0.,1.),th=.97-pd*1.05;
+        float pool=pd>0.?smoothstep(th-.03,th+.03,n1):0.;
+        // Pools carry a grey-blue sky tint (seen from above too, not only at grazing angles) inside a darker soaked rim.
+        float rim=smoothstep(.0,.06,n1-th+.075)*(1.-smoothstep(.0,.05,n1-th-.01))*step(.001,pd);
+        diffuseColor.rgb=mix(diffuseColor.rgb,vec3(.30,.34,.39),.6*pool);diffuseColor.rgb*=1.-.45*rim;
+        diffuseColor.a=max(max(.3*film*smoothstep(.03,.15,wd)*(.45+.9*n2),.86*pool),.6*rim);
+        if(diffuseColor.a<.004)discard;
+        if(uRain>0.&&pool>0.){vec2 g=vWxz*2.2,gi=floor(g);float ph=fract(uRainT*.9+h21(gi)),r=length(g-gi-.5)*2.;
+          diffuseColor.rgb+=vec3(.12)*uRain*pool*smoothstep(.12,0.,abs(r-ph))*(1.-ph);}`)
+        .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor=mix(.34,.025,pool);');
+    };
+    this.puddleMesh = add(this.root, pg, puddleMat, 0, 0, 0, false);
     this.puddleMesh.visible = false;
 
     // Start/finish chequer and grid boxes.
@@ -1287,13 +1319,15 @@ export class World {
     }
     this.startLights.forEach((l) => { const i = Math.floor(this.startLights.indexOf(l) / 2), on = countdown > 0 && countdown < 4 - i * .45; l.material.color.set(on ? '#ff2a12' : '#2a1412'); if (l.material.userData.glow) l.material.userData.glow.material.opacity = on ? .9 : 0; });
     const water = this.track.water;
+    this.waterUniforms.uRainT.value = time; this.waterUniforms.uRain.value = Math.min(1, this.track.weatherInfo?.rainHere ?? 0);
     if (water?.live && Math.floor(time * 3) !== this.waterTick) {
-      this.waterTick = Math.floor(time * 3); const col = this.puddleMesh.geometry.attributes.color, arr = col.array, depth = water.depth; let any = false;
-      for (let i = 0; i < depth.length; i++) {
-        const d = depth[i], a = d < .04 ? 0 : Math.min(.8, .22 * (1 - Math.exp(-d / .35)) + .55 * clamp((d - .6) / 1.6, 0, 1));
-        if (a > 0) any = true; for (let v = 0; v < 6; v++) arr[i * 24 + v * 4 + 3] = a;
+      this.waterTick = Math.floor(time * 3); const tex = this.waterUniforms.uWater.value, arr = tex.image.data, W = tex.image.width, depth = water.depth; let any = false;
+      for (let k = 0; k < depth.length; k++) {
+        const d = depth[k]; if (d > .04) any = true;
+        const i = (k / 13) | 0, l = k - i * 13;
+        arr[(i % W) + ((((i / W) | 0) * 13 + l) * W)] = Math.round(Math.sqrt(Math.min(d, 6.6) / 6.6) * 255);
       }
-      col.needsUpdate = true; this.puddleMesh.visible = any;
+      tex.needsUpdate = true; this.puddleMesh.visible = any;
     } else if (!water?.live && this.puddleMesh.visible) this.puddleMesh.visible = false;
     // Rubber shading: rewrite and upload only the lane cells whose value moved.
     if (Math.floor(time * 2) !== this.rubberTick) {
