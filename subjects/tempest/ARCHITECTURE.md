@@ -462,6 +462,21 @@ bites once the forecast puts the rival's lateral path back on ours.
   and the racing line carried that cost. Following to the zone's edge instead: fewer incidents (1.1–1.4 against
   about 1.4) but field 4.08 / 3.96 against 3.58 / 3.75 (seeds 7–9 / 10–12). Off.
 
+### Off the green (measured)
+
+43 of 57 race places TEMPEST lost (seeds 7–9) went in the first 60 s. In the first 4 s after the green it runs
+2–4 m/s slower than RAZOR and Spearhead (37.3 against 40.8 m/s at 2 s) at the same lateral load (|ay| 3.9 against
+4.0): it asks for more throttle (0.89) but sends 0.73 against RAZOR's 0.82. Its own layers take the difference:
+stability 0.077 (almost all the yaw-rate term, active 30 % of the time), traction 0.067 (mostly wheelspin, where the
+game's traction control already acts) and slip 0.013. Field noise: the base scores 3.58 / 3.75 / 3.71 on seeds
+7–9 / 10–12 / 13–15, so a change needs more than ±0.15 to show. Tried, all off by default:
+
+- `joinAccel` (lattice): size the start join at the speed reached at its end, not the speed at the green. 4.96.
+- `overRel` (control): yaw-rate tolerance growing with the yaw asked for. 4.54, more incidents.
+- `overSteerRef` (control): the steady-state yaw of the lock last sent is a reference too, so the yaw the car
+  carries behind the jerk-limited steering through an S is not read as a slide. Places lost 2.6 → 2.1 per race
+  and first-minute losses 43 → 31, but fewer passes: 3.67 / 3.75 / 3.71 (equal), damage 2.9–3.5 % (from 2.2–2.8).
+
 ## 7. Open work
 
 - Delay-aware steering under one frame of lag (braking in wake oscillates; see the worker path)

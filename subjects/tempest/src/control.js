@@ -61,7 +61,17 @@ export class Controller {
     this.steer = clamp(ff + (o.yawGain ?? 0.45) * rErr + (o.slideGain ?? 5) * slide, -1, 1);
     // ---- stability, anticipated ----
     const rK = car.ay / v, rRef = Math.sign(rK) === Math.sign(car.yawRate) && Math.abs(rK) > Math.abs(rDes) ? rK : rDes;
-    const over = Math.sign(car.yawRate) === Math.sign(rRef) ? Math.max(0, Math.abs(car.yawRate) - Math.abs(rRef)) : Math.abs(car.yawRate);
+    // overSteerRef: oversteer is rotating more than the steering asks. Behind the jerk-limited steering the car still yaws
+    // with the lock it holds while the path's curvature reverses (an S off the green: 0.4 rad/s at no lateral load), and
+    // against the path alone that read as a slide. The steady-state yaw of the lock last sent is a reference too
+    let rRefS = rRef;
+    if (o.overSteerRef === true && this.sent && Math.abs(this.sent.steer) > 0.005) {
+      const st = this.sent.steer, top = 1.3 * model.lat(v); let lo = 0, hi = top;
+      if (Math.abs(model.steerFor(top, v)) > Math.abs(st)) { for (let q = 0; q < 18; q++) { const m = 0.5 * (lo + hi); if (Math.abs(model.steerFor(m, v)) < Math.abs(st)) lo = m; else hi = m; } }
+      const rS = Math.sign(st) * Math.sign(model.steerFor(1, v)) * lo / Math.max(2, v);
+      if (Math.sign(rS) === Math.sign(car.yawRate) && Math.abs(rS) > Math.abs(rRefS)) rRefS = rS;
+    }
+    const over = Math.sign(car.yawRate) === Math.sign(rRefS) ? Math.max(0, Math.abs(car.yawRate) - Math.abs(rRefS)) : Math.abs(car.yawRate);
     const trend = dt > 0 ? clamp((over - this.lastOver) / dt, 0, 4) : 0; this.lastOver = over;
     const overP = over + trend * (o.anticipate ?? 0);
     const dBetaS = Math.min(Math.abs(dBeta), Math.abs(beta - model.betaFor(car.ay, v)));
