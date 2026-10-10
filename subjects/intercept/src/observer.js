@@ -3,6 +3,11 @@ import { angle, gap, clamp, advance, roadSample } from './math.js';
 export const HALF_LENGTH = 2.28;
 export const HALF_WIDTH = 0.98;
 
+function forwardMotion(v,a,time) {
+  v=Math.max(0,v);const applied=Math.min(time,1,a<0?v/-a:Infinity),end=Math.max(0,v+a*applied);
+  return {distance:v*applied+.5*a*applied*applied+end*(time-applied),velocity:end};
+}
+
 /** Public observations only. Race eligibility is separate from physical occupancy. */
 export class Observer {
   constructor(track) { this.track = track; this.history = new Map(); this.list = []; }
@@ -48,14 +53,15 @@ export class Observer {
   /** Reliable near-term body tube; never freezes a rival at the forecast endpoint. */
   at(r, time) {
     const h = Math.min(3.5, Math.max(0, time)), acceleration = r.hazard ? Math.min(0,r.ax) : clamp(r.ax,-8,4);
-    const ds = r.v*h + .5*acceleration*Math.min(h,1.0)**2;
+    const motion=forwardMotion(r.v,acceleration,h),ds=motion.distance;
     let road=r.s+ds;
     let lateral = r.d + clamp(r.vd,-3,3)*Math.min(h,.7);
-    if(this.reference&&!r.hazard&&!r.approaching&&r.reference){const line=this.reference,c=advance(line,r.reference.i,r.reference.f,Math.max(0,r.referenceSpeed*h+.5*acceleration*Math.min(h,1)**2));
+    const referenceDistance=this.reference&&r.reference?forwardMotion(r.referenceSpeed,acceleration,h).distance:0;
+    if(this.reference&&!r.hazard&&!r.approaching&&r.reference){const line=this.reference,c=advance(line,r.reference.i,r.reference.f,referenceDistance);
       road=roadSample(line,c.i,c.f,this.track.length);lateral=line.sample(line.lat,c.i,c.f)+r.offset+r.offsetSpeed*Math.min(h,.7);}
-    const q=this.track.at(road),velocity=Math.max(0,r.v+acceleration*Math.min(h,1));
+    const q=this.track.at(road),velocity=motion.velocity;
     let heading=q.heading+r.psi;
-    if(this.reference&&!r.hazard&&!r.approaching&&r.reference){const c=advance(this.reference,r.reference.i,r.reference.f,Math.max(0,r.referenceSpeed*h+.5*acceleration*Math.min(h,1)**2));heading=this.reference.heading(c.i,c.f);}
+    if(this.reference&&!r.hazard&&!r.approaching&&r.reference){const c=advance(this.reference,r.reference.i,r.reference.f,referenceDistance);heading=this.reference.heading(c.i,c.f);}
     return {s:road,d:lateral,v:velocity,x:q.x+Math.cos(q.heading)*lateral,z:q.z-Math.sin(q.heading)*lateral,h:heading,
       vx:Math.sin(heading)*velocity,vz:Math.cos(heading)*velocity,sigma:.15+.12*h*h,valid:time<=3.5};
   }

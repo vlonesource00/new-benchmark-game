@@ -45,6 +45,12 @@ test('contact severity follows the collision normal, so matched sideways rubbing
  assert.ok(lateral.closing<1);assert.ok(lateral.longitudinal<.1);
  const rear=bodyContact(a,{x:0,z:4.4,h:0,vx:0,vz:40});assert.ok(rear.closing>6);assert.ok(rear.longitudinal>.9);
 });
+test('forecast displacement agrees with velocity after the acceleration window and after stopping',()=>{
+ const o=new Observer(track),r={s:250,d:0,v:40,vd:0,ax:4,psi:0,hazard:false};
+ const a=o.at(r,2),b=o.at(r,2.01);assert.ok(Math.abs((b.s-a.s)/.01-a.v)<1e-8);assert.equal(a.s,336);
+ const stopped={...r,v:2,ax:-8},c=o.at(stopped,2),d=o.at(stopped,3);
+ assert.equal(c.v,0);assert.equal(c.s,d.s);assert.equal(c.s,250.25);assert.equal(o.at(r,4).valid,false);
+});
 test('pass requires rear clearance and continuous retention; pit entry never earns a pass',()=>{
  const book=new Outcomes(),r={id:1,ds:10,along:2.28,eligible:true,kind:'race'},field={list:[r],me:{d:0},car:{damage:0}};
  book.update({damage:0},field,0,{});book.declare(r,field,0,1);field.me.d=1;r.ds=0;book.update({damage:0},field,.1,{});
