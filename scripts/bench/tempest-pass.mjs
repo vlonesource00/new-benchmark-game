@@ -58,9 +58,11 @@ const rd = solo ? null : shim ? made.find((x) => !(x instanceof TempestDriver)) 
 if (!td) throw new Error('no TEMPEST driver found');
 if (shim && seats.hosts.some((h) => h?.failed)) throw new Error('seat worker failed');
 Object.assign(td.options, opts); td.forceRefresh = true;
-if (rd?.options) { Object.assign(rd.options, rivalOpts); rd.forceRefresh = true; }
+// RAZOR keeps a base margin and rescales options.margin from it every update (adaptive tyres): set both
+if (rd?.options) { Object.assign(rd.options, rivalOpts); if (rivalOpts.margin != null && rd.baseMargin !== undefined) rd.baseMargin = rivalOpts.margin; rd.forceRefresh = true; }
 for (const [who, d, o] of [['tempest', td, opts], ...(solo ? [] : [[rival, rd, rivalOpts]])]) for (const [key, val] of Object.entries(o))
   if (JSON.stringify(d?.options?.[key]) !== JSON.stringify(val)) throw new Error(`${who} option ${key} did not take: ${JSON.stringify(d?.options?.[key])}`); if (rival === 'next-racer' && rd?.o) rd.o.planBudgetMs = Infinity;
+if (args.includes("--lineAt")) { const [a, b] = flag("lineAt").split(",").map(Number), Ln = td.line, lanes = td.atlas.lanes; for (let s = a; s <= b; s += 2.5) { const i = Math.round(Ln.stationOf(s)) % Ln.N; console.log(`s ${s} lat ${Ln.lat[i].toFixed(2)} ks ${Ln.ks[i].toFixed(4)} v ${Ln.v[i].toFixed(1)} len ${Ln.len[i].toFixed(2)} | ` + lanes.map((l, m) => `${l.shift ? (l.shift[i] ?? 0).toFixed(1) : "-"}:${l.ks ? l.ks[i].toFixed(3) : "-"}:${l.v ? l.v[i].toFixed(0) : "-"}`).join(" ")); } process.exit(0); }
 const me = race.cars[ti], him = solo ? { id: -1, speed: NaN, damage: NaN, hybrid: null, race: { progress: NaN } } : race.cars[ri];
 // --ghost t0,t1: a matched counterfactual. TEMPEST and the rival do not collide inside that window (the race sets ghost every
 // step; this holds it on), everything else identical
@@ -152,16 +154,16 @@ while (race.time < T && race.phase !== 'finished') {
     if (args.includes('--cands') && race.time >= from && race.time < from + Number(flag('cands'))) console.log(`plan ${race.time.toFixed(2)} ${a.state} d0 ${a.chosen?.p?.start?.d0 ?? ''}: ` + (a.lastEvs ?? []).map((e, q) => `${a.cands[q].kind}${a.cands[q].chosen ? '*' : ''} s ${e.score.toFixed(2)} t ${e.t.toFixed(2)} c ${e.contact.toFixed(2)} p ${e.passes}/${e.lost} dev ${e.maxDev.toFixed(1)}`).join(' | '));
     // a pass claimed by the chosen plan, and when (tH: our arrival at the horizon) against the forecast's span
     if (b?.passes > 0) { claims.n++; if (b.tH > FSPAN) claims.beyond++; claims.tH.push(b.tH); }
-    if (f) for (const h of [1.5, 3]) fc.push({ h, due: a.planT + h, s0: td.field.me.s, pred: at(f.ds, h), st: a.state });
+    if (f) for (const h of [1.5, 3]) fc.push({ h, due: a.planT + h, s0: td.field.me.s, pred: at(f.ds, h), st: a.state, ph: (td.field.byId.get(him.id)?.a ?? 0) > 1.5 ? "acc" : (td.field.byId.get(him.id)?.a ?? 0) < -3 ? "brk" : "cst" });
   }
   for (let q = fc.length - 1; q >= 0; q--) if (race.time >= fc[q].due) {
     const e = fc.splice(q, 1)[0], r = td.field.byId.get(him.id);
-    if (r) fcErr[e.h].push({ err: wrapL(r.s - e.s0) - e.pred, st: e.st });
+    if (r) fcErr[e.h].push({ err: wrapL(r.s - e.s0) - e.pred, st: e.st, ph: e.ph });
   }
   if (++k % 6) continue;   // 0.1 s rows
-  if (args.includes('--dumpAt') && !dumped && race.time >= Number(flag('dumpAt'))) { dumped = true; const P = td.path ?? td.line, L = td.line, ci = td.c?.i ?? 0; console.log(`dump at ${race.time.toFixed(2)} lane ${P !== L} v ${me.speed.toFixed(1)} cap ${P.cap ? 'yes' : 'no'} window ${JSON.stringify(P.window ?? null)} ci ${ci} planT ${td.arbiter.planT?.toFixed(2)} myLat ${(td.line.closest(me.x, me.z, ci).lat ?? NaN)} sh0 ${JSON.stringify(td.arbiter.plan?.start ?? null)}`); for (let j = -2; j < 60; j += 3) { const q = P.idx(ci + j), w = L.idx(ci + j); console.log(`  +${(j * P.ds).toFixed(0).padStart(4)} m  lane vmax ${P.vmax[q].toFixed(1)} v ${P.v[q].toFixed(1)} vbrk ${P.vbrk[q].toFixed(1)} cap ${P.cap ? P.cap[q].toFixed(1) : '-'} ks ${(P.ks?.[q] ?? NaN).toFixed(4)} sh ${(P.lat[q] - L.lat[w]).toFixed(2)} | line v ${L.v[w].toFixed(1)} vbrk ${L.vbrk[w].toFixed(1)} ks ${(L.ks?.[w] ?? NaN).toFixed(4)}`); } }
+  if (args.includes('--dumpAt') && !dumped && race.time >= Number(flag('dumpAt'))) { dumped = true; const P = td.path ?? td.line, L = td.line, ci = td.c?.i ?? 0; console.log(`dump at ${race.time.toFixed(2)} lane ${P !== L} v ${me.speed.toFixed(1)} cap ${P.cap ? 'yes' : 'no'} window ${JSON.stringify(P.window ?? null)} ci ${ci} planT ${td.arbiter.planT?.toFixed(2)} myLat ${(td.line.closest(me.x, me.z, ci).lat ?? NaN)} sh0 ${JSON.stringify(td.arbiter.plan?.start ?? null)} chosen ${JSON.stringify(td.arbiter.chosen?.p ?? null, (k, x) => k === "f" || k === "lane" && typeof x === "object" || ArrayBuffer.isView(x) ? undefined : x).slice(0, 600)}`); for (let j = -2; j < 60; j += 3) { const q = P.idx(ci + j), w = L.idx(ci + j); console.log(`  +${(j * P.ds).toFixed(0).padStart(4)} m  lane vmax ${P.vmax[q].toFixed(1)} v ${P.v[q].toFixed(1)} vbrk ${P.vbrk[q].toFixed(1)} cap ${P.cap ? P.cap[q].toFixed(1) : '-'} ks ${(P.ks?.[q] ?? NaN).toFixed(4)} sh ${(P.lat[q] - L.lat[w]).toFixed(2)} | line v ${L.v[w].toFixed(1)} vbrk ${L.vbrk[w].toFixed(1)} ks ${(L.ks?.[w] ?? NaN).toFixed(4)}`); } }
   const r = td.field.byId.get(him.id), p = a.lastPred && a.lastPred.t > race.time - 0.1 ? a.lastPred : null;
-  rows.push({ gr: `${me.gear}/${Math.round(me.rpm)}${me.tcActive ? "T" : ""}${me.shiftTimer > 0 ? "S" : ""} ${him.gear}/${Math.round(him.rpm ?? 0)}${him.tcActive ? "T" : ""}`, e: pathErr, guard: ctl.guard, t: race.time, st: a.state, age: race.time - a.planT, ds: r?.ds, dd: r ? r.d - td.field.me.d : NaN, v: me.speed, vr: him.speed, vt: ctl.targetSpeed,
+  rows.push({ gr: `${me.gear}/${Math.round(me.rpm)}${me.tcActive ? "T" : ""}${me.shiftTimer > 0 ? "S" : ""} ${him.gear}/${Math.round(him.rpm ?? 0)}${him.tcActive ? "T" : ""}`, e: pathErr, sl: ((me.s % track.length) + track.length) % track.length, slR: ((him.s % track.length) + track.length) % track.length, lo: Math.sqrt(td.line.closest(me.x, me.z, td.cursor ?? -1).d2 ?? 0), path: td.path && td.path !== td.line ? (td.path.kind ?? "lane") : "line", guard: ctl.guard, t: race.time, st: a.state, age: race.time - a.planT, ds: r?.ds, dd: r ? r.d - td.field.me.d : NaN, v: me.speed, vr: him.speed, vt: ctl.targetSpeed,
     src: why.src, cap: why.cap, cut: why.cut, rt: req.throttle, rb: req.brake, st2: sent.throttle, sb: sent.brake, xt: ex.throttle, xb: ex.brake, steer: ex.steer, yr: me.yawRate, stab: ctl.stability, beta: Math.atan2(me.v, Math.max(2, me.u)), pred: p ? p.err : null, wake: me.aero?.wake ?? 0,
     hy: `${me.hybrid?.mode?.[0] ?? '-'}${him.hybrid?.mode?.[0] ?? '-'}`, lim: `${why.cap}/${why.cut}`,
     all: [...Object.entries(why.caps ?? {}).map(([n, x]) => `${n}-${x.toFixed(1)}`), ...Object.entries(why.cuts ?? {}).map(([n, x]) => `${n}-${x.toFixed(2)}`)].join(' '),
@@ -181,6 +183,7 @@ const stat = (xs) => { const v = xs.map((x) => x.err).sort((p1, p2) => p1 - p2);
 const tq = claims.tH.sort((x, y) => x - y), q = (f) => (tq.length ? tq[Math.floor(tq.length * f)].toFixed(2) : '-');
 console.log(`pass claims by the chosen plan: ${claims.n} decisions, ${claims.beyond} resolved after the ${FSPAN.toFixed(1)} s forecast span (tH p10 ${q(0.1)} p50 ${q(0.5)} p90 ${q(0.9)} s)`);
 for (const h of [1.5, 3]) console.log(`rival forecast error at ${h} s (+ = rival further than forecast): all ${stat(fcErr[h])} | in ATTACK ${stat(fcErr[h].filter((x) => x.st === 'ATTACK'))}`);
+for (const h of [1.5, 3]) console.log(`  by rival phase at ${h} s: ` + ["acc", "cst", "brk"].map((k) => `${k} ${stat(fcErr[h].filter((x) => x.ph === k))}`).join(" | "));
 // one line per declared attack (state windows), then the replay rows of the chosen ones
 const atts = []; let open = null;
 for (const r of rows) { if (r.st === 'ATTACK' && !open) open = { t0: r.t, rs: [] }; if (open) { if (r.st !== 'ATTACK' && r.t - open.last > 1.5) { atts.push(open); open = null; } else { open.rs.push(r); if (r.st === 'ATTACK') open.last = r.t; } } }
@@ -262,3 +265,5 @@ if (args.includes('--timeline')) {
   console.log(`\ntimeline (${per}/s):    t  state   gap  side    v    vR  source/cap/cut              wake  hy   steer  yaw/s   beta  stab`);
   let sec = -1; for (const r of rows) if (r.t >= t0 && Math.floor(r.t * per + 1e-6) > sec && (sec = Math.floor(r.t * per + 1e-6)) >= 0) console.log(`  ${r.t.toFixed(1).padStart(6)} ${r.st.padEnd(6)} ${f1(r.ds).padStart(5)} ${f1(r.dd).padStart(5)} ${r.v.toFixed(1).padStart(5)} ${r.vr.toFixed(1).padStart(5)}  ${`${r.src}/${r.lim}`.padEnd(28)} ${r.wake.toFixed(2)}  ${r.hy}  ${r.steer.toFixed(3).padStart(6)} ${r.yr.toFixed(3).padStart(6)} ${r.beta.toFixed(3).padStart(6)} ${(r.stab ?? 1).toFixed(2)}  vt ${r.vt.toFixed(1)} t/b ${(r.xt ?? 0).toFixed(2)}/${(r.xb ?? 0).toFixed(2)} ask ${(r.rt ?? 0).toFixed(2)} g ${r.gr}`);
 }
+// --every N: one compact row per N seconds over the whole run (s along the lap, gap, side offset, speeds, wake, state)
+if (args.includes('--every')) { const N = Number(flag('every', 1)); let next = 0; for (const r of rows) if (r.t >= next) { next = r.t + N; console.log(`  ${r.t.toFixed(1).padStart(6)} s ${r.sl.toFixed(0).padStart(5)} sR ${(r.slR ?? NaN).toFixed(0).padStart(5)} ${r.st.padEnd(7)} gap ${r.ds?.toFixed(1).padStart(6)} side ${r.dd?.toFixed(1).padStart(5)} line ${r.lo.toFixed(1).padStart(4)} ${r.path} v ${r.v.toFixed(1)} vR ${r.vr.toFixed(1)} vt ${r.vt?.toFixed(1)} wake ${r.wake.toFixed(2)} ${r.src}/${r.lim} ${r.all}`); } }
