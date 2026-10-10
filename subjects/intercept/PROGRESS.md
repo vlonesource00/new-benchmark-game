@@ -1,48 +1,71 @@
-# INTERCEPT implementation
+# INTERCEPT implementation checkpoint
 
-Implementation worktree: `intercept-dev`. Existing drivers and TEMPEST experiments are preserved. Integration follows the published `graphics-aaa` base, now rebased onto cca58d1. The traffic laboratory measurements below began on 7df8b91; its regression checks also pass on the new base.
+Independent racer on `intercept-dev`, based on `graphics-aaa`. This checkpoint was measured on 9a8282d; the subsequent upstream changes through d996abd affect only opt-in TEMPEST experiments and documentation. Existing drivers and their experiments are preserved.
 
-Design: an asynchronous battle planner with a shared controller executing at the physics rate. Small connected corridors, fresh body clearance, fixed attack side, continuous joins, and useful exit speed determine moves. Labels never select the pedal profile.
+Readiness estimate: approximately 70%. This is an engineering estimate against the gates below, not a measured probability of winning or an ETA. INTERCEPT is not yet a proven best racer.
 
-Completion gates (each requires evidence):
+The asynchronous planner chooses small connected corridors. The shared controller executes at the physics rate with fresh body clearance, a latched attack side, private course arrays and bounded route contracts. Labels never choose a pedal profile. A cached, short physical forecast models rival acceleration, braking and road distance without reading rival plans. A moving off-road car is still predicted as moving.
 
-- [x] Shared controller, private course data, timestamped contract and physics-rate worker executor.
-- [x] Clean retained maneuver pass around a car blocking the fast line, through the worker path, with a following-only control. Verified in the controlled Harbor train; general race passing remains open.
-- [ ] Inside/outside/exit passes, both grid orders, defense and multi-class traffic.
-- [ ] Stopped/spun/pit/finished-car evasion, rain, swaps, safety car and full yellow.
-- [ ] Dynamic tyre/fuel/energy strategy; Harbor GTP below 53 s, GT3 below 64 s, comparable stint fade at most 4 s.
-- [ ] Matched comparisons against RAZOR, APEX and SPEARHEAD; supported worker jitter/spikes and real browser checks.
+Completion gates:
 
-Superiority is a test objective, not an established result. Local result files are excluded from commits. Fixed roster comparisons isolate integration effects on other AIs.
+- [x] Physics-rate executor, bounded contracts, private route buffers and continuous joins.
+- [x] Three retained traffic passes around bodies blocking the fast line, with a following-only causal control.
+- [x] Actual Chromium workers withstand the tested 500/250 ms wall-clock reply delays without contacts or worker errors.
+- [x] Native regression coverage for pits, retired/off-road bodies, swaps, rain, changeable weather, SC and FCY.
+- [x] Harbor pace targets in the measured runs; dynamic tyre/fuel/energy planning and measured stint fade below 4 s.
+- [ ] Repeatable retained same-class inside/outside/exit maneuver passes and useful defense in matched grid orders.
+- [ ] Fast hazard recovery; safe clearance alone does not meet this gate.
+- [ ] Consistent endurance superiority against RAZOR, APEX and SPEARHEAD across tracks, seeds, mixed fields and real browser scheduling.
 
-## Traffic laboratory checkpoint
+## Changes accepted in this checkpoint
 
-`TOOLS.md` documents the sparse three-GT3 Harbor fixture, interactive replay, JSON/CSV capture, analysis, comparative matrix and regression checks.
+- Cache a bounded physical rival forecast instead of freezing acceleration. Preserve powered predictions for upright off-road cars.
+- Compare corridor clearance in the future road section and preserve an established lane through a reachable traffic train. Abort routes cannot chain another attack.
+- Use at least 3.3 m center separation for new GTP passes of GT3s; retain the smaller owned space once alongside.
+- Reset wear forecasts on renewal and estimate wear over meaningful distance. Distinguish a fuel-only stop from tyre renewal. Do not make an extra late tyre stop when the current set can finish economically within fuel, mandatory-stop, swap and fade limits.
+- Permit a close combat hybrid burst only when the nose is clear, the car is accelerating and battery reserve permits it. The race bridge now represents green as no active caution; previously the string `green` silently disabled the burst.
+- Preserve GT's measured grip reserve in qualifying. Spending the full modeled peak gained only 0.10 s but caused an excursion; the reserved run stayed clean.
+- Release unreachable stored braking after a hazard escape. Recovery remains too slow.
+- Add four replay cameras, actual trails, same-time solo/no-hazard ghosts, pair clearance readouts and encounter bookmarks. Capture race peak/cumulative damage and actual solver contact pairs so pit repair cannot erase safety history.
 
-The standard controlled train puts GT3s at 100, 180 and 260 m, with the GTP at 20 m. It retains all three passes at 263.1, 254.1 and 272.8 km/h; the last clearance occurs at 9.89 s. Straight time is 10.69 s against 10.38 s solo, a 0.31 s loss. There are no contacts, damage or incidents in this case. The first pass has new maneuver evidence; the next two use the already established passing lane. Following-only retains zero passes on the straight and loses 4.29 s.
+## Traffic and browser evidence
 
-The matrix covers six scenarios across seeds 7, 11 and 23. Standard train results are nearly identical across those seeds; seeded delivery jitter is the main source of seed variation here. Geometry, spacing, rival speed and unrestricted rival behavior are separate variations. Unrestricted GT3s are harder to reach before T1; the report records reachability rather than claiming every unmade pass was feasible.
+The controlled Harbor train starts the GTP at 20 m and three RAZOR GT3s at 100, 180 and 260 m. GT3 speed is limited through ordinary pedals; bodies are neither moved nor ghosted. The trace continues through the next corners.
 
-The 500/250 ms injected-delay scenario retains three clean straight passes for seeds 7 and 23. Seed 11 retains two on the straight; the third completes just after the endpoint with a light bumper contact (0.50% damage), and is marked contact-assisted. This is an open latency/performance edge case, not clean passing evidence.
+Current worker train: three retained passes, one new maneuver and two carried-lane passes, zero contacts/damage/incidents. Straight delay is -0.085 s against matched solo; drafting accounts for the negative delay. Following-only retains zero passes on the straight. The seeded simulated-delay checks also retain three clean passes.
 
-Stopped and spun obstacles remain in place, without marshal assistance. Both are cleared without damage. The stopped obstacle adds 0.09 s to the straight against the same moving field with that obstacle removed; the spun obstacle adds 0.85 s. Speed recovery against that moving-field control is 1.6 and 3.23 s respectively. Both fail the 1.5 s fast-evasion checkpoint; total recovery against solo is also shown and is slower still.
+Actual Chromium module workers, with 500/250 ms wall-clock reply delays: three retained passes at 263.2, 252.1 and 271.9 km/h; last clearance at 10.12 s. Straight delay is +0.343 s against matched solo. No contacts, damage, incident points, worker errors or browser errors. Maximum route age is 1.28 simulated seconds. Headless frame cadence differs from a laptop or 60 fps real-time play; this is one validated case, not a guarantee that all deadlines or hardware are safe.
 
-Native checks cover pit/boxing/off-road/retired bodies, true rear clearance, lane-buffer isolation, pedal/profile invariants, short-race compound selection, swaps, SC, FCY, rain and changeable weather. The production build passes. A real Chromium two-car run with 250 ms wall-clock reply delay completed 25 simulated seconds with no worker errors or severe contacts, but had light rubbing and 1.27% damage. It does not replace a real-browser three-GT3 pass fixture or full endurance validation.
+Pinned stopped/spun obstacles are cleared without rescue or damage. Current total straight delays are +0.347 / +0.468 s. Incremental delay at clearance versus the moving-field counterfactual is +0.118 / +0.170 s, but speed recovery takes about 6.84 / 7.00 s. The 1.5 s recovery gate remains open. The isolated spun case and a very late hazard require separate scrutiny.
 
-## Open work
+## Pace and endurance evidence
 
-1. Keep body separation through a late pass into T1, including variable reply cadence, without unnecessary following brakes.
-2. Recover useful speed promptly after hazard evasion; safe clearance alone does not meet the gate.
-3. Validate inside/outside/exit attacks and defense, in both grid orders and actual browser workers.
-4. Diagnose race-pace loss using `race.mjs --trace`, then measure stint fade, rain decisions and endurance results on matched fields.
-5. Re-run qualifying against the new run-up rule. Earlier qualifying results do not establish the current ranking.
+Matched solo worker qualifying setup on Harbor, warm softs, seed 7:
 
-## Current endurance checkpoint
+| Class | INTERCEPT best | RAZOR best | APEX best | SPEARHEAD best |
+| --- | ---: | ---: | ---: | ---: |
+| GTP | 50.71 s | 51.42 s | 51.50 s | 52.42 s |
+| GT3, measured reserve | 61.00 s | 60.86 s | 61.01 s | 62.66 s |
 
-A matched 12-lap Harbor GTP race through the worker path, seed 7 with INTERCEPT starting behind RAZOR and APEX, finishes with RAZOR at 686.68 s, INTERCEPT at 698.41 s and APEX at 704.98 s. INTERCEPT's best lap is 52.53 s, with one stop, one swap, zero damage and zero incident points. Its final medium stint runs from 52.53 to 53.40 s. It declares 10 attacks, starts 10, and reaches no overlaps or retained passes. The result establishes useful pace and strategy in this setup, not effective same-class race combat.
+Both accepted INTERCEPT qualifying runs have zero damage and incident points. These short qualifying runs do not establish endurance superiority.
 
-The rival forecast now continues from its accelerated velocity after its one-second acceleration window, and never moves backwards after braking to a stop. Displacement and reported velocity agree. This corrects the motion model; it does not establish a race improvement.
+Current four-driver, 12-lap worker races, seed 11, INTERCEPT starting last:
 
-An energy A/B leaves INTERCEPT on the shared game's policy instead of its own straight-speed taper. Race time is essentially unchanged (698.34 s), while INTERCEPT takes 3.17% damage and two incident points, still without a pass. The production energy policy remains unchanged. A lower hybrid demand on straights alone is insufficient to explain the combat loss.
+| Class | INTERCEPT finish | RAZOR finish | INTERCEPT peak damage | Incident points | Stop / swap |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| GTP | 691.92 s | 694.81 s | 0.40% | 0 | 1 / 1 |
+| GT3 | 812.64 s | 809.19 s | 5.72% | 6 | 1 / 1 |
 
-All 19 system checks, the controlled traffic regressions and the production build pass on this base. The corrected two-car fixture also exposes a severe impact when a spun car is spawned only 23 m ahead at 58 m/s; this is an open near-hazard case, not covered by the clean sparse-train result. A moving-rival fixture damages the rival even without INTERCEPT damage, so it cannot establish clean passing. Fast hazard recovery, the late-pass latency edge case, same-class conversion, defense, GT3 endurance and broader browser validation remain open. INTERCEPT is a working prototype, not a proven best racer.
+The GTP field includes a severe APEX/RAZOR collision; INTERCEPT is not involved in that severe contact. Its win is not proof of a clean maneuver pass of RAZOR. It records one retained pace pass and no retained new maneuver. GT3 loses 3.45 s and records no retained pass. Finish damage is zero after GT3 pit repair, which is why peak/cumulative damage and pair history are required.
+
+Clean timed samples in the final medium stints span 0.94 s in GTP and 2.03 s in GT3. They satisfy the fade target for these runs, not every track or traffic condition. Earlier front-start runs on the pre-burst bridge won GTP by 1.44 s and lost GT3 by 0.82 s; they are historical comparisons, not results of the final bridge fix.
+
+## Remaining development
+
+1. Convert overlap into retained same-class maneuver passes, with a causal following-only control and both matched grid orders.
+2. Diagnose GT3 lap-1 off-track loss and contact history; measure peak damage rather than finish damage.
+3. Recover speed rapidly after stopped/spun-car evasion without sacrificing body clearance or stability.
+4. Validate defense, mixed-class endurance, rain pit decisions and variable scheduling in actual browser workers and on slower hardware.
+5. Extend qualifying and endurance comparisons beyond Harbor and establish consistent wins before claiming superiority.
+
+Thirty system checks and the controlled traffic regressions pass. Result JSON/CSV/HTML files remain local and excluded from Git. `TOOLS.md` contains reproduction commands and the visual review workflow.

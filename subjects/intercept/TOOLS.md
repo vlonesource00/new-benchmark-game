@@ -75,10 +75,34 @@ node --import ./scripts/json-loader.mjs subjects/intercept/tools/traffic-check.m
 
 The analysis reports the worst 50 m delays, extra braking compared with solo, throttle lift events, constraint durations, rival forecast errors at 0.5 and 1.5 s, latency injections and damage events. The replay shows actual bodies, road boundaries, executed route, rival forecasts, speed/target/solo plots and pedal history. Scrubbing or clicking an event exposes nose geometry, speed caps, axle reserve, wheelspin, tyre state, candidate scores, public target eligibility and plan age.
 
+The additional camera panel provides body view at true metre scale, road-aligned view, a selected-rival close-up and the whole track. It includes zoom, two-second actual trails, same-time solo/no-hazard ghosts and pair body clearance. Previous/next encounter buttons jump to overlap, clearance and retention; arrow keys step the trace and space plays it. The original expanded lateral view remains available separately.
+
+Generate a review index and regenerate its camera pages:
+
+```sh
+node subjects/intercept/tools/review.mjs
+node subjects/intercept/tools/serve-traffic.mjs --port 4180
+```
+
+Open `http://127.0.0.1:4180/review-intercept.html`. `review.mjs --cases name1,name2` chooses existing result names. It never reruns or changes their recorded simulations.
+
+For actual Chromium module workers, provide Playwright's module path in `INTERCEPT_PLAYWRIGHT` and a Chromium executable in `INTERCEPT_CHROME`, then run:
+
+```sh
+node subjects/intercept/tools/browser-traffic.mjs --spikes --out browser-train-spikes
+node subjects/intercept/tools/replay-check.mjs --screenshots
+```
+
+The browser fixture injects 500/250 ms wall-clock reply delays, drives the ordinary browser seat path and runs a matched solo control. Headless frame cadence is measured, not forced to 60 fps; simulated route age is reported separately. This does not establish performance on every device. The UI check exercises all four cameras, target choice, zoom, encounter bookmarks, keyboard stepping and a narrow viewport.
+
 Existing tools remain available: `probe.mjs` for solo/pack pace, `encounter.mjs` for controlled two-car situations, `race.mjs` for real endurance and strategy, `browser.mjs` for actual browser workers, and `check.mjs --races` for game-system regressions. Traffic performance is one gate; it does not establish qualifying, defensive or endurance superiority.
 
-Use `race.mjs --path worker --trace --out endurance.json` to save one-second samples of stint forecasts, tyre state, fuel, battery, executed pedals and their constraints alongside lap and stop outcomes. This helps distinguish intentional tyre preservation from unnecessary race-pace loss.
+Use `race.mjs --path worker --trace --trace-period .1 --out endurance.json` to save ten samples per second of stint forecasts, tyre state, fuel, battery, executed pedals and their constraints alongside lap and stop outcomes. The default trace interval is one second. Actual physical road distance is separate from accumulated race progress. This helps distinguish intentional tyre preservation from unnecessary race-pace loss.
+
+Every endurance run records peak damage, cumulative damage gained, actual solver contact frames/episodes, peak collision closing speed and the steward incident log. Pit repair can clear finish damage, so finish damage alone must never be used as a clean-race verdict. Contact episodes split after 0.25 s without that pair; contact frames remain available separately.
 
 `race.mjs --energy-stock` provides an energy-policy A/B for INTERCEPT alone. The result records the selected policy; trace rows include hybrid power, mode and intent for every car. This is a diagnostic switch, not a production tuning change.
+
+`race.mjs --follow` disables INTERCEPT tactical paths; `--kinematic` selects the simpler kinematic rival forecast. `traffic.mjs --separation` changes its requested clearance for diagnostics; new GTP-to-GT3 passes retain a production minimum of 3.3 m. These switches are reported in result metadata and are not alternate production defaults.
 
 The two-car encounter fixture initializes pose from road distance, preserving speed while setting heading, and initializes the game's `previousS` progress field. Stopped/spun/off-road obstacles stay in place by default; `--rescue` restores normal marshal recovery. Older encounter measurements made before these fixture corrections must be reproduced before being used as evidence.

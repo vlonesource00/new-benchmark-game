@@ -1,11 +1,12 @@
 import { readFileSync,writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
+import { cameraMarkup, cameraScript } from './replay-views.mjs';
 
 /** Self-contained traffic replay: observed bodies, chosen executable route and actual constraints. */
 export function makeReplay(data){
  if(!data?.trace?.length||!data?.solo?.length)throw Error('Replay needs traffic and matched solo trace rows.');
  const encoded=JSON.stringify(data).replace(/</g,'\\u003c');
- return `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+ const html=`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>INTERCEPT — traffic telemetry</title><style>
 *{box-sizing:border-box}body{margin:0;background:#10151c;color:#e9edf4;font:14px system-ui,sans-serif}main{max-width:1440px;margin:auto;padding:22px}h1{font-size:26px;margin:0 0 8px}p{color:#aab6c7;line-height:1.55}button,select{background:#283241;color:#fff;border:1px solid #435167;border-radius:5px;padding:8px 14px;cursor:pointer}input{width:100%;accent-color:#f7cf46}.grid{display:grid;grid-template-columns:1.25fr 1fr;gap:16px}.card{background:#19222e;border:1px solid #2c3848;border-radius:10px;padding:16px;min-width:0}.wide{grid-column:1/-1}canvas{width:100%;height:390px;background:#121a24;border-radius:6px}.plot{height:210px}table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:9px 7px;border-bottom:1px solid #344153}th{color:#94a7be}strong,.gold{color:#f7cf46}.readout{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.readout span{display:block;color:#9aabc0;font-size:12px}.readout b{display:block;font-size:17px;margin-top:4px}pre{font:12px ui-monospace,monospace;white-space:pre-wrap;max-height:350px;overflow:auto;color:#c0d0e5}.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:#9aabc0}.events{max-height:230px;overflow:auto}.events button{display:block;width:100%;text-align:left;background:transparent;border:0;border-bottom:1px solid #344153;padding:7px}.warn{color:#ff947d}@media(max-width:900px){.grid{grid-template-columns:1fr}.readout{grid-template-columns:repeat(2,1fr)}canvas{height:330px}table{font-size:11px}main{padding:12px}}
 </style><main><h1>INTERCEPT traffic laboratory</h1><p id="context"></p><div class="card"><div style="display:flex;align-items:center;gap:14px"><button id="play">Play</button><select id="rate"><option value=".5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option></select><b id="clock"></b><span id="phase"></span></div><input id="scrub" type="range" min="0" value="0" step="1"></div><div class="grid" style="margin-top:16px">
@@ -56,6 +57,8 @@ $('decision').textContent=JSON.stringify({speedConstraint:t.source,profileKmh:t.
 }}
 function animate(now){if(playing){if(previous)carry+=(now-previous)/1000*+$('rate').value;while(carry>=.1){carry-=.1;if(index>=rows.length-1){playing=false;$('play').textContent='Play';break;}index++;}draw();}previous=now;requestAnimationFrame(animate)}window.onresize=draw;$('forecast').onchange=draw;draw();requestAnimationFrame(animate);
 </script></html>`;
+ return html.replace('<section class="card"><div id="readout"',cameraMarkup+'<section class="card"><div id="readout"')
+   .replace("window.onresize=draw;",cameraScript+"window.onresize=draw;");
 }
 
 if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){const input=process.argv[2];if(!input)throw Error('node replay.mjs traffic-result.json [output.html]');const data=JSON.parse(readFileSync(input,'utf8'));writeFileSync(process.argv[3]??input.replace(/\.json$/,'.html'),makeReplay(data));console.log('Replay saved.');}
