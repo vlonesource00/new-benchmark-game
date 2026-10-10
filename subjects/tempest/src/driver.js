@@ -176,6 +176,7 @@ export class TempestDriver {
     const state = context.state ?? {}; this.state = state;
     const boxing = Boolean(real.race?.boxThisLap || state.pitPlan) && !state.pit, toPit = boxing ? this.pitGuide.toEntry(real.s ?? 0) : Infinity;
     const field = this.field;
+    field.frame = this.options.lineFrame === true ? this.line : null;
     field.update(real, cars ?? [], context, t, state);
     const me = field.me;
     let path = line, pitCap = Infinity, pitCap2 = Infinity, planCap = Infinity, planCap2 = Infinity;

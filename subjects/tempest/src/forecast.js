@@ -3,6 +3,7 @@ import { CarModel, liveGrip } from '../../apex/src/model.js';
 
 export const FDT = 0.1, FSTEPS = 101;         // 10 s of forecast: the planner judges passes at its horizon, up to ~8 s out
 export const FSPAN = (FSTEPS - 1) * FDT;
+const PACE_BIN = 20, PACE_RATE = 0.02, PACE_MIN = 3;
 
 // How much each architecture moves across to cover a car in its tow before a braking zone (metres).
 // Read from their documents and code: RAZOR makes one smooth cover, APEX never closes a door, SPEARHEAD keeps
@@ -17,7 +18,30 @@ const COVER = { razor: 1.3, apex: 0, 'next-racer': 0.4, tempest: 0.9, solstice: 
  * hazards and in spray.
  */
 export class Forecast {
-  constructor(driver) { this.driver = driver; this.models = new Map(); this.cache = new Map(); this.stamp = -1; }
+  constructor(driver) { this.driver = driver; this.models = new Map(); this.cache = new Map(); this.stamp = -1; this.pace = new Map(); }
+  /**
+   * Learnt pace: each rival's speed against our class line, per 20 m of road, smoothed over the laps it has been seen.
+   * A car that is slow through one corner is forecast slow there again, not back on our pace after a second or two:
+   * that is where a pass is made. Cars in the pit lane, boxing or out of the race teach nothing.
+   */
+  observe(list) {
+    const d = this.driver, L = d.track.length, nb = Math.ceil(L / PACE_BIN);
+    for (const r of list) {
+      if (r.hazard || r.box || r.pit || r.done || !(r.v > 5)) continue;
+      const line = d.shadow(r.cls) ?? d.line, st = line.stationOf(r.s), i = Math.floor(st);
+      const ratio = clamp(r.v / Math.max(5, line.sample(line.v, i, st - i, 0)), 0.6, 1.2);
+      let p = this.pace.get(r.id); if (!p) this.pace.set(r.id, p = { k: new Float32Array(nb).fill(1), n: new Uint16Array(nb) });
+      const b = Math.floor((((r.s % L) + L) % L) / PACE_BIN) % nb;
+      // the first pass through a bin takes the reading; later ones blend in slowly (a lap is ~60 visits per bin)
+      p.k[b] += (ratio - p.k[b]) * (p.n[b] === 0 ? 1 : PACE_RATE); if (p.n[b] < 65535) p.n[b]++;
+    }
+  }
+  /** Learnt pace ratio of a rival at road position s (1 where it has not been seen). */
+  paceAt(id, s) {
+    const p = this.pace.get(id); if (!p) return 1;
+    const L = this.driver.track.length, b = Math.floor((((s % L) + L) % L) / PACE_BIN) % p.k.length;
+    return p.n[b] >= PACE_MIN ? p.k[b] : 1;
+  }
   model(cls) {
     if (!this.models.has(cls)) this.models.set(cls, new CarModel(cls));
     return this.models.get(cls);
@@ -44,6 +68,10 @@ export class Forecast {
     }
     const spray = r.spray ?? 0;
     let x = 0, sp = r.v;
+    const learn = d.options.paceLearn === true && !r.box, kl0 = learn ? this.paceAt(r.id, r.s) : 1;
+    // the gearbox carried forward from the gear the car is in (it upshifts at 7450 rpm): from the top gear down, an
+    // accelerating car would be read lugging a tall gear, at half its real drive above 40 m/s
+    const fg = d.options.forecastGear !== false; let g = fg && r.car?.gear > 0 ? r.car.gear : m.gearAt(r.v, 1);
     for (let k = 0; k < n; k++) {
       const t = k * FDT;
       ds[k] = r.ds + x; v[k] = sp;
@@ -53,9 +81,11 @@ export class Forecast {
       sig[k] = Math.min(3, 0.15 + 0.32 * t + 0.08 * t * t + (r.hazard ? 0.8 : 0) + spray * (0.3 + 0.4 * t));
       sigS[k] = Math.min(12, 0.4 + 1.1 * t + 0.25 * t * t + spray * 2 * t);
       if (r.hazard) { const a = Math.min(0, r.a); x += Math.max(0, sp * FDT + 0.5 * a * FDT * FDT); sp = Math.max(0, sp + a * FDT); continue; }
-      const k1 = 1 + (k0 - 1) * Math.exp(-t / 2.5);
+      // the present pace ratio fades toward what this car has shown at that part of the road (or our pace, unseen)
+      const kl = learn ? this.paceAt(r.id, r.s + x) : 1, k1 = kl + (k0 - kl0) * Math.exp(-t / 2.5);
       const limit = line.sample(line.v, i0, f0, x + sp * 0.12) * k1;
-      const a = clamp((limit - sp) / FDT, -m.brake(Math.max(8, sp)), m.driveG(sp, m.gearAt(sp), mass));
+      g = fg ? m.gearAt(sp, g) : m.gearAt(sp);
+      const a = clamp((limit - sp) / FDT, -m.brake(Math.max(8, sp)), m.driveG(sp, g, mass));
       x += Math.max(0, sp * FDT + 0.5 * a * FDT * FDT); sp = Math.max(0, sp + a * FDT);
     }
     f = { r, ds, lat, v, sig, sigS, wrap: L };

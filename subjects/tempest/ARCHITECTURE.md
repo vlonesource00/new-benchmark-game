@@ -413,6 +413,35 @@ make every lateral move slower and contacts rose. Also measured without gain at 
 share, hold margin, wake envelope. The start is a plan-stability problem in a dense pack:
 the next lever is committing to one side through the first corners rather than re-choosing every 0.1 s.
 
+With the line hold (field 4.29 on seeds 10–12) a second start mechanism showed up: a lane change committed during the
+formation lap (about 30 m/s) is kept on replan at that length, and its curvature caps the lane at about 34 m/s while the
+field accelerates. Sizing changes for the speed reached through them (iterated drive acceleration) fixes that car but
+lengthens every change: field 5.63 (all edges, kept short transitions dropped), 5.46 (kept transitions kept), 5.25 (start
+edge only). Rejected.
+
+### Rival acceleration in the forecast (measured, kept)
+
+The pass fixture against RAZOR never slowed it: RAZOR keeps a base margin and rescales `options.margin` from it every
+update, so every fixture run "at 0.94" was at full pace (the bench now sets both). Slowed for real, RAZOR at margin
+0.88 laps about 2 s slower than TEMPEST alone, and TEMPEST still sat behind it for 240 s without a pass. With it ahead,
+TEMPEST lifted on the straights under following caps 25–40 m back, and the racing-line candidate was priced with
+contact (4–11) while the controller had none. The forecast was short of the rival: +5 m at 3 s on average, +8 m
+while the rival accelerated. Cause: its drive came from `gearAt(v)`, which starts at the top gear and only shifts down
+under 3450 rpm, so an accelerating car was read lugging its tallest gear: 2.7 against 6 m/s² at 50 m/s. The game's box
+upshifts at 7450 rpm. The forecast now starts from the gear the car is in and carries the box forward (hysteresis).
+The bias while accelerating went from +4.8 to −0.5 m at 3 s (braking: still about +5 m, the rival brakes later than
+forecast). Field (seeds 7–9 / 10–12): 4.50 / 4.29 → **3.58 / 3.75**, passes 1.3 → 2.0–2.2 a car-race, damage
+about 2 %. `forecastGear: false` restores the old reading.
+
+Measured alongside and left opt-in:
+
+- `lineFrame`: positions in the racing line's frame. Harbor's centre line kinks at s ≈ 862 (radius 6.4 m, under the
+  8.2 m half width) where the line runs 6–8 m inside; there the nearest centre point jumps, s by 6–9 m and d by up to
+  20 m between frames, and every lateral rate with it. In the line frame the forecast spread at 1.5 s fell from
+  −3.7…6.9 to −0.2…4.9 m (p10…p90). Field 3.75 (equal), damage 3.8 %: only one corner of one track changes.
+- `paceLearn`: each rival's speed against our line, per 20 m, smoothed over laps, as the pace its forecast fades to.
+  Field 4.54 against 3.75: worse.
+
 ## 7. Open work
 
 - Delay-aware steering under one frame of lag (braking in wake oscillates; see the worker path)

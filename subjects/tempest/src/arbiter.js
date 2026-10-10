@@ -48,6 +48,7 @@ export class Arbiter {
     this.clock += dt;
     this.settle(now, me);
     this.outcomes.update(now, field, this.state);
+    if (o.paceLearn === true) forecast.observe(field.list);
     // a slide is no time to change the plan: hold it until the controller has the car again
     const sliding = d.control.stability < 0.5 && this.plan;
     if (sliding) this.stats.held = (this.stats.held ?? 0) + 1;

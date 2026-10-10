@@ -8,12 +8,27 @@ export const HALF_LEN = 2.28, HALF_WID = 0.98;
  * but its body is solid until it leaves the road; a pit-lane car is neither.
  */
 export class Perception {
-  constructor(track) { this.track = track; this.reset(); }
-  reset() { this.hist = new Map(); this.list = []; this.byId = new Map(); this.me = null; this.meHist = null; }
+  constructor(track) { this.track = track; this.frame = null; this.reset(); }
+  reset() { this.hist = new Map(); this.list = []; this.byId = new Map(); this.me = null; this.meHist = null; this.hints = new Map(); }
+  /**
+   * Where a car is, in the racing line's frame when one is set: s from the line's station, d as the line's own offset
+   * plus the car's distance across it. The centre line can fold where it kinks tighter than the road is wide (Harbor
+   * turn 1: radius 6.4 m against a half width of 8.2 m, and the line runs 6–8 m inside it): there the nearest centre
+   * point jumps by metres between frames and so do s, d and every rate taken from them. The line is smooth (it is
+   * driven), so a car on or near it keeps a continuous position. Far from the line, the road's own projection.
+   */
+  project(x, z, key, road) {
+    const L = this.frame; if (!L) return road();
+    const h = this.hints.get(key), c = L.closest(x, z, h == null ? -1 : L.idx(h - 4), 18);
+    if (c.d2 > 196) { this.hints.delete(key); return road(); }
+    this.hints.set(key, c.i);
+    const j = L.idx(c.i + 1), lat = L.lat[c.i] * (1 - c.f) + L.lat[j] * c.f;
+    return { s: (c.i + c.f) * L.ds, lateral: lat + c.e, heading: L.heading(c.i, c.f) };
+  }
   update(car, cars, context, now, state = {}) {
     const track = this.track, L = track.length, edge = track.halfWidth + (track.curbWidth ?? 0);
     const info = new Map((state.rivals ?? []).map((r) => [r.id, r]));
-    const p0 = context?.projections?.get(car.id) ?? track.nearest(car.x, car.z);
+    const p0 = this.project(car.x, car.z, car.id, () => context?.projections?.get(car.id) ?? track.nearest(car.x, car.z));
     // own lateral rate, smoothed the same way as the rivals'
     const mh = this.meHist; let vl = 0;
     if (mh && now > mh.t && now - mh.t < 1) vl = 0.5 * mh.vl + 0.5 * clamp((p0.lateral - mh.d) / (now - mh.t), -10, 10);
@@ -25,7 +40,7 @@ export class Perception {
       if (other.id === car.id) continue;
       const meta = info.get(other.id) ?? {}, pit = meta.pit ?? null;
       if (pit === 'lane' || pit === 'service') { this.hist.delete(other.id); continue; }
-      const p = context?.projections?.get(other.id) ?? track.nearest(other.x, other.z);
+      const p = this.project(other.x, other.z, other.id, () => context?.projections?.get(other.id) ?? track.nearest(other.x, other.z));
       const ds = ((p.s - p0.s + L * 1.5) % L) - L / 2;
       if (Math.abs(ds) > 400) { this.hist.delete(other.id); continue; }
       const hw = other.spec?.halfWidth ?? HALF_WID, hl = other.spec?.halfLength ?? HALF_LEN;
