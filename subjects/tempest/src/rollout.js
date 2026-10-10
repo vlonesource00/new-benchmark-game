@@ -144,7 +144,7 @@ export class Rollout {
     const wE = me.halfWidth ?? 0.98, colC = o.contactCost ?? 3, B = o.passValue ?? 0.45;
     const caps = this.cap, tAt = this.tAt, latA = this.lat, peak = (this.peak ??= new Float64Array(64)), peakH = (this.peakH ??= new Float64Array(64));
     const env = (this.env ??= new Float64Array(4096)), segA = (this.segA ??= new Float64Array(4096));
-    const event = (o.contactMode ?? 'event') === 'event', behind = o.behindShare ?? 0.4, useWake = o.rolloutWake !== false, capB = o.capBrake ?? 0.55;
+    const event = (o.contactMode ?? 'event') === 'event', behind = o.behindShare ?? 0.4, useWake = o.rolloutWake !== false, capB = o.capBrake ?? 0.55, zoneCap = o.capZone === true;
     // capEnvelope: a following cap is a speed at a place, and the controller brakes to it beforehand (the committed
     // plan's cap envelope). A first pass finds the caps; the second drives against their braking envelope instead of
     // slowing at the cap itself
@@ -173,7 +173,9 @@ export class Rollout {
             else { const pc = colC * sev * (seg / p.dS); cost += pc; contact += pc; }
           }
         } else if (g > 0 && g < 90 && c < 0.35 + 0.4 * sg) {
-          const room = g - Ls - 0.8 - 0.25 * sgs - 0.15 * Math.max(0, vp - rv);
+          // capZone: follow to the edge of the contact zone, so that a car the cap keeps in line is not also charged
+          // contact for the same metres (the zone grows with the forecast's spread along the road, 0.5 sigma)
+          const room = g - Ls - 0.8 - (zoneCap ? 0.5 : 0.25) * sgs - 0.15 * Math.max(0, vp - rv);
           cap = Math.min(cap, rv + Math.sqrt(2 * capB * model.brake(Math.max(8, rv)) * Math.max(0, room)));
         }
       }

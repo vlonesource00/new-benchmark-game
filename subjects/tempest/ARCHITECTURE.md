@@ -457,6 +457,11 @@ on the field (seeds 7–9, base 3.58), so both stay opt-in, default off:
 The late cap is the root: the racing line is held under the line-hold gate at a contact cost of 2 and the cap only
 bites once the forecast puts the rival's lateral path back on ours.
 
+- `capZone`: the rollout's following cap stopped the car at `Ls + 0.8 + 0.25 σs`, inside the contact zone
+  (`Ls + 0.5 σs`) once σs passes 3.2 m (about 2 s out), so a car the cap keeps in line was charged contact as well
+  and the racing line carried that cost. Following to the zone's edge instead: fewer incidents (1.1–1.4 against
+  about 1.4) but field 4.08 / 3.96 against 3.58 / 3.75 (seeds 7–9 / 10–12). Off.
+
 ## 7. Open work
 
 - Delay-aware steering under one frame of lag (braking in wake oscillates; see the worker path)
