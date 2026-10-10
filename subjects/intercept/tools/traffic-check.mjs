@@ -17,11 +17,19 @@ const base=scene('train'),repeat=scene('repeat');assert.equal(signature(base),si
 assert.equal(base.summary.retainedOnStraight,3);assert.equal(base.summary.ownContacts,0);assert.equal(base.summary.damage,0);assert.ok(base.summary.straightDelay<1);
 assert.deepEqual(base.passes.map(p=>p.kind),['move','carried-lane','carried-lane']);
 assert.ok(base.passes.every(p=>p.clear.speed>60&&p.retained-p.clear.time>=1));console.log('ok three retained body-clear passes, with route evidence and deterministic workers');
-const follow=scene('follow',['--follow']);assert.equal(follow.summary.retainedOnStraight,0);assert.equal(follow.summary.ownContacts,0);
+const follow=scene('follow',['--follow']);assert.equal(follow.summary.retainedOnStraight,0);assert.equal(follow.summary.straightOwnContacts,0);
+// The following-only counterfactual may rub a car alongside after the measured straight.
+// It must not rear-end traffic on the straight, or turn a light side rub into a severe impact.
+assert.equal(follow.summary.severe,0);assert.ok(follow.summary.damage<.01);
 assert.ok(follow.summary.straightDelay>base.summary.straightDelay+2);console.log('ok following-only control rules out straight-line pace as the passing explanation');
 const spike=scene('spikes',['--lagJitter','4','--frameJitter','.3','--spikes','2:0.5,6:0.25']);
 assert.ok(spike.summary.planAgeMax>.4);assert.equal(spike.summary.retainedOnStraight,3);assert.equal(spike.summary.ownContacts,0);assert.equal(spike.summary.damage,0);
 assert.ok(spike.summary.straightDelay<1);assert.equal(spike.events.filter(x=>x.type==='latency-spike').length,2);console.log('ok injected delays preserve passing and fresh execution');
+const braking=scene('early-brake',['--mode','braking','--positions','65,180,260','--speed','57','--gt-speed','52','--limit','62','--brake-at','1.2']);
+assert.equal(braking.summary.straightOwnContacts,0);assert.equal(braking.summary.straightDamage,0);assert.equal(braking.summary.severe,0);
+assert.ok(braking.summary.damage<.01);assert.equal(braking.passes.find(p=>p.id===0).contacts,0);assert.equal(braking.passes.find(p=>p.id===0).status,'retained');
+assert.ok(braking.passes.find(p=>p.id===0).clear.speed>60);assert.ok(braking.summary.straightDelay<.5);
+console.log('ok an early-braking tow target is passed through open space without a rear-end or lost straight pace');
 for(const mode of ['stopped','spun']){const d=scene(mode,['--mode',mode]),hazard=d.passes.find(p=>p.hazard);
  assert.equal(hazard.status,'retained');assert.equal(d.summary.ownContacts,0);assert.equal(d.summary.damage,0);assert.ok(d.summary.danger.length===1);
  assert.equal(hazard.rescueAssisted,false);assert.ok(!d.events.some(e=>e.type==='marshal-rescue'&&e.id===hazard.id));

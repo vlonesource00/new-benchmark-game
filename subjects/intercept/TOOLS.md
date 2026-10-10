@@ -47,6 +47,9 @@ node --import ./scripts/json-loader.mjs subjects/intercept/tools/traffic.mjs --l
 # Causal control: same GTP/controller and fast line, with tactical moves disabled.
 node --import ./scripts/json-loader.mjs subjects/intercept/tools/traffic.mjs --follow --out following-only
 
+# A physical tow target braking early; speed and position remain controlled by the car.
+node --import ./scripts/json-loader.mjs subjects/intercept/tools/traffic.mjs --mode braking --positions 65,180,260 --speed 57 --gt-speed 52 --limit 62 --brake-at 1.2 --out early-brake
+
 # Compare drivers against the same three RAZOR GT3s.
 node --import ./scripts/json-loader.mjs subjects/intercept/tools/traffic-matrix.mjs --drivers intercept,razor,apex,next-racer --scenarios train,natural,spikes
 ```
@@ -100,6 +103,24 @@ Existing tools remain available: `probe.mjs` for solo/pack pace, `encounter.mjs`
 Use `race.mjs --path worker --trace --trace-period .1 --out endurance.json` to save ten samples per second of stint forecasts, tyre state, fuel, battery, executed pedals and their constraints alongside lap and stop outcomes. The default trace interval is one second. Actual physical road distance is separate from accumulated race progress. This helps distinguish intentional tyre preservation from unnecessary race-pace loss.
 
 Every endurance run records peak damage, cumulative damage gained, actual solver contact frames/episodes, peak collision closing speed and the steward incident log. Pit repair can clear finish damage, so finish damage alone must never be used as a clean-race verdict. Contact episodes split after 0.25 s without that pair; contact frames remain available separately.
+
+Formation and racing damage gained are recorded separately, with both included in total safety figures. Each contact episode captures both cars' poses, controls, pit phase and controller trace at the first and hardest impact. `--progress` prints progress every 30 simulated seconds. `--start standing` selects a standing start; default is rolling.
+
+`--classes lmdh,gt,lmdh` supplies one class per driver in a mixed field. Traces include all cars, physical distance, formation status, weather, executed routes and a neighboring body blocking a return. `--trace-period 1` keeps long-field replays smaller; `.1` suits a short encounter.
+
+## Retained passes and field cameras
+
+```sh
+node --import ./scripts/json-loader.mjs subjects/intercept/tools/encounter-check.mjs
+node subjects/intercept/tools/encounter-view.mjs --case new-pass --reference new-follow
+node subjects/intercept/tools/encounter-view.mjs --case final-mixed14-harbor --car 11 --rival-car 12
+```
+
+The encounter regression requires a clean maneuver pass of RAZOR at normal worker delivery and one extra frame of lag. Its matched following-only control stays behind. This relative-speed fixture is not a full race benchmark.
+
+`encounter-view.mjs` accepts an encounter trace or a full race from current `race.mjs --trace`. Four cameras show actual bodies, trajectories, pedals, constraint reasons and resources. Full-field views draw other cars in grey and mark the formation handover. Select distinct zero-based `--car` / `--rival-car` indices. `replay-check.mjs --encounter --url <replay-url>` exercises cameras, bookmarks, keys and narrow layout.
+
+The dashed following-only ghost includes the rival's reactions; it is a causal comparison, not a solo reference. Contact-assisted passes stay flagged. The review index combines synthetic replays, matched five-track solo data and endurance records without rerunning their simulations.
 
 `race.mjs --energy-stock` provides an energy-policy A/B for INTERCEPT alone. The result records the selected policy; trace rows include hybrid power, mode and intent for every car. This is a diagnostic switch, not a production tuning change.
 

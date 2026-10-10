@@ -19,8 +19,9 @@ const settings={driver:arg('driver','intercept'),rival:arg('rival','razor'),path
   frameSteps:+arg('frameSteps',2),lagFrames:+arg('lagFrames',0),lagJitter:+arg('lagJitter',0),frameJitter:+arg('frameJitter',0),
   spikes:arg('spikes','').split(',').filter(Boolean).map(x=>{const [at,delay]=x.split(':').map(Number);return {at,delay};}),follow:args.includes('--follow'),rescueHazard:args.includes('--rescue'),
   separation:+arg('separation',config.separation),options:JSON.parse(arg('opts','{}'))};
+if(settings.mode==='braking')settings.leadBrake={at:+arg('brake-at',1.5),duration:+arg('brake-duration',1),brake:+arg('lead-brake',.8)};
 if(settings.positions.length!==3||settings.positions.some(x=>!Number.isFinite(x))||settings.positions.some((x,i,a)=>i&&x-a[i-1]<25))throw Error('Three increasing positions, at least 25 m apart, are required.');
-if(!['train','natural','stopped','spun'].includes(settings.mode))throw Error('mode must be train, natural, stopped or spun');
+if(!['train','natural','braking','stopped','spun'].includes(settings.mode))throw Error('mode must be train, natural, braking, stopped or spun');
 if(!['native','worker'].includes(settings.path))throw Error('path must be native or worker');
 if(settings.offsets.length!==3||settings.offsets.some(x=>!Number.isFinite(x)))throw Error('Three finite lateral offsets are required.');
 if(settings.spikes.some(x=>!Number.isFinite(x.at)||!Number.isFinite(x.delay)||x.at<0||x.delay<0))throw Error('spikes must be time:delay pairs in seconds');
@@ -58,7 +59,9 @@ async function run(solo=false,omitHazard=false){
    for(const b of race.entries[i].bridges)b.reset?.({cars:race.cars,track});race.entries[i].strategist.decide=()=>null;
    if(i!==mine){
      for(const bridge of race.entries[i].bridges){const update=bridge.update.bind(bridge);bridge.update=(car,...rest)=>{update(car,...rest);
-       if(settings.mode!=='natural'&&car.speed>settings.gtLimit){car.controls={...car.controls,throttle:0,brake:Math.max(car.controls.brake,clamp((car.speed-settings.gtLimit)*.2,0,.5))};}};}
+       if(settings.mode!=='natural'&&car.speed>settings.gtLimit){car.controls={...car.controls,throttle:0,brake:Math.max(car.controls.brake,clamp((car.speed-settings.gtLimit)*.2,0,.5))};}
+       const pulse=settings.leadBrake;
+       if(i===0&&pulse&&race.time>=10+pulse.at&&race.time<10+pulse.at+pulse.duration)car.controls={...car.controls,throttle:0,brake:pulse.brake};};}
    }
  }
  const hazard=!solo&&['stopped','spun'].includes(settings.mode)?2:null;

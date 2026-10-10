@@ -62,11 +62,13 @@ while(race.time<10+T){
  if(++every%12===0){const c=race.cars[1],d=all.find(d=>d.lastCar?.id===1&&(path==='native'||d.settings.executor));
  rows.push({t:race.time,s:c.s,x:c.x,z:c.z,yaw:c.yaw,otherX:race.cars[0].x,otherZ:race.cars[0].z,otherYaw:race.cars[0].yaw,v:c.speed,gap:race.track.length?((race.cars[0].s-c.s+race.track.length*1.5)%race.track.length-race.track.length/2):0,
    d:c.lateral,otherD:race.cars[0].lateral,otherV:race.cars[0].speed,otherDamage:race.cars[0].damage,otherZone:race.cars[0].zone,otherControls:{...race.cars[0].controls},damage:c.damage,impact:c.impact,controls:{...c.controls},debug:d?structuredClone(d.debug()):null,
-   planner:planner?{state:planner.battle.state,side:planner.battle.side,candidates:structuredClone(planner.debug().cands)}:null});}}
+   visual:d?.visualDebug(),planner:planner?{state:planner.battle.state,side:planner.battle.side,candidates:structuredClone(planner.debug().cands)}:null});}}
 const mine=all.find(d=>d.lastCar?.id===1&&(path==='native'||d.settings.executor)),worker=all.find(d=>d.lastCar?.id===1&&!d.settings.executor);
 const result={cls,path,rival,seed,follow,hazard,collisionOff,leadBrake:Number.isFinite(brakeAt)?{at:brakeAt,duration:brakeDuration,brake:leadBrake}:null,s,v,rv,gap:distance,finalGap:rows.at(-1)?.gap,damage:race.cars.map(c=>c.damage),contacts:race.contacts,severe:race.collisionStats.severeContacts,
   stats:mine?.outcomes.book,events:mine?.outcomes.events,workerStats:worker?.outcomes.book,errors:race.entries.flatMap(e=>e.bridges.map(b=>({n:b.errors,message:b.lastError}))),
   states:[...new Set(rows.map(x=>x.debug?.intent))],maxError:Math.max(...rows.map(x=>Math.abs(x.debug?.e??0)))};
 seats?.dispose();
-const out=arg('out','');if(out){const dir=fileURLToPath(new URL('../results/',import.meta.url));mkdirSync(dir,{recursive:true});writeFileSync(dir+out,JSON.stringify({result,rows,firstContract},null,2));}
+const out=arg('out','');if(out){const dir=fileURLToPath(new URL('../results/',import.meta.url));mkdirSync(dir,{recursive:true});
+ const track={id:race.track.id,length:race.track.length,halfWidth:race.track.halfWidth,geometry:Array.from({length:Math.ceil(race.track.length/15)},(_,i)=>({s:i*15,...race.track.at(i*15)}))};
+ writeFileSync(dir+out,JSON.stringify({result,rows,firstContract,track},null,2));}
 console.log(JSON.stringify(result));

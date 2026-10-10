@@ -69,6 +69,19 @@ test('contact severity follows the collision normal, so matched sideways rubbing
  assert.ok(lateral.closing<1);assert.ok(lateral.longitudinal<.1);
  const rear=bodyContact(a,{x:0,z:4.4,h:0,vx:0,vz:40});assert.ok(rear.closing>6);assert.ok(rear.longitudinal>.9);
 });
+
+
+test('a hazard around the executing turn is guarded, while a separated pit body is ignored',()=>{
+ const car={x:0,z:0,yaw:0,speed:60,vx:0,vz:60},rival={x:16.2,z:51.512,yaw:.3047,vx:0,vz:0,controls:{brake:0}},
+   r={id:1,car:rival,physical:true,hazard:true,pit:false,ds:54,v:0,along:2.28,ax:0},
+   path={N:2,len:[100,100],px:[0,30],pz:[0,95.3939],idx:i=>Math.max(0,Math.min(1,i)),
+     heading:()=>Math.atan2(30,95.3939),sample:(a,i,f)=>a[i]+((a[i+1]??a[i])-a[i])*f},
+   o={list:[r],at:()=>({x:rival.x,z:rival.z,h:rival.yaw})},model={brake:()=>20};
+ assert.equal(noseConstraint(car,o,model).cap,Infinity,'The current straight body ray misses the corner');
+ const nose=noseConstraint(car,o,model,{path,cursor:{i:0,f:0}});assert.ok(Number.isFinite(nose.cap));assert.equal(nose.details.predictedBlock,true);
+ rival.x+=12;assert.equal(noseConstraint(car,o,model,{path,cursor:{i:0,f:0}}).cap,Infinity);
+ r.pit=true;rival.x-=12;assert.equal(noseConstraint(car,o,model,{path,cursor:{i:0,f:0}}).cap,Infinity);
+});
 test('forecast displacement agrees with velocity after the acceleration window and after stopping',()=>{
  const o=new Observer(track),r={s:250,d:0,v:40,vd:0,ax:4,psi:0,hazard:false};
  const a=o.at(r,2),b=o.at(r,2.01);assert.ok(Math.abs((b.s-a.s)/.01-a.v)<1e-8);assert.equal(a.s,336);
@@ -174,6 +187,26 @@ test('scoring a replacement corridor cannot mutate the committed route',()=>{
  course.beginRoutes(held);const rejected=course.corridor(me,observed.list[0],1,2,{clearance:4});
  assert.notEqual(rejected,held);assert.deepEqual(held.px,geometry);assert.deepEqual(held.vbrk,profile);
 });
+
+test('prototype body braking is measured independently of road-heading changes',()=>{
+ const car=new Vehicle(0,'observer','#fff','lmdh'),rival=new Vehicle(1,'braking','#fff','lmdh');
+ car.place(track,250,0,65);rival.place(track,270,0,65);const o=new Observer(track);o.update(car,[car,rival],{},10);
+ rival.vx*=61/65;rival.vz*=61/65;o.update(car,[car,rival],{},10.1);
+ assert.ok(Math.abs(o.list[0].deceleration-40)<1e-6);assert.equal(o.list[0].ax,-18);
+ const h=Math.atan2(rival.vx,rival.vz)+.4;rival.vx=Math.sin(h)*61;rival.vz=Math.cos(h)*61;
+ o.update(car,[car,rival],{},10.2);assert.ok(o.list[0].deceleration<1e-6,'Turning at constant body speed is not braking');
+});
+test('a return holds occupied space and compiles a fresh join once the neighbor clears',()=>{
+ const car=new Vehicle(0,'return','#fff','lmdh'),rival=new Vehicle(1,'alongside','#fff','gt'),course=new Course(track,config);course.prepare(car);
+ const p=track.at(250),c=course.line.closest(p.x,p.z),lineD=course.line.sample(course.line.lat,c.i,c.f),side=lineD>0?-1:1;
+ car.place(track,250,lineD+side*3.2,65);rival.place(track,250,lineD,68);
+ const o=new Observer(track);o.reference=course.line;o.update(car,[car,rival],{},10);
+ const b=new Battle(course,config,new Outcomes());b.state='RETURN';b.side=side;b.returnReason='clear';
+ b.path=course.corridor(car,null,side,1,{clearance:3.2,entry:60,hold:150,returnLength:100});
+ const lane=b.update(car,o,10,{force:true});assert.equal(b.returnTarget,1);assert.notEqual(lane,b.returnPath);
+ const original=b.returnPath;rival.place(track,700,lineD,68);o.update(car,[car,rival],{},10.2);
+ b.update(car,o,10.2,{force:true});assert.equal(b.returnTarget,null);assert.equal(b.returnGuard,null);assert.notEqual(b.returnPath,original);
+});
 test('native bridge produces finite controls and preserves live physics state',()=>{
  const bridge=createInterceptBridge({hostTrack:track});const old=me.wheels.map(w=>w.tyre.wear);for(let n=0;n<20;n++)bridge.update(me,[me],FIXED_DT,{time:n/120,totalLaps:20,state:{phase:'racing'}});
  assert.equal(bridge.errors,0,bridge.lastError);assert.ok(Object.values(me.controls).every(Number.isFinite));assert.deepEqual(me.wheels.map(w=>w.tyre.wear),old);
@@ -192,6 +225,16 @@ function run(race,caution=null){let called=false;while(race.phase!=='finished'&&
 test('short dry races choose a useful compound, not hards by default',()=>{
  for(const cls of ['lmdh','gt']){const r=makeRace({laps:4,cls,trackId:'nurburgring',stops:1});assert.ok(r.entries[0].strategist instanceof InterceptStrategist);
  assert.notEqual(r.entries[0].strategist.startCompound(),'hard');}
+});
+
+test('renewed tyre planning uses actual tread; lap-counter age cannot cause an extra stop',()=>{
+ const r=makeRace({laps:6,cls:'lmdh',trackId:'nurburgring',stops:1}),car=r.cars[0],s=r.entries[0].strategist;
+ r.fitTyres(car,'hard',true);car.wheels.forEach(w=>w.tyre.wear=.035);car.fuel=50;
+ Object.assign(s,{stops:1,swaps:1,fuelPerLap:10,lapRef:450,stintLaps:0});s.wearPerLap.hard=.035;
+ const fresh=s.planStint(car,3,0);s.stintLaps=4;assert.deepEqual(s.planStint(car,3,0),fresh);
+ assert.equal(fresh.laps,3);assert.ok(s.stopLoss>30);
+ const harbor=makeRace({laps:6,stops:1}).entries[0].strategist;
+ assert.ok(s.laneLoss>harbor.laneLoss+5);assert.equal(s.cautionSaving('sc'),s.laneLoss*.75);
 });
 test('a late tyre stop must pay for itself without breaking stint, fuel or race rules',()=>{
  const r=makeRace({laps:12,cls:'gt',stops:1,swap:true}),car=r.cars[0],s=r.entries[0].strategist;
