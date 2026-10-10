@@ -36,6 +36,7 @@ const idOf = (race, id) => (id == null ? null : race.cars.findIndex((c) => c.id 
 
 // Per-architecture identity: colour for the plan and a one-line reading of how it thinks.
 const THEMES = {
+  intercept: { color: '#f7cf46', mind: 'Physics-rate control; committed connected gaps; body clearance and retained passes' },
   'claude-revolution': { color: '#d97757', mind: 'Scores lanes against predicted rivals; commits one move per corner' },
   'next-racer': { color: '#ff2e63', mind: 'Simulates manoeuvre outcomes; commits to the best exit' },
   solstice: { color: '#ffb000', mind: 'Whole-lap line with live axle forces; traffic rollouts' },
@@ -183,6 +184,17 @@ PROFILES.apex = (d, v) => {
 };
 PROFILES['phantom-v2'] = PROFILES.phantom;
 PROFILES.razor = razorLens;
+PROFILES.intercept = (d,v) => ({
+  intent:d.intent??'INIT',sub:d.sub??'',tagText:d.sub??'',suppressInference:true,
+  focus:d.focus!=null?{id:d.focus,kind:d.intent==='ATTACK'?'attack':d.intent==='ALONGSIDE'?'alongside':'follow'}:null,
+  side:d.side??0,
+  cands:(d.cands??[]).map(q=>({label:q.kind,score:q.score,chosen:q.chosen,note:`exit ${(q.exit*3.6).toFixed(0)} km/h`})),
+  candNote:'executable demand · connected exit · body impact cost',
+  gauges:[gauge('axle reserve',d.trace?.reserve,pct(d.trace?.reserve),'#3ddc84'),gauge('tyre spend',(d.resources?.allowance??1)-.95,`${((d.resources?.allowance??1)*100).toFixed(1)}%`,'#c77dff')],
+  counters:[counter('attempts',d.stats?.declared),counter('overlap',d.stats?.overlap),counter('moves kept',d.stats?.maneuvers),counter('pace passes',d.stats?.pace),counter('traffic',d.stats?.traffic),counter('contact assisted',d.stats?.contactAssisted)],
+  tags:[d.trace?.source,d.trace?.pedal,`plan ${(1000*(d.planAge??0)).toFixed(0)} ms`].filter(Boolean),
+  log:(d.events??[]).slice().reverse().map(e=>`${e.time.toFixed(1)} s · ${e.type} #${e.id} ${e.maneuver?'move':'pace'}${e.impact?' · impact':''}`)
+});
 // TEMPEST: one committed path; the options are its rollouts in seconds behind the chosen one, the lead is how far the
 // kept path is ahead of its best challenger (it switches only when that goes negative), and the marks are where the
 // path leaves the racing line and where it rejoins it.

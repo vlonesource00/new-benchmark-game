@@ -75,6 +75,7 @@ self.onmessage = ({ data }) => {
     if(data.state)context.state=data.state;
     if(data.controlDelay!==undefined)context.controlDelay=data.controlDelay;
     if(data.feedbackPeriod!==undefined)context.feedbackPeriod=data.feedbackPeriod;
+    if(data.epoch!==undefined)context.epoch=data.epoch;
     bridge.update(car, cars, data.dt, context);
     let debug;
     if (data.debug) { try { debug = plain(bridge.debug?.()); } catch { debug = undefined; } }

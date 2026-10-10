@@ -10,6 +10,9 @@ import { installApexStrategy } from '../../subjects/apex/src/strategy.js';
 import { razorState } from '../bridges/razor-state.js';
 import { installRazorStrategy } from '../../subjects/razor/src/strategy.js';
 import { installTempestStrategy } from '../../subjects/tempest/src/strategy.js';
+import { installInterceptStrategy } from '../../subjects/intercept/src/strategy.js';
+import { createInterceptExecutor } from '../bridges/intercept-bridge.js';
+import { interceptState } from '../bridges/intercept-state.js';
 // TEMPEST runs on RAZOR's seat protocol (control timing, epochs, the public race envelope).
 const corridorAi = (id) => id === 'razor' || id === 'tempest';
 import { installNativeStrategy } from '../../subjects/next-racer/src/strategy.js';
@@ -44,6 +47,7 @@ export class AsyncSeats {
       if (driver.id === 'apex') installApexStrategy(race, race.cars[index]);
       if (driver.id === 'razor') installRazorStrategy(race, race.cars[index]);
       if (driver.id === 'tempest') installTempestStrategy(race, race.cars[index]);
+      if (driver.id === 'intercept') installInterceptStrategy(race, race.cars[index]);
       return this.seat(driver, index, race);
     };
   }
@@ -77,17 +81,19 @@ export class AsyncSeats {
     const host = this.host(index, race), slot = race.teams[index].drivers.indexOf(driver);
     const seats = this;
     let local = null;
+    const executor = driver.id === 'intercept' ? createInterceptExecutor(race.track,index) : null;
     const seat = {
       driverId: driver.id, errors: 0, remote: true,
       seq: -1, inFlight: false, controls: null, pendingDt: 0, lastLatency: 0, sentAt: 0, lastDebug: null,
       epoch:0,controlTime:null,preview:null,controlDelay:.02,
       receive(data) {
-        if((driver.id==='next-racer'||corridorAi(driver.id))&&data.epoch!==this.epoch)return;
+        if((driver.id==='next-racer'||corridorAi(driver.id)||executor)&&data.epoch!==this.epoch)return;
         this.inFlight = false; this.controls = data.controls; this.errors = data.errors;
         if(driver.id==='next-racer'){this.controlTime=data.time;this.preview=data.preview??null;
           this.controlDelay=Math.max(0,Math.min(.2,race.time-data.time));}
         if(corridorAi(driver.id)){this.controlTime=data.time;this.controlDelay=Math.max(0,Math.min(.2,race.time-data.time));}
         if (driver.id === 'apex' || corridorAi(driver.id)) this.intent = data.intent ?? null;
+        if(executor){executor.adopt(data.preview,race.cars[index],this.epoch);this.controlTime=data.time;this.preview=data.preview;}
         this.lastLatency = performance.now() - this.sentAt;
         if (data.debug) this.lastDebug = data.debug;
         if (data.visual !== undefined) this.lastVisual = data.visual;
@@ -103,6 +109,7 @@ export class AsyncSeats {
           previewFeedback(car,race.track,this.preview,context.time)??this.controls,
           {route:previewRoute(race.track,this.preview,context.time),
             age:this.controlTime==null?0:Math.max(0,context.time-this.controlTime)}).controls;
+        if(executor){executor.update(car,cars,dt,{...context,state:interceptState(race,car)});this.errors=executor.bridge.errors;}
         this.pendingDt += dt;
         this.post(context);
       },
@@ -114,10 +121,16 @@ export class AsyncSeats {
       },
       post(context) {
         if (this.inFlight) return;
+        // INTERCEPT replans at a bounded rate. State accumulated while busy is replaced by the newest snapshot.
+        if(executor && this.controls && context.time-(this.lastPostTime??-99)<.075)return;
+        this.lastPostTime=context.time;
         this.inFlight = true; this.seq = ++seats.seq; this.sentAt = performance.now();
         // surface and weather go out on this seat's own count: the shared reply counter interleaves the seats, so a
         // modulo of it could skip some seats for good
-        const refresh = (this.sent = (this.sent ?? 0) + 1) % RUBBER_EVERY === 1;
+        const refresh = executor
+          ? context.time-(this.lastSurfaceTime??-99)>=.25
+          : (this.sent = (this.sent ?? 0) + 1) % RUBBER_EVERY === 1;
+        if(refresh&&executor)this.lastSurfaceTime=context.time;
         host.worker.postMessage({
           type: 'step', slot, seq: this.seq, dt: Math.min(0.1, this.pendingDt), time: context.time, laps: context.totalLaps,
           cars: seats.cars(race), wetness: race.track.wetness, tempGrip: race.track.tempGrip,
@@ -127,6 +140,8 @@ export class AsyncSeats {
           ...(driver.id==='next-racer'?{state:nextRacerState(race,race.cars[index]),
             ambient:race.track.ambient,epoch:this.epoch,controlDelay:this.controlDelay,feedbackPeriod:1/120}:{}),
           ...(driver.id === 'apex' ? { state: apexState(race, race.cars[index]) } : {}),
+          ...(executor ? {state:interceptState(race,race.cars[index]),ambient:race.track.ambient,
+            epoch:this.epoch,controlDelay:0,feedbackPeriod:1/120}:{}),
           ...(corridorAi(driver.id) ? { state: razorState(race, race.cars[index]),
             ambient: race.track.ambient, epoch: this.epoch, controlDelay: this.controlDelay } : {}),
           debug: seats.wantDebug || undefined,
@@ -137,16 +152,20 @@ export class AsyncSeats {
       },
       reset() {
         this.epoch++;this.controlTime=null;this.preview=null;
+        executor?.reset({cars:race.cars,track:race.track});this.lastPostTime=-99;this.lastSurfaceTime=-99;
         if(driver.id==='next-racer'){this.lastDebug=null;seats.snap=null;seats.snapTime=-1;resetFeedback(race.cars[index]);}
         this.controls = null; this.inFlight = false; this.pendingDt = 0; this.seq = -1; this.sent = 0;
         local?.reset?.({ cars: race.cars, track: race.track, line: race.lineFor(race.cars[index]) });
         if (!host.failed && host.initialised) host.worker.postMessage({ type: 'reset', slot, cars: race.cars.map(snapshotCar) });
       },
-      debug() { return local?.debug?.() ?? (driver.id==='next-racer'&&this.lastDebug?
+      debug() { if(executor&&!local){const debug=executor.debug();return {...debug,planner:this.lastDebug?{intent:this.lastDebug.intent,side:this.lastDebug.side,
+        cands:this.lastDebug.cands,resources:this.lastDebug.resources,focus:this.lastDebug.focus,focusGap:this.lastDebug.focusGap}:null,
+        workerLatencyMs:this.lastLatency,inFlight:this.inFlight,requestSequence:this.seq,replyTime:this.controlTime};}
+        return local?.debug?.() ?? (driver.id==='next-racer'&&this.lastDebug?
         {...this.lastDebug,...feedbackDebug(race.cars[index])}:this.lastDebug) ?? { architecture: driver.arch ?? driver.id }; },
       visualDebug() { const point=driver.id==='next-racer'?feedbackDebug(race.cars[index])?.trackingPoint:null;
         const relayed = this.lastVisual ?? (this.lastDebug?.trackingPoint ? { trackingPoint: this.lastDebug.trackingPoint } : null);
-        return local?.visualDebug?.() ?? (point ? { ...relayed, trackingPoint: point } : relayed); }
+        return local?.visualDebug?.() ?? executor?.visualDebug() ?? (point ? { ...relayed, trackingPoint: point } : relayed); }
     };
     host.seats.push(seat);
     return seat;
