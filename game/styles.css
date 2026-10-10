@@ -297,7 +297,20 @@ input[type=range] { accent-color: var(--accent); width: 180px; }
 .tel .charts.four { grid-template-columns: 1fr 1fr; }
 .tel-soc { display: inline-block; width: 46px; height: 6px; background: rgba(255,255,255,.1); vertical-align: middle; margin-right: 4px; }
 .tel-soc i { display: block; height: 100%; }
-.tel canvas { width: 100%; height: 190px; background: rgba(255,255,255,.03); border: 1px solid var(--line); }
+.tel canvas { width: 100%; height: 220px; background: rgba(255,255,255,.03); border: 1px solid var(--line); cursor: crosshair; display: block; }
+.tel-chart { position: relative; }
+.tel-bar { display: flex; align-items: center; gap: 14px; margin-top: 14px; flex-wrap: wrap; }
+.tel-bar small { color: var(--dim); font-size: 12px; }
+.tel-filter { display: flex; gap: 6px; }
+.tel-filter:empty { display: none; }
+.tel-filter button { border: 1px solid var(--line); background: rgba(255,255,255,.04); padding: 4px 12px; font-size: 13px; font-weight: 700; letter-spacing: .14em; }
+.tel-filter button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.tel-tip { display: none; position: absolute; z-index: 2; min-width: 230px; pointer-events: none; background: rgba(10,11,15,.94); border: 1px solid var(--line); border-top: 2px solid var(--accent); padding: 6px 8px; font-family: var(--mono); font-size: 12px; box-shadow: 0 6px 20px rgba(0,0,0,.5); }
+.tel-tip b { display: block; font-size: 11px; letter-spacing: .2em; color: var(--dim); margin-bottom: 4px; }
+.tel-tip div { display: grid; grid-template-columns: 8px 1fr auto; gap: 6px; align-items: center; padding: 1px 0; color: rgba(255,255,255,.75); }
+.tel-tip div.hl { color: #fff; font-weight: 700; background: rgba(255,255,255,.08); }
+.tel-tip i { width: 8px; height: 8px; display: block; }
+.tel-tip em { font-style: normal; color: var(--dim); font-size: 11px; }
 .tel .chart-t { font-size: 12px; letter-spacing: .24em; color: var(--dim); margin-bottom: 4px; }
 .stintbar { display: flex; height: 12px; min-width: 140px; }
 .stintbar i { height: 100%; border-right: 1px solid #0a0a0c; }
