@@ -1,6 +1,6 @@
 # INTERCEPT implementation
 
-Implementation worktree: `intercept-dev`. Existing drivers and TEMPEST experiments are preserved. Integration follows the published `graphics-aaa` base; the measurements below were made on 7df8b91 before the latest qualifying-only and TEMPEST changes.
+Implementation worktree: `intercept-dev`. Existing drivers and TEMPEST experiments are preserved. Integration follows the published `graphics-aaa` base, now rebased onto cca58d1. The traffic laboratory measurements below began on 7df8b91; its regression checks also pass on the new base.
 
 Design: an asynchronous battle planner with a shared controller executing at the physics rate. Small connected corridors, fresh body clearance, fixed attack side, continuous joins, and useful exit speed determine moves. Labels never select the pedal profile.
 
@@ -37,4 +37,12 @@ Native checks cover pit/boxing/off-road/retired bodies, true rear clearance, lan
 4. Diagnose race-pace loss using `race.mjs --trace`, then measure stint fade, rain decisions and endurance results on matched fields.
 5. Re-run qualifying against the new run-up rule. Earlier qualifying results do not establish the current ranking.
 
-Earlier endurance probes still had RAZOR ahead, and a GT3 run accumulated too much damage. The new traffic fixes require fresh endurance runs; INTERCEPT is a working prototype, not a proven best racer.
+## Current endurance checkpoint
+
+A matched 12-lap Harbor GTP race through the worker path, seed 7 with INTERCEPT starting behind RAZOR and APEX, finishes with RAZOR at 686.68 s, INTERCEPT at 698.41 s and APEX at 704.98 s. INTERCEPT's best lap is 52.53 s, with one stop, one swap, zero damage and zero incident points. Its final medium stint runs from 52.53 to 53.40 s. It declares 10 attacks, starts 10, and reaches no overlaps or retained passes. The result establishes useful pace and strategy in this setup, not effective same-class race combat.
+
+The rival forecast now continues from its accelerated velocity after its one-second acceleration window, and never moves backwards after braking to a stop. Displacement and reported velocity agree. This corrects the motion model; it does not establish a race improvement.
+
+An energy A/B leaves INTERCEPT on the shared game's policy instead of its own straight-speed taper. Race time is essentially unchanged (698.34 s), while INTERCEPT takes 3.17% damage and two incident points, still without a pass. The production energy policy remains unchanged. A lower hybrid demand on straights alone is insufficient to explain the combat loss.
+
+All 19 system checks, the controlled traffic regressions and the production build pass on this base. The corrected two-car fixture also exposes a severe impact when a spun car is spawned only 23 m ahead at 58 m/s; this is an open near-hazard case, not covered by the clean sparse-train result. A moving-rival fixture damages the rival even without INTERCEPT damage, so it cannot establish clean passing. Fast hazard recovery, the late-pass latency edge case, same-class conversion, defense, GT3 endurance and broader browser validation remain open. INTERCEPT is a working prototype, not a proven best racer.

@@ -6,12 +6,15 @@ import { installWorkerShim } from '../../../scripts/bench/lockstep-workers.mjs';
 import { Course } from '../src/course.js';
 import config from '../config.json' with {type:'json'};
 import { InterceptDriver } from '../src/driver.js';
+import { Resources } from '../src/strategy.js';
+import { gap } from '../src/math.js';
 import { writeFileSync,mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const args=process.argv.slice(2),arg=(k,d)=>{const i=args.indexOf('--'+k);return i<0?d:args[i+1];};
 const cls=arg('cls','lmdh'),trackId=arg('track','harbor-ring'),rival=arg('rival','apex'),path=arg('path','worker'),seed=+arg('seed',7),
   s=+arg('s',250),distance=+arg('gap',23),v=+arg('v',58),rv=+arg('rv',48),T=+arg('time',30),follow=args.includes('--follow'),hazard=arg('hazard','');
+if(args.includes('--energy-stock'))Resources.prototype.energy=function(car){car.intent=null;};
 const all=[],u=InterceptDriver.prototype.update,prepare=InterceptDriver.prototype.prepare;
 InterceptDriver.prototype.prepare=function(car){prepare.call(this,car);this.options.combat=!follow;};
 InterceptDriver.prototype.update=function(...a){if(!all.includes(this))all.push(this);return u.apply(this,a);};
@@ -25,9 +28,10 @@ race.start();while(race.phase!=='racing'){race.step(FIXED_DT);shim?.step();}
 race.time=10;
 const course=new Course(race.track,{...config,...config.tracks?.[trackId],...config.tracks?.[trackId]?.perClass?.[cls]});course.prepare(race.cars[1]);
 for(let i=0;i<2;i++){
- const car=race.cars[i],state=car.race,fuel=car.fuel,road=s+(i===0?distance:0),index=course.line.idx(Math.round(road/course.line.ds)),d=course.line.lat[index];
- car.place(race.track,road,d,i===0?rv:v);car.race={...state,lap:1,progress:road,lastS:road};car.fuel=fuel;car.gear=course.model.gearAt(car.speed,4);
- car.yaw=course.line.h[index];car.vx=Math.sin(car.yaw)*car.speed;car.vz=Math.cos(car.yaw)*car.speed;
+ const car=race.cars[i],state=car.race,fuel=car.fuel,road=s+(i===0?distance:0),speed=i===0?rv:v;
+ let index=0,nearest=Infinity;for(let n=0;n<course.line.N;n++){const delta=Math.abs(gap(course.line.st[n],road,race.track.length));if(delta<nearest){index=n;nearest=delta;}}
+ car.place(race.track,road,course.line.lat[index],speed);car.race={...state,lap:1,progress:road,previousS:road,lapStart:10};car.fuel=fuel;car.gear=course.model.gearAt(speed,4);
+ car.yaw=course.line.h[index];car.vx=Math.sin(car.yaw)*speed;car.vz=Math.cos(car.yaw)*speed;
  race.fitTyres(car,'soft',true);for(const b of race.entries[i].bridges)b.reset?.({cars:race.cars,track:race.track});
  race.entries[i].strategist.decide=()=>null;
 }
@@ -37,6 +41,7 @@ if(hazard){
    c.place(race.track,s+distance,hazard==='offroad'?race.track.halfWidth+5:+arg('rivalLat',race.cars[1].lateral),0);
    if(hazard==='spun')c.yaw+=Math.PI*+arg('hazardYaw',.55);
    for(const b of e.bridges)b.update=car=>{car.controls={throttle:0,brake:1,steer:0};};
+   if(!args.includes('--rescue')){const rescue=race.rescue.bind(race);race.rescue=(entry,dt)=>entry===e?undefined:rescue(entry,dt);}
  }else if(hazard==='boxing')e.pitPlan={litres:0,tyres:false,swap:false,compound:'soft'};
 }
 let every=0,firstContract=null;const rows=[];

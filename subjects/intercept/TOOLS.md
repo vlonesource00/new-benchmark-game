@@ -78,3 +78,7 @@ The analysis reports the worst 50 m delays, extra braking compared with solo, th
 Existing tools remain available: `probe.mjs` for solo/pack pace, `encounter.mjs` for controlled two-car situations, `race.mjs` for real endurance and strategy, `browser.mjs` for actual browser workers, and `check.mjs --races` for game-system regressions. Traffic performance is one gate; it does not establish qualifying, defensive or endurance superiority.
 
 Use `race.mjs --path worker --trace --out endurance.json` to save one-second samples of stint forecasts, tyre state, fuel, battery, executed pedals and their constraints alongside lap and stop outcomes. This helps distinguish intentional tyre preservation from unnecessary race-pace loss.
+
+`race.mjs --energy-stock` provides an energy-policy A/B for INTERCEPT alone. The result records the selected policy; trace rows include hybrid power, mode and intent for every car. This is a diagnostic switch, not a production tuning change.
+
+The two-car encounter fixture initializes pose from road distance, preserving speed while setting heading, and initializes the game's `previousS` progress field. Stopped/spun/off-road obstacles stay in place by default; `--rescue` restores normal marshal recovery. Older encounter measurements made before these fixture corrections must be reproduced before being used as evidence.
