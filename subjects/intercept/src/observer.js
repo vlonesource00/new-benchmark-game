@@ -40,7 +40,8 @@ export class Observer {
       const r = { id: other.id, car: other, cls: other.classId, s: q.s, d: q.lateral, ds, v, vd, ax,
         psi, along: Math.abs(Math.cos(psi))*HALF_LENGTH + Math.abs(Math.sin(psi))*HALF_WIDTH,
         across: Math.abs(Math.cos(psi))*HALF_WIDTH + Math.abs(Math.sin(psi))*HALF_LENGTH,
-        physical, eligible, pit: Boolean(pit), approaching, done, off, reenter,
+        physical, eligible, retired:Boolean(retired), pit: Boolean(pit), approaching, done, off, reenter,
+        moving:v>=7&&Math.abs(psi)<.65&&!pit&&!approaching&&!retired&&!done,
         hazard: done || Math.abs(psi) > .65 || v < 7 || (!eligible&&physical), kind: eligible ? other.classId === car.classId ? 'race' : 'traffic' : 'hazard' };
       if(this.reference){const line=this.reference;let c=line.closest(other.x,other.z,old?.referenceIndex??-1,Math.max(14,Math.ceil(Math.max(0,elapsed)*other.speed/line.ds)+8));
         if(c.d2>225)c=line.closest(other.x,other.z,-1);const d=line.sample(line.lat,c.i,c.f),slope=(line.lat[line.idx(c.i+2)]-line.lat[line.idx(c.i-2)])/(4*line.ds);
@@ -52,6 +53,8 @@ export class Observer {
   }
   /** Reliable near-term body tube; never freezes a rival at the forecast endpoint. */
   at(r, time) {
+    // A running car outside the white line can still accelerate and rejoin. Race eligibility does not stop its engine.
+    if(this.motion&&r.moving&&r.reference&&r.car?.spec)return this.motion.at(r,time);
     const h = Math.min(3.5, Math.max(0, time)), acceleration = r.hazard ? Math.min(0,r.ax) : clamp(r.ax,-8,4);
     const motion=forwardMotion(r.v,acceleration,h),ds=motion.distance;
     let road=r.s+ds;

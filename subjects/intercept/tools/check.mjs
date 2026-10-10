@@ -7,9 +7,12 @@ import { Observer } from '../src/observer.js';
 import { Outcomes } from '../src/outcomes.js';
 import { Controller, longitudinalDemand, noseConstraint } from '../src/controller.js';
 import { Course } from '../src/course.js';
-import { InterceptStrategist } from '../src/strategy.js';
+import { InterceptStrategist, Resources } from '../src/strategy.js';
 import { bodyContact } from '../src/body.js';
+import { Battle, corridorFits } from '../src/battle.js';
+import { RivalMotion } from '../src/motion.js';
 import { createInterceptBridge } from '../../../game/bridges/intercept-bridge.js';
+import { interceptState } from '../../../game/bridges/intercept-state.js';
 import config from '../config.json' with {type:'json'};
 
 let count=0;
@@ -51,6 +54,45 @@ test('forecast displacement agrees with velocity after the acceleration window a
  const stopped={...r,v:2,ax:-8},c=o.at(stopped,2),d=o.at(stopped,3);
  assert.equal(c.v,0);assert.equal(c.s,d.s);assert.equal(c.s,250.25);assert.equal(o.at(r,4).valid,false);
 });
+
+test('a powered rival keeps accelerating and the forecast cannot mutate our course',()=>{
+ const a=new Vehicle(0,'a','#fff','lmdh'),b=new Vehicle(1,'b','#fff','lmdh'),course=new Course(track,config);course.prepare(a);
+ a.place(track,250,0,40);b.place(track,273,0,40);b.controls={throttle:1,brake:0,steer:0};b.gear=4;
+ const o=new Observer(track);o.reference=course.line;o.motion=new RivalMotion(course);o.update(a,[a,b]);
+ const profile=course.line.vbrk.slice(),r=o.list[0],first=o.at(r,0),future=o.at(r,2);
+ assert.ok(future.v>first.v+2);assert.ok(future.s-first.s>first.v*2+2);assert.equal(o.at(r,3.6).valid,false);
+ assert.ok(o.motion.of(r).length<=36);assert.deepEqual(course.line.vbrk,profile);
+});
+
+test('a passing corridor is checked against the same future section of the road',()=>{
+ const a=new Vehicle(0,'a','#fff','lmdh'),b=new Vehicle(1,'b','#fff','lmdh'),course=new Course(track,config);course.prepare(a);
+ const i=Math.round(160/course.line.ds),j=Math.round(183/course.line.ds);a.place(track,160,course.line.lat[i],65);b.place(track,183,course.line.lat[j],50);a.yaw=course.line.h[i];
+ const o=new Observer(track);o.reference=course.line;o.update(a,[a,b]);course.beginRoutes();const path=course.corridor(a,o.list[0],1);
+ assert.ok(corridorFits(path,course.line,a,o.list[0],1));
+ const c=path.closest(a.x,a.z);assert.ok(Math.abs(path.sample(path.lat,c.i,c.f,path.entryLength)-o.list[0].d)<1.9,'Present road coordinates would falsely reject this future section');
+});
+test('an upright off-road car remains powered in prediction without becoming a passing target',()=>{
+ const a=new Vehicle(0,'a','#fff','lmdh'),b=new Vehicle(1,'b','#fff','lmdh'),course=new Course(track,config);course.prepare(a);
+ a.place(track,250,track.halfWidth-.5,40);b.place(track,275,track.halfWidth+1,40);b.controls={throttle:1,brake:0,steer:0};b.gear=4;
+ const o=new Observer(track);o.reference=course.line;o.motion=new RivalMotion(course);o.update(a,[a,b]);const r=o.list[0];
+ assert.equal(r.eligible,false);assert.equal(r.physical,true);assert.equal(r.moving,true);assert.ok(o.at(r,2).v>r.v+2);
+ const book=new Outcomes();book.declare(r,o,0,1);assert.equal(book.book.declared,0);
+});
+
+test('a cleared route ending ahead is handed off without rebuilding around the car behind',()=>{
+ const a=new Vehicle(0,'a','#fff','lmdh'),b=new Vehicle(1,'b','#fff','lmdh'),course=new Course(track,config);course.prepare(a);
+ a.place(track,300,-2.5,60);b.place(track,280,0,45);const o=new Observer(track);o.reference=course.line;o.update(a,[a,b]);
+ course.beginRoutes();const path=course.corridor(a,o.list[0],-1);path.holdEndS=o.me.s+20;
+ const battle=new Battle(course,config,new Outcomes());Object.assign(battle,{state:'CLEAR',target:1,side:-1,path,since:0,clearAt:.5});
+ assert.equal(battle.update(a,o,1),path);assert.equal(battle.state,'RETURN');assert.equal(battle.returnReason,'clear');
+});
+
+test('a failed attack cannot become a chain toward a distant third car',()=>{
+ const a=new Vehicle(0,'a','#fff','lmdh'),b=new Vehicle(1,'b','#fff','lmdh'),c=new Vehicle(2,'c','#fff','gt'),course=new Course(track,config);course.prepare(a);
+ a.place(track,300,-2.5,60);b.place(track,330,0,62);c.place(track,370,0,45);const o=new Observer(track);o.reference=course.line;o.update(a,[a,b,c]);
+ const battle=new Battle(course,config,new Outcomes());Object.assign(battle,{state:'RETURN',target:1,side:-1,returnReason:'abort'});
+ const path=battle.update(a,o,1);assert.equal(battle.state,'RETURN');assert.equal(battle.target,1);assert.equal(path.key,'space:0');
+});
 test('pass requires rear clearance and continuous retention; pit entry never earns a pass',()=>{
  const book=new Outcomes(),r={id:1,ds:10,along:2.28,eligible:true,kind:'race'},field={list:[r],me:{d:0},car:{damage:0}};
  book.update({damage:0},field,0,{});book.declare(r,field,0,1);field.me.d=1;r.ds=0;book.update({damage:0},field,.1,{});
@@ -74,6 +116,14 @@ test('impossible thrust cannot accumulate and delay the braking demand',()=>{
  const course=new Course(track,config);course.prepare(me);const c=course.line.closest(me.x,me.z),d=longitudinalDemand(course.line,c,20,course.model);
  assert.ok(d.acceleration<=Math.max(.5,course.model.drive(20)));
  const slow=longitudinalDemand(course.line,c,70,course.model,{cap:15});assert.ok(slow.acceleration>=-course.model.brake(70));assert.ok(slow.acceleration<0);
+});
+test('an escape releases braking promptly when lateral allocation clipped the nose demand',()=>{
+ const car=new Vehicle(0,'escape','#fff','lmdh'),course=new Course(track,config);course.prepare(car);car.place(track,500,0,60);
+ const controller=new Controller(config),o=new Observer(track);o.update(car,[car]);car.ay=course.model.lat(60)/course.model.margin/.9;
+ for(let i=0;i<30;i++)controller.step(car,course.line,course,o,1/120,{nose:{cap:0,brake:0,blocker:{hazard:true}}});
+ assert.equal(controller.trace.pedal,'brake-reserve');assert.ok(controller.acceleration>-10);
+ car.ay=0;for(let i=0;i<12;i++)controller.step(car,course.line,course,o,1/120,{nose:{cap:Infinity,brake:0,blocker:null}});
+ assert.equal(car.controls.brake,0);assert.ok(car.controls.throttle>.1,'Cleared space must reopen the accelerator within 0.1 s');
 });
 test('scoring a replacement corridor cannot mutate the committed route',()=>{
  const course=new Course(track,config);course.prepare(me);other.place(track,me.s+30,0,40);
@@ -100,6 +150,53 @@ function run(race,caution=null){let called=false;while(race.phase!=='finished'&&
 test('short dry races choose a useful compound, not hards by default',()=>{
  for(const cls of ['lmdh','gt']){const r=makeRace({laps:4,cls,trackId:'nurburgring',stops:1});assert.ok(r.entries[0].strategist instanceof InterceptStrategist);
  assert.notEqual(r.entries[0].strategist.startCompound(),'hard');}
+});
+test('a late tyre stop must pay for itself without breaking stint, fuel or race rules',()=>{
+ const r=makeRace({laps:12,cls:'gt',stops:1,swap:true}),car=r.cars[0],s=r.entries[0].strategist;
+ r.fitTyres(car,'medium',true);car.wheels.forEach(w=>w.tyre.wear=.73);car.fuel=12;car.race.lap=11;
+ Object.assign(s,{stops:1,swaps:1,fuelPerLap:7,lapRef:63,stintLaps:6});s.wearPerLap.medium=.105;s.fade.medium=1;
+ assert.equal(s.decide(car,2),null);assert.equal(s.reason,'FINISH ON SET');assert.equal(s.nextTyreLap,13);
+ s.request={compound:'soft',swap:false};assert.ok(s.decide(car,2));s.request=null;
+ s.stops=0;assert.ok(s.decide(car,2));s.stops=1;s.swaps=0;assert.ok(s.decide(car,2));s.swaps=1;
+ car.fuel=5;assert.ok(s.decide(car,2));car.fuel=12;car.wheels.forEach(w=>w.tyre.wear=.9);assert.ok(s.decide(car,2));
+});
+test('resource forecasts average meaningful distance and reset when the same compound is renewed',()=>{
+ const car=new Vehicle(0,'resource','#fff','lmdh'),o=new Observer(track),resources=new Resources(config);
+ car.race={lap:3,progress:track.length*2.5};car.wheels.forEach(w=>{w.tyre.compound='soft';w.tyre.wear=.3;});
+ const state={time:0,totalLaps:4,lapRef:53,wearPerLap:{soft:.15},nextTyreLap:4};resources.update(car,state,o,.1);
+ assert.equal(resources.trace.remaining,1.5);assert.equal(resources.trace.toTyres,.5);
+ car.race.progress+=track.length*.03;car.wheels.forEach(w=>w.tyre.wear=.33);resources.update(car,{...state,time:2},o,.1);
+ assert.equal(resources.rate,null);assert.equal(resources.trace.wearPerLap,.15);
+ car.race.progress+=track.length*.27;car.wheels.forEach(w=>w.tyre.wear=.345);resources.update(car,{...state,time:16},o,.1);
+ assert.ok(Math.abs(resources.rate-.15)<1e-8);
+ car.wheels.forEach(w=>w.tyre.wear=0);resources.update(car,{...state,time:17},o,.1);assert.equal(resources.rate,null);
+ assert.equal(resources.trace.wearPerLap,.15);assert.ok(Number.isFinite(resources.trace.projectedFade));
+});
+test('qualifying spends prototype grip margin but preserves the measured GT control reserve',()=>{
+ for(const cls of ['lmdh','gt']){
+   const car=new Vehicle(0,'quali','#fff',cls),resources=new Resources(config),o=new Observer(track);
+   car.race={lap:1,progress:0};resources.update(car,{time:1,totalLaps:3,session:'qualifying'},o,1);
+   assert.ok(Math.abs(resources.allowance-(cls==='gt'?1:1/config.margin))<1e-8);
+ }
+});
+test('combat boost is reserved for a close eligible rival and executable acceleration in open space',()=>{
+ const car=new Vehicle(0,'energy','#fff','lmdh'),r=new Resources(config),battle={target:1,state:'ALONGSIDE',side:1};
+ car.place(track,250,0,70);car.controls={throttle:1,brake:0,steer:0};car.hybrid={energy:1.8e6};r.trace={remaining:8};
+ const observer={list:[{id:1,eligible:true,ds:1}]},controller={targetSpeed:90,trace:{feed:2,source:'profile'}};
+ r.energy(car,{},battle,null,controller,observer);assert.equal(car.intent.deploy,1);assert.equal(r.trace.energy.burst,true);
+ controller.trace.source='nose';r.energy(car,{},battle,null,controller,observer);assert.equal(r.trace.energy.burst,false);assert.ok(car.intent.deploy<.3);
+ controller.trace.source='profile';observer.list[0].eligible=false;r.energy(car,{},battle,null,controller,observer);assert.equal(r.trace.energy.burst,false);
+ observer.list[0].eligible=true;observer.list[0].ds=50;r.energy(car,{},battle,null,controller,observer);assert.equal(r.trace.energy.burst,false);
+ observer.list[0].ds=1;car.hybrid.energy=3e5;r.energy(car,{},battle,null,controller,observer);assert.equal(r.trace.energy.burst,false);
+});
+test('the real race bridge permits combat boost on green and withholds it under full yellow',()=>{
+ const race=makeRace({caution:'full'}),car=race.cars[0],resources=new Resources(config);
+ race.phase='racing';race.formation=null;car.place(race.track,250,0,70);car.controls={throttle:1,brake:0,steer:0};car.hybrid.energy=1.8e6;
+ resources.trace={remaining:8};const battle={target:1,state:'ALONGSIDE',side:1},observer={list:[{id:1,eligible:true,ds:1}]},controller={targetSpeed:90,trace:{feed:2,source:'profile'}};
+ let state=interceptState(race,car);assert.equal(state.caution,null);
+ resources.energy(car,state,battle,null,controller,observer);assert.equal(car.intent.deploy,1);
+ race.callCaution('fcy');state=interceptState(race,car);assert.equal(state.caution,'fcy');
+ resources.energy(car,state,battle,null,controller,observer);assert.equal(resources.trace.energy.burst,false);
 });
 if(process.argv.includes('--races')){
  test('pit service and driver swap complete',()=>{const r=run(makeRace({laps:5,stops:1,swap:true}));assert.ok(r.entries[0].strategist.stops>=1);assert.ok(r.entries[0].strategist.swaps>=1);});

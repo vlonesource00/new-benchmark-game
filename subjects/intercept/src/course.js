@@ -49,7 +49,7 @@ export class Course {
     const beta=Math.atan2(car.v,Math.max(2,car.u)), slope=clamp(Math.tan(angle(car.yaw+beta-base.heading(cur.i,cur.f))),-.35,.35);
     const second=clamp((car.yawRate/Math.max(8,car.speed)-base.ks[i0]),-.004,.004);
     const rivalIndex=target ? (target.reference?.i??base.closest(target.car.x,target.car.z).i) : i0;
-    const offset=target ? target.d-base.lat[rivalIndex]+side*clearance : side*clearance;
+    const offset=target ? (target.offset??target.d-base.lat[rivalIndex])+side*clearance : side*clearance;
     // A quintic displacement's peak lateral jerk is 60*delta*v^3/L^3. An undersized join
     // creates an artificial low-speed notch; choose its physical length before compiling.
     entry=Math.max(entry,joinSpeed*Math.cbrt(60*Math.max(.1,Math.abs(offset-d0))/Math.max(20,jerk))*1.08);
@@ -57,7 +57,7 @@ export class Course {
     const shift=new Float64Array(n+1), bound=this.track.halfWidth-1.12;
     // Smooth the admissible hold route itself before joining. Pointwise hard clipping is not a path join.
     const offsets=new Float64Array(n+1);
-    for(let j=0;j<=n;j++) { const i=base.idx(i0+j); offsets[j]=clamp(base.lat[i]+offset,-bound,bound)-base.lat[i]; }
+    for(let j=0;j<=n;j++) { const i=base.idx(i0+j);offsets[j]=clamp(base.lat[i]+offset,-bound,bound)-base.lat[i]; }
     for(let pass=0;pass<3;pass++) { const copy=offsets.slice(); for(let j=1;j<n;j++) offsets[j]=(copy[j-1]+2*copy[j]+copy[j+1])*.25; }
     for(let j=0;j<=n;j++) { const x=j*base.ds;
       shift[j]=x<entry ? join(d0,slope,second,offsets[j],entry,x) : x<entry+hold ? offsets[j] : offsets[j]*(1-ease((x-entry-hold)/returnLength));

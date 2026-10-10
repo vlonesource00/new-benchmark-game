@@ -37,27 +37,35 @@ export function evaluate(path,car,course,observer,target,horizon=3.4) {
   return {path,progress,exit:v,risk,blocked,cleared,finalGap,initialGap,score:progress+v*.8-risk*5};
 }
 
+/** Compare clearance in the same future road section, not against the rival's present lateral coordinate. */
+export function corridorFits(path,base,car,target,side){
+  const c=path.closest(car.x,car.z),x=path.sample(path.px,c.i,c.f,path.entryLength),z=path.sample(path.pz,c.i,c.f,path.entryLength);
+  const section=base.closest(x,z);
+  return side*(section.e-(target.offset??0))>HALF_WIDTH+target.across+.02;
+}
+
 /** A latched target/side with continuously refreshed timing. No tactical lane grid, no label hysteresis in pedals. */
 export class Battle {
   constructor(course,options,outcomes){this.course=course;this.options=options;this.outcomes=outcomes;this.reset();}
-  reset(){this.state='PACE';this.target=null;this.side=0;this.path=null;this.returnPath=null;this.at=-99;this.since=0;this.clearAt=null;this.candidates=[];this.sequence=0;}
-  wire(){return {state:this.state,target:this.target,side:this.side,since:this.since,clearAt:this.clearAt};}
+  reset(){this.state='PACE';this.target=null;this.side=0;this.path=null;this.returnPath=null;this.at=-99;this.since=0;this.clearAt=null;this.returnReason=null;this.candidates=[];this.sequence=0;}
+  wire(){return {state:this.state,target:this.target,side:this.side,since:this.since,clearAt:this.clearAt,returnReason:this.returnReason};}
   adopt(b){
     if(!b)return;
-    const state=this.state,clearAt=this.clearAt;
+    const state=this.state,clearAt=this.clearAt,returnReason=this.returnReason;
     const ahead=this.target===b.target&&(['CLEAR','RETURN'].includes(state)&&['ATTACK','ALONGSIDE'].includes(b.state)||state==='RETURN'&&b.state==='CLEAR');
     Object.assign(this,b);
-    if(ahead){this.state=state;this.clearAt=clearAt;}
+    if(ahead){this.state=state;this.clearAt=clearAt;this.returnReason=returnReason;}
   }
   progress(observer,now) {
     const r=observer.list.find(r=>r.id===this.target);
     if(this.state==='RETURN')return r;
-    if(!r||!r.eligible&&!r.hazard){if(this.target!==null){this.state='RETURN';this.clearAt??=now;}return r;}
+    if(!r||!r.eligible&&!r.hazard){if(this.target!==null){this.state='RETURN';this.returnReason='ineligible';this.clearAt??=now;}return r;}
     const overlap=Math.abs(r.ds)<HALF_LENGTH+r.along+.35;
     if(overlap&&this.side){this.state=r.hazard?'EVADE':this.state==='DEFEND'&&r.ds<0?'DEFEND':'ALONGSIDE';this.clearAt=null;}
+    else if(this.state==='ALONGSIDE'&&r.ds>HALF_LENGTH+r.along+.35)this.state='ATTACK';
     if(r.ds< -(HALF_LENGTH+r.along+.4)){this.clearAt??=now;this.state='CLEAR';}
     else if(this.clearAt!==null)this.clearAt=null;
-    if(this.clearAt!==null&&now-this.clearAt>1.1){this.state='RETURN';}
+    if(this.clearAt!==null&&now-this.clearAt>1.1){this.state='RETURN';this.returnReason='clear';}
     return r;
   }
   update(car,observer,now,{force=false,enabled=true}={}) {
@@ -71,11 +79,13 @@ export class Battle {
       const c=base.closest(car.x,car.z);
       const next=observer.list.find(q=>q.physical&&q.ds>6&&q.ds<Math.max(60,car.speed*1.65)&&q.id!==this.target&&
         (q.hazard||q.eligible&&car.speed-q.v>2));
-      if(next&&this.side){
-        const clearance=next.hazard?HALF_WIDTH+next.across+.55:this.options.separation;
+      if(next&&this.side&&this.returnReason==='clear'){
+        const clearance=next.hazard?HALF_WIDTH+next.across+.55:next.kind==='traffic'?Math.max(3.3,this.options.separation):this.options.separation;
         const path=course.corridor(car,next,this.side,4,{entry:Math.max(40,car.speed*.8),hold:Math.max(150,car.speed*4),returnLength:100,clearance}),lane=evaluate(path,car,course,observer,next);
         this.candidates=[{...lane,kind:'continue',side:this.side}];
-        if(lane.risk<.4){this.target=next.id;this.state=next.hazard?'EVADE':'ATTACK';this.since=now;this.clearAt=null;this.returnPath=null;
+        const direct=evaluate(base,car,course,observer,next);
+        const trafficChain=next.kind==='traffic'&&car.speed-next.v>3&&(next.ds-5)/Math.max(.2,car.speed-next.v)<4;
+        if(lane.risk<.4&&(trafficChain||lane.progress>direct.progress-2&&lane.exit>direct.exit-1)){this.target=next.id;this.state=next.hazard?'EVADE':'ATTACK';this.since=now;this.clearAt=null;this.returnReason=null;this.returnPath=null;
           if(next.eligible)this.outcomes.declare(next,observer,now,this.side);return this.path=path;}
       }
       if(Math.abs(c.e)<.35){this.reset();return this.path=base;}
@@ -116,6 +126,9 @@ export class Battle {
       const moved=Math.abs((target.offset??target.d)-(this.path.targetOffset??target.offset??target.d))>.4;
       const remaining=gap(this.path.holdEndS??observer.me.s,observer.me.s,course.track.length);
       if(held.risk<.5&&!moved&&remaining>Math.max(45,car.speed*.8)){this.candidates.push({...held,side:this.side,kind:'held'});return this.path;}
+      // Once physically clear, extending a lane around the car behind delays the next traffic pass.
+      // Keep the current route until the next tick can continue or join; outcome retention is measured independently.
+      if(target.ds< -(HALF_LENGTH+target.along+.4)){this.state='RETURN';this.returnReason='clear';return this.path;}
     }
     // Approach on the fast course until the separation is both reachable and relevant.
     if(!committed&&!hazard&&target.ds>Math.max(22,closing*2.1+car.speed*.35) && gapTime>2.7){
@@ -129,7 +142,7 @@ export class Battle {
       return this.path=base;
     }
     const entry=hazard?clamp(target.ds-8,18,55):clamp(car.speed*.75,28,70),hold=clamp(car.speed*4,150,310),
-      clearance=hazard?HALF_WIDTH+target.across+.55:['ALONGSIDE','DEFEND'].includes(this.state)?Math.max(this.options.holdSeparation,this.side*(observer.me.d-target.d)):this.options.separation;
+      clearance=hazard?HALF_WIDTH+target.across+.55:['ALONGSIDE','DEFEND'].includes(this.state)?Math.max(this.options.holdSeparation,this.side*(observer.me.d-target.d)):target.kind==='traffic'?Math.max(3.3,this.options.separation):this.options.separation;
     const sides=committed?[this.side]:[-1,1];
     let chosen=null;
     for(const side of sides) {
@@ -144,24 +157,28 @@ export class Battle {
       const path=course.corridor(car,target,side,1+this.candidates.length,{entry,hold,returnLength:Math.max(70,car.speed*1.3),clearance:space,
         ...(hazard?{jerk:240,joinSpeed:Math.max(12,car.speed*.7)}:{})});
       const candidate=evaluate(path,car,course,observer,target);
-      const near=path.closest(car.x,car.z),atSeparation=path.sample(path.lat,near.i,near.f,path.entryLength);
+      const near=path.closest(car.x,car.z);
       candidate.side=side;candidate.kind=hazard?'evade':Math.sign(base.ks[near.i])===side?'inside':'outside';
-      candidate.fits=Math.abs(atSeparation-target.d)>1.9;
+      candidate.fits=corridorFits(path,base,car,target,side);
       // Terminal speed is valued; commitment continuity is valuable, but a real impact is not.
       candidate.score+=(committed?6:0)+(candidate.cleared?8:0);
       this.candidates.push(candidate);
       if(candidate.fits&&(!chosen||candidate.score>chosen.score))chosen=candidate;
     }
-    const actionable=chosen&&(hazard||committed||chosen.cleared||chosen.score>current.score+1.0||current.blocked>.5&&chosen.risk<current.risk+.1);
+    // A tiny rollout gain or a following cap is not evidence that a racing move can reach the opponent.
+    // Already owned overlap remains committed; a new attack needs real closing and a reachable overlap.
+    const reachable=chosen&&(chosen.finalGap<5||target.ds<18&&closing>1&&chosen.finalGap<target.ds+2);
+    const useful=chosen&&(chosen.cleared&&chosen.finalGap<5||chosen.score>current.score+.5);
+    const actionable=chosen&&(hazard||committed||reachable&&useful);
     if(actionable&&chosen.risk<Math.max(.8,current.risk+.2)) {
       if(!committed){this.target=target.id;this.side=chosen.side;this.since=now;this.state=hazard?'EVADE':'ATTACK';if(target.eligible)this.outcomes.declare(target,observer,now,this.side);}
       this.path=chosen.path;
-      if(now-this.since>8&&target.ds>35&&this.state!=='ALONGSIDE'){this.state='RETURN';this.clearAt=now;}
+      if(now-this.since>8&&target.ds>35&&this.state!=='ALONGSIDE'){this.state='RETURN';this.returnReason='abort';this.clearAt=now;}
       return this.path;
     }
     if(committed){
       // A real closure may invalidate an attack. Join back, rather than instantly snap to the fast line.
-      this.state='RETURN';this.clearAt=now;return this.path??base;
+      this.state='RETURN';this.returnReason=target.ds< -(HALF_LENGTH+target.along+.4)?'clear':'abort';this.clearAt=now;return this.path??base;
     }
     this.state=target.ds<35?'FOLLOW':'TOW';return this.path=base;
   }

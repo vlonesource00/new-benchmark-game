@@ -6,7 +6,7 @@ export class Outcomes {
   reset(){this.relations=new Map();this.pending=new Map();this.events=[];this.attack=null;
     this.book={declared:0,started:0,overlap:0,completed:0,retained:0,maneuvers:0,carried:0,pace:0,traffic:0,contactAssisted:0,lost:0,failed:0};}
   note(event){this.events.push(event);if(this.events.length>24)this.events.shift();}
-  declare(r,observer,now,side){if(this.attack?.id===r.id)return;
+  declare(r,observer,now,side){if(!r?.eligible||this.attack?.id===r.id)return;
     if(this.attack&&!this.attack.completed)this.book.failed++;
     const offset=observer.me.offset??observer.me.d;
     this.book.declared++;this.attack={id:r.id,start:now,d0:offset,carried:Math.abs(offset)>.55,side,started:false,overlap:false,completed:false,impact:false,damage0:observer.car.damage};}

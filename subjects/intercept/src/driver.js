@@ -4,6 +4,7 @@ import { Controller, noseConstraint } from './controller.js';
 import { Battle } from './battle.js';
 import { Outcomes } from './outcomes.js';
 import { Resources } from './strategy.js';
+import { RivalMotion } from './motion.js';
 import { PitGuide } from '../../apex/src/pit.js';
 import { clamp } from './math.js';
 
@@ -14,6 +15,7 @@ export class InterceptDriver {
     this.classId=car.classId;this.options={...this.settings,...this.settings.classes?.[car.classId],...this.settings.perClass?.[car.classId]};
     this.course=new Course(this.track,this.options);this.course.prepare(car);this.observer=new Observer(this.track);
     this.observer.reference=this.course.line;
+    if(this.options.motionForecast!==false)this.observer.motion=new RivalMotion(this.course);
     this.controller=new Controller(this.options);this.outcomes=new Outcomes();this.battle=new Battle(this.course,this.options,this.outcomes);
     this.resources=new Resources(this.options);this.pitGuide=new PitGuide(this.track);this.prepared=true;
   }
@@ -50,7 +52,7 @@ export class InterceptDriver {
       if(!active){this.battle.state='PACE';this.remote=null;}
     }
     this.path=path;this.controller.step(car,path,this.course,this.observer,Math.max(1/120,Math.min(.1,dt)),{pit:pitCap,time:now});
-    this.resources.energy(car,state,this.battle,path,this.controller);this.outcomes.update(car,this.observer,now,this.battle);
+    this.resources.energy(car,state,this.battle,path,this.controller,this.observer);this.outcomes.update(car,this.observer,now,this.battle);
     this.sequence++;this.lastTime=now;return car.controls;
   }
   preview(epoch=0){return this.path?this.course.contract(this.path,this.observerCar??this.lastCar,this.battle.wire(),this.lastTime,epoch,this.sequence):null;}

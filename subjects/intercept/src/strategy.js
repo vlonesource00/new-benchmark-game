@@ -27,14 +27,29 @@ export class InterceptStrategist extends TeamStrategist {
   resetMark(){super.resetMark();this.wheelMark=null;}
   startCompound(){const id=super.startCompound();this.memo=null;const p=this.planFresh(this.cal.laps,this.format.mandatoryStops);
     this.nextTyreLap=p.laps;return id;}
+  finishOnSet(car,laps){
+    const id=car.wheels[0].tyre.compound,compound=COMPOUNDS[id];
+    if(!compound||laps<1||car.fuel/this.fuelPerLap<laps+.2)return false;
+    const wear=maxWear(car),rate=this.wearRate(id),fade=this.fade[id]??1,endWear=wear+rate*laps;
+    const loss=w=>this.lapRef*.45*fade*(.1*w+1.2*Math.max(0,w-WEAR_CLIFF)**2);
+    // The cliff is a cost, not an automatic extra stop. Keep the fade and depletion limits explicit.
+    if(endWear>.92||loss(endWear)>4)return false;
+    let stay=0;for(let j=0;j<laps;j++)stay+=this.lapRef*.55*(1-compound.grip)+loss(wear+(j+.5)*rate);
+    return stay<=this.stopLoss+this.planFresh(laps,0).cost;
+  }
   decide(car,lapsLeft,aiDriving=true,caution=false){
-    const plan=super.decide(car,lapsLeft,aiDriving,caution);
+    let plan=super.decide(car,lapsLeft,aiDriving,caution);
+    const autonomousTyres=plan?.tyres&&this.reason.split(' + ').every(r=>r==='TYRES'||r==='PLAN');
+    const rulesMet=this.stops>=this.format.mandatoryStops&&(!this.format.mandatorySwap||this.swaps>0||this.team.drivers.length<2);
+    if(aiDriving&&!this.request&&!caution&&autonomousTyres&&rulesMet&&this.finishOnSet(car,Math.max(0,lapsLeft-1))){
+      plan=this.plan=null;this.boxThisLap=false;this.reason='FINISH ON SET';
+    }
     this.memo=null;
     if(plan?.tyres)this.nextTyreLap=car.race.lap;
     else {const n=Math.max(0,lapsLeft-1),owed=Math.max(0,this.format.mandatoryStops-this.stops),p=this.planStint(car,n,owed);
       // A fuel-only stop is not a tyre renewal. Carry the current set's remaining life past it.
       const remainingSet=Math.max(1,Math.floor((.86-maxWear(car))/this.wearRate(car.wheels[0].tyre.compound)));
-      this.nextTyreLap=car.race.lap+Math.max(1,plan&&!plan.tyres?remainingSet:p.laps);}
+      this.nextTyreLap=this.reason==='FINISH ON SET'?this.cal.laps+1:car.race.lap+Math.max(1,plan&&!plan.tyres?remainingSet:p.laps);}
     this.decisions.push({lap:car.race.lap,compound:car.wheels[0].tyre.compound,box:Boolean(plan),nextTyreLap:this.nextTyreLap,reason:this.reason});
     if(this.decisions.length>32)this.decisions.shift();return plan;
   }
@@ -54,29 +69,46 @@ export function installInterceptStrategy(race,car){
 }
 
 export class Resources {
-  constructor(options){this.options=options;this.allowance=1;this.last=null;this.rate=0;}
+  constructor(options){this.options=options;this.allowance=1;this.last=null;this.rate=null;this.compound=null;}
   update(car,state,observer,dt){
     const now=state.time??0,wear=maxWear(car),core=Math.max(...car.wheels.map(w=>w.tyre.core-w.tyre.optimum));
-    if(this.last&&now-this.last.time>.5&&wear>=this.last.wear&&wear-this.last.wear<.1){const r=(wear-this.last.wear)/(now-this.last.time);this.rate=this.rate?this.rate*.8+r*.2:r;this.last={time:now,wear};}
-    if(!this.last||wear<this.last.wear)this.last={time:now,wear};
-    const lap=Math.max(0,car.race?.lap??0),remaining=Math.max(.1,(state.totalLaps??20)-lap),fuelLaps=car.fuel/Math.max(.1,state.fuelPerLap??8);
-    const toTyres=state.pitPlan?.tyres?Math.max(.1,1-(car.race?.lapFraction??0)):state.nextTyreLap!=null?Math.max(.2,state.nextTyreLap-lap):Math.min(remaining,Math.max(1,fuelLaps));
-    const horizon=Math.min(remaining,toTyres),ref=car.classId==='lmdh'?53:64,projected=wear+this.rate*ref*horizon;
+    const compound=car.wheels[0].tyre.compound,progress=car.race?.progress??0,length=observer.track.length;
+    const reference=state.lapRef??car.race?.bestLap,ref=Number.isFinite(reference)&&reference>1?reference:car.classId==='lmdh'?53:64;
+    if(!this.last||compound!==this.compound||wear<this.last.wear-1e-4){this.last={time:now,wear,progress};this.rate=null;this.compound=compound;}
+    const distance=progress-this.last.progress;
+    // Wear varies with the corner. Estimate a stint from meaningful road distance, not a two-second burst.
+    if(now-this.last.time>=Math.max(15,ref*.25)&&distance>=length*.2){
+      const measured=Math.max(0,wear-this.last.wear)*length/distance;
+      this.rate=this.rate===null?measured:this.rate*.55+measured*.45;this.last={time:now,wear,progress};
+    }
+    const fraction=Math.max(0,progress)%length/length,lap=Math.max(1,car.race?.lap??1),
+      remaining=Math.max(.05,(state.totalLaps??20)-lap+1-fraction),fuelLaps=car.fuel/Math.max(.1,state.fuelPerLap??8);
+    const toTyres=state.pitPlan?.tyres?Math.max(.05,1-fraction):state.nextTyreLap!=null?Math.max(.05,state.nextTyreLap-lap-fraction):Math.min(remaining,Math.max(.05,fuelLaps));
+    const learned=state.wearPerLap?.[compound],wearPerLap=this.rate??(Number.isFinite(learned)?learned:0),horizon=Math.min(remaining,toTyres),projected=wear+wearPerLap*horizon;
     const fade=ref*.45*(.1*projected+1.2*Math.max(0,projected-.72)**2),target=observer.list.find(r=>r.eligible&&r.ds>0&&r.ds<90);
-    const urgent=remaining<1.7||state.pitPlan?.tyres||target&&target.ds<40;
-    let wanted=fade<3.5&&core<22 ? 1/this.options.margin:clamp(1-(fade-3.5)*.008, .94,1);
-    if(state.session==='qualifying')wanted=1/this.options.margin;
+    const urgent=remaining<1.7||state.pitPlan?.tyres||target&&target.ds<40&&car.speed>target.v;
+    const budget=urgent?4:3.5;
+    const ceiling=car.classId==='gt'?1:1/this.options.margin;
+    let wanted=fade<budget&&core<22 ? ceiling:clamp(1-(fade-budget)*.008, .94,1);
+    // The GT controller needs its measured grip reserve even on a qualifying run.
+    if(state.session==='qualifying')wanted=ceiling;
     this.allowance+=(wanted-this.allowance)*Math.min(1,dt*2);
-    this.trace={allowance:this.allowance,projectedWear:projected,projectedFade:fade,toTyres,urgent:Boolean(urgent),hot:core};
+    this.trace={allowance:this.allowance,projectedWear:projected,projectedFade:fade,wearPerLap,toTyres,remaining,urgent:Boolean(urgent),hot:core};
     return this.allowance;
   }
-  energy(car,state,battle,path,controller){
+  energy(car,state,battle,path,controller,observer){
     if(!car.hybrid)return;
     if(state.session==='qualifying'){car.intent=null;return;}
-    const soc=car.hybrid.energy/3e6,v=car.speed,finish=(state.totalLaps??20)-(car.race?.lap??0)<1.3;
-    const fight=battle.state==='ATTACK'||battle.state==='ALONGSIDE';
+    const soc=car.hybrid.energy/3e6,v=car.speed,finish=(this.trace?.remaining??Infinity)<1.3;
+    const rival=observer?.list.find(r=>r.id===battle.target&&r.eligible),
+      fight=rival&&battle.side&&Math.abs(rival.ds)<22&&['ATTACK','ALONGSIDE','DEFEND'].includes(battle.state);
     const exit=controller.trace?.feed>0||controller.targetSpeed>v+1;
     const max=finish||fight?1:clamp(.7+(soc-.55)*2.5,.1,1),taper=clamp((78-v)/38,0,1);
-    car.intent={deploy:max*taper*(exit?1:.5)*clamp(soc/.09,0,1),harvest:soc<.35?.8:.35,ttl:.25};
+    // Once space is owned, top-speed economy must not cancel the acceleration needed to finish the pass.
+    // A blocked nose, braking demand or low battery still withholds the burst.
+    const burst=Boolean(fight&&exit&&car.controls.throttle>.75&&car.controls.brake<.01&&controller.trace?.source!=='nose'&&soc>.16&&!state.formation&&!state.caution);
+    const deploy=(burst?1:max*taper*(exit?1:.5))*clamp(soc/.09,0,1);
+    car.intent={deploy,harvest:soc<.35?.8:.35,ttl:.25};
+    if(this.trace)this.trace.energy={deploy,burst,finish,target:rival?.id??null,gap:rival?.ds??null,soc};
   }
 }

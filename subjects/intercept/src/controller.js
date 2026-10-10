@@ -89,11 +89,15 @@ export class Controller {
     // A verified escape still needs lateral grip. Full emergency braking must not erase that grip.
     const urgentBrake=nose.blocker?.hazard&&path.steerJerk>o.steerJerk?Math.min(nose.brake,Math.max(.12,ax.share*1.15)*ax.reserve):nose.brake;
     if(urgentBrake>pedals.brake){pedals={...pedals,throttle:0,brake:urgentBrake,reason:'blocked-nose'};}
+    // The escape allocator can supply much less braking than the raw nose demand. Do not
+    // store that unreachable deceleration and keep braking after the body has cleared.
+    const allocatedAcceleration=pedals.throttle*(model.drive(v)+model.dragK*v*v+.13)-(model.dragK*v*v+.13)-pedals.brake*model.brake(v);
+    if(pedals.reason==='brake-reserve'&&demand.source==='nose')this.acceleration=Math.max(this.acceleration,allocatedAcceleration);
     car.controls={throttle:pedals.throttle,brake:pedals.brake,steer:clamp(steer,-1,1)};
     this.targetSpeed=demand.target;this.lineSpeed=path.sample(path.vbrk,c.i,c.f);this.e=c.e;
     this.mode=pedals.brake>.025?'BRAKE':Math.abs(v*v*kp)<4?'PUSH':'CORNER';
     this.trace={time,source:demand.source,pedal:pedals.reason,target:demand.target,feed:demand.feed,requestedAcceleration:demand.requestedAcceleration,
-      acceleration:this.acceleration,frontSlip:ax.front,rearSlip:ax.rear,wheelspin:ax.spin,reserve:ax.reserve,use:ax.use,
+      acceleration:this.acceleration,allocatedAcceleration,frontSlip:ax.front,rearSlip:ax.rear,wheelspin:ax.spin,reserve:ax.reserve,use:ax.use,
       profileTarget:demand.profileTarget,wakeTarget:demand.wakeTarget,noseCap:Number.isFinite(demand.cap)?demand.cap:null,pitCap:Number.isFinite(demand.pit)?demand.pit:null,nextTarget:demand.next,
       nose:nose.blocker?.id??null,noseGeometry:nose.details,steer:car.controls.steer,throttle:car.controls.throttle,brake:car.controls.brake,
       preview,kp,k,ay,measuredAy:car.ay,yawRate:car.yawRate,beta:ax.beta,betaError,pathHeading:heading,pathLateral:path.sample(path.lat,c.i,c.f),
