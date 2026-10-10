@@ -157,6 +157,13 @@ export class TempestDriver {
   }
   update(real, cars, dt, context = {}) {
     this.prepare(real);
+    // qualifying: one fresh set, one flying lap and nothing to save the tyres for, so the class may drive nearer the force
+    // peak (qualiMargin; LMDh 1.0 matched or beat RAZOR on all four tracks, GT3 at 1.0 slid on two of four)
+    const quali = context.state?.session === 'qualifying' && this.options.qualiMargin != null;
+    if (quali !== Boolean(this.inQuali)) {
+      if (quali) this.raceMargin = this.options.margin;
+      this.inQuali = quali; this.options = { ...this.options, margin: quali ? this.options.qualiMargin : this.raceMargin }; this.forceRefresh = true;
+    }
     this.controlDelay = context.controlDelay ?? 0;
     const car = this.predict(real, dt), line = this.line, o = this.options, t = context.time ?? 0;
     this.refreshClock += dt;

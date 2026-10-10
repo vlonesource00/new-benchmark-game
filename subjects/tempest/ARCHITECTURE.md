@@ -188,6 +188,12 @@ leaving it passes someone or the line holds a heavy impact (closing past 6 m/s, 
 4.29, damage ~2 %, rain clean. On a wet road a lane taken for water is kept (gating it put a car off in the rain check);
 gating only for traffic in the dry gave 5.08. Field races are deterministic (same seed, same result at any load).
 
+Qualifying (`scripts/bench/quali-bench.mjs`, every AI in one ghosted session, soft tyres): the session hands TEMPEST
+`qualiMargin` in place of `margin` (LMDh 1.0; the race keeps 0.97, tyre life and traffic). LMDh best laps Harbor / Solenne /
+Alpine / Desert 51.18 / 48.59 / 59.14 / 63.58 s against RAZOR 51.47 / 48.57 / 59.14 / 63.60 (mean 55.62 vs 55.69, the
+fastest of the four AIs). GT3 stays at 0.97: at 1.0 it slid on Harbor and Desert, 0.985 was neutral; it trails RAZOR by
+0.04–0.45 s. Tread push does nothing here: it never spends on a set's first lap, the only fresh lap qualifying has.
+
 Bench note: `--opts` go in after `prepare()`, so keys baked there (`brakeExp`, `gears`, `notch*`) never take effect
 through `--opts`; per-class config is merged in `prepare()` and overrides earlier options.
 

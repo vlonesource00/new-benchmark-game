@@ -27,7 +27,8 @@
   "strategy": true,
   "classes": {
     "lmdh": {
-      "brakeExp": 1.85
+      "brakeExp": 1.85,
+      "qualiMargin": 1
     }
   },
   "tracks": {
