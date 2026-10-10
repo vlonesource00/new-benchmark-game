@@ -11,9 +11,14 @@ export function deployment(soc,v,{finish=false,fight=false,exit=false,throttle=0
 
 /** Live stint model on the shared game's current compounds. No baked data from an older tyre model. */
 export class InterceptStrategist extends TeamStrategist {
-  constructor(previous,trackId,classId){super(previous.team,previous.cal,previous.format);Object.assign(this,previous);
+  constructor(previous,trackId,classId,lane=null){super(previous.team,previous.cal,previous.format);Object.assign(this,previous);
     this.trackId=trackId;this.classId=classId;this.nextTyreLap=null;this.decisions=[];this.wheelRates=new Map();
-    this.style={aggression:.3,patience:1,undercut:0};this.stopLoss=18+this.cal.baseStopS+this.cal.tyreChangeS;
+    this.style={aggression:.3,patience:1,undercut:0};
+    // Price this circuit's lane instead of carrying Harbor's fixed 18 s to every track.
+    const referenceSpeed=(lane?.L??0)/Math.max(1,this.lapRef);
+    this.laneLoss=lane?Math.max(10,lane.length/lane.limit-lane.length/Math.max(20,referenceSpeed)):18;
+    const swap=this.team.drivers.length>1&&(this.format.mandatorySwap||this.team.drivers.every(d=>d.kind==='ai'))?this.cal.swapS:0;
+    this.stopLoss=this.laneLoss+this.cal.baseStopS+this.cal.tyreChangeS+swap;
   }
   wearRate(id){return Math.max(.005,this.wearPerLap[id])*1.06;}
   stintCost(id,age,laps){
@@ -31,6 +36,20 @@ export class InterceptStrategist extends TeamStrategist {
       const worst=Math.max(...rates);if(worst>0)this.wearPerLap[id]=this.wearPerLap[id]*.6+worst*.4;}
     this.wheelMark=current;this.memo=null;
   }
+  planStint(car,n,owed){
+    this.memo=null;
+    const id=car.wheels[0].tyre.compound,rate=this.wearRate(id),wear=maxWear(car),age=wear/rate;
+    const fuel=Math.max(0,Math.floor(car.fuel/this.fuelPerLap-.15)),life=Math.max(0,Math.floor((1-wear)/rate));
+    let best={cost:Infinity,laps:0};
+    for(let x=0;x<=Math.min(n,fuel,life);x++){
+      let cost=this.stintCost(id,age,x);
+      if(x<n)cost+=this.stopLoss+this.planFresh(n-x,Math.max(0,owed-1)).cost;
+      else if(owed>0)continue;
+      if(cost<best.cost)best={cost,laps:x};
+    }
+    return best;
+  }
+  cautionSaving(kind){return this.laneLoss*(kind==='sc'?.75:.5);}
   resetMark(){super.resetMark();this.wheelMark=null;}
   startCompound(){const id=super.startCompound();this.memo=null;const p=this.planFresh(this.cal.laps,this.format.mandatoryStops);
     this.nextTyreLap=p.laps;return id;}
@@ -57,7 +76,9 @@ export class InterceptStrategist extends TeamStrategist {
       // A fuel-only stop is not a tyre renewal. Carry the current set's remaining life past it.
       const remainingSet=Math.max(1,Math.floor((.86-maxWear(car))/this.wearRate(car.wheels[0].tyre.compound)));
       this.nextTyreLap=this.reason==='FINISH ON SET'?this.cal.laps+1:car.race.lap+Math.max(1,plan&&!plan.tyres?remainingSet:p.laps);}
-    this.decisions.push({lap:car.race.lap,compound:car.wheels[0].tyre.compound,box:Boolean(plan),nextTyreLap:this.nextTyreLap,reason:this.reason});
+    this.decisions.push({lap:car.race.lap,compound:car.wheels[0].tyre.compound,box:Boolean(plan),nextTyreLap:this.nextTyreLap,reason:this.reason,
+      lapsLeft,fuel:car.fuel,fuelPerLap:this.fuelPerLap,wear:maxWear(car),wearPerLap:this.wearRate(car.wheels[0].tyre.compound),
+      stintLaps:this.stintLaps,stops:this.stops,swaps:this.swaps,lapRef:this.lapRef,stopLoss:this.stopLoss,plan:plan?{...plan}:null});
     if(this.decisions.length>32)this.decisions.shift();return plan;
   }
   stopDone(plan){const prior=this.nextTyreLap;super.stopDone(plan);this.memo=null;
@@ -72,7 +93,7 @@ export function installInterceptStrategy(race,car){
   // Never replace another architecture's explicit team planner in a mixed AI pairing.
   if(e.team.drivers.some(d=>d.kind==='ai'&&d.id!=='intercept'))return false;
   if(e.strategist.stops>0||e.strategist.stintLaps>0)return false;
-  e.strategist=new InterceptStrategist(e.strategist,race.track.id,car.classId);return true;
+  e.strategist=new InterceptStrategist(e.strategist,race.track.id,car.classId,race.lane);return true;
 }
 
 export class Resources {

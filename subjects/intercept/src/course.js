@@ -106,14 +106,14 @@ export class Course {
     const c=path.closest(car.x,car.z), count=Math.min(path.N-1,Math.ceil(Math.max(360,car.speed*5)/path.ds)), arrays={};
     for(const key of ['px','pz','h','ks','lat','vbrk','vmax','len','st']) arrays[key]=Array.from({length:count+1},(_,j)=>path[key][path.idx(c.i-3+j)]);
     return {version:1,epoch,sequence,time:now,track:this.track.id,classId:car.classId,ds:path.ds,sourceS:path.st[path.idx(c.i-3)],
-      endS:path.st[path.idx(c.i-3+count)],arrays,battle:{...battle},steerJerk:path.steerJerk??this.options.steerJerk,model:{grip:this.model.grip,margin:this.model.margin},key:path.key??'course'};
+      endS:path.st[path.idx(c.i-3+count)],arrays,battle:{...battle},attackSide:path.attackSide??0,steerJerk:path.steerJerk??this.options.steerJerk,model:{grip:this.model.grip,margin:this.model.margin},key:path.key??'course'};
   }
 }
 
 /** Open local route. Advancing past its endpoint hands back to the already loaded base course. */
 export class Route {
   constructor(contract) {
-    Object.assign(this,contract.arrays); this.N=this.px.length;this.ds=contract.ds;this.key=contract.key;this.contract=contract;this.steerJerk=contract.steerJerk; this.v=this.vbrk;
+    Object.assign(this,contract.arrays); this.N=this.px.length;this.ds=contract.ds;this.key=contract.key;this.contract=contract;this.steerJerk=contract.steerJerk;this.attackSide=contract.attackSide??0;this.v=this.vbrk;
   }
   idx(i){return Math.max(0,Math.min(this.N-1,i));}
   closest(x,z,hint=-1){

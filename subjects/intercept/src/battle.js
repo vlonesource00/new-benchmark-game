@@ -8,7 +8,7 @@ import { deployment } from './strategy.js';
 /** Bounded prediction on the actual compiled demand. No frozen rivals, alternative pedal profile or plan rebuild. */
 export function evaluate(path,car,course,observer,target,horizon=3.4) {
   const model=course.model,t=course.track,L=course.line,c=path.closest(car.x,car.z);
-  let i=c.i,f=c.f,v=Math.max(2,car.speed),time=0,arc=0,risk=0,blocked=0,cleared=false;
+  let i=c.i,f=c.f,v=Math.max(2,car.speed),time=0,arc=0,risk=0,blocked=0,cleared=false,threat=null,peakRisk=0;
   const startS=observer.me.s,initialGap=target?.ds??0;let energy=car.hybrid?.energy??0;
   while(time<horizon) {
     const h=.10,k=path.sample(path.ks,i,f),d=path.sample(path.lat,i,f),heading=path.heading(i,f),body={x:path.sample(path.px,i,f),z:path.sample(path.pz,i,f),h:heading,vx:Math.sin(heading)*v,vz:Math.cos(heading)*v};
@@ -19,8 +19,8 @@ export function evaluate(path,car,course,observer,target,horizon=3.4) {
       if(ds>0&&ds<110&&across<2.4+.05*ds)wake=Math.max(wake,Math.exp(-ds/55)*(1-(across/(2.4+.05*ds))**2));
       if(Math.abs(ds)<9&&across<5){const contact=bodyContact(body,p,.08);
         if(contact){const {depth,closing,longitudinal}=contact;
-          risk+=h*(Math.max(0,depth-.12)*1.2+Math.max(0,closing-1.5)**2*(longitudinal>.65?.6:.16));
-          if(r.hazard||closing>6)risk+=h*20;
+          const cost=h*(Math.max(0,depth-.12)*1.2+Math.max(0,closing-1.5)**2*(longitudinal>.65?.6:.16)+(r.hazard||closing>6?20:0));
+          risk+=cost;if(cost>peakRisk){peakRisk=cost;threat=r.id;}
         }}
       if(ds>HALF_LENGTH+r.along && ds<35 && across<HALF_WIDTH+r.across+.18){
         const room=ds-HALF_LENGTH-r.along-.6;cap=Math.min(cap,Math.sqrt(p.v*p.v+2*model.brake(v)*.75*Math.max(0,room)));blocked+=h;}
@@ -40,7 +40,7 @@ export function evaluate(path,car,course,observer,target,horizon=3.4) {
   }
   const road=roadSample(path,i,f,t.length),progress=gap(road,startS,t.length),rival=target?observer.at(target,time):null;
   const finalGap=rival?gap(rival.s,road,t.length):0;
-  return {path,progress,exit:v,risk,blocked,cleared,finalGap,initialGap,score:progress+v*.8-risk*5};
+  return {path,progress,exit:v,risk,threat,blocked,cleared,finalGap,initialGap,score:progress+v*.8-risk*5};
 }
 
 /** Compare clearance in the same future road section, not against the rival's present lateral coordinate. */
@@ -53,8 +53,8 @@ export function corridorFits(path,base,car,target,side){
 /** A latched target/side with continuously refreshed timing. No tactical lane grid, no label hysteresis in pedals. */
 export class Battle {
   constructor(course,options,outcomes){this.course=course;this.options=options;this.outcomes=outcomes;this.reset();}
-  reset(){this.state='PACE';this.target=null;this.side=0;this.path=null;this.returnPath=null;this.at=-99;this.since=0;this.clearAt=null;this.returnReason=null;this.progressMark=null;this.candidates=[];this.sequence=0;}
-  wire(){return {state:this.state,target:this.target,side:this.side,since:this.since,clearAt:this.clearAt,returnReason:this.returnReason};}
+  reset(){this.state='PACE';this.target=null;this.side=0;this.path=null;this.returnPath=null;this.returnGuard=null;this.returnTarget=null;this.at=-99;this.since=0;this.clearAt=null;this.returnReason=null;this.progressMark=null;this.candidates=[];this.sequence=0;}
+  wire(){return {state:this.state,target:this.target,side:this.side,since:this.since,clearAt:this.clearAt,returnReason:this.returnReason,returnTarget:this.returnTarget};}
   adopt(b){
     if(!b)return;
     const state=this.state,clearAt=this.clearAt,returnReason=this.returnReason;
@@ -79,7 +79,7 @@ export class Battle {
     if(!enabled){this.path=base;this.state='PACE';return base;}
     if(!force&&now-this.at<this.options.battlePeriod)return this.path??base;
     this.at=now;this.sequence++;
-    course.beginRoutes(this.path,this.returnPath);
+    course.beginRoutes(this.path,this.returnPath,this.returnGuard?.path);
     // Do not merge into the next reachable slower body just because the previous pass is complete.
     if(this.state==='RETURN') {
       const c=base.closest(car.x,car.z);
@@ -92,11 +92,35 @@ export class Battle {
         const direct=evaluate(base,car,course,observer,next);
         const trafficChain=next.kind==='traffic'&&car.speed-next.v>3&&(next.ds-5)/Math.max(.2,car.speed-next.v)<4;
         if(lane.risk<.4&&(trafficChain||lane.progress>direct.progress-2&&lane.exit>direct.exit-1)){this.target=next.id;this.state=next.hazard?'EVADE':'ATTACK';this.since=now;this.clearAt=null;this.returnReason=null;this.returnPath=null;
-          if(next.eligible)this.outcomes.declare(next,observer,now,this.side);return this.path=path;}
+          this.returnGuard=null;this.returnTarget=null;if(next.eligible)this.outcomes.declare(next,observer,now,this.side);return this.path=path;}
       }
       if(Math.abs(c.e)<.35){this.reset();return this.path=base;}
       // Rebuilding the join every planning tick warps its geometry and repeatedly moves its speed notch.
       this.returnPath??=course.corridor(car,null,0,0,{entry:Math.max(90,car.speed*1.8),hold:20,returnLength:60,clearance:0});
+      // Preserve space around a front/overlapping body or slower traffic, without yielding a race
+      // lane to a rival behind. A costly hold behind us can erase the advantage of a clean pass.
+      const merge=evaluate(this.returnPath,car,course,observer,null),neighbor=observer.list.find(q=>q.id===merge.threat&&q.physical&&
+        q.ds>-(HALF_LENGTH+q.along)&&q.ds<Math.max(25,car.speed*.7)&&
+        (q.ds>=0||q.hazard||q.kind==='traffic'&&car.speed-q.v>3));
+      if(neighbor&&merge.risk>.3){
+        const stillHeld=this.returnGuard?.id===neighbor.id&&Math.abs((neighbor.offset??neighbor.d)-this.returnGuard.offset)<.6&&
+          gap(this.returnGuard.path.holdEndS,observer.me.s,course.track.length)>Math.max(35,car.speed*.6);
+        if(!stillHeld){
+          const h=course.track.at(course.track.nearest((car.x+neighbor.car.x)*.5,(car.z+neighbor.car.z)*.5).s).heading,
+            lateral=(car.x-neighbor.car.x)*Math.cos(h)-(car.z-neighbor.car.z)*Math.sin(h),side=Math.sign(lateral)||this.side||1,
+            clearance=Math.max(Math.abs(lateral),neighbor.kind==='traffic'?3.3:this.options.holdSeparation),
+            path=course.corridor(car,neighbor,side,2,{entry:Math.max(40,car.speed*.8),hold:Math.max(120,car.speed*2.4),returnLength:100,clearance});
+          this.returnGuard={id:neighbor.id,offset:neighbor.offset??neighbor.d,path};
+        }
+        const held=evaluate(this.returnGuard.path,car,course,observer,null);this.candidates=[{...merge,kind:'join',side:0},{...held,kind:'hold-space',side:this.returnGuard.path.attackSide}];
+        if(held.risk<merge.risk-.05){this.returnTarget=neighbor.id;return this.path=this.returnGuard.path;}
+      }
+      // The protected lane displaced the body after the original join was compiled.
+      // Build one fresh C2 join when space opens, instead of chasing that obsolete centreline.
+      if(this.returnTarget!==null&&this.returnGuard&&this.path===this.returnGuard.path){
+        this.returnPath=course.corridor(car,null,0,3,{entry:Math.max(90,car.speed*1.8),hold:20,returnLength:60,clearance:0});this.returnGuard=null;
+      }
+      this.returnTarget=null;
       return this.path=this.returnPath;
     }
     const beside=!this.side&&observer.list.find(q=>q.eligible&&Math.abs(q.ds)<HALF_LENGTH+q.along+.4&&Math.abs(q.d-observer.me.d)<4.5);

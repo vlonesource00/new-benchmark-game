@@ -59,11 +59,11 @@ export class InterceptDriver {
   controlPreview(){return this.course.contract(this.path,this.lastCar,this.battle.wire(),this.lastTime,this.contextEpoch??0,this.sequence);}
   debug(){const r=this.observer?.list.find(r=>r.id===this.battle?.target),c=this.controller;
     return {architecture:'INTERCEPT',intent:this.battle?.state??'INIT',mode:c?.mode,targetSpeed:c?.targetSpeed,lineSpeed:c?.lineSpeed,e:c?.e,
-      focus:r?.id??null,focusGap:r?.ds??null,side:this.battle?.side??0,planAge:this.remote?Math.max(0,this.lastTime-this.remote.contract.time):0,
+      focus:r?.id??null,focusGap:r?.ds??null,side:this.battle?.side??0,returnNeighbor:this.battle?.returnTarget??null,planAge:this.remote?Math.max(0,this.lastTime-this.remote.contract.time):0,
       trace:c?.trace,resources:this.resources?.trace,stats:this.outcomes?.book,events:this.outcomes?.events,
       route:{key:this.path?.key??'course',sequence:this.remote?.contract.sequence??this.sequence,epoch:this.contextEpoch,sourceS:this.remote?.contract.sourceS,endS:this.remote?.contract.endS},
       observed:this.observer?.list.slice(0,6).map(q=>({id:q.id,kind:q.kind,s:q.s,gap:q.ds,lateral:q.d,speed:q.v,closing:(this.lastCar?.speed??0)-q.v,
-        acceleration:q.ax,lateralSpeed:q.vd,headingError:q.psi,eligible:q.eligible,physical:q.physical,hazard:q.hazard,pit:q.pit,boxing:q.approaching,offroad:q.off,reenter:q.reenter,
+        acceleration:q.ax,bodyDeceleration:q.deceleration,lateralSpeed:q.vd,headingError:q.psi,eligible:q.eligible,physical:q.physical,hazard:q.hazard,pit:q.pit,boxing:q.approaching,offroad:q.off,reenter:q.reenter,
         forecast:[.5,1.5].map(t=>({t,...this.observer.at(q,t)}))})),
       cands:this.battle?.candidates.map(q=>({kind:q.kind,key:q.path?.key??'course',side:q.side,score:q.score,progress:q.progress,exit:q.exit,risk:q.risk,blocked:q.blocked,routeTax:q.routeTax,profileFloor:q.path?.profileFloor,clear:q.cleared,finalGap:q.finalGap,fits:q.fits,chosen:q.path===this.path})),
       sub:r?`${this.battle.state.toLowerCase()} #${r.id} ${r.ds.toFixed(1)} m`:c?.mode?.toLowerCase()??'priming'};

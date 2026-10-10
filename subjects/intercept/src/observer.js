@@ -29,6 +29,10 @@ export class Observer {
       const vd = other.vx * Math.cos(h) - other.vz * Math.sin(h), old = this.history.get(other.id);
       const elapsed = old ? now - old.time : 0;
       const ax = elapsed > .008 && elapsed < .5 ? clamp((v - old.v) / elapsed, -18, 8) : 0;
+      // Road-tangent acceleration is deliberately bounded for lane prediction. Frontal braking
+      // needs the actual loss of body speed; prototypes can decelerate far harder than 18 m/s².
+      const bodySpeed=Math.hypot(other.vx,other.vz),deceleration=elapsed>.008&&elapsed<.5&&Number.isFinite(old?.bodySpeed)?
+        clamp((old.bodySpeed-bodySpeed)/elapsed,0,60):0;
       const pit = meta?.pit && meta.pit !== 'approach', approaching = meta?.boxCalled || meta?.pit === 'approach';
       const retired = meta?.retired || other.race?.retired || other.race?.disqualified;
       const done = Number.isFinite(other.race?.finishTime), off = Math.abs(q.lateral) > t.halfWidth + .8;
@@ -37,7 +41,7 @@ export class Observer {
       // Retired cars are not race targets, but the game's collision solver still sees their bodies.
       const physical = (!pit || Math.hypot(other.x-car.x, other.z-car.z) < 12) && (!off || reenter || Math.abs(q.lateral-me.lateral) < 3);
       const eligible = !pit && !approaching && !retired && !done && !off && v>=7 && Math.abs(psi)<.65;
-      const r = { id: other.id, car: other, cls: other.classId, s: q.s, d: q.lateral, ds, v, vd, ax,
+      const r = { id: other.id, car: other, cls: other.classId, s: q.s, d: q.lateral, ds, v, vd, ax, deceleration,
         psi, along: Math.abs(Math.cos(psi))*HALF_LENGTH + Math.abs(Math.sin(psi))*HALF_WIDTH,
         across: Math.abs(Math.cos(psi))*HALF_WIDTH + Math.abs(Math.sin(psi))*HALF_LENGTH,
         physical, eligible, retired:Boolean(retired), pit: Boolean(pit), approaching, done, off, reenter,
@@ -57,7 +61,7 @@ export class Observer {
           r.eligible=r.moving&&!off;r.hazard=!r.eligible&&physical;r.kind=r.eligible?(other.classId===car.classId?'race':'traffic'):'hazard';
         }
       }
-      this.list.push(r); this.history.set(other.id, { time: now, v, d: q.lateral,referenceIndex:r.reference?.i });
+      this.list.push(r); this.history.set(other.id, { time: now, v, bodySpeed, d: q.lateral,referenceIndex:r.reference?.i });
     }
     this.list.sort((a,b) => Math.abs(a.ds)-Math.abs(b.ds));
     return this;

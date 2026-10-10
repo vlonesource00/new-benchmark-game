@@ -1,4 +1,4 @@
-import { clamp, angle } from './math.js';
+import { clamp, angle, advance } from './math.js';
 import { axleState, allocate } from './axles.js';
 import { HALF_LENGTH, HALF_WIDTH } from './observer.js';
 
@@ -32,7 +32,7 @@ export function longitudinalDemand(path,c,v,model,{cap=Infinity,cap2=cap,pit=Inf
 }
 
 /** Current body ray, not a blanket cap for an opponent whose future line overlaps ours. */
-export function noseConstraint(car,observer,model,{lateralEscape=false}={}) {
+export function noseConstraint(car,observer,model,{lateralEscape=false,path=null,cursor=null}={}) {
   let cap=Infinity,brake=0,blocker=null,details=null;
   const sy=Math.sin(car.yaw),cy=Math.cos(car.yaw),v=Math.max(0,car.speed);
   for(const r of observer.list) {
@@ -65,6 +65,24 @@ export function noseConstraint(car,observer,model,{lateralEscape=false}={}) {
     if(safe<cap){cap=safe;blocker=r;details={forward,across,predictedAcross:predicted,closing,room,safe,deceleration,escapeTime};}
     if(room<closing*.18)brake=Math.max(brake,clamp(closing/Math.max(2,room+2),0,1));
   }
+  // A braking or pit-approach car can become a frontal blocker around a corner while lying outside
+  // today's straight body ray. Check the route we are actually executing, not every candidate.
+  if(path&&cursor)for(const r of observer.list){
+    const braking=r.ax< -2||(r.car.controls?.brake??0)>.15;
+    if(!r.physical||(!r.hazard&&!braking)||r.pit||r.ds<5||r.ds>v*1.5+25||v-r.v<4&&!braking)continue;
+    for(const time of [.35,.7,1.05]){
+      const p=observer.at(r,time),c=advance(path,cursor.i,cursor.f,v*time),h=path.heading(c.i,c.f),
+        dx=p.x-path.sample(path.px,c.i,c.f),dz=p.z-path.sample(path.pz,c.i,c.f),
+        front=dx*Math.sin(h)+dz*Math.cos(h),side=dx*Math.cos(h)-dz*Math.sin(h),delta=angle(p.h-h),
+        across=Math.abs(Math.cos(delta))*HALF_WIDTH+Math.abs(Math.sin(delta))*HALF_LENGTH,
+        along=Math.abs(Math.cos(delta))*HALF_LENGTH+Math.abs(Math.sin(delta))*HALF_WIDTH;
+      if(front< -HALF_LENGTH-along||front>HALF_LENGTH+along+12||Math.abs(side)>HALF_WIDTH+across+.12)continue;
+      const closing=Math.max(0,v-r.v),room=r.ds-HALF_LENGTH-r.along-1.2,leadV=r.hazard?r.v:p.v??r.v,
+        ownBrake=Math.max(3,model.brake(v)*.75),safe=Math.sqrt(Math.max(0,leadV)**2+2*ownBrake*Math.max(0,room-closing*.15));
+      if(safe<cap){cap=safe;blocker=r;details={forward:r.ds,across:side,closing,room,safe,predictedBlock:true,horizon:time};}
+      break;
+    }
+  }
   return {cap,brake,blocker,details};
 }
 
@@ -95,7 +113,7 @@ export class Controller {
       if(room<.25 && drift>.35 && Math.abs(observer.me.d-dir*.5)<course.track.halfWidth-1.1)
         steer-=dir*clamp((drift-.35)*.045,0,.18);
     }
-    nose??=noseConstraint(car,observer,model,{lateralEscape:o.noseEscape&&Math.abs(c.e)<.65&&ax.reserve>.75});
+    nose??=noseConstraint(car,observer,model,{path,cursor:c,lateralEscape:o.noseEscape&&path!==course.line&&path.attackSide&&Math.abs(c.e)<.65&&ax.reserve>.75});
     const demand=longitudinalDemand(path,c,v,model,{cap:nose.cap,pit,wake:car.aero?.wake??0});
     // Smooth demand inside corners, without delaying an urgent brake or a newly opened exit.
     const rate=demand.acceleration<this.acceleration?100:85;
