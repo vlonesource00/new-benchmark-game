@@ -476,6 +476,16 @@ game's traction control already acts) and slip 0.013. Field noise: the base scor
 - `overSteerRef` (control): the steady-state yaw of the lock last sent is a reference too, so the yaw the car
   carries behind the jerk-limited steering through an S is not read as a slide. Places lost 2.6 → 2.1 per race
   and first-minute losses 43 → 31, but fewer passes: 3.67 / 3.75 / 3.71 (equal), damage 2.9–3.5 % (from 2.2–2.8).
+- Governor on lateral slip only, wheelspin left to the game's traction control (setup 3: from kappa 0.113, mild):
+  4.08, first-minute losses 52. TEMPEST's own wheelspin limit earns its keep. Not kept in the code.
+- Drive inside the friction circle in the rollout (drive x sqrt(1 - u^2), u the lateral grip in use on the lane):
+  the S-join to the line off the green was priced the fastest plan (4.7 s against 5.0–5.3) while the car was cut
+  back to 0.73 throttle on it. 4.25, first-minute losses 46. Not kept in the code.
+
+Pattern over this round: each change that corrects one measured error moves the field 0.3–1.4 places the wrong way,
+while the base is stable across seed sets. The planner's margins were set together with today's errors; a correction
+alone unbalances them (as with the forecast fixes in 2026-10-08). The next attempt at the start should be judged with
+the margins it interacts with (routeGate, holdMargin, contact weights) re-set for it, not alone.
 
 ## 7. Open work
 
