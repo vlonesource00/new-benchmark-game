@@ -180,6 +180,14 @@ on GT lap 1. Solo, Harbor: LMDh 52.70 / 52.72 / 52.90 s, GT3 62.04 / 62.18 s, ag
 62.07 / 62.17 s. On the fuel-fixed field bench (four tracks, seeds 7–9, native) it still loses: base 5.04, clean-air PACE
 only 5.08, spent everywhere 5.50 (incident points 1.0 → 1.7–2.4). Over 12 laps in the field (Harbor, Alpine, seeds 7–9) it is neutral too: place 4.83 → 4.92, incidents 3.0 → 3.5, damage 3.9 → 3.4 %. It stays opt-in. Regression checks: `node --import ./scripts/json-loader.mjs subjects/tempest/tools/check.mjs` (perception, bridge, pit + swap, SC, FCY, rain, changeable weather; ~35 s).
 
+Line hold (`routeGate`, `routeHeavy`, `defend: false`): most race places were lost by leaving the racing line, to route
+around a car (contact risk priced at ~3 s), to cover a lane, or to an off-line lane with no pass in it. The cars behind took
+the line. Field place (seeds 7–9 / 10–12, four tracks, 24 car-races each): base 5.04 / 5.29; no combat at all 3.00 (damage
+10 %); gate fully open + no defence 3.75 / 3.88 (passes 2.4 a race, damage 6–7 %); shipped: the line is held unless
+leaving it passes someone or the line holds a heavy impact (closing past 6 m/s, a stopped, spun or finished car), 4.50 /
+4.29, damage ~2 %, rain clean. On a wet road a lane taken for water is kept (gating it put a car off in the rain check);
+gating only for traffic in the dry gave 5.08. Field races are deterministic (same seed, same result at any load).
+
 Bench note: `--opts` go in after `prepare()`, so keys baked there (`brakeExp`, `gears`, `notch*`) never take effect
 through `--opts`; per-class config is merged in `prepare()` and overrides earlier options.
 

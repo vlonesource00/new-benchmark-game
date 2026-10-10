@@ -142,17 +142,17 @@ export class Rollout {
     // braking envelope (full throttle until it must brake), so that is the demand scored
     const prof = o.freeThrust === true ? lane.vbrk : lane.v;
     const wE = me.halfWidth ?? 0.98, colC = o.contactCost ?? 3, B = o.passValue ?? 0.45;
-    const caps = this.cap, tAt = this.tAt, latA = this.lat, peak = (this.peak ??= new Float64Array(64));
+    const caps = this.cap, tAt = this.tAt, latA = this.lat, peak = (this.peak ??= new Float64Array(64)), peakH = (this.peakH ??= new Float64Array(64));
     const env = (this.env ??= new Float64Array(4096)), segA = (this.segA ??= new Float64Array(4096));
     const event = (o.contactMode ?? 'event') === 'event', behind = o.behindShare ?? 0.4, useWake = o.rolloutWake !== false, capB = o.capBrake ?? 0.55;
     // capEnvelope: a following cap is a speed at a place, and the controller brakes to it beforehand (the committed
     // plan's cap envelope). A first pass finds the caps; the second drives against their braking envelope instead of
     // slowing at the cap itself
     const nPass = o.capEnvelope === true ? 2 : 1, bEnv = (o.envBrake ?? 0.6) * model.brake(30);
-    let t, v, cost, contact, tH, maxDev, out, xPrev;
+    let t, v, cost, contact, heavy, tH, maxDev, out, xPrev;
     for (let pass = 0; pass < nPass; pass++) {
     if (pass) { env[n] = caps[n]; for (let j = n - 1; j >= 1; j--) env[j] = Math.min(caps[j], Math.sqrt(env[j + 1] * env[j + 1] + 2 * bEnv * segA[j + 1])); }
-    t = 0; tAt[0] = 0; v = Math.max(1, car.speed); cost = 0; contact = 0; tH = NaN; maxDev = 0; out = -1; xPrev = wrap(line.idx(i0) * ds - me.s, L); peak.fill(0, 0, plan.fs.length);
+    t = 0; tAt[0] = 0; v = Math.max(1, car.speed); cost = 0; contact = 0; heavy = 0; tH = NaN; maxDev = 0; out = -1; xPrev = wrap(line.idx(i0) * ds - me.s, L); peak.fill(0, 0, plan.fs.length); peakH.fill(0, 0, plan.fs.length);
     for (let j = 1; j <= n; j++) {
       const i = line.idx(i0 + j), x = wrap(i * ds - me.s, L), seg = lane.len[line.idx(i - 1)] * clamp((x - xPrev) / ds, 0, 1);
       const dB = lane.lat[i];
@@ -168,6 +168,8 @@ export class Rollout {
             const risk = clamp((need - c) / (sg + 0.3), 0, 1), conf = Math.exp(-Math.max(0, t - 0.6) / 1.5);
             const sev = risk * conf * (r.hazard ? 2 : 1) * (1 + Math.abs(vp - rv) / 6);
             if (event) peak[q] = Math.max(peak[q], sev);
+            // heavy: a real impact, not racing contact (a stopped, spun or finished car, or closing past the game's severe 6 m/s)
+            if (r.hazard || r.done || Math.abs(v - rv) > (o.heavyClosing ?? 6)) peakH[q] = Math.max(peakH[q], sev);
             else { const pc = colC * sev * (seg / p.dS); cost += pc; contact += pc; }
           }
         } else if (g > 0 && g < 90 && c < 0.35 + 0.4 * sg) {
@@ -193,7 +195,7 @@ export class Rollout {
     // contact is an event, not a distance: the worst moment against each car, shared with a car that is behind
     if (event) for (let q = 0; q < plan.fs.length; q++) {
       const r = plan.fs[q].r, pc = colC * peak[q] * (!r.hazard && r.ds < 0 ? behind : 1);
-      cost += pc; contact += pc;
+      cost += pc; contact += pc; heavy += colC * peakH[q] * (!r.hazard && r.ds < 0 ? behind : 1);
     }
     // outcome at the horizon, as in the lattice
     let passes = 0, lost = 0, who = null;
@@ -204,7 +206,7 @@ export class Rollout {
       else if (g0 < 0 && gE > -0.3 * Ls) lost++;
     }
     const score = t + cost - B * (passes - lost);
-    const ev = { lane, i0, n, score, t, tH, passes, lost, contact, maxDev, p, who: who?.id ?? null, out, unified, prof: prof === lane.vbrk ? 'vbrk' : 'v' };
+    const ev = { lane, i0, n, score, t, tH, passes, lost, contact, heavy, maxDev, p, who: who?.id ?? null, out, unified, prof: prof === lane.vbrk ? 'vbrk' : 'v' };
     // the time used to place the end of the beside hold, against the time this drive reaches it (diagnostic)
     if (p.beside) { const b = p.beside, xe = (b.delay ?? 0) + b.entry + b.hold; ev.bt = { used: tOf(xe), held: clamp(xe / v0, 0, 4.4), drive: this.tLookup(tAt)(xe) }; }
     // besideTime 'drive': place the lane again on the times this drive took (one fixed-point step)

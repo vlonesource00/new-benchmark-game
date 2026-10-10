@@ -134,8 +134,13 @@ export class Arbiter {
     // leaving the line only pays when it passes someone or avoids a real contact on it: routing around a car only to
     // escape its following cap gives the line to the cars behind
     const lineEv = evs.find((e) => e.p.forced) ?? evs.find((e) => e.p.first === LINE_LANE && !e.p.hold && !e.p.beside);
-    const routeGate = o.routeGate ?? -1;   // off by default: measured worse (4.67 at 0.5, 5.58 at 1.5 vs 4.33 off)
-    if (lineEv && best !== lineEv && best.passes <= 0 && p.defend == null && lineEv.contact < routeGate && best.maxDev > 1.2 && !(best.p.hold && this.state === 'ATTACK')) best = lineEv;
+    // config sets it open (1000): field 5.04 -> 4.25 (seeds 7-9), and with defend:false 3.75; unseen seeds 10-12 5.29 -> 3.88,
+    // passes 0.96 -> 2.38/car-race, damage 4.3 -> 7.4 %. Cover lanes and contact-avoidance routes gave the line away.
+    // In the dry it also holds the line when the line is clear (an off-line lane with no pass promises pace it does not
+    // deliver: traffic-only gating gave 5.08 vs 4.29 on seeds 10-12); on a wet road a lane taken for water is left alone.
+    // routeHeavy: an impact on the line (closing, a hazard, a finished car) still lets the car leave it; rubbing does not
+    const routeGate = o.routeGate ?? -1, wetRoad = d.track.water?.live && (d.track.wetness ?? 0) > 0.01;
+    if (lineEv && best !== lineEv && best.passes <= 0 && p.defend == null && (lineEv.contact > 0 || !wetRoad) && lineEv.contact < routeGate && !(lineEv.heavy > (o.routeHeavy ?? Infinity)) && best.maxDev > 1.2 && !(best.p.hold && this.state === 'ATTACK')) best = lineEv;
     this.lastEvs = evs;
     // for the debugger: every option against the chosen one, and how far the kept path leads its best challenger
     const holdEv = evs.find((e) => e.p.hold), rival = evs.reduce((m, e) => (e.p.hold || (m && m.score <= e.score) ? m : e), null);
