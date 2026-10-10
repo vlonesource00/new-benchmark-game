@@ -21,7 +21,7 @@ import { RaceControl } from './caution.js';
 
 export const FIXED_DT = 1 / 120;
 /** Lone qualifying: timed laps after the out lap, gap between cars on track (m), session cap (s). */
-export const QUALI_LAPS = 2, QUALI_SPACING = 260, QUALI_TIME_LIMIT = 480;
+export const QUALI_LAPS = 2, QUALI_SPACING = 260, QUALI_RUNUP = 250, QUALI_TIME_LIMIT = 480;
 
 /**
  * Authoritative endurance race. Mirrors the host Session.step loop (same
@@ -125,9 +125,10 @@ export class EnduranceRace {
     this.entries.forEach((e, i) => {
       const c = e.car;
       const quali = this.session === 'qualifying';
-      // Qualifying spreads the cars round the lap so each runs in clear air.
+      // Qualifying spreads the cars round the lap so each runs in clear air. Every car, the first included, gets a
+      // run-up to the line: from the grid box (50 m out) the first car began its timed lap from a standing start.
       const rolling = this.startType === 'rolling';
-      const back = quali ? i * Math.min(QUALI_SPACING, track.length / this.entries.length) : rolling ? lead + Math.floor(i / 2) * ROLLING.row : Math.floor(i / 2) * rowSpacing;
+      const back = quali ? QUALI_RUNUP + i * Math.min(QUALI_SPACING, (track.length - QUALI_RUNUP) / this.entries.length) : rolling ? lead + Math.floor(i / 2) * ROLLING.row : Math.floor(i / 2) * rowSpacing;
       const lane = rolling ? Math.min(ROLLING.lane, track.halfWidth * 0.4) : laneOff;
       c.place(track, (rolling ? track.finishS : track.gridS) - back, quali ? 0 : i % 2 ? -lane : lane, rolling ? ROLLING.pace * 0.8 : 0);
       c.fuelScale = this.cal.fuelScale;
