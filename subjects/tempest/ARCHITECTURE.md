@@ -442,6 +442,21 @@ Measured alongside and left opt-in:
 - `paceLearn`: each rival's speed against our line, per 20 m, smoothed over laps, as the pace its forecast fades to.
   Field 4.54 against 3.75: worse.
 
+### Braking into a slide behind a car (measured, nothing kept)
+
+Pass fixture against RAZOR at margin 0.88: TEMPEST spun at 52 s, 7.6 % damage. Holding the racing line at 69 m/s in
+a fast corner (sideslip 0.13 rad, what the model expects there), 25 m behind and closing 4 m/s, the following cap
+arrived late and asked for full brake mid-corner. The grip share let 0.54…0.88 of it through as the lateral demand
+eased; the fronts saturated (slip 2.3 against the 2.15 limit) and the rear let go as the brake came off (rear slip
+1.4 → 3.4) while the wake rose 0.2 → 0.6. Two controller fixes both removed the spin in the fixture and both lost
+on the field (seeds 7–9, base 3.58), so both stay opt-in, default off:
+
+- `wakeShare`: the grip share from the lateral grip left in the wake (the wake envelope's downforce loss). 4.42.
+- `frontRelease`: the slip protection that eases the brake for a saturated rear also eases it for the front. 4.08.
+
+The late cap is the root: the racing line is held under the line-hold gate at a contact cost of 2 and the cap only
+bites once the forecast puts the rival's lateral path back on ours.
+
 ## 7. Open work
 
 - Delay-aware steering under one frame of lag (braking in wake oscillates; see the worker path)

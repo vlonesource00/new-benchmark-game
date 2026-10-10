@@ -109,7 +109,9 @@ export class Controller {
     const cut = (name, t) => { const x = throttle - t; if (x > 0.005) { why.cuts[name] = x; if (x > 0.02 && x > (why.cuts[why.cut] ?? 0)) why.cut = name; } return t; };
     this.raw = { throttle, brake };
     if (ctx.noseBrake > 0) { cut('nose-brake', 0); throttle = 0; brake = Math.max(brake, ctx.noseBrake); }
-    const phys = model.lat(v) / Math.max(0.5, (model.margin ?? 1) * (line.trim[i] ?? 1));
+    // in dirty air the lateral grip is the downforce that is left: the share left for the brakes is smaller
+    const wkLat = o.wakeShare === true && wk > 0.05 ? 1 - 0.16 * Math.min(0.95, wk) * model.dfShare(v) : 1;
+    const phys = model.lat(v) * wkLat / Math.max(0.5, (model.margin ?? 1) * (line.trim[i] ?? 1));
     const use = clamp(Math.max(Math.abs(v * v * kp), Math.abs(car.ay) * 0.9) / Math.max(1, phys), 0, 1);
     const share = Math.sqrt(Math.max(0, 1 - use * use)); this.share = share;
     if (brake > 0) brake = Math.min(brake, Math.max(o.brakeFloor ?? 0.12, share * (o.brakeAllow ?? 1.15)));
@@ -125,7 +127,7 @@ export class Controller {
     const sF = Math.max(latSlip(car.wheels[0].tyre), latSlip(car.wheels[1].tyre)), sR = Math.max(latSlip(car.wheels[2].tyre), latSlip(car.wheels[3].tyre));
     const hi = o.slipHi ?? 2.15, tooFar = Math.max(0, Math.max(sF, sR) - hi), loose = Math.max(0, sR - sF - (o.looseBand ?? 0.35));
     const protect = clamp((1 - (o.protectGain ?? 2) * tooFar) * (1 - (o.looseGain ?? 1.2) * loose), 0.15, 1);
-    throttle = cut('slip', throttle * protect); if (sR > hi) brake *= protect;
+    throttle = cut('slip', throttle * protect); if (sR > hi || (o.frontRelease === true && sF > hi)) brake *= protect;
     brake *= this.stability; throttle = cut('stability', throttle * this.stability);
     this.why = why;
     this.mode = brake > 0 ? 'BRAKE' : throttle > 0.95 || (Math.abs(this.ayReq) < 4 && throttle > 0.5) ? 'PUSH' : 'CORNER';
