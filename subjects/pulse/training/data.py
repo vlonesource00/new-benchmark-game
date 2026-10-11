@@ -12,13 +12,27 @@ def episodes(directory, schema, expected_split, corrective=False, optional=False
         manifest = records[0]
         if manifest['type'] != 'manifest' or manifest['split'] != expected_split:
             raise ValueError(f'Bad manifest/split: {path.name}')
+        if manifest.get('neverTraining'):
+            raise ValueError('A diagnostic intervention cannot enter training')
         mode = manifest['settings']['mode']
-        if corrective and mode not in ['policy', 'dagger']:
+        disturbance = manifest.get('trainingDisturbance', False)
+        clean_prefix = manifest.get('cleanPrefixTraining', False)
+        if clean_prefix and (mode != 'policy' or not manifest.get('trainingOnly') or manifest['settings'].get('trainingExpertActuator')):
+            raise ValueError('Clean-prefix feedback must be unassisted policy collection')
+        if clean_prefix and not corrective:
+            raise ValueError('Policy feedback requires expert corrective targets')
+        if disturbance and (mode != 'teacher' or not manifest.get('trainingOnly') or not (manifest['settings'].get('disturbanceSteer') or manifest['settings'].get('disturbanceLongitudinal'))):
+            raise ValueError('Invalid externally disturbed teacher data')
+        if corrective and mode not in ['policy', 'dagger'] and not disturbance:
             raise ValueError('Correction data must contain student-visited states')
+        if disturbance and not corrective:
+            raise ValueError('Noisy expert execution cannot become a cloning target; load it as corrections')
         if not corrective and mode not in ['teacher', 'shadow']:
             raise ValueError('Initial cloning cannot train on student execution targets')
         if records[-1]['type'] != 'summary' or records[-1]['minFuel'] < 1 or records[-1].get('endedEarly'):
             raise ValueError(f'Incomplete/fuel-starved episode: {path.name}')
+        if not corrective and any(records[-1].get(k, 0) for k in ['trackLimitSeconds', 'cumulativeDamage', 'incidents', 'dq']):
+            raise ValueError(f'Expert demonstration failed the legal/damage gate: {path.name}')
         steps = [r for r in records if r['type'] == 'step']
         if not steps:
             continue
@@ -40,8 +54,20 @@ def episodes(directory, schema, expected_split, corrective=False, optional=False
         if corrective:
             for i, r in enumerate(steps):
                 half_width = r['observation']['preview'][0]['halfWidth']
-                valid[i] = r['before']['damage'] <= .02 and abs(r['observation']['road']['lateral']) <= half_width + 1
+                # New traces carry the game's wheel/kerb boundary, outside the
+                # neural inputs. Older traces keep their conservative filter.
+                limit = r.get('legalTrackLimit', half_width + 1)
+                if not np.isfinite(limit) or limit < half_width:
+                    raise ValueError(f'Invalid physical track limit: {path.name}')
+                valid[i] = r['before']['damage'] <= .02 and abs(r['observation']['road']['lateral']) <= limit
                 valid[i] &= r['observation']['raw'][1] >= -1
+            if disturbance or clean_prefix:
+                # Disturbed expert and unassisted feedback episodes may fail. Learn the clean
+                # prefix only; later wall hits, repairs or marshal relocation
+                # cannot masquerade as successful recovery demonstrations.
+                failures = [i for i, r in enumerate(steps) if not valid[i] or r['before']['damage'] > .001]
+                if failures:
+                    valid[min(failures):] = False
         starts = np.where(valid & np.r_[True, ~valid[:-1]])[0]
         ends = np.where(valid & np.r_[~valid[1:], True])[0] + 1
         for start, end in zip(starts, ends):

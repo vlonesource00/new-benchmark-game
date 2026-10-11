@@ -3,12 +3,12 @@ import { resolve } from 'node:path';
 import { HOME } from './versions.mjs';
 import { createPolicy } from './policy.mjs';
 import { timing } from '../src/runtime.mjs';
-import { SCHEMA } from '../src/schema.mjs';
 const args = process.argv.slice(2), i = args.indexOf('--model');
 const directory = resolve(HOME, i < 0 ? 'artifacts/model' : args[i + 1]), parity = JSON.parse(readFileSync(resolve(directory, 'parity.json'), 'utf8'));
 const result = { model: directory.split(/[/\\]/).at(-1), backend: 'onnxruntime-node CPU', batches: {}, maximumActionError: 0, maximumHiddenError: 0 };
 for (const batch of [1, 16]) {
-  const policy = await createPolicy(directory, { batch }); let hidden = new Array(batch * SCHEMA.hidden).fill(0);
+  const policy = await createPolicy(directory, { batch }), SCHEMA = policy.schema;
+  let hidden = new Array(batch * SCHEMA.hidden).fill(0);
   for (const sample of parity) {
     const input = Array.from({ length: batch }, () => sample.observation).flat();
     const prediction = await policy.step(input, hidden); hidden = prediction.hidden;

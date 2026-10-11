@@ -17,11 +17,13 @@ export function treeDigest(directories) {
   for (const path of files) hash.update(relative(ROOT, path).replaceAll('\\', '/')).update('\0').update(readFileSync(path)).update('\0');
   return hash.digest('hex');
 }
-export function versions() {
-  return { schemaVersion: SCHEMA.version, schemaDigest: digest(SCHEMA),
+export function versions(schema = SCHEMA) {
+  if (!['pulse-observation-v1', 'pulse-observation-v2'].includes(schema.version)) throw Error('Unknown observation contract');
+  return { schemaVersion: schema.version, schemaDigest: digest(schema),
     simulatorDigest: treeDigest(['game/core', 'game/engine/sim']),
-    observationDigest: treeDigest(['subjects/pulse/src/schema.mjs']),
-    harnessDigest: treeDigest(['subjects/pulse/src/runtime.mjs', 'subjects/pulse/tools/scenario.mjs', 'subjects/pulse/tools/record.mjs']),
+    observationDigest: treeDigest(['subjects/pulse/src/schema.mjs', ...(schema.version === 'pulse-observation-v2' ? ['subjects/pulse/src/schema-v2.mjs'] : [])]),
+    harnessDigest: treeDigest(['subjects/pulse/src/runtime.mjs', 'subjects/pulse/src/observations.mjs',
+      'subjects/pulse/tools/scenario.mjs', 'subjects/pulse/tools/record.mjs', 'subjects/pulse/tools/policy.mjs']),
     teacherDigest: treeDigest(['subjects/intercept/src', 'subjects/intercept/config.json']),
     git: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: ROOT, encoding: 'utf8' }).trim(), teacher: 'intercept' };
 }

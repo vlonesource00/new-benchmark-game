@@ -5,6 +5,7 @@ import { FORMATS } from '../../../game/core/rules.js';
 import { observe, SCHEMA, toControls } from '../src/schema.mjs';
 import { ActionMailbox, supervise } from '../src/runtime.mjs';
 import { runScenario } from './scenario.mjs';
+import { SCHEMA as V2, observe as observeV2, conditionObservation } from '../src/schema-v2.mjs';
 const checks = [];
 const test = async (name, fn) => { await fn(); checks.push(name); };
 const team = i => ({ id: 'check' + i, index: i, starter: 0, grid: i, classId: i ? 'gt' : 'lmdh',
@@ -148,6 +149,85 @@ await test('mid-lap starts never create a false full-lap pace record', async () 
   assert(laps.length >= 2); assert.equal(laps[0].full, false); assert(laps.slice(1).every(l => l.full));
   assert(r.summary.fullLaps.length >= 1); assert(r.summary.bestFullLap > 45);
   assert(laps[0].seconds < r.summary.bestFullLap);
+});
+await test('v2 conditions only public state and preserves every original input', () => {
+  car.place(race.track, 500, 0, 50); car.yaw += .1;
+  const before = JSON.stringify(car), base = observe(race, car), live = observeV2(race, car);
+  assert.equal(JSON.stringify(car), before); assert.equal(live.normalized.length, V2.size);
+  assert.deepEqual(conditionObservation(base, car, race.track), live);
+  const recovered = [...live.normalized.slice(0, 39), ...live.normalized.slice(44)];
+  assert.deepEqual(recovered, base.normalized);
+  const beta = V2.fields.findIndex(f => f.name === 'ego.bodySideslip');
+  assert(Math.abs(live.raw[beta] + .1) < 1e-8); assert.deepEqual(live.missing, []);
+});
+await test('v2 and v1 teacher paths have identical physical motion', async () => {
+  const a = await runScenario({ seconds: 1 }), b = await runScenario({ seconds: 1, observationVersion: V2.version });
+  assert.equal(a.summary.progress, b.summary.progress); assert.deepEqual(a.rows.map(r => r.target), b.rows.map(r => r.target));
+  assert.equal(b.schema.size, 364); assert(b.rows.every(r => r.observation.normalized.length === 364));
+});
+await test('training recovery leaves a stationary legal racing-line offset to the policy', async () => {
+  const r = await runScenario({ seconds: .05, start: 500, lateral: 7.7, speed: 0, mode: 'dagger', expertMix: 0,
+    policy: async (_x, h) => ({ action: [0, 0], hidden: h }) });
+  assert.equal(r.summary.expertRows, 0); assert(r.rows.every(row => row.legalTrackLimit > 10));
+});
+await test('training recovery still catches an outward-moving near-limit body', async () => {
+  const r = await runScenario({ seconds: .05, start: 500, lateral: 9.9, speed: 30, yawOffset: .1, mode: 'dagger', expertMix: 0,
+    policy: async (_x, h) => ({ action: [0, 1], hidden: h }) });
+  assert(r.summary.expertRows > 0); assert(r.rows[0].expertGuard.outwardSpeed > 2);
+});
+await test('expert tracing observes without changing control or physical motion', async () => {
+  const a = await runScenario({ seconds: 2 }), b = await runScenario({ seconds: 2, traceExpert: true });
+  assert.equal(a.summary.progress, b.summary.progress);
+  assert.deepEqual(a.rows.map(r => r.target), b.rows.map(r => r.target));
+  assert(b.rows.every(r => Number.isFinite(r.teacherTrace.k) && Number.isFinite(r.teacherTrace.pathError)));
+});
+await test('expert history counterfactual leaves the actual controller and physics untouched', async () => {
+  const a = await runScenario({ seconds: 2 }), b = await runScenario({ seconds: 2, traceExpert: true, probeExpertHistory: true });
+  assert.equal(a.summary.progress, b.summary.progress);
+  assert.deepEqual(a.rows.map(r => r.target), b.rows.map(r => r.target));
+  assert(b.rows.every(r => Number.isFinite(r.teacherHistoryProbe.instantaneousCurvature)));
+});
+await test('held expert cadence is explicit and cannot become a policy fallback', async () => {
+  const r = await runScenario({ seconds: 2, holdExpert: true });
+  assert(r.rows.every(row => row.substeps.every(s => JSON.stringify(s.controls) === JSON.stringify(row.teacherControls))));
+  await assert.rejects(() => runScenario({ seconds: 1, holdExpert: true, mode: 'policy', policy: async (_x, h) => ({ action: [0, 1], hidden: h }) }), /teacher-only/);
+});
+await test('delayed expert diagnostic holds actual previous controls until reply arrival', async () => {
+  const r = await runScenario({ seconds: .2, holdExpert: true, heldExpertLagMs: 1000 / 120 });
+  assert.deepEqual(r.rows[0].substeps[0].controls, { throttle: 0, brake: 0, steer: 0 });
+  assert.deepEqual(r.rows[0].substeps[1].controls, r.rows[0].teacherControls);
+  await assert.rejects(() => runScenario({ seconds: 1, heldExpertLagMs: 10 }), /bounded held-teacher/);
+});
+await test('component assistance is explicit and is still governed by physical nose safety', async () => {
+  const r = await runScenario({ seconds: .2, mode: 'policy', diagnosticExpertActuator: 'steer',
+    policy: async (_x, h) => ({ action: [-1, .5], hidden: h }) });
+  assert.equal(r.summary.expertActuatorRows, r.summary.rows); assert(r.summary.scope.startsWith('Diagnostic only'));
+  assert(r.rows.every(row => Math.abs(row.executed.steer - row.teacherControls.steer) < 1e-6));
+  await assert.rejects(() => runScenario({ seconds: 1, diagnosticExpertActuator: 'steer' }), /policy-only diagnostic/);
+});
+await test('pedal curriculum is explicit and forbidden in independent policy evaluation', async () => {
+  const r = await runScenario({ seconds: .2, mode: 'dagger', trainingExpertActuator: 'longitudinal', expertMix: 0,
+    policy: async (_x, h) => ({ action: [0, -1], hidden: h }) });
+  assert.equal(r.summary.expertActuatorRows, r.summary.rows); assert(r.summary.scope.startsWith('Training only: expert pedals'));
+  assert(r.rows.every(row => row.actionSource === 'training-pedal-curriculum'));
+  await assert.rejects(() => runScenario({ seconds: 1, mode: 'policy', trainingExpertActuator: 'longitudinal',
+    policy: async (_x, h) => ({ action: [0, 1], hidden: h }) }), /no evaluation actuator assistance/);
+});
+await test('warm recovery preserves moving tyre/body state and cannot assist the policy', async () => {
+  const r = await runScenario({ seconds: .1, start: 120, yawOffset: .12, lateral: 1, warmupToStart: true, observationVersion: V2.version });
+  assert(r.summary.warmupSeconds > 1); assert.equal(r.events[0].type, 'training-state-perturbation');
+  assert(r.rows[0].before.speed > 45); assert.equal(r.rows[0].before.damage, 0);
+  const beta = V2.fields.findIndex(f => f.name === 'ego.bodySideslip');
+  assert(r.rows[0].observation.raw[beta] < -.08);
+  assert(r.rows[0].before.tyres.some(tyre => Math.abs(tyre.alpha) > 1e-3));
+  await assert.rejects(() => runScenario({ seconds: 1, warmupToStart: true, mode: 'policy', policy: async (_x, h) => ({ action: [0, 1], hidden: h }) }), /teacher-only/);
+});
+await test('training disturbance labels precede noisy execution and cannot assist the policy', async () => {
+  const r = await runScenario({ seconds: 2, disturbanceSteer: .1, disturbancePeriod: 1.5, disturbanceDuration: .2 });
+  assert(r.summary.scope.startsWith('Training only'));
+  assert(r.rows.some(row => Math.abs(row.teacherControls.steer - row.executed.steer) > .03));
+  assert(r.rows.every(row => row.actionSource === 'training-disturbed-expert'));
+  await assert.rejects(() => runScenario({ seconds: 1, disturbanceSteer: .1, mode: 'policy', policy: async (_x, h) => ({ action: [0, 1], hidden: h }) }), /Training disturbances/);
 });
 for (const entry of race.entries) for (const bridge of entry.bridges) bridge.dispose?.();
 console.log(JSON.stringify({ passed: checks.length, checks }));

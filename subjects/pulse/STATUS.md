@@ -1,16 +1,21 @@
 # PULSE checkpoint — 11 October 2026
 
-M0 infrastructure works. M1 autonomous driving is **not complete**. Corrective
-learning is running through real physical episodes, but no candidate completes
-the matched clean-lap gate. Nothing here certifies competitive pace or combat.
+M0 infrastructure works. PULSE now completes clean unassisted full Harbor GTP
+laps below 53 seconds. The latest feedback snapshot repeats four of six solo
+setups cleanly. M1 is **not complete**: other starting poses, traffic and sustained
+added latency still expose failures. Nothing here certifies
+competitive race pace, combat, independent strategy or endurance.
 
 ## Verified infrastructure
 
 - Isolated CUDA Python and Node/ONNX dependencies; real GPU optimizer update.
-- 28 simulator/runtime checks, including partial-lap rejection, legal kerb use, fresh safety during a 500 ms inference
+- 40 simulator/runtime checks, including partial-lap rejection, legal kerb use, fresh safety during a 500 ms inference
   blackout, late/out-of-order rejection and elapsed time since accepted state.
-- 8 model/data checks: padding/order invariance, identical initial transfer to
-  the reactive head, expert correction targets, contiguous sequences and splits.
+- 27 local model/data checks: padding/order invariance, initial-function transfer,
+  current-state actor/history-mask invariance, expert targets, legality filters,
+  contiguous sequences, splits, explicit v1-to-v2 transfer, isolated pedal learning
+  interpolation that cannot alter the frozen steering function, clean-prefix
+  policy feedback and rejection of expert actuator assistance in that collection.
 - Replays show body, road and full-circuit views, actual pedals, sensors,
   intervention/assistance source, hidden age and physical outcome bookmarks.
 - Each experiment keeps a separate checkpoint and full-rate matched test traces.
@@ -54,6 +59,148 @@ On the student-visited c02 traffic collection, it was 0.1787. This supports a
 visited-state/control-feedback problem; it does not prove a particular cause.
 Request-history dropout and reactive feedback are experiments, not proven cures.
 
+## Current diagnosis and controlled experiments
+
+- c05 isolated the reactive head with identical parent, data, seed and training
+  settings. First legal violations were 13.15/9.61/34.20 s with the original
+  head and 33.78/18.32/1.78 s with the reactive head. It helped solo and badly
+  regressed traffic, so it remains opt-in.
+- On c04's first two traffic seconds, removing rival inputs changed steering
+  by up to 0.083. A physical counterfactual retained actual rivals, wakes,
+  collisions and fresh safety: first legal violation moved from 1.78 to 12.37 s.
+  Both failed. Rival encoding contributes to that failure; it is not the only
+  cause, and masking traffic is not a promoted driving fix.
+- Fresh 120 Hz expert control and 60 Hz held expert control both remained legal
+  and undamaged in all three 70-second fixtures. This establishes that a held
+  cadence can work; it does not test extra reply delay or certify PULSE.
+- Cold recoveries approved 20 train/7 validation demonstrations and quarantined
+  one failed validation demonstration. Warm recoveries actually execute the
+  expert approach, preserve dynamic tyre/controller state, and then perturb
+  body heading/lateral position. They approved 23 train/12 validation examples;
+  one failed train example was quarantined. Failed examples never enter training.
+- The DAgger recovery trigger now distinguishes a stationary legal fast-line
+  offset from an outward-moving body near its grip/footprint boundary. Its
+  measured expert fractions remain high (roughly 46–65% in the latest mixed
+  collection); this is training assistance, not independent control.
+- The v2 encoder appends five public features: circuit phase sine/cosine, body
+  sideslip, road heading error and outer-wheel margin. It supplies no ideal line.
+  Conversion verified all 109,980 recorded steps across 54 files: every original
+  input, target and executed command is preserved. Original harness provenance
+  remains recorded. Identical actor transfer starts with zero new-input weights.
+- The c11 pair uses identical physical states, labels, sequence boundaries,
+  parent and training settings. Better v2 imitation loss did not pass the
+  driving gate. Its solo command RMSE is 0.036 on expert states and 0.164 on
+  student states before illegal/damaged/reversed motion. Masking request history
+  barely helps. Holding the last expert steering command scores RMSE 0.010 on
+  expert states, illustrating why teacher-forced loss can be misleading.
+
+Latest unassisted Harbor GTP tests, clear/soft, 120 seconds per case. Values below
+are **seconds to first legal-limit violation**, not lap times or time without
+damage. Offset fixtures begin at s=1000 m and their first crossing is partial.
+
+| Checkpoint | Solo | Offset solo | Three GT3s | Clean full-lap gates |
+|---|---:|---:|---:|---:|
+| c11-v1-control | 33.20 | 12.81 | 37.04 | 0/3 |
+| c11-v2-conditioned | 33.12 | 17.03 | 19.82 | 0/3 |
+| c12-control, 100 more epochs | 32.58 | 16.83 | 14.94 | 0/3 |
+| c12-warm, same parent/settings plus warm examples | 13.89 | 57.59 | 13.04 | 0/3 |
+| c13-motor-mask, warm data, request/actuator history ignored | 38.47 | 24.10 | 29.44 | 0/3 |
+
+The c11–c13 current-state actors have 48,162 parameters and explicitly report
+that motor actuation does not use recurrent memory. The original GRU remains
+available. None of those candidates is promoted: lower supervised loss and
+longer initial legal tracking did not produce repeated clean full laps.
+Traffic clearance events in failed/damaged runs are not proof of deliberate
+move passes. Existing racers, shared physics and the production game are unchanged.
+
+## Control separation and the first clean laps
+
+- The expert-history probe temporarily removes its curvature memory and restores
+  every controller field/control before physics. On c13's clean prefix, the
+  resulting steering-label difference is RMSE 0.0059, versus policy error 0.134.
+  This rules out a large curvature-memory label error in that reproduction;
+  it does not establish that every expert internal state is irrelevant.
+- At c14 epoch 100, replacing only the policy's pedals with expert pedals gives
+  a clean 120-second solo run and a valid full 52.26 s lap. Replacing only its
+  steering still fails at 40.67 s and accumulates 14.3% damage. Both are explicitly
+  assisted diagnostics, forbidden as performance or imitation-training evidence.
+  The pedal/control-state coupling is the priority identified by this test.
+- Controlled external steering disturbances produced 12 clean 120-second expert
+  correction episodes. A pedal curriculum collected 16 further episodes with
+  learned steering, expert pedals and recorded bounded expert recovery. Twelve
+  solo episodes were clean; traffic episodes were not all clean. These are
+  assisted training states, not policy results.
+- External pedal disturbances produced 12 more correction episodes, two of
+  which exceeded limits and one incurred damage. The loader admits only their
+  clean prefixes, never later repaired/marshal-relocated motion. Noisy execution
+  is never the expert target. All new collections use bounded CPU parallelism.
+- The split motor freezes the existing learned steering/encoders and fits an
+  independent public-state pedal head. Parent transfer starts with the same
+  function. The resulting actor has 70,563 parameters, no recurrent actuation,
+  and no expert actuator or privileged line input during policy evaluation.
+
+Native Harbor GTP, clear/soft, 120 seconds per original development fixture:
+
+| Candidate | Solo | Offset solo | Three GT3s | Clean full-lap gates |
+|---|---|---|---|---:|
+| c16-control, minimum imitation loss | clean, 53.06 s full lap | fails at 30.81 s | fails at 4.76 s | 1/3 |
+| c16-speed, pedal disturbances added | fails at 97.63 s | clean, 53.50 s full lap | fails at 4.79 s | 1/3 |
+| c16-control, fixed epoch 50 | clean, 55.64 s full lap | clean, 55.48 s full lap | fails at 4.79 s | 2/3 |
+
+The fixed-epoch-50 solo results reproduced in a second run. These reused
+development fixtures are not unseen generalization evidence. Four additional
+solo starts changed speed/lateral position and all failed the complete clean
+gate. This is a real control milestone, not a robust driver release.
+
+The same epoch-50 candidate passed the nominal 30 Hz hold case (55.43 s), but
+failed an extra 16.67 ms reply delay and 250/500 ms blackouts. Blackouts are tested
+both on the opening straight and around the first braking zone. Correct packet
+rejection and fresh nose safety do **not** certify physical delay tolerance.
+
+Fixed interpolation of two compatible pedal heads did not solve these failures;
+all three tested mixtures remain rejected. It exports a single learned policy
+and changes no frozen steering weights. It is not a runtime expert fallback.
+
+The replay viewer now adds steering, signed-pedal and body-angle timelines,
+showing expert labels, policy proposals and actual execution separately. It also
+shows the declared feature count and links each fixed-epoch replay to its actual
+checkpoint. Fixed-epoch snapshots complement imitation-loss selection; no actor
+is silently promoted on validation loss alone.
+
+## Unassisted corrective feedback: c18
+
+Sixteen new student-only collection episodes vary starting speed and lateral
+offset at s=20 and s=1000 m. Expert commands label visited states without replacing
+either actuator. Of 115,200 recorded rows, 51,393 precede the first legality or
+damage failure. Only those clean prefixes enter training; repaired/rescued states
+are excluded. Training/validation starting states differ from the development
+gates, which remain reused tests rather than unseen generalization evidence.
+
+Paired 75-epoch CUDA runs start from c16-control/epoch-50, with identical motor
+configuration, seed and learning rate. Only the feedback run receives the new
+corrective dataset. Steering remains frozen; the separate pedal head learns.
+The lowest imitation-loss checkpoint does not pass the driving gates in either
+run. Fixed epochs give the useful results:
+
+| Checkpoint | Clean solo setups / 6 | Changed-start gates / 4 | Clean full-lap range |
+|---|---:|---:|---:|
+| c16-control/epoch-50 | 2 | 0 | 55.48–55.64 s |
+| c18-control/epoch-50 | 0 | 0 | none |
+| c18-feedback/epoch-25 | 4 | 3 | 52.65–52.78 s |
+| c18-feedback/epoch-50 | 3 | 2 | 52.47–52.50 s |
+
+c18-feedback/epoch-25 reproduces all seven original/changed-start/traffic
+outcomes exactly in a second run. It still fails the original offset start,
+the slow offset variation and traffic. The traffic opening violates limits at
+4.84 s and accumulates 12.1% damage. It is not a production candidate.
+
+The same snapshot completes 120 seconds cleanly after straight inference
+blackouts of 250/500 ms and a corner blackout of 250 ms, with full laps of
+52.61/52.68/52.59 s. Sustained 30 Hz control fails at 51.33 s, one extra frame of
+reply delay at 16.61 s, and the 500 ms corner blackout at 15.18 s. These native
+injected-stall results do not certify real browser worker scheduling or immunity
+to spikes. They establish a limited improvement over the earlier stall failures.
+
 ## Inference backend
 
 c04 has 147,170 parameters. Torch/native ONNX action error ≤2.3e−7, hidden error
@@ -73,25 +220,50 @@ game rendering/worker load. Use WASM for this small model, CUDA for training.
 WebGPU becomes attractive for larger compute/batches or a CPU-limited client;
 measure it together with rendering before choosing it for production.
 
+The browser inference harness now selects the checkpoint's declared v1/v2
+schema and verifies each graph's SHA-256. Native c13 action parity is within
+2.4e−7; hidden error is zero. CPU p99 is 0.25 ms at batch 1 / 0.48 ms at batch 16.
+Edge c13, 150 warmed samples per backend/batch: WASM p99 0.5/0.8 ms, WebGPU
+8.6/8.1 ms. Both agree with Torch within 3.6e−7. All cameras and the narrow
+viewport passed with no page errors or overflow. These are inference/visual
+checks, not real seat-worker scheduling or immunity to long frame stalls.
+
+The epoch-50 split motor passed Torch/native/browser parity: native action error
+below 7.4e-7, browser below 8.1e-7, identity hidden error zero. CPU p99 at batches
+1/16 was 0.21/0.31 ms. Edge WASM p99 was 0.5/0.6 ms; WebGPU 5.0/10.0 ms over 150
+warmed samples each. All camera/trace views and the narrow viewport passed.
+This confirms WASM remains the appropriate inference baseline for this small
+actor; CUDA is used for training. Real production workers/render load remain open.
+
+c18-feedback/epoch-25 also passes native/browser parity (action errors below
+9.7e-7; hidden error zero). Native CPU batch 1/16 p99 is 0.094/0.162 ms. Edge
+WASM p99 is 0.9/0.8 ms and WebGPU 5.1/11.1 ms over 150 warmed evaluations each.
+All camera/trace views and the narrow viewport pass without page errors or
+overflow. This is a small inference microbench, not a field latency guarantee.
+
 ## Next work
 
-1. Diagnose the first straight-line deviation from c03/c04 with matched steering,
-   lateral velocity and yaw response, including the validity of expert labels
-   when the expert's internal state evolves on unexecuted commands.
-2. Check observation conditioning and whether the public road preview suffices
-   to infer the demonstrated trajectory. Measure input sensitivities rather
-   than continuing to add epochs or datasets without a hypothesis.
-3. Separate the reactive-head experiment from data changes; use identical data,
-   parent weights and held-out fixtures for the next A/B test.
-4. Require repeated clean unassisted laps and offset recoveries before promoting
-   any candidate. Then evaluate held cadence/delay/blackouts physically, beyond
-   the mailbox contract checks.
-5. After that gate: actual retained move passes, fast hazard evasion, multiple
+1. Make the coupled motor policy converge across starting speed/position, judged
+   on physical outcomes. Frozen steering plus supervised pedals is a useful
+   diagnosis/curriculum but has a narrow stable region. Current-state imitation
+   and parameter interpolation have not established robust closed-loop control.
+2. Continue unassisted corrective feedback across the failed offset starts,
+   then evaluate physical motor refinement rather than choose by imitation loss.
+   Preserve c16's conservative offset recovery and c18's faster varied-start
+   checkpoints as explicit baselines; neither supersedes the other's failures.
+3. Repair the traffic-sensitive steering response. The frozen steering branch
+   still fails early with three GT3s; successful solo laps do not imply combat.
+4. Require changed-pose and delay/blackout gates, then real browser-worker tests.
+   Do not replace a neural actuator with the expert in independent evaluation.
+5. After those gates: actual retained move passes, fast hazard evasion, multiple
    tracks/classes, independent strategy, weather/endurance and real workers.
 
-Local lab: http://127.0.0.1:4181/ . Select c03-limits-traffic-policy to inspect
-the best traffic opening so far; select c04-limits-traffic-policy for its
-regression and c04-limits-solo-policy for the improved solo tracking.
+Local lab: http://127.0.0.1:4181/ . Select c18-feedback-e50-solo-policy for the
+clean 52.47 s solo lap, or c18-confirmation-solo-policy for the repeated 52.78 s
+snapshot. c18-confirmation also includes its changed-start, traffic and blackout
+failures. Select c16-stable-robustness-solo-policy and
+c16-stable-robustness-solo-offset-policy for the repeated conservative runs.
+The same suite's changed-pose, traffic and blackout replays show remaining failures.
 Full traces/reports are generated under artifacts/evaluations and are ignored
 by Git. Models/datasets are also ignored; source and these measured summaries
 can be committed without publishing local machine paths or model files.

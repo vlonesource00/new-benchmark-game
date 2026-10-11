@@ -57,6 +57,11 @@ The best validation checkpoint is exported at batch sizes 1 and 16. Loss is
 an imitation metric, not proof of lap pace or overtaking.
 Existing output directories are refused: each experiment keeps its own weights,
 dataset identities, parent checkpoint, trainer/dependency hashes and metadata.
+`--checkpoint-every 25` also preserves fixed-epoch weights. After the trainer
+finishes, `training/export_snapshots.py --run artifacts/models/run-name` exports
+each snapshot to its own directory. These complement the minimum-imitation-loss
+checkpoint: physical stability and pace must be measured separately. The repeated
+development fixtures are explicitly labelled as such, not unseen test evidence.
 `tools/checkpoint.mjs --name unique-name` archives the original `artifacts/model`
 directory if using the initial prototype. Archive-time source is explicitly
 distinguished from the trainer source that produced an old model.
@@ -91,7 +96,7 @@ Push-Location subjects/pulse
 .venv/Scripts/python.exe training/train.py --epochs 50 --resume artifacts/models/clone-01 --corrections data/corrections-01 --out artifacts/models/corrected-01
 Pop-Location
 node subjects/pulse/tools/infer.mjs --model artifacts/models/corrected-01
-node --import ./scripts/json-loader.mjs subjects/pulse/tools/evaluate.mjs --name corrected-01 --model artifacts/models/corrected-01 --seconds 70
+node --import ./scripts/json-loader.mjs subjects/pulse/tools/evaluate.mjs --name corrected-01 --model artifacts/models/corrected-01 --seconds 120
 ```
 
 Correction labels come from `teacherControls` on visited states, never the
@@ -104,12 +109,58 @@ and held request features from some whole windows, reducing a command-copying
 shortcut. Actual motion sensors remain available. `--reactive` adds nine scaled
 public motion features directly to the learned output head alongside GRU memory
 (147,170 parameters). Transfer from the original head initially reproduces
-the parent exactly; all additional feedback weights are learned.
+the parent exactly; all additional feedback weights are learned. The paired c05
+experiment used identical data and training settings: the reactive head helped
+solo tracking but regressed traffic. It is not promoted as a fix.
+
+`--context-skip` lets current ego/road features reach the recurrent head. The
+separate `--instant` experiment removes recurrence from motor actuation: a small
+current-state actor keeps the mailbox's hidden shape but returns hidden state
+unchanged. Its metadata explicitly says `actuationUsesRecurrentMemory: false`.
+These alternatives diagnose the feedback loop; none has passed autonomous laps.
+`--motor-history-mask` is a further instantaneous-actor experiment: request
+history and actual steering are ignored consistently in training and inference.
+Physical motion, tyres, road and opponents remain visible. This tests a
+teacher-forcing shortcut; it is not a deterministic steering controller.
 
 `training/recurrent_probe.py --model artifacts/models/name --episode data/path.jsonl`
 compares uninterrupted expert-observed predictions with short-window error. This
 separates recurrent drift from errors on student-visited states; it is still an
 imitation diagnostic, not an autonomous driving result.
+
+`training/fit_probe.py --model artifacts/models/name --evaluation artifacts/evaluations/name --out artifacts/diagnostics/name-fit.json`
+compares command errors on matched expert and student trajectories. Statistics
+on student states stop at the first illegal, damaged or reversed state; recurrence
+is computed on the complete sequence rather than stitched across discarded rows.
+It also measures a request-history masking counterfactual. This is offline
+imitation, not a physical intervention or evidence of racing performance.
+
+Two additional bounded diagnostics run from the repository root:
+
+```powershell
+node --import ./scripts/json-loader.mjs subjects/pulse/tools/feedback.mjs --name traffic-feedback --trace c04-limits/traffic-policy --model artifacts/models/c04 --seconds 3 --physical-seconds 15
+node --import ./scripts/json-loader.mjs subjects/pulse/tools/cadence.mjs --name expert-hold
+node --import ./scripts/json-loader.mjs subjects/pulse/tools/recover.mjs --name recover-cold
+node --import ./scripts/json-loader.mjs subjects/pulse/tools/recover.mjs --name recover-warm --warm
+```
+
+`feedback.mjs` checks recorded action parity before reconstructing sensitivities.
+Its physical counterfactual masks rival inputs only: actual rivals, wake,
+collisions and fresh front safety remain. Diagnostic data is marked
+`neverTraining` and cannot enter the trainer. `cadence.mjs` compares fresh
+120 Hz expert commands with commands held at 60 Hz. A successful expert hold is
+not a successful policy hold.
+
+Recovery collection quarantines every demonstration with illegal limits,
+damage, incidents, disqualification or an incomplete episode. Only approved
+train/validation directories may be supplied through repeated `--expert-data`.
+Warm collection really drives the expert to the sampling point, preserving
+physical tyre/yaw state and controller history, then perturbs lateral position
+and body heading. This training-only branch is forbidden in policy evaluation.
+The expert DAgger guard allows stationary legal racing-line offsets and uses
+outward velocity plus a footprint buffer when choosing a recovery intervention.
+Intervention counts remain explicit; a dataset with many expert commands is not
+an autonomous result.
 
 The evaluator uses separate test starts/seeds and compares the expert and
 unassisted policy with matched initial conditions. It saves full-rate traces,
@@ -123,6 +174,9 @@ Placed fixtures begin partway through a lap. The initial crossing is excluded
 from `fullLaps` and `bestFullLap`; game best-lap values that include that partial
 lap must not be used for qualifying claims. Run long enough for a subsequent
 complete lap when measuring pace.
+`cleanFullLapGate` requires both a clean complete test interval and a valid full
+lap. A clean 70-second interval that only crosses the initial partial lap fails
+this gate. The 120-second defaults above provide time for a full subsequent lap.
 In traffic, progress deficit is not a solo-equivalent lap time: the two drivers
 can influence their opponents differently. `--latency` adds 30 Hz held controls,
 one frame of reply delay and 250/500 ms inference blackouts.
@@ -199,6 +253,64 @@ production backend. Moving a model to the GPU does not improve its driving logic
 
 ## Trace and validity contract
 
+### Control-response diagnostics
+
+`tools/label-probe.mjs --name unique-name --model artifacts/models/run-name`
+measures the expert's curvature-memory effect without changing its real controls
+or physics. `tools/component-probe.mjs` replaces one actuator at a time to isolate
+steering versus pedal failures. Both produce full traces; both are diagnostic
+interventions forbidden as imitation data or autonomous performance evidence.
+
+Teacher-only external disturbances generate real speed/tyre/yaw transients:
+
+```powershell
+node --import ./scripts/json-loader.mjs subjects/pulse/tools/disturb.mjs --name steer-recovery --jobs 6 --seconds 120
+node --import ./scripts/json-loader.mjs subjects/pulse/tools/disturb.mjs --name pedal-recovery --pedals --jobs 6 --seconds 120
+node --import ./scripts/json-loader.mjs subjects/pulse/tools/pedal-curriculum.mjs --name pedal-curriculum --model artifacts/models/run-name --jobs 6 --seconds 120
+```
+
+The first two collections perturb executed expert commands and preserve the
+expert's correction labels separately. Load these roots with `--corrections`;
+the loader rejects noisy execution as an initial cloning target and admits only
+the clean prefix of a failed externally disturbed expert episode. The curriculum
+uses learned steering, expert pedals and explicit training-only recovery. All
+assistance is recorded and removed from independent policy evaluation.
+
+The opt-in `--instant --split-motor --resume compatible-parent` trainer preserves
+the parent's learned steering and freezes its encoders while fitting a separate
+public-state pedal head. Its initial function is identical to the parent and
+pedal updates cannot change steering weights. This is a control-learning
+experiment, not a claim of trained recurrent tactics or competitive racing.
+`training/interpolate.py` can export fixed pedal-weight mixtures only when both
+parents have identical frozen steering/encoders and matching contracts. It
+produces one policy, uses no runtime expert, and does not guarantee improvement.
+
+Use `tools/evaluate.mjs --robustness --latency` with a checkpoint to add changed
+starting speeds/offsets and actual held/delayed/blackout driving tests. Corner
+blackouts supplement the easier straight cases. Passing mailbox/safety unit
+checks does not establish clean physical driving during a stall.
+
+The viewer's Trace selector adds signed steering, signed pedals and body-angle
+timelines. Expert labels, policy proposals and actual execution have separate
+colours. Snapshot links point to the actual actor used by that replay.
+
+`tools/motor-feedback.mjs` collects unassisted student trajectories across
+starting speeds and lateral offsets. The expert supplies labels only. Load the
+new dataset with `--corrections`; the loader admits only the clean prefix before
+the first physical legality/damage failure, excluding later repairs and rescues.
+Its training/validation cases are distinct from the reused development gates.
+
+```powershell
+node --import ./scripts/json-loader.mjs subjects/pulse/tools/motor-feedback.mjs --name motor-feedback-01 --model artifacts/models/c16-control/epoch-50 --jobs 6 --seconds 120
+```
+
+For an individual collection, `record.mjs --clean-prefix-training` requires
+policy mode, `--trace-expert` and a training/validation split. It refuses expert
+actuator assistance. These collection runs provide corrective data, not an
+unseen performance certificate.
+
+### Recorded data
+
 `data/{train,validation,test}/*.jsonl` starts with a manifest, then full-rate
 steps, and ends with a summary. Each step includes raw and normalized features,
 actual dt/reset, previous/held commands, teacher and policy proposals, executed
@@ -212,9 +324,31 @@ does not change summary/event measurements.
 359 features: ego39, four tyres32, twelve road stations144, eight masked rivals144.
 No ideal line, teacher target speed, rival private plan or identity enters the
 network. Shared opponent encoding and masked mean/max pooling precede a GRU128.
-The model has 146,594 parameters. Physical controls are steer and signed
+The original model has 146,594 parameters. Physical controls are steer and signed
 longitudinal effort; the latter maps to exclusive throttle/brake. Simultaneous
 teacher pedal use is counted so this representation's limitation is visible.
+
+The opt-in `pulse-observation-v2` contract has 364 features. It appends circuit
+phase sine/cosine, body sideslip, road heading error and outer-wheel margin to
+the ego group. All are derived from public circuit/vehicle state. No teacher
+trajectory is supplied. Original fields keep exactly the same values and scales.
+Models choose their declared encoder; v1 checkpoints remain loadable.
+
+```powershell
+node --import ./scripts/json-loader.mjs subjects/pulse/tools/schema.mjs --v2
+node --import ./scripts/json-loader.mjs subjects/pulse/tools/condition-data.mjs --name conditioned-data
+```
+
+The migration preserves every old input, expert target and executed command,
+records source hashes, and keeps original harness provenance. New observations
+are derived from recorded public physical state. `--transfer-schema` in the
+trainer is an explicit v1-to-v2 transfer; new input weights start at zero, so the
+parent's outputs are unchanged before training with the same actor configuration.
+The migration and checkpoint
+must use their matching schema file. Record new expert episodes with
+`--observation-version pulse-observation-v2`; policy recording selects the
+checkpoint's version automatically. The matched c11 comparison did not pass the
+driving gate, so v2 remains an experiment rather than a certified upgrade.
 
 Checkpoint load refuses schema, observation-code, physics or model-file mismatch.
 Dataset manifests also hash teacher source/config. A model trained on the old

@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-let replay, index = 0, playing = false, elapsed = 0, previousTime = 0;
+let replay, index = 0, playing = false, elapsed = 0, previousTime = 0, featureIndex = new Map();
 const format = (x, n = 2) => Number.isFinite(x) ? x.toFixed(n) : '—';
 const canvas = $('view'), chart = $('chart');
 function setup(canvas) { const box = canvas.getBoundingClientRect(), dpr = devicePixelRatio; canvas.width = box.width * dpr; canvas.height = box.height * dpr; const c = canvas.getContext('2d'); c.scale(dpr, dpr); return { c, w: box.width, h: box.height }; }
@@ -63,8 +63,21 @@ function scene(row) {
 function timeline() {
   const { c, w, h } = setup(chart); c.fillStyle = '#101a26'; c.fillRect(0, 0, w, h);
   const end = replay.rows.at(-1).time || 1, left = 38, bottom = h - 25;
-  c.fillStyle = '#91a7bc'; c.font = '12px system-ui'; c.fillText('Speed (km/h) · executed throttle / brake', 16, 18);
-  for (const [getter, color] of [[r => r.before.speed * 3.6 / 360, '#51d5df'], [r => r.executed.throttle, '#50d4b6'], [r => r.executed.brake, '#ff7080']]) {
+  const mode = $('chart-mode').value, signed = value => .5 + .5 * Math.max(-1, Math.min(1, value));
+  const raw = (r, name) => { const i = featureIndex.get(name); return i === undefined ? 0 : r.observation.raw[i]; };
+  const modes = {
+    speed: { label: 'Speed cyan · throttle green · brake red', series: [[r => r.before.speed * 3.6 / 360, '#51d5df'], [r => r.executed.throttle, '#50d4b6'], [r => r.executed.brake, '#ff7080']] },
+    steer: { label: 'Steering: expert grey · policy cyan · executed yellow', series: [[r => signed(r.teacherControls?.steer ?? 0), '#94a3b8'], [r => signed(r.policyProposal?.[0] ?? 0), '#51d5df'], [r => signed(r.executed.steer), '#ffd166']] },
+    pedals: { label: 'Effort: expert grey · policy cyan · executed yellow', series: [[r => signed((r.teacherControls?.throttle ?? 0) - (r.teacherControls?.brake ?? 0)), '#94a3b8'], [r => signed(r.policyProposal?.[1] ?? 0), '#51d5df'], [r => signed(r.executed.throttle - r.executed.brake), '#ffd166']] },
+    motion: { label: 'Angles: body sideslip cyan · road heading yellow (±0.6 rad)', series: [[r => {
+      const psi = Math.atan2(raw(r, 'ego.headingSin'), raw(r, 'ego.headingCos'));
+      const vf = raw(r, 'ego.forwardSpeed'), vs = raw(r, 'ego.sideSpeed');
+      return signed(Math.atan2(vs * Math.cos(psi) - vf * Math.sin(psi), vf * Math.cos(psi) + vs * Math.sin(psi)) / .6);
+    }, '#51d5df'], [r => signed(Math.atan2(raw(r, 'ego.headingSin'), raw(r, 'ego.headingCos')) / .6), '#ffd166']] }
+  }, selected = modes[mode];
+  c.fillStyle = '#91a7bc'; c.font = '12px system-ui'; c.fillText(selected.label, 16, 18);
+  if (mode !== 'speed') { c.strokeStyle = '#354d64'; c.beginPath(); c.moveTo(left, bottom - .5 * (h - 50)); c.lineTo(w - 15, bottom - .5 * (h - 50)); c.stroke(); }
+  for (const [getter, color] of selected.series) {
     c.strokeStyle = color; c.lineWidth = 1; c.beginPath(); replay.rows.forEach((r, i) => c[i ? 'lineTo' : 'moveTo'](left + r.time / end * (w - left - 15), bottom - getter(r) * (h - 50))); c.stroke();
   }
   const x = left + replay.rows[index].time / end * (w - left - 15); c.strokeStyle = '#ffd166'; c.beginPath(); c.moveTo(x, 25); c.lineTo(x, bottom); c.stroke();
@@ -84,7 +97,10 @@ function render() {
   $('constraints').textContent = `${row.actionSource ?? replay.summary.mode}${row.expertChosen ? ' · expert assistance: ' + row.expertReason : ''}. ` +
     (row.safety.length ? `Safety: ${row.safety.join(', ')}${replay.summary.mode === 'shadow' ? ' (counterfactual)' : ''}` : 'No safety override at this observation.');
   $('latency').textContent = JSON.stringify({ decisionMs: row.decisionMs, recurrentDt: row.recurrentDt, requestDt: row.decisionDt,
-    hiddenNorm: row.hiddenNorm, sequence: row.acceptedSequence,
+    hiddenNorm: row.hiddenNorm, sequence: row.acceptedSequence, expertController: row.teacherTrace,
+    expertHistoryProbe: row.teacherHistoryProbe, trainingDisturbance: row.trainingDisturbance,
+    expertActuator: replay.manifest.expertActuator ?? replay.manifest.settings?.trainingExpertActuator,
+    diagnostic: replay.manifest.diagnostic, networkInputsMasked: Boolean(row.diagnosticPolicyObservation),
     missing: row.observation.missing, clipped: row.observation.clipped, sensors: row.observation.selected, ignored: row.observation.rejected, inferenceMs: replay.summary.latencyMs.inference, mailbox: replay.summary.mailbox }, null, 2);
   const filter = $('filter').value.toLowerCase(); $('features').replaceChildren();
   replay.schema.fields.forEach((field, i) => { if (filter && !field.name.toLowerCase().includes(filter)) return; const tr = document.createElement('tr');
@@ -92,14 +108,18 @@ function render() {
 }
 async function load(url) {
   replay = await (await fetch(url)).json(); index = 0; playing = false; $('play').textContent = 'Play'; $('scrub').max = replay.rows.length - 1;
+  featureIndex = new Map(replay.schema.fields.map((field, i) => [field.name, i]));
   $('scope').textContent = `${replay.summary.scope} ${replay.summary.track} · ${replay.summary.classId} · seed ${replay.summary.seed}`;
   $('scope').className = ['policy', 'dagger'].includes(replay.summary.mode) ? 'warn' : '';
+  if (replay.manifest.diagnostic) { $('scope').textContent += ' | Diagnostic: ' + replay.manifest.diagnostic; $('scope').className = 'warn'; }
   const meta = replay.manifest.policy;
-  const checkpoint = meta?.training?.out;
+  const checkpoint = meta?.checkpointDirectory ?? (meta?.checkpointEpoch ? `${meta.training.out}/epoch-${meta.checkpointEpoch}` : meta?.training?.out);
   document.querySelector('header a').href = '/gpu.html?model=' + encodeURIComponent(
-    typeof checkpoint === 'string' && /^artifacts\/(?:model|models\/[a-z0-9-]+)$/i.test(checkpoint) ? checkpoint : 'artifacts/model');
+    typeof checkpoint === 'string' && /^artifacts\/(?:model|models\/[a-z0-9-]+(?:\/epoch-[1-9][0-9]{0,2})?)$/i.test(checkpoint) ? checkpoint : 'artifacts/model');
+  $('feature-count').textContent = `${replay.schema.size} normalized public features · IDs are debug-only`;
   $('training').textContent = meta ? JSON.stringify({ checkpointForThisReplay: meta.modelSha256, stage: meta.stage,
-    parameters: meta.parameters, validationLoss: meta.bestValidationLoss, training: meta.training,
+    parameters: meta.parameters, actuationUsesRecurrentMemory: meta.actuationUsesRecurrentMemory, checkpointEpoch: meta.checkpointEpoch,
+    checkpointSelection: meta.checkpointSelection, validationLoss: meta.bestValidationLoss, training: meta.training,
     trainingSeconds: meta.seconds, parent: meta.parentModelSha256, physicsDigest: meta.simulatorDigest }, null, 2) :
     'This is an expert demonstration. No PULSE checkpoint is controlling this replay.';
   $('events').replaceChildren();
@@ -114,6 +134,7 @@ if (requested && episodes.some(e => e.url === '/results/' + requested + '.json')
 else if (episodes.some(e => e.name === 'train-traffic-8.json')) $('episode').value = '/results/train-traffic-8.json';
 if (episodes.length) await load($('episode').value);
 $('episode').onchange = () => load($('episode').value); $('camera').onchange = render; $('filter').oninput = render;
+$('chart-mode').onchange = render;
 $('scrub').oninput = () => { index = +$('scrub').value; render(); };
 $('play').onclick = () => { playing = !playing; $('play').textContent = playing ? 'Pause' : 'Play'; };
 window.addEventListener('resize', render);

@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from model import PulsePolicy
+from model import PulsePolicy, transfer_observations
 from data import episodes, assert_disjoint, windows
 
 
@@ -18,6 +18,17 @@ def batch(data, indices, length, device):
 
 
 def rollout_loss(model, x, y, burn, fresh, steer_weight):
+    if model.instant:
+        # Same supervised objective/burn mask, vectorized because actuation has
+        # no recurrent dependence. The fresh physical state supplies feedback.
+        a, _ = model(x.reshape(-1, x.shape[-1]), torch.zeros(x.shape[0] * x.shape[1], model.hidden_size, device=x.device))
+        a = a.reshape_as(y)
+        weight = 1 + 2 * (y[:, :, 1:] < -.05).float()
+        error = ((a - y).square() * torch.cat([torch.ones_like(weight) * steer_weight, weight], 2)).mean(2)
+        if burn and fresh.any():
+            first = (error[:, :burn] * fresh[:, None]).sum(0) / fresh.sum()
+            return torch.cat([first, error[:, burn:].mean(0)]).mean()
+        return error[:, burn:].mean()
     h = torch.zeros(x.shape[0], model.hidden_size, device=x.device)
     losses = []
     for t in range(x.shape[1]):
@@ -43,6 +54,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument('--schema', default='artifacts/schema.json')
     p.add_argument('--data', default='data')
+    p.add_argument('--expert-data', action='append', default=[], help='Additional clean whole-episode expert recoveries')
     p.add_argument('--out', default='artifacts/model')
     p.add_argument('--epochs', type=int, default=20)
     p.add_argument('--batch', type=int, default=64)
@@ -53,12 +65,20 @@ def main():
     p.add_argument('--corrections', action='append', default=[], help='Roots with train/validation expert-labelled student episodes')
     p.add_argument('--corrective-weight', type=int, default=3)
     p.add_argument('--resume', help='Completed compatible checkpoint directory')
+    p.add_argument('--transfer-schema', action='store_true', help='Explicitly transfer unchanged v1 inputs into the public v2 conditioning experiment')
     p.add_argument('--lr', type=float, default=3e-4)
     p.add_argument('--history-dropout', type=float, default=0, help='Training-only whole-window dropout of previous/held request features')
     p.add_argument('--reactive', action='store_true', help='Learn direct motion feedback alongside recurrent context')
+    p.add_argument('--context-skip', action='store_true', help='Learn a direct current-road/motion path around recurrent filtering')
+    p.add_argument('--instant', action='store_true', help='M1 diagnostic: current-state motor actor, without recurrent actuation')
+    p.add_argument('--motor-history-mask', action='store_true', help='Instant motor experiment: ignore request history and actual steering in training/inference')
+    p.add_argument('--checkpoint-every', type=int, default=0, help='Save fixed-epoch weights for closed-loop development comparisons')
+    p.add_argument('--split-motor', action='store_true', help='Freeze learned steering and fit a separate public-state pedal head')
     args = p.parse_args()
     if args.epochs < 1 or args.epochs > 200 or not 0 <= args.burn < args.length or not 8 <= args.length <= 512 or not 1 <= args.batch <= 512 or not 1 <= args.corrective_weight <= 10 or not 0 < args.lr < .01 or not 0 <= args.history_dropout <= .9:
         raise ValueError('Invalid bounded training settings')
+    if not 0 <= args.checkpoint_every <= args.epochs:
+        raise ValueError('Invalid snapshot interval')
     out = Path(args.out)
     if out.exists():
         raise ValueError('Output already exists. Preserve it and use a new --out experiment directory.')
@@ -72,6 +92,9 @@ def main():
                        ['ego.previousSteer', 'ego.previousLongitudinal', 'ego.heldSteer', 'ego.heldLongitudinal']]
     train = episodes(Path(args.data) / 'train', schema, 'train')
     validation = episodes(Path(args.data) / 'validation', schema, 'validation')
+    for root in args.expert_data:
+        train.extend(episodes(Path(root) / 'train', schema, 'train'))
+        validation.extend(episodes(Path(root) / 'validation', schema, 'validation'))
     for root in args.corrections:
         train.extend(episodes(Path(root) / 'train', schema, 'train', corrective=True))
         validation.extend(episodes(Path(root) / 'validation', schema, 'validation', corrective=True, optional=True))
@@ -81,17 +104,26 @@ def main():
     for key in identities:
         if len({e['manifest']['versions'][key] for e in train + validation}) != 1:
             raise ValueError(f'Mixed {key}; rerecord compatible episodes')
-    model = PulsePolicy(schema, reactive=args.reactive).to('cuda')
+    config = {'reactive': args.reactive, 'contextSkip': args.context_skip, 'instant': args.instant, 'motorHistoryMask': args.motor_history_mask, 'splitMotor': args.split_motor}
+    if args.split_motor and not args.resume:
+        raise ValueError('Pedal isolation must preserve an existing learned steering policy')
+    model = PulsePolicy(schema, **config).to('cuda')
     parent = None
     if args.resume:
         parent = json.loads((Path(args.resume) / 'metadata.json').read_text())
-        if any(parent[key] != version[key] for key in identities):
+        required_identities = ['simulatorDigest', 'teacherDigest'] if args.transfer_schema else identities
+        if any(parent[key] != version[key] for key in required_identities):
             raise ValueError('Resume checkpoint is incompatible with the dataset')
         checkpoint = torch.load(Path(args.resume) / 'model.pt', map_location='cuda', weights_only=True)
-        if checkpoint['schema'] != schema:
+        if checkpoint['schema'] != schema and not args.transfer_schema:
             raise ValueError('Resume schema mismatch')
-        model.load_parent(checkpoint['weights'])
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+        weights = transfer_observations(checkpoint['weights'], checkpoint['schema'], schema) if args.transfer_schema else checkpoint['weights']
+        model.load_parent(weights)
+    optimizer = torch.optim.AdamW((p for p in model.parameters() if p.requires_grad), lr=args.lr, weight_decay=1e-4)
+    # Architecture initialization consumes a different number of random draws.
+    # Reset stochastic training here so paired resumed models see identical
+    # dropout masks; NumPy also uses the same seeded batch permutation below.
+    torch.manual_seed(args.seed)
     train_windows = windows(train, args.length, args.length // 2, args.corrective_weight)
     valid_windows = windows(validation, args.length, args.length)
     if not train_windows or not valid_windows:
@@ -126,13 +158,17 @@ def main():
                 valid.append(float(rollout_loss(model, x, y, args.burn, fresh, args.steer_weight)))
         row = {'epoch': epoch + 1, 'trainLoss': float(np.mean(losses)), 'validationLoss': float(np.mean(valid))}
         history.append(row)
+        if args.checkpoint_every and (epoch + 1) % args.checkpoint_every == 0:
+            snapshots = out / 'checkpoints'
+            snapshots.mkdir(exist_ok=True)
+            torch.save({'weights': model.state_dict(), 'schema': schema, 'modelConfig': config, 'epoch': epoch + 1}, snapshots / f'epoch-{epoch + 1}.pt')
         if row['validationLoss'] < best:
             best = row['validationLoss']
-            torch.save({'weights': model.state_dict(), 'schema': schema, 'modelConfig': {'reactive': args.reactive}}, out / 'model.pt')
+            torch.save({'weights': model.state_dict(), 'schema': schema, 'modelConfig': config}, out / 'model.pt')
         print(json.dumps(row), flush=True)
         (out / 'training.json').write_text(json.dumps({'history': history, 'seconds': time.perf_counter() - started}, indent=2))
     checkpoint = torch.load(out / 'model.pt', map_location='cpu', weights_only=True)
-    model = PulsePolicy(schema, reactive=args.reactive).cpu().eval(); model.load_state_dict(checkpoint['weights'])
+    model = PulsePolicy(schema, **config).cpu().eval(); model.load_state_dict(checkpoint['weights'])
     for n in [1, 16]:
         x = torch.zeros(n, schema['size']); h = torch.zeros(n, schema['hidden'])
         torch.onnx.export(model, (x, h), out / f'policy-{n}.onnx', dynamo=False, opset_version=17,
@@ -149,13 +185,17 @@ def main():
             a, h = model(torch.from_numpy(x[None]), h)
             parity.append({'observation': x.tolist(), 'action': a[0].tolist(), 'hidden': h[0].tolist()})
     (out / 'parity.json').write_text(json.dumps(parity))
-    metadata = {**version, 'schema': schema, 'architecture': 'PULSE-GRU-128-REACTIVE' if args.reactive else 'PULSE-GRU-128',
-                'modelConfig': {'reactive': args.reactive}, 'parameters': sum(p.numel() for p in model.parameters()),
+    architecture = 'PULSE-CURRENT-128' + ('-SPLIT-MOTOR' if args.split_motor else '') if args.instant else 'PULSE-GRU-128' + ('-REACTIVE' if args.reactive else '') + ('-CONTEXT-SKIP' if args.context_skip else '')
+    metadata = {**version, 'schema': schema, 'architecture': architecture,
+                'modelConfig': config, 'parameters': sum(p.numel() for p in model.parameters()),
+                'trainingRandomnessResetAfterInitialization': True,
+                'actuationUsesRecurrentMemory': not args.instant,
                 'stage': 'M2 corrective imitation prototype; independent racing unproven' if args.corrections else 'M1 prototype behavior clone; competitive driving unproven', 'training': vars(args),
                 'parentModelSha256': parent['modelSha256'] if parent else None,
                 'trainerDigest': hashlib.sha256(b''.join((Path(__file__).parent / file).read_bytes() for file in ['train.py', 'model.py', 'data.py'])).hexdigest(),
                 'dependencyDigest': hashlib.sha256(b''.join(Path(file).read_bytes() for file in ['uv.lock', 'package-lock.json'])).hexdigest(),
                 'bestValidationLoss': best, 'trainEpisodes': [e['path'] for e in train], 'validationEpisodes': [e['path'] for e in validation],
+                'checkpointSelection': 'minimum held-out imitation loss; autonomous driving must be tested separately',
                 'supportedTracks': sorted({e['manifest']['settings']['track'] for e in train}),
                 'supportedClasses': sorted({e['manifest']['settings']['classId'] for e in train}),
                 'datasets': [{'file': e['path'], 'episodeId': e['manifest']['episodeId'], 'startIndex': e['start_index'],

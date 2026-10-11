@@ -12,7 +12,8 @@ const output = resolve(HOME, 'artifacts/evaluations', name);
 if (existsSync(output)) throw Error('Evaluation already exists; preserve it and use a new name');
 mkdirSync(output, { recursive: true });
 mkdirSync(resolve(HOME, 'results'), { recursive: true });
-const policy = await createPolicy(resolve(HOME, model)), ver = versions(), report = { name, model, modelSha256: policy.metadata.modelSha256, versions: ver, cases: [] };
+const policy = await createPolicy(resolve(HOME, model)), ver = versions(policy.schema), report = { name, model, modelSha256: policy.metadata.modelSha256, versions: ver,
+  suiteRole: 'Reused development fixtures; these results are not unseen generalization evidence.', cases: [] };
 if (!policy.metadata.supportedTracks.includes('harbor-ring') || !policy.metadata.supportedClasses.includes('lmdh')) {
   await policy.dispose(); throw Error('This evaluation requires a Harbor GTP checkpoint; out-of-domain results cannot silently pass this gate.');
 }
@@ -22,20 +23,28 @@ const cases = [
   { name: 'solo-offset', fixture: 'solo', seed: 28, start: 1000, lateral: -.5 },
   { name: 'traffic', fixture: 'train', seed: 29, start: 20, lateral: 0 }
 ];
+if (args.includes('--robustness')) cases.push(
+  { name: 'start-left-slow', fixture: 'solo', seed: 71, start: 20, lateral: -.75, speed: 42 },
+  { name: 'start-right-fast', fixture: 'solo', seed: 73, start: 20, lateral: .75, speed: 48 },
+  { name: 'offset-left-slow', fixture: 'solo', seed: 79, start: 1000, lateral: -.25, speed: 35 },
+  { name: 'offset-right-fast', fixture: 'solo', seed: 83, start: 1000, lateral: .25, speed: 40 }
+);
 if (args.includes('--latency')) cases.push(
   { name: 'held-30hz', fixture: 'solo', seed: 27, start: 20, lateral: 0, rate: 30 },
   { name: 'lag-1-frame', fixture: 'solo', seed: 27, start: 20, lateral: 0, lagMs: 16.667 },
   { name: 'blackout-250ms', fixture: 'solo', seed: 27, start: 20, lateral: 0, stallAt: 3, stallMs: 250 },
-  { name: 'blackout-500ms', fixture: 'solo', seed: 27, start: 20, lateral: 0, stallAt: 3, stallMs: 500 }
+  { name: 'blackout-500ms', fixture: 'solo', seed: 27, start: 20, lateral: 0, stallAt: 3, stallMs: 500 },
+  { name: 'corner-blackout-250ms', fixture: 'solo', seed: 27, start: 20, lateral: 0, stallAt: 12, stallMs: 250 },
+  { name: 'corner-blackout-500ms', fixture: 'solo', seed: 27, start: 20, lateral: 0, stallAt: 12, stallMs: 500 }
 );
 try {
   // Compile and warm the session before judging driving. Recurrent state is still reset per episode.
-  let h = new Array(SCHEMA.hidden).fill(0);
-  for (let i = 0; i < 30; i++) h = (await policy.step(new Array(SCHEMA.size).fill(0), h)).hidden;
+  let h = new Array(policy.schema.hidden).fill(0);
+  for (let i = 0; i < 30; i++) h = (await policy.step(new Array(policy.schema.size).fill(0), h)).hidden;
   for (const scenario of cases) {
     const pair = {};
     for (const mode of ['teacher', 'policy']) {
-      const settings = { ...scenario, seconds, mode, track: 'harbor-ring', classId: 'lmdh', rate: scenario.rate ?? 60, weather: 'clear' };
+      const settings = { ...scenario, seconds, mode, track: 'harbor-ring', classId: 'lmdh', rate: scenario.rate ?? 60, weather: 'clear', observationVersion: policy.metadata.schemaVersion };
       const result = await runScenario({ ...settings, policy: mode === 'policy' ? policy.step : undefined });
       const episode = name + '-' + scenario.name + '-' + mode;
       const manifest = { type: 'manifest', format: 'pulse-episode-v1', episodeId: digest(settings), name: episode, split: 'test', settings,
@@ -47,7 +56,9 @@ try {
       const firstTrackViolation = result.events.find(e => e.type === 'track-limit-violation')?.time ?? null;
       pair[mode] = { ...result.summary, firstDeparture, firstTrackViolation, replay: '/?episode=' + episode,
         completedClean: result.summary.seconds >= seconds - 1e-6 && !result.summary.endedEarly && !result.summary.dq &&
-          result.summary.trackLimitSeconds === 0 && result.summary.cumulativeDamage < .001 && result.summary.severe === 0 && result.summary.incidents === 0 };
+          result.summary.trackLimitSeconds === 0 && result.summary.cumulativeDamage < .001 && result.summary.severe === 0 && result.summary.incidents === 0 &&
+          result.summary.expertRows === 0 && result.summary.expertActuatorRows === 0 };
+      pair[mode].cleanFullLapGate = pair[mode].completedClean && result.summary.fullLaps.some(lap => lap.valid);
     }
     const c = { name: scenario.name, settings: scenario, ...pair,
       progressDeficitMetres: pair.teacher.progress - pair.policy.progress,
@@ -58,5 +69,7 @@ try {
       firstTrackViolation: c.policy.firstTrackViolation, trackLimitSeconds: c.policy.trackLimitSeconds,
       asphaltEdgeSeconds: c.policy.asphaltEdgeSeconds, damage: c.policy.cumulativeDamage, passes: c.policy.retainedPasses,
       progressDeficitMetres: c.progressDeficitMetres, expertAssistance: c.policy.expertRows }));
+    console.log(JSON.stringify({ case: c.name, cleanFullLapGate: c.policy.cleanFullLapGate,
+      validFullLaps: c.policy.fullLaps.filter(lap => lap.valid).length, bestFullLap: c.policy.bestFullLap }));
   }
 } finally { await policy.dispose(); }

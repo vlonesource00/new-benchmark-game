@@ -28,7 +28,9 @@ INTERCEPT, RAZOR, APEX, SPEARHEAD and TEMPEST. Work on `pulse-dev` from
 
 ## Subsequent gates
 
-M1 completion: clean unassisted Harbor GTP laps, including offset starts. Not met.
+M1 completion: repeatable clean unassisted Harbor GTP laps across starting poses,
+including offsets. Clean sub-53 s laps repeat in four of six solo setups; other
+offset starts, traffic and sustained added delay remain unpassed.
 M2: corrective demonstrations (DAgger), held-out tracks/seeds and delayed cadence.
 M3: retained move passes, three GT3s, stopped/spun hazards, both grid orders.
 M4: strategist, wet/dry transitions, pit/driver swaps, caution and endurance.
@@ -45,3 +47,10 @@ Claims require held-out retained passes, solo/race sector loss, damage accumulat
 even across repairs, stint fade, full-field p99 latency and real browser workers.
 Discard comparisons with fuel starvation, checkpoint/schema/physics mismatch or
 different initial conditions. No model can promise immunity to scheduling stalls.
+
+The control-separation diagnostic identifies pedal/state coupling as the priority
+for the current motor actor. Keep expert-assisted component/curriculum runs out
+of performance claims. Fixed-epoch physical evaluations complement imitation
+loss; preserving one clean solo trajectory does not establish a robust basin or
+trained combat. Next, improve coupled control on actual visited states, broaden
+the initial-pose and delay suites, then address traffic-sensitive steering.

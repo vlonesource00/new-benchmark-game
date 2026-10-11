@@ -3,8 +3,9 @@ import { EnduranceRace, FIXED_DT } from '../../../game/core/race.js';
 import { FORMATS } from '../../../game/core/rules.js';
 import { createSeatBridge } from '../../../game/core/field.js';
 import { halfCarInside } from '../../../game/engine/sim/racecraft-policy.js';
-import { observe, toAction, gap, angle, SCHEMA } from '../src/schema.mjs';
+import { observe, toAction, toControls, gap, angle, SCHEMA } from '../src/schema.mjs';
 import { ActionMailbox, supervise, timing } from '../src/runtime.mjs';
+import { observationProfile } from '../src/observations.mjs';
 
 export const pose = c => ({ id: c.id, classId: c.classId, x: c.x, z: c.z, yaw: c.yaw, speed: c.speed,
   s: c.s, lateral: c.lateral, progress: c.race.progress, fuel: c.fuel, damage: c.damage,
@@ -17,7 +18,11 @@ export async function runScenario(options = {}) {
   const settings = { track: 'harbor-ring', classId: 'lmdh', fixture: 'solo', seconds: 60, seed: 7, rate: 60,
     weather: 'clear', mode: 'teacher', start: 20, lateral: 0, rivalOffset: 0, yawOffset: 0, speed: 45, rival: 'intercept',
     lagMs: 0, spikeAt: 3, spikeMs: 0, stallAt: 3, stallMs: 0, hazardAt: 0,
-    expertMix: .5, expertBlockMs: 250, ...options };
+    expertMix: .5, expertBlockMs: 250, traceExpert: false, probeExpertHistory: false, holdExpert: false, heldExpertLagMs: 0, warmupToStart: false, velocityYawOffset: 0,
+    disturbanceSteer: 0, disturbanceLongitudinal: 0, disturbanceDuration: .2, disturbancePeriod: 3,
+    diagnosticExpertActuator: null, trainingExpertActuator: null,
+    observationVersion: SCHEMA.version, ...options };
+  const { schema, observe: observeAt } = observationProfile(settings.observationVersion);
   if (!['teacher', 'shadow', 'policy', 'dagger'].includes(settings.mode)) throw Error('Invalid mode');
   if (!['solo', 'pair', 'train', 'stopped', 'spun'].includes(settings.fixture)) throw Error('Invalid fixture');
   if (![20, 30, 60, 120].includes(settings.rate)) throw Error('rate must be 20, 30, 60 or 120');
@@ -25,6 +30,22 @@ export async function runScenario(options = {}) {
   if (![settings.seed, settings.start, settings.lateral, settings.rivalOffset, settings.yawOffset, settings.speed, settings.lagMs, settings.spikeMs, settings.spikeAt, settings.stallAt, settings.stallMs, settings.hazardAt].every(Number.isFinite)
     || settings.lagMs < 0 || settings.spikeMs < 0 || settings.stallMs < 0 || settings.speed < 0) throw Error('Finite nonnegative speeds/delays required');
   if (settings.mode !== 'teacher' && !settings.policy) throw Error('shadow/policy requires a checkpoint');
+  if (settings.diagnosticExpertActuator && (settings.mode !== 'policy' || !['steer', 'longitudinal'].includes(settings.diagnosticExpertActuator)))
+    throw Error('Component intervention is a policy-only diagnostic');
+  if (settings.trainingExpertActuator && (settings.mode !== 'dagger' || settings.trainingExpertActuator !== 'longitudinal'))
+    throw Error('Pedal curriculum is training-only DAgger; no evaluation actuator assistance');
+  if (settings.holdExpert && settings.mode !== 'teacher') throw Error('Held expert is a teacher-only cadence diagnostic');
+  if (!Number.isFinite(settings.heldExpertLagMs) || settings.heldExpertLagMs < 0 || settings.heldExpertLagMs > 100
+    || (settings.heldExpertLagMs && !settings.holdExpert)) throw Error('Expert delay requires the bounded held-teacher diagnostic');
+  if (![settings.disturbanceSteer, settings.disturbanceLongitudinal, settings.disturbanceDuration, settings.disturbancePeriod].every(Number.isFinite)
+    || settings.disturbanceSteer < 0 || settings.disturbanceSteer > .25 || settings.disturbanceLongitudinal < 0 || settings.disturbanceLongitudinal > 1
+    || settings.disturbanceDuration < .05 || settings.disturbanceDuration > .75
+    || settings.disturbancePeriod < 1.5 || settings.disturbancePeriod > 10) throw Error('Invalid bounded training disturbance');
+  if ((settings.disturbanceSteer || settings.disturbanceLongitudinal) && (settings.mode !== 'teacher' || settings.holdExpert || settings.probeExpertHistory))
+    throw Error('Training disturbances require the unheld teacher; they cannot drive a policy evaluation');
+  if (settings.warmupToStart && (settings.mode !== 'teacher' || settings.fixture !== 'solo')) throw Error('Warm recoveries are teacher-only solo collection');
+  if (!Number.isFinite(settings.velocityYawOffset) || Math.abs(settings.velocityYawOffset) > .2 || (settings.velocityYawOffset && !settings.warmupToStart))
+    throw Error('Velocity perturbation requires bounded warm collection');
   if (!(settings.expertMix >= 0 && settings.expertMix <= 1) || !(settings.expertBlockMs >= 50 && settings.expertBlockMs <= 2000)) throw Error('Invalid bounded expert mixture');
   const count = settings.fixture === 'solo' ? 1 : settings.fixture === 'train' ? 4 : 2;
   const teams = Array.from({ length: count }, (_, i) => ({ id: `pulse-lab-${i}`, index: i, grid: i, starter: 0,
@@ -33,18 +54,67 @@ export async function runScenario(options = {}) {
     drivers: [{ id: i ? settings.rival : 'intercept', kind: 'ai', name: i ? settings.rival : 'INTERCEPT teacher', short: i ? 'RIV' : 'ICP' }] }));
   const mailbox = new ActionMailbox(), delayed = [], rows = [], events = [], teacherMs = [], encoderMs = [], inferenceMs = [], supervisorMs = [];
   let armed = false, current = null, previous = [0, 0], race, acceptedAt = 0;
+  const expertQueue = []; let expertHeld = { throttle: 0, brake: 0, steer: 0 };
   const makeBridge = (driver, index, r) => {
     const teacher = createSeatBridge(driver, index, r);
     if (index) return teacher;
     const wrapped = Object.create(teacher);
     wrapped.update = (car, cars, dt, context) => {
+      const traceThis = armed && settings.traceExpert && current && !current.teacherControls;
+      const beforeController = traceThis ? { curvature: teacher.driver.controller.kc, acceleration: teacher.driver.controller.acceleration,
+        actualSteer: car.controls.steer } : null;
       const t = performance.now(); teacher.update(car, cars, dt, context); teacherMs.push(performance.now() - t);
       if (!armed) return;
-      if (current && !current.teacherControls) current.teacherControls = { ...car.controls };
+      if (current && !current.teacherControls) {
+        current.teacherControls = { ...car.controls };
+        if (traceThis) current.teacherTrace = { previous: beforeController, ...teacher.driver.controller.trace,
+          intent: teacher.driver.battle.state, routeKey: teacher.driver.path.key };
+        if (settings.probeExpertHistory) {
+          // Label-only counterfactual. Restore every controller field and the
+          // controls before the real physics step; this never drives either car.
+          const d = teacher.driver, controller = d.controller, saved = { ...controller }, controls = car.controls;
+          try {
+            controller.kc = NaN;
+            controller.step(car, d.path, d.course, d.observer, Math.max(1 / 120, Math.min(.1, dt)), {
+              pit: saved.trace.pitCap ?? Infinity, time: context.time ?? 0,
+              brakingTube: d.options.brakingTube && !d.state.formation && d.state.phase !== 'grid' && d.state.phase !== 'countdown'
+            });
+            current.teacherHistoryProbe = { withoutCurvatureMemory: { ...car.controls },
+              continuousCurvature: saved.trace.k, instantaneousCurvature: controller.trace.k,
+              measuredCurvature: car.ay / Math.max(.25, car.speed * car.speed) };
+          } finally { Object.assign(controller, saved); car.controls = controls; }
+        }
+      }
+      if (settings.holdExpert) {
+        const elapsed = context.time - startAt;
+        if (!current.expertQueued) {
+          expertQueue.push({ due: elapsed + settings.heldExpertLagMs / 1000, controls: { ...current.teacherControls } });
+          current.expertQueued = true;
+        }
+        while (expertQueue.length && expertQueue[0].due <= elapsed + 1e-9) expertHeld = expertQueue.shift().controls;
+        car.controls = { ...expertHeld };
+      }
       if (settings.mode === 'policy' || (settings.mode === 'dagger' && !current?.expertChosen)) {
-        const t = performance.now(), safe = supervise(mailbox.action, race, car); supervisorMs.push(performance.now() - t);
+        const proposed = toControls(mailbox.action);
+        if (settings.diagnosticExpertActuator === 'steer') proposed.steer = car.controls.steer;
+        if (settings.diagnosticExpertActuator === 'longitudinal' || settings.trainingExpertActuator === 'longitudinal') { proposed.throttle = car.controls.throttle; proposed.brake = car.controls.brake; }
+        const t = performance.now(), safe = supervise(toAction(proposed), race, car); supervisorMs.push(performance.now() - t);
         car.controls = safe.controls;
         if (current) for (const reason of safe.reasons) if (!current.safety.includes(reason)) current.safety.push(reason);
+      }
+      if (settings.disturbanceSteer || settings.disturbanceLongitudinal) {
+        const elapsed = context.time - startAt, cycle = Math.floor((elapsed + 1e-9) / settings.disturbancePeriod);
+        const within = elapsed - cycle * settings.disturbancePeriod;
+        const active = cycle > 0 && within < settings.disturbanceDuration;
+        // Seeded external control pulses make real speed/tyre/yaw transients. The
+        // expert labels the resulting state before the pulse is applied; noisy
+        // execution is never a cloning target or an autonomous driving result.
+        const bits = Math.imul(cycle ^ settings.seed, 0x45d9f3b) >>> 0, sign = bits & 0x8000 ? 1 : -1;
+        const envelope = active ? sign * Math.sin(Math.PI * within / settings.disturbanceDuration) : 0;
+        const delta = settings.disturbanceSteer * envelope, longitudinalDelta = settings.disturbanceLongitudinal * envelope;
+        const action = toAction(car.controls); action[0] += delta; action[1] += longitudinalDelta;
+        car.controls = toControls(action);
+        if (current) current.trainingDisturbance ??= { steerDelta: delta, longitudinalDelta, cycle, active };
       }
     };
     wrapped.reset = snapshot => { teacher.reset?.(snapshot); mailbox.reset(); };
@@ -60,19 +130,45 @@ export async function runScenario(options = {}) {
     if (i > 2000) throw Error('Start did not reach racing phase');
     race.step(FIXED_DT);
   }
-  const startAt = race.time;
+  let startAt = race.time;
   for (let i = 0; i < count; i++) {
     const c = race.cars[i], fuel = c.fuel;
-    const s = settings.start + (i ? 55 + (i - 1) * 85 : 0), lateral = settings.lateral + (i ? ((i % 2) ? .2 : -.2) + settings.rivalOffset : 0);
+    const s = (settings.warmupToStart ? 20 : settings.start) + (i ? 55 + (i - 1) * 85 : 0),
+      lateral = (settings.warmupToStart ? 0 : settings.lateral) + (i ? ((i % 2) ? .2 : -.2) + settings.rivalOffset : 0);
     const speed = i ? settings.fixture === 'train' ? 43 : settings.speed : settings.speed;
     c.place(track, s, lateral, speed); c.fuel = fuel;
-    if (i === 0 && settings.yawOffset) { c.yaw += settings.yawOffset; c.vx = Math.sin(c.yaw) * speed; c.vz = Math.cos(c.yaw) * speed; }
+    if (i === 0 && settings.yawOffset && !settings.warmupToStart) { c.yaw += settings.yawOffset; c.vx = Math.sin(c.yaw) * speed; c.vz = Math.cos(c.yaw) * speed; }
     c.race = { ...c.race, progress: s, previousS: s, lap: 1, lapStart: startAt, finishTime: null };
     c.gear = c.classId === 'lmdh' ? 4 : 3;
     race.fitTyres(c, 'soft', true);
     race.entries[i].strategist.decide = () => null;
   }
   for (const e of race.entries) for (const bridge of e.bridges) bridge.reset?.({ cars: race.cars, track });
+  let warmupSeconds = 0;
+  if (settings.warmupToStart) {
+    if (settings.start < 20 || settings.start >= track.length - 20 || Math.abs(settings.yawOffset) > .2 || Math.abs(settings.lateral) > 3)
+      throw Error('Warm recovery target/perturbation out of bounds');
+    // The expert actually drives to the sampling point. Tyres, yaw dynamics and
+    // its controller memory come from executed motion, not a reset pose at speed.
+    const c = race.cars[0];
+    for (let n = 0; c.race.progress < settings.start; n++) {
+      if (n > 20000 || race.phase !== 'racing') throw Error('Warm recovery did not reach its point');
+      race.step(FIXED_DT);
+      if (c.damage || !halfCarInside(Math.abs(c.lateral) - (c.spec?.track ?? 1.72) / 2, track.halfWidth + (track.curbWidth ?? 0)))
+        throw Error('Warm expert approach was not clean');
+    }
+    warmupSeconds = race.time - startAt; startAt = race.time;
+    const road = track.nearest(c.x, c.z), safeEdge = track.halfWidth + (track.curbWidth ?? 0) - (c.spec?.track ?? 1.72) / 2 - .3;
+    const targetOffset = Math.max(-safeEdge, Math.min(safeEdge, road.lateral + settings.lateral));
+    c.x += road.nx * (targetOffset - road.lateral); c.z += road.nz * (targetOffset - road.lateral);
+    c.yaw += settings.yawOffset;
+    const motionYaw = Math.atan2(c.vx, c.vz) + settings.velocityYawOffset, speed = Math.hypot(c.vx, c.vz);
+    c.vx = Math.sin(motionYaw) * speed; c.vz = Math.cos(motionYaw) * speed;
+    const at = track.nearest(c.x, c.z); c.s = at.s; c.lateral = at.lateral;
+    previous = toAction(c.controls);
+    events.push({ time: 0, type: 'training-state-perturbation', warmupSeconds, s: c.s,
+      lateralDelta: targetOffset - road.lateral, yawDelta: settings.yawOffset, velocityYawDelta: settings.velocityYawOffset });
+  }
   let stopHazard = null;
   if (settings.fixture === 'stopped' || settings.fixture === 'spun') {
     stopHazard = () => {
@@ -123,9 +219,10 @@ export async function runScenario(options = {}) {
       // request. Overlapping delayed requests may have been rejected entirely.
       const recurrentDt = settings.mode === 'teacher' ? stride * FIXED_DT : Math.max(stride * FIXED_DT, time - mailbox.at);
       const t = performance.now();
-      const observation = observe(race, self, { dt: recurrentDt, previous, actionAge: settings.mode === 'teacher' ? 0 : time - mailbox.at });
+      const observation = observeAt(race, self, { dt: recurrentDt, previous, actionAge: settings.mode === 'teacher' ? 0 : time - mailbox.at });
       encoderMs.push(performance.now() - t);
       current = { type: 'step', index: rows.length, time, reset: rows.length === 0, dt: stride * FIXED_DT,
+        legalTrackLimit: track.halfWidth + (track.curbWidth ?? 0) + (self.spec?.track ?? 1.72) / 2,
         observation, before: pose(self), cars: race.cars.map(pose), requested: null, teacherControls: null,
         executed: null, executedEnd: null, safety: [], substeps: [], actionAge: settings.mode === 'teacher' ? 0 : time - mailbox.at,
         hiddenNorm: Math.hypot(...mailbox.hidden), acceptedSequence: mailbox.accepted, decisionMs: 0, decisionDt, recurrentDt, inferenceStalled: stalled, post: null };
@@ -135,7 +232,19 @@ export async function runScenario(options = {}) {
         const block = Math.floor((time + 1e-9) / (settings.expertBlockMs / 1000));
         if (block !== expertBlock) { expertBlock = block; mixSeed = (Math.imul(1664525, mixSeed) + 1013904223) >>> 0; blockExpert = mixSeed / 2 ** 32 < settings.expertMix; }
         const at = track.nearest(self.x, self.z), error = Math.abs(angle(self.yaw - at.heading));
-        if (Math.abs(at.lateral) > track.halfWidth - 2 || error > .3 || self.damage > .02) guardUntil = time + .5;
+        const sideSpeed = self.vx * at.nx + self.vz * at.nz;
+        const outwardSpeed = Math.max(0, Math.sign(at.lateral) * sideSpeed);
+        const wheelHalfTrack = (self.spec?.track ?? 1.72) / 2;
+        // Legality permits one side of the car outside the kerb, where grip is
+        // already much lower. Leave a footprint/response buffer for collection,
+        // rather than waiting for the centre to break the official limit.
+        const gripCenterLimit = track.halfWidth + (track.curbWidth ?? 0) - wheelHalfTrack;
+        const edgeMargin = Math.max(2 * wheelHalfTrack + .3, wheelHalfTrack + .3 + outwardSpeed * .5);
+        current.expertGuard = { legalTrackLimit: current.legalTrackLimit, gripCenterLimit, edgeMargin, outwardSpeed, headingError: error };
+        // The fastest line legitimately uses the kerb. Intervening at asphalt
+        // width minus 2 m makes the expert take over ordinary line-following,
+        // and prevents learning the physically useful edge corrections.
+        if (Math.abs(at.lateral) > current.legalTrackLimit - edgeMargin || error > .3 || self.damage > .02) guardUntil = time + .5;
         current.expertChosen = blockExpert || time < guardUntil;
         current.expertReason = time < guardUntil ? 'training-recovery' : blockExpert ? 'seeded-mixture' : null;
         if (current.expertChosen) expertRows++;
@@ -210,7 +319,8 @@ export async function runScenario(options = {}) {
         current.target = toAction(current.executed);
         current.post = pose(self); current.progressDelta = self.race.progress - current.before.progress;
         current.damageAdded = Math.max(0, self.damage - current.before.damage);
-        current.actionSource = policyDriven ? 'pulse-policy' : settings.mode === 'dagger' ? 'training-expert' : 'intercept-teacher';
+        current.actionSource = settings.trainingExpertActuator ? 'training-pedal-curriculum' : settings.diagnosticExpertActuator ? 'diagnostic-assisted-policy' :
+          policyDriven ? 'pulse-policy' : settings.disturbanceSteer || settings.disturbanceLongitudinal ? 'training-disturbed-expert' : settings.mode === 'dagger' ? 'training-expert' : 'intercept-teacher';
         current.acceptedSequence = mailbox.accepted; current.acceptedAt = acceptedAt;
         if (current.safety.length) interventionRows++;
         if (current.observation.clipped.length) clippedRows++;
@@ -227,7 +337,7 @@ export async function runScenario(options = {}) {
   for (const e of race.entries) for (const bridge of e.bridges) if (bridge.errors) throw Error(`Teacher bridge error: ${bridge.lastError}`);
   const summary = { mode: settings.mode, fixture: settings.fixture, track: settings.track, classId: settings.classId,
     seed: settings.seed, seconds: tick * FIXED_DT, phase: race.phase, dq: !!self.race.dq, endedEarly: tick < iterations,
-    wallSeconds, initializationMs, simSecondsPerWallSecond: tick * FIXED_DT / wallSeconds, minSpeed, maxRoadOffset,
+    wallSeconds, initializationMs, warmupSeconds, simSecondsPerWallSecond: tick * FIXED_DT / wallSeconds, minSpeed, maxRoadOffset,
     offTrackSeconds, asphaltEdgeSeconds: offTrackSeconds, trackLimitSeconds, runoffSeconds,
     trackLimitDefinition: 'Game halfCarInside wheel/kerb rule; offTrackSeconds is the legacy asphalt-centre edge diagnostic.',
     gameOfftrack: self.race.offtrack, incidents: race.stewards.of(race.entries[0]).inc,
@@ -237,13 +347,17 @@ export async function runScenario(options = {}) {
     cumulativeDamage, endDamage: self.damage, initialDamage: beforeDamage, contacts: race.contacts, severe: race.collisionStats.severeContacts,
     retainedPasses: [...encounters.values()].filter(e => e.retained !== null && e.kind !== 'hazard').length,
     hazardsCleared: [...encounters.values()].filter(e => e.retained !== null && e.kind === 'hazard').length, encounters: [...encounters.values()],
-    interventionRows, expertRows, clippedRows, missingRows, simultaneousPedalRows: simultaneous, mailbox: mailbox.stats,
+    interventionRows, expertRows, expertActuatorRows: settings.diagnosticExpertActuator || settings.trainingExpertActuator ? rows.length : 0,
+    clippedRows, missingRows, simultaneousPedalRows: simultaneous, mailbox: mailbox.stats,
     latencyMs: { observation: timing(encoderMs), teacher: timing(teacherMs), inference: timing(inferenceMs), safety: timing(supervisorMs) },
     paceScope: 'Placed fixtures begin partway through a lap. The initial crossing is excluded from fullLaps and bestFullLap.',
-    scope: settings.mode === 'dagger' ? 'Training only: seeded INTERCEPT/PULSE mixture with expert recovery. No independent PULSE performance claim.' :
+    scope: settings.diagnosticExpertActuator ? `Diagnostic only: expert replaces ${settings.diagnosticExpertActuator}. This is assisted driving, never a PULSE gate.` :
+      settings.trainingExpertActuator ? 'Training only: expert pedals with learned steering and bounded expert recovery. Autonomous gates must remove all assistance.' :
+      settings.disturbanceSteer || settings.disturbanceLongitudinal ? 'Training only: perturbed expert execution; teacherControls label the disturbed physical states. No PULSE performance claim.' :
+      settings.mode === 'dagger' ? 'Training only: seeded INTERCEPT/PULSE mixture with expert recovery. No independent PULSE performance claim.' :
       settings.mode === 'shadow' ? 'INTERCEPT drives. PULSE predictions are counterfactual, not racing results.' :
       settings.mode === 'policy' ? 'Experimental PULSE drives; INTERCEPT labels its states and supplies the unchanged strategy. Native CPU inference.' : 'INTERCEPT demonstration. No PULSE policy driving.' };
   const outline = Array.from({ length: 320 }, (_, i) => { const p = track.at(i / 320 * track.length); return { x: p.x, z: p.z, s: p.s }; });
   for (const e of race.entries) for (const bridge of e.bridges) bridge.dispose?.();
-  return { summary, rows, events, track: { id: track.id, length: track.length, halfWidth: track.halfWidth, curbWidth: track.curbWidth, outline }, schema: SCHEMA };
+  return { summary, rows, events, track: { id: track.id, length: track.length, halfWidth: track.halfWidth, curbWidth: track.curbWidth, outline }, schema };
 }

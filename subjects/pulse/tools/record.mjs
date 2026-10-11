@@ -3,35 +3,53 @@ import { resolve } from 'node:path';
 import { once } from 'node:events';
 import { runScenario } from './scenario.mjs';
 import { HOME, versions, digest } from './versions.mjs';
+import { observationProfile } from '../src/observations.mjs';
 const args = process.argv.slice(2), arg = (k, d) => { const i = args.indexOf('--' + k); return i < 0 ? d : args[i + 1]; };
 const settings = { track: arg('track', 'harbor-ring'), classId: arg('class', 'lmdh'), fixture: arg('fixture', 'solo'),
   seconds: +arg('seconds', 60), seed: +arg('seed', 7), rate: +arg('rate', 60), mode: arg('mode', 'teacher'), weather: arg('weather', 'clear'),
+  observationVersion: arg('observation-version', 'pulse-observation-v1'), warmupToStart: args.includes('--warmup-to-start'),
+  velocityYawOffset: +arg('velocity-yaw-offset', 0),
+  disturbanceSteer: +arg('disturbance-steer', 0), disturbanceLongitudinal: +arg('disturbance-longitudinal', 0), disturbanceDuration: +arg('disturbance-duration', .2), disturbancePeriod: +arg('disturbance-period', 3),
+  trainingExpertActuator: arg('training-expert-actuator', null),
   lagMs: +arg('lag-ms', 0), spikeMs: +arg('spike-ms', 0), spikeAt: +arg('spike-at', 3), speed: +arg('speed', 45),
   stallMs: +arg('stall-ms', 0), stallAt: +arg('stall-at', 3),
   hazardAt: +arg('hazard-at', 0),
-  expertMix: +arg('expert-mix', .5), expertBlockMs: +arg('expert-block-ms', 250),
+  expertMix: +arg('expert-mix', .5), expertBlockMs: +arg('expert-block-ms', 250), traceExpert: args.includes('--trace-expert'),
   start: +arg('start', 20), lateral: +arg('lateral', 0), rivalOffset: +arg('rival-offset', 0), yawOffset: +arg('yaw-offset', 0), rival: arg('rival', 'intercept') };
 if (!['lmdh', 'gt'].includes(settings.classId)) throw Error('class must be lmdh or gt');
-const ver = versions(), split = arg('split', settings.mode === 'policy' ? 'test' : 'train'), name = arg('name', `${settings.fixture}-${settings.classId}-${settings.seed}`);
+const split = arg('split', settings.mode === 'policy' ? 'test' : 'train'), name = arg('name', `${settings.fixture}-${settings.classId}-${settings.seed}`);
 if (!/^[a-z0-9-]+$/i.test(name) || !['train', 'validation', 'test'].includes(split)) throw Error('Invalid episode name or split');
+const cleanPrefixTraining = args.includes('--clean-prefix-training');
+if (cleanPrefixTraining && (settings.mode !== 'policy' || split === 'test' || !settings.traceExpert || settings.trainingExpertActuator))
+  throw Error('Clean-prefix feedback requires unassisted policy driving, expert labels and a training/validation split');
 let policy;
 if (settings.mode !== 'teacher') {
   const { createPolicy } = await import('./policy.mjs');
   policy = await createPolicy(resolve(HOME, arg('model', 'artifacts/model')));
+  if (args.includes('--observation-version') && settings.observationVersion !== policy.metadata.schemaVersion) throw Error('Explicit observation version differs from checkpoint');
+  settings.observationVersion = policy.metadata.schemaVersion;
   if ((!policy.metadata.supportedTracks.includes(settings.track) || !policy.metadata.supportedClasses.includes(settings.classId)) && !args.includes('--allow-ood'))
     throw Error('Model has not trained on this class/track. Use teacher mode; --allow-ood explicitly records an out-of-domain experiment.');
   settings.policy = policy.step;
 }
+const ver = versions(observationProfile(settings.observationVersion).schema);
 const dataRoot = arg('data-root', 'data');
 if (!/^data(?:\/[a-z0-9-]+)*$/i.test(dataRoot)) throw Error('data-root must be an owned path beneath data/');
 const directory = resolve(HOME, dataRoot, split); mkdirSync(directory, { recursive: true });
 const replayDirectory = resolve(HOME, 'results'); mkdirSync(replayDirectory, { recursive: true });
 if (!args.includes('--replace') && (existsSync(resolve(directory, name + '.jsonl')) || existsSync(resolve(replayDirectory, name + '.json'))))
   throw Error('Episode name already exists. Use a new name, or --replace explicitly for this owned generated episode.');
-const episodeId = digest(Object.fromEntries(['track', 'classId', 'fixture', 'seed', 'weather', 'start', 'lateral', 'rivalOffset', 'yawOffset', 'speed', 'rival', 'rate'].map(k => [k, settings[k]])));
+const identityFields = ['track', 'classId', 'fixture', 'seed', 'weather', 'start', 'lateral', 'rivalOffset', 'yawOffset', 'speed', 'rival', 'rate'];
+if (settings.warmupToStart) identityFields.push('warmupToStart', 'velocityYawOffset');
+if (settings.disturbanceSteer || settings.disturbanceLongitudinal) identityFields.push('disturbanceSteer', 'disturbanceLongitudinal', 'disturbanceDuration', 'disturbancePeriod');
+if (settings.trainingExpertActuator) identityFields.push('trainingExpertActuator');
+const episodeId = digest(Object.fromEntries(identityFields.map(k => [k, settings[k]])));
 const manifest = { type: 'manifest', format: 'pulse-episode-v1', episodeId, name, split, settings: { ...settings, policy: undefined },
   versions: ver, policy: policy?.metadata ?? null, sampleRate: settings.rate, teacherSuppliesStrategy: true, path: 'native',
-  trainingOnly: settings.mode === 'dagger', labelSource: settings.mode === 'dagger' || settings.mode === 'policy' ? 'teacherControls on visited states' : 'executed teacher controls' };
+  trainingOnly: cleanPrefixTraining || settings.mode === 'dagger' || settings.warmupToStart || !!settings.disturbanceSteer || !!settings.disturbanceLongitudinal,
+  cleanPrefixTraining,
+  trainingDisturbance: !!settings.disturbanceSteer || !!settings.disturbanceLongitudinal,
+  labelSource: settings.disturbanceSteer || settings.disturbanceLongitudinal ? 'teacherControls on externally disturbed physical states' : settings.mode === 'dagger' || settings.mode === 'policy' ? 'teacherControls on visited states' : 'executed teacher controls' };
 const dataset = createWriteStream(resolve(directory, name + '.jsonl'));
 dataset.write(JSON.stringify(manifest) + '\n');
 try {
