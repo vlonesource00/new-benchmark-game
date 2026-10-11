@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>PULSE · racing laboratory</title>
+<link rel="stylesheet" href="/lab/style.css"></head><body>
+<header><div><h1>PULSE <span>racing laboratory</span></h1><p id="scope">Loading recorded episodes…</p></div><a href="/gpu.html">GPU / inference check ↗</a></header>
+<main>
+<section class="toolbar"><label>Episode <select id="episode"></select></label><label>Camera <select id="camera"><option value="body">Body / open space</option><option value="road">Road / lateral separation</option><option value="track">Whole circuit</option></select></label>
+<button id="play">Play</button><label>Playback <select id="rate"><option value=".25">¼×</option><option value="1" selected>1×</option><option value="2">2×</option></select></label><span id="clock"></span>
+<input id="scrub" aria-label="Replay position" type="range" min="0" max="1" step="1" value="0"></section>
+<div class="columns"><section class="scene"><canvas id="view"></canvas><div class="legend">● Ego <span>● Rivals</span> <em>— Road preview</em> · Rear clearance and 1 s retention required</div><canvas id="chart"></canvas></section>
+<aside><div id="metrics" class="metrics"></div><section><h2>Controls at this observation</h2><div id="pedals"></div><p id="constraints"></p></section><section><h2>Inference / data quality</h2><pre id="latency"></pre></section>
+<section><h2>Events</h2><div id="events"></div></section></aside></div>
+<section><h2>Observation inspector <span>359 normalized public features · IDs are debug-only</span></h2><label>Filter <input id="filter" placeholder="tyres, road, rival, actionAge…"></label><div class="table-wrap"><table><thead><tr><th>Feature</th><th>Raw</th><th>Normalized</th><th>Limit / scale</th></tr></thead><tbody id="features"></tbody></table></div></section>
+<section><h2>Checkpoint / training</h2><pre id="training">A demonstration replay does not establish PULSE driving capability.</pre></section>
+</main><script type="module" src="/lab/viewer.mjs"></script></body></html>

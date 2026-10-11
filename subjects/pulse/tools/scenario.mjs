@@ -1,0 +1,249 @@
+import { Track } from '../../../game/engine/sim/track.js';
+import { EnduranceRace, FIXED_DT } from '../../../game/core/race.js';
+import { FORMATS } from '../../../game/core/rules.js';
+import { createSeatBridge } from '../../../game/core/field.js';
+import { halfCarInside } from '../../../game/engine/sim/racecraft-policy.js';
+import { observe, toAction, gap, angle, SCHEMA } from '../src/schema.mjs';
+import { ActionMailbox, supervise, timing } from '../src/runtime.mjs';
+
+export const pose = c => ({ id: c.id, classId: c.classId, x: c.x, z: c.z, yaw: c.yaw, speed: c.speed,
+  s: c.s, lateral: c.lateral, progress: c.race.progress, fuel: c.fuel, damage: c.damage,
+  battery: c.hybrid?.energy ?? 0, controls: { ...c.controls }, tc: c.tcActive, abs: c.absActive,
+  lap: c.race.lap, lapValid: c.race.valid, gameOfftrack: c.race.offtrack,
+  tyres: c.wheels.map(w => ({ core: w.tyre.core, wear: w.tyre.wear, kappa: w.tyre.kappa, alpha: w.tyre.alpha })) });
+
+export async function runScenario(options = {}) {
+  const initializationStart = performance.now();
+  const settings = { track: 'harbor-ring', classId: 'lmdh', fixture: 'solo', seconds: 60, seed: 7, rate: 60,
+    weather: 'clear', mode: 'teacher', start: 20, lateral: 0, rivalOffset: 0, yawOffset: 0, speed: 45, rival: 'intercept',
+    lagMs: 0, spikeAt: 3, spikeMs: 0, stallAt: 3, stallMs: 0, hazardAt: 0,
+    expertMix: .5, expertBlockMs: 250, ...options };
+  if (!['teacher', 'shadow', 'policy', 'dagger'].includes(settings.mode)) throw Error('Invalid mode');
+  if (!['solo', 'pair', 'train', 'stopped', 'spun'].includes(settings.fixture)) throw Error('Invalid fixture');
+  if (![20, 30, 60, 120].includes(settings.rate)) throw Error('rate must be 20, 30, 60 or 120');
+  if (!(settings.seconds > 0 && settings.seconds <= 600)) throw Error('Duration must be between 0 and 600 seconds');
+  if (![settings.seed, settings.start, settings.lateral, settings.rivalOffset, settings.yawOffset, settings.speed, settings.lagMs, settings.spikeMs, settings.spikeAt, settings.stallAt, settings.stallMs, settings.hazardAt].every(Number.isFinite)
+    || settings.lagMs < 0 || settings.spikeMs < 0 || settings.stallMs < 0 || settings.speed < 0) throw Error('Finite nonnegative speeds/delays required');
+  if (settings.mode !== 'teacher' && !settings.policy) throw Error('shadow/policy requires a checkpoint');
+  if (!(settings.expertMix >= 0 && settings.expertMix <= 1) || !(settings.expertBlockMs >= 50 && settings.expertBlockMs <= 2000)) throw Error('Invalid bounded expert mixture');
+  const count = settings.fixture === 'solo' ? 1 : settings.fixture === 'train' ? 4 : 2;
+  const teams = Array.from({ length: count }, (_, i) => ({ id: `pulse-lab-${i}`, index: i, grid: i, starter: 0,
+    name: i ? `Rival ${i}` : 'PULSE laboratory', short: i ? `GT${i}` : 'PLS', color: i ? '#51d5df' : '#ffd166',
+    classId: i && settings.fixture === 'train' ? 'gt' : settings.classId,
+    drivers: [{ id: i ? settings.rival : 'intercept', kind: 'ai', name: i ? settings.rival : 'INTERCEPT teacher', short: i ? 'RIV' : 'ICP' }] }));
+  const mailbox = new ActionMailbox(), delayed = [], rows = [], events = [], teacherMs = [], encoderMs = [], inferenceMs = [], supervisorMs = [];
+  let armed = false, current = null, previous = [0, 0], race, acceptedAt = 0;
+  const makeBridge = (driver, index, r) => {
+    const teacher = createSeatBridge(driver, index, r);
+    if (index) return teacher;
+    const wrapped = Object.create(teacher);
+    wrapped.update = (car, cars, dt, context) => {
+      const t = performance.now(); teacher.update(car, cars, dt, context); teacherMs.push(performance.now() - t);
+      if (!armed) return;
+      if (current && !current.teacherControls) current.teacherControls = { ...car.controls };
+      if (settings.mode === 'policy' || (settings.mode === 'dagger' && !current?.expertChosen)) {
+        const t = performance.now(), safe = supervise(mailbox.action, race, car); supervisorMs.push(performance.now() - t);
+        car.controls = safe.controls;
+        if (current) for (const reason of safe.reasons) if (!current.safety.includes(reason)) current.safety.push(reason);
+      }
+    };
+    wrapped.reset = snapshot => { teacher.reset?.(snapshot); mailbox.reset(); };
+    wrapped.dispose = () => teacher.dispose?.();
+    return wrapped;
+  };
+  const track = new Track(settings.track);
+  race = new EnduranceRace({ track, teams, makeBridge, format: { ...FORMATS.custom, mandatoryStops: 0, mandatorySwap: false },
+    laps: 20, startCompound: 'soft', difficulty: 1, seed: settings.seed, weatherSeed: settings.seed,
+    weather: settings.weather, startType: 'standing' });
+  race.start();
+  for (let i = 0; race.phase !== 'racing'; i++) {
+    if (i > 2000) throw Error('Start did not reach racing phase');
+    race.step(FIXED_DT);
+  }
+  const startAt = race.time;
+  for (let i = 0; i < count; i++) {
+    const c = race.cars[i], fuel = c.fuel;
+    const s = settings.start + (i ? 55 + (i - 1) * 85 : 0), lateral = settings.lateral + (i ? ((i % 2) ? .2 : -.2) + settings.rivalOffset : 0);
+    const speed = i ? settings.fixture === 'train' ? 43 : settings.speed : settings.speed;
+    c.place(track, s, lateral, speed); c.fuel = fuel;
+    if (i === 0 && settings.yawOffset) { c.yaw += settings.yawOffset; c.vx = Math.sin(c.yaw) * speed; c.vz = Math.cos(c.yaw) * speed; }
+    c.race = { ...c.race, progress: s, previousS: s, lap: 1, lapStart: startAt, finishTime: null };
+    c.gear = c.classId === 'lmdh' ? 4 : 3;
+    race.fitTyres(c, 'soft', true);
+    race.entries[i].strategist.decide = () => null;
+  }
+  for (const e of race.entries) for (const bridge of e.bridges) bridge.reset?.({ cars: race.cars, track });
+  let stopHazard = null;
+  if (settings.fixture === 'stopped' || settings.fixture === 'spun') {
+    stopHazard = () => {
+      const c = race.cars[1], fuel = c.fuel, state = c.race, damage = c.damage;
+      c.place(track, settings.hazardAt === 0 ? settings.start + 90 : c.s, settings.hazardAt === 0 ? settings.lateral : c.lateral, 0);
+      c.fuel = fuel; c.race = state; c.damage = damage;
+      if (settings.fixture === 'spun') c.yaw += Math.PI * .55;
+      race.entries[1].bridges[0].update = car => { car.controls = { throttle: 0, brake: 1, steer: 0 }; };
+      events.push({ time: race.time - startAt, type: 'hazard-stop', id: c.id, s: c.s });
+    };
+    if (settings.hazardAt === 0) { stopHazard(); stopHazard = null; }
+    const rescue = race.rescue.bind(race);
+    race.rescue = (entry, dt) => { if (entry !== race.entries[1]) rescue(entry, dt); };
+  }
+  const self = race.cars[0], stride = Math.round(120 / settings.rate), iterations = Math.round(settings.seconds / FIXED_DT);
+  const beforeFuel = self.fuel, beforeDamage = self.damage, startProgress = self.race.progress;
+  let cumulativeDamage = 0, lastDamage = self.damage, tick = 0, interventionRows = 0, clippedRows = 0, missingRows = 0, simultaneous = 0;
+  let minSpeed = self.speed, maxRoadOffset = Math.abs(self.lateral), offTrackSeconds = 0, trackLimitSeconds = 0, runoffSeconds = 0;
+  let wasOff = false, wasLimit = false, wasStalled = false, lastDecisionAt = -stride * FIXED_DT;
+  let expertRows = 0, expertBlock = -1, blockExpert = false, guardUntil = -1, mixSeed = (settings.seed ^ 0x50314) >>> 0;
+  let previousLap = self.race.lap, crossings = 0;
+  const fullLaps = [];
+  const encounters = new Map(), seenContacts = new Map();
+  const originalStewards = race.stewards.step.bind(race.stewards);
+  race.stewards.step = dt => {
+    for (const pair of race.stewards.pairs) {
+      const [a, b, closing] = pair, key = [a, b].sort().join(':');
+      if (race.time - (seenContacts.get(key) ?? -99) > .2) events.push({ time: race.time - startAt, type: 'contact', a, b, closing });
+      seenContacts.set(key, race.time);
+    }
+    originalStewards(dt);
+  };
+  const initializationMs = performance.now() - initializationStart, wallStart = performance.now(); armed = true;
+  for (tick = 0; tick < iterations && race.phase === 'racing'; tick++) {
+    const time = race.time - startAt;
+    if (stopHazard && time >= settings.hazardAt) { stopHazard(); stopHazard = null; }
+    for (let i = delayed.length - 1; i >= 0; i--) if (delayed[i].due <= time + 1e-9) {
+      const packet = delayed.splice(i, 1)[0], accepted = mailbox.accept(packet.reply, time);
+      if (accepted) acceptedAt = time;
+      events.push({ time, type: accepted ? 'reply-accepted' : 'reply-rejected', seq: packet.reply.seq, age: time - packet.reply.at });
+    }
+    if (tick % stride === 0) {
+      const stalled = settings.mode !== 'teacher' && time + 1e-9 >= settings.stallAt && time + 1e-9 < settings.stallAt + settings.stallMs / 1000;
+      if (stalled !== wasStalled) events.push({ time, type: stalled ? 'inference-stall' : 'inference-resumed', duration: settings.stallMs / 1000 });
+      wasStalled = stalled;
+      const decisionDt = time - lastDecisionAt;
+      // Hidden state belongs to the last accepted observation, not the last
+      // request. Overlapping delayed requests may have been rejected entirely.
+      const recurrentDt = settings.mode === 'teacher' ? stride * FIXED_DT : Math.max(stride * FIXED_DT, time - mailbox.at);
+      const t = performance.now();
+      const observation = observe(race, self, { dt: recurrentDt, previous, actionAge: settings.mode === 'teacher' ? 0 : time - mailbox.at });
+      encoderMs.push(performance.now() - t);
+      current = { type: 'step', index: rows.length, time, reset: rows.length === 0, dt: stride * FIXED_DT,
+        observation, before: pose(self), cars: race.cars.map(pose), requested: null, teacherControls: null,
+        executed: null, executedEnd: null, safety: [], substeps: [], actionAge: settings.mode === 'teacher' ? 0 : time - mailbox.at,
+        hiddenNorm: Math.hypot(...mailbox.hidden), acceptedSequence: mailbox.accepted, decisionMs: 0, decisionDt, recurrentDt, inferenceStalled: stalled, post: null };
+      if (settings.mode === 'dagger') {
+        // Training-only expert bursts broaden the visited states. Policy evaluation
+        // never reaches this branch and has no teacher steering fallback.
+        const block = Math.floor((time + 1e-9) / (settings.expertBlockMs / 1000));
+        if (block !== expertBlock) { expertBlock = block; mixSeed = (Math.imul(1664525, mixSeed) + 1013904223) >>> 0; blockExpert = mixSeed / 2 ** 32 < settings.expertMix; }
+        const at = track.nearest(self.x, self.z), error = Math.abs(angle(self.yaw - at.heading));
+        if (Math.abs(at.lateral) > track.halfWidth - 2 || error > .3 || self.damage > .02) guardUntil = time + .5;
+        current.expertChosen = blockExpert || time < guardUntil;
+        current.expertReason = time < guardUntil ? 'training-recovery' : blockExpert ? 'seeded-mixture' : null;
+        if (current.expertChosen) expertRows++;
+      }
+      if (settings.policy && !stalled) {
+        lastDecisionAt = time;
+        const request = mailbox.request(time), t = performance.now(), result = await settings.policy(observation.normalized, request.hidden);
+        current.decisionMs = performance.now() - t; inferenceMs.push(current.decisionMs);
+        current.policyProposal = result.action;
+        const reply = { ...request, action: result.action, hidden: result.hidden };
+        const spike = Math.abs(time - settings.spikeAt) < stride * FIXED_DT * .5 ? settings.spikeMs : 0;
+        // Wall service time is included in this simulated arrival, not called zero latency.
+        const delay = (settings.lagMs + spike + current.decisionMs) / 1000;
+        delayed.push({ due: time + delay, reply });
+        if (spike) events.push({ time, type: 'latency-spike', delay });
+      }
+      if (settings.mode === 'shadow') {
+        const safe = supervise(current.policyProposal ?? mailbox.action, race, self); current.safety = safe.reasons; current.shadowSent = safe.controls;
+      }
+    }
+    race.step(FIXED_DT);
+    minSpeed = Math.min(minSpeed, self.speed); maxRoadOffset = Math.max(maxRoadOffset, Math.abs(self.lateral));
+    const off = Math.abs(self.lateral) > track.halfWidth;
+    if (off) offTrackSeconds += FIXED_DT;
+    if (off !== wasOff) events.push({ time, type: off ? 'off-track' : 'rejoined', lateral: self.lateral, speed: self.speed });
+    wasOff = off;
+    const outsideLimits = !race.entries[0].pit && !halfCarInside(Math.abs(self.lateral) - (self.spec?.track ?? 1.72) / 2, track.halfWidth + (track.curbWidth ?? 0));
+    if (outsideLimits) trackLimitSeconds += FIXED_DT;
+    if (Math.abs(self.lateral) >= track.halfWidth + (track.curbWidth ?? 0)) runoffSeconds += FIXED_DT;
+    if (outsideLimits !== wasLimit) events.push({ time, type: outsideLimits ? 'track-limit-violation' : 'inside-track-limits', lateral: self.lateral, speed: self.speed });
+    wasLimit = outsideLimits;
+    if (race.cars.some(c => c.fuel < .5)) throw Error('Fuel watchdog: no-pit episode exceeded its fuel window; result invalid');
+    if (current) {
+      const executed = { ...self.controls };
+      current.executed ??= executed; current.executedEnd = executed; current.substeps.push({ dt: FIXED_DT, controls: executed });
+      cumulativeDamage += Math.max(0, self.damage - lastDamage); lastDamage = self.damage;
+      if (self.race.lap > previousLap) {
+        const lap = { time: race.time - startAt, type: 'lap', lap: previousLap, seconds: self.race.lastLap,
+          full: crossings > 0, valid: ['purple', 'green', 'yellow'].includes(self.race.lastState) };
+        if (lap.full) fullLaps.push(lap);
+        events.push(lap); crossings++; previousLap = self.race.lap;
+      }
+      const damageAdded = Math.max(0, self.damage - (current.substepDamage ?? current.before.damage));
+      current.substepDamage = self.damage;
+      if (damageAdded > .001) events.push({ time, type: 'damage', added: damageAdded, total: cumulativeDamage, speed: self.speed });
+      for (let i = 1; i < count; i++) {
+        const other = race.cars[i], ds = gap(other.s, self.s, track.length);
+        let e = encounters.get(i);
+        const entry = race.entries[i], nonRacing = !!entry.pit || !!entry.pitPlan || !!entry.retired || other.ghost || other.race.finishTime !== null;
+        const kind = other.speed < 7 || Math.abs(other.lateral) > track.halfWidth + .8 ? 'hazard' :
+          other.classId !== self.classId ? 'traffic' : Math.abs(other.race.progress - self.race.progress) > track.length * .5 ? 'lapping' : 'race';
+        if (!e && !nonRacing && ds > 0 && ds < 120) { e = { id: other.id, kind, start: time, initialOffset: self.lateral, overlap: null, clear: null, retained: null, damage0: cumulativeDamage }; encounters.set(i, e); }
+        if (!e || e.retained !== null) continue;
+        if (nonRacing || e.invalidated || self.ghost) { e.invalidated = 'pit/finished/retired/rescue'; continue; }
+        if (kind === 'hazard') e.kind = 'hazard';
+        const extent = c => { const psi = c.yaw - track.at(c.s).heading; return Math.abs(Math.cos(psi)) * 2.28 + Math.abs(Math.sin(psi)) * .98; };
+        const bodyLength = extent(self) + extent(other);
+        if (Math.abs(ds) < 4.56 && e.overlap === null) {
+          e.overlap = time; e.sideSeparation = Math.abs(other.lateral - self.lateral); e.offsetChange = self.lateral - e.initialOffset;
+          events.push({ time, type: 'overlap', id: other.id, separation: e.sideSeparation });
+        }
+        if (ds < -bodyLength - .15) {
+          e.clear ??= time;
+          if (time - e.clear >= 1) { e.retained = time; e.speed = self.speed; e.damage = cumulativeDamage - e.damage0;
+            events.push({ time, type: e.kind === 'hazard' ? 'hazard-cleared' : 'retained-pass', id: other.id, speed: self.speed, contactContaminated: e.damage > 1e-8,
+              kind: e.kind, maneuverEvidence: { offsetChange: e.offsetChange ?? 0, separation: e.sideSeparation ?? 0 } }); }
+        } else e.clear = null;
+      }
+      if ((tick + 1) % stride === 0 || tick + 1 === iterations) {
+        const policyDriven = settings.mode === 'policy' || (settings.mode === 'dagger' && !current.expertChosen);
+        current.requested = policyDriven ? [...mailbox.action] : toAction(current.teacherControls ?? current.executed);
+        current.target = toAction(current.executed);
+        current.post = pose(self); current.progressDelta = self.race.progress - current.before.progress;
+        current.damageAdded = Math.max(0, self.damage - current.before.damage);
+        current.actionSource = policyDriven ? 'pulse-policy' : settings.mode === 'dagger' ? 'training-expert' : 'intercept-teacher';
+        current.acceptedSequence = mailbox.accepted; current.acceptedAt = acceptedAt;
+        if (current.safety.length) interventionRows++;
+        if (current.observation.clipped.length) clippedRows++;
+        if (current.observation.missing.length) missingRows++;
+        if (current.target[1] !== 0 && current.executed.throttle > .01 && current.executed.brake > .01) simultaneous++;
+        settings.onRow?.(current);
+        rows.push(current);
+        previous = [...current.requested];
+      }
+    }
+    if (![self.x, self.z, self.speed, self.yaw].every(Number.isFinite)) throw Error('Non-finite physics state');
+  }
+  const wallSeconds = (performance.now() - wallStart) / 1000;
+  for (const e of race.entries) for (const bridge of e.bridges) if (bridge.errors) throw Error(`Teacher bridge error: ${bridge.lastError}`);
+  const summary = { mode: settings.mode, fixture: settings.fixture, track: settings.track, classId: settings.classId,
+    seed: settings.seed, seconds: tick * FIXED_DT, phase: race.phase, dq: !!self.race.dq, endedEarly: tick < iterations,
+    wallSeconds, initializationMs, simSecondsPerWallSecond: tick * FIXED_DT / wallSeconds, minSpeed, maxRoadOffset,
+    offTrackSeconds, asphaltEdgeSeconds: offTrackSeconds, trackLimitSeconds, runoffSeconds,
+    trackLimitDefinition: 'Game halfCarInside wheel/kerb rule; offTrackSeconds is the legacy asphalt-centre edge diagnostic.',
+    gameOfftrack: self.race.offtrack, incidents: race.stewards.of(race.entries[0]).inc,
+    gameBestLapIncludingInitialPartial: self.race.bestLap, fullLaps,
+    bestFullLap: fullLaps.filter(l => l.valid).reduce((best, l) => best === null ? l.seconds : Math.min(best, l.seconds), null),
+    rows: rows.length, progress: self.race.progress - startProgress, minFuel: Math.min(...race.cars.map(c => c.fuel)), fuelUsed: beforeFuel - self.fuel,
+    cumulativeDamage, endDamage: self.damage, initialDamage: beforeDamage, contacts: race.contacts, severe: race.collisionStats.severeContacts,
+    retainedPasses: [...encounters.values()].filter(e => e.retained !== null && e.kind !== 'hazard').length,
+    hazardsCleared: [...encounters.values()].filter(e => e.retained !== null && e.kind === 'hazard').length, encounters: [...encounters.values()],
+    interventionRows, expertRows, clippedRows, missingRows, simultaneousPedalRows: simultaneous, mailbox: mailbox.stats,
+    latencyMs: { observation: timing(encoderMs), teacher: timing(teacherMs), inference: timing(inferenceMs), safety: timing(supervisorMs) },
+    paceScope: 'Placed fixtures begin partway through a lap. The initial crossing is excluded from fullLaps and bestFullLap.',
+    scope: settings.mode === 'dagger' ? 'Training only: seeded INTERCEPT/PULSE mixture with expert recovery. No independent PULSE performance claim.' :
+      settings.mode === 'shadow' ? 'INTERCEPT drives. PULSE predictions are counterfactual, not racing results.' :
+      settings.mode === 'policy' ? 'Experimental PULSE drives; INTERCEPT labels its states and supplies the unchanged strategy. Native CPU inference.' : 'INTERCEPT demonstration. No PULSE policy driving.' };
+  const outline = Array.from({ length: 320 }, (_, i) => { const p = track.at(i / 320 * track.length); return { x: p.x, z: p.z, s: p.s }; });
+  for (const e of race.entries) for (const bridge of e.bridges) bridge.dispose?.();
+  return { summary, rows, events, track: { id: track.id, length: track.length, halfWidth: track.halfWidth, curbWidth: track.curbWidth, outline }, schema: SCHEMA };
+}
