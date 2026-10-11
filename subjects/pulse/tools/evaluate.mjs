@@ -5,6 +5,7 @@ import { HOME, versions, digest } from './versions.mjs';
 import { createPolicy } from './policy.mjs';
 import { runScenario } from './scenario.mjs';
 import { SCHEMA } from '../src/schema.mjs';
+import { encounterOutcome } from '../src/encounter-outcomes.mjs';
 const args = process.argv.slice(2), arg = (k, d) => { const i = args.indexOf('--' + k); return i < 0 ? d : args[i + 1]; };
 const name = arg('name'), model = arg('model', 'artifacts/model');
 if (!name || !/^[a-z0-9-]+$/i.test(name)) throw Error('Use a unique simple --name');
@@ -14,6 +15,9 @@ mkdirSync(output, { recursive: true });
 mkdirSync(resolve(HOME, 'results'), { recursive: true });
 const policy = await createPolicy(resolve(HOME, model)), ver = versions(policy.schema), report = { name, model, modelSha256: policy.metadata.modelSha256, versions: ver,
   suiteRole: 'Reused development fixtures; these results are not unseen generalization evidence.', cases: [] };
+const fastMotor = args.includes('--fast-motor');
+const motor = fastMotor ? (await import('./fast-motor.mjs')).loadFastMotor(resolve(HOME, model), policy.metadata) : null;
+report.fastMotor = fastMotor;
 if (!policy.metadata.supportedTracks.includes('harbor-ring') || !policy.metadata.supportedClasses.includes('lmdh')) {
   await policy.dispose(); throw Error('This evaluation requires a Harbor GTP checkpoint; out-of-domain results cannot silently pass this gate.');
 }
@@ -46,15 +50,29 @@ if (args.includes('--combat')) cases.push(
   { name: 'stopped', fixture: 'stopped', seed: 127, start: 20, lateral: 0 },
   { name: 'spun', fixture: 'spun', seed: 131, start: 20, lateral: 0 }
 );
+if (args.includes('--traffic-latency')) cases.push(
+  { name: 'traffic-30hz', fixture: 'train', seed: 29, start: 20, lateral: 0, rate: 30 },
+  { name: 'traffic-lag-1-frame', fixture: 'train', seed: 29, start: 20, lateral: 0, lagMs: 16.667 },
+  { name: 'traffic-blackout-250ms', fixture: 'train', seed: 29, start: 20, lateral: 0, stallAt: 18.5, stallMs: 250 },
+  { name: 'traffic-blackout-500ms', fixture: 'train', seed: 29, start: 20, lateral: 0, stallAt: 18.5, stallMs: 500 }
+);
+const requestedCases = arg('only')?.split(',');
+const selectedCases = requestedCases ? cases.filter(c => requestedCases.includes(c.name)) : cases;
+if (requestedCases?.some(name => !selectedCases.some(c => c.name === name))) {
+  await policy.dispose(); throw Error('Unknown --only case; enable the corresponding suite');
+}
+report.caseSelection = selectedCases.map(c => c.name);
 try {
   // Compile and warm the session before judging driving. Recurrent state is still reset per episode.
   let h = new Array(policy.schema.hidden).fill(0);
   for (let i = 0; i < 30; i++) h = (await policy.step(new Array(policy.schema.size).fill(0), h)).hidden;
-  for (const scenario of cases) {
+  for (const scenario of selectedCases) {
     const pair = {};
     for (const mode of ['teacher', 'policy']) {
-      const settings = { ...scenario, seconds, mode, track: 'harbor-ring', classId: 'lmdh', rate: scenario.rate ?? 60, weather: 'clear', observationVersion: policy.metadata.schemaVersion };
-      const result = await runScenario({ ...settings, policy: mode === 'policy' ? policy.step : undefined });
+      const settings = { ...scenario, seconds, mode, track: 'harbor-ring', classId: 'lmdh', rate: scenario.rate ?? 60, weather: 'clear', observationVersion: policy.metadata.schemaVersion,
+        fastMotor: mode === 'policy' && fastMotor, motorRate: 60 };
+      const result = await runScenario({ ...settings, policy: mode === 'policy' ? policy.step : undefined,
+        motor: mode === 'policy' && fastMotor ? motor.step : undefined });
       const episode = name + '-' + scenario.name + '-' + mode;
       const manifest = { type: 'manifest', format: 'pulse-episode-v1', episodeId: digest(settings), name: episode, split: 'test', settings,
         versions: ver, policy: mode === 'policy' ? policy.metadata : null, path: 'native', teacherSuppliesStrategy: true };
@@ -64,6 +82,7 @@ try {
       const firstDeparture = result.events.find(e => e.type === 'off-track')?.time ?? null;
       const firstTrackViolation = result.events.find(e => e.type === 'track-limit-violation')?.time ?? null;
       pair[mode] = { ...result.summary, firstDeparture, firstTrackViolation, replay: '/?episode=' + episode,
+        encounterOutcome: encounterOutcome(result, { seconds, checkpointDistance: +arg('checkpoint', 1400) }),
         completedClean: result.summary.seconds >= seconds - 1e-6 && !result.summary.endedEarly && !result.summary.dq &&
           result.summary.trackLimitSeconds === 0 && result.summary.cumulativeDamage < .001 && result.summary.severe === 0 && result.summary.incidents === 0 &&
           result.summary.expertRows === 0 && result.summary.expertActuatorRows === 0 };

@@ -103,6 +103,8 @@ function render() {
     (row.safety.length ? `Safety: ${row.safety.join(', ')}${replay.summary.mode === 'shadow' ? ' (counterfactual)' : ''}` : 'No safety override at this observation.');
   $('latency').textContent = JSON.stringify({ decisionMs: row.decisionMs, recurrentDt: row.recurrentDt, requestDt: row.decisionDt,
     hiddenNorm: row.hiddenNorm, sequence: row.acceptedSequence, expertController: row.teacherTrace,
+    localMotor: row.localMotorAction, localMotorAt: row.localMotorAt,
+    trafficCorrection: row.trafficCorrection, exploration: replay.manifest.counterfactual,
     expertHistoryProbe: row.teacherHistoryProbe, trainingDisturbance: row.trainingDisturbance,
     expertActuator: replay.manifest.expertActuator ?? replay.manifest.settings?.trainingExpertActuator,
     diagnostic: replay.manifest.diagnostic, networkInputsMasked: Boolean(row.diagnosticPolicyObservation),
@@ -117,6 +119,12 @@ async function load(url) {
   $('scope').textContent = `${replay.summary.scope} ${replay.summary.track} · ${replay.summary.classId} · seed ${replay.summary.seed}`;
   $('scope').className = ['policy', 'dagger'].includes(replay.summary.mode) ? 'warn' : '';
   if (replay.manifest.diagnostic) { $('scope').textContent += ' | Diagnostic: ' + replay.manifest.diagnostic; $('scope').className = 'warn'; }
+  if (replay.manifest.counterfactual) {
+    const c = replay.manifest.counterfactual;
+    $('scope').textContent = (c.label === 'baseline' ? 'Unmodified learned-policy reference. ' :
+      'Offline exploration with sampled controls; this is not a trained NN improvement. ') + $('scope').textContent;
+    $('scope').className = 'warn';
+  }
   const meta = replay.manifest.policy;
   const checkpoint = meta?.checkpointDirectory ?? (meta?.checkpointEpoch ? `${meta.training.out}/epoch-${meta.checkpointEpoch}` : meta?.training?.out);
   document.querySelector('header a').href = '/gpu.html?model=' + encodeURIComponent(

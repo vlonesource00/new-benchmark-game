@@ -20,5 +20,5 @@ export default defineConfig({ root, cacheDir: resolve(root, 'artifacts/vite-cach
       res.setHeader('Content-Type', name.endsWith('.wasm') ? 'application/wasm' : 'text/javascript'); res.end(readFileSync(path));
     });
   } }],
-  build: { target: 'esnext', outDir: resolve(root, 'artifacts/lab-dist'), rollupOptions: { input: { lab: resolve(root, 'index.html'), gpu: resolve(root, 'gpu.html') } } }
+  build: { target: 'esnext', outDir: resolve(root, 'artifacts/lab-dist'), rollupOptions: { input: { lab: resolve(root, 'index.html'), gpu: resolve(root, 'gpu.html'), search: resolve(root, 'search.html') } } }
 });

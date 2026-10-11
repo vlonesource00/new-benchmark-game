@@ -238,5 +238,42 @@ await test('traffic placement records real gaps, spacing and approach speeds', a
   }
   await assert.rejects(() => runScenario({ seconds: .1, rivalGap: -1 }), /traffic placement/);
 });
+await test('invalid traffic delta cannot commit action or recurrent state', () => {
+  const m = new ActionMailbox(), request = m.request(0);
+  assert(!m.accept({ ...request, action: [.1, .8], correction: [NaN, 0], hidden: new Array(128).fill(1) }, .01));
+  assert.equal(m.accepted, 0); assert(m.hidden.every(x => x === 0)); assert.equal(m.stats.invalid, 1);
+});
+await test('local motor keeps fresh feedback throughout a traffic-inference blackout', async () => {
+  let calls = 0;
+  const r = await runScenario({ seconds: 1, mode: 'policy', fixture: 'pair', observationVersion: V2.version,
+    fastMotor: true, rate: 30, motorRate: 60, stallAt: .2, stallMs: 500,
+    motor: () => { calls++; return [0, .8]; }, policy: async (_x, h) => ({ action: [.01, .6], hidden: h }) });
+  const held = r.rows.filter(row => row.inferenceStalled);
+  assert(held.length > 10); assert(calls > r.rows.length);
+  assert(held.every(row => row.trafficCorrection.every(Number.isFinite)));
+  assert(held.some(row => row.actionAge > .4 && row.time + row.dt - row.localMotorAt < .04));
+  assert(held.every(row => Math.abs(row.requested[0] - .01) < 1e-6 && Math.abs(row.requested[1] - .6) < 1e-6));
+  assert.equal(r.summary.expertActuatorRows, 0);
+});
+await test('empty traffic is exactly zero correction in the two-rate actor', async () => {
+  const r = await runScenario({ seconds: .3, mode: 'policy', observationVersion: V2.version, fastMotor: true,
+    motor: () => [0, .8], policy: async (_x, h) => ({ action: [.01, .6], hidden: h }) });
+  assert(r.rows.every(row => row.trafficCorrection.every(x => x === 0)));
+  assert.deepEqual(r.rows.at(-1).requested, [0, .8]);
+});
+await test('two-rate actor rejects expert assistance and malformed motor replies', async () => {
+  const policy = async (_x, h) => ({ action: [0, .8], hidden: h });
+  await assert.rejects(() => runScenario({ seconds: .1, fastMotor: true, motor: () => [0, 1] }), /unassisted policy/);
+  await assert.rejects(() => runScenario({ seconds: .1, mode: 'policy', policy, fastMotor: true, motor: () => [NaN, 1] }), /Invalid local learned-motor/);
+});
+await test('alternative experts are real teacher comparisons, never policy actuator assistance', async () => {
+  for (const expertDriver of ['razor', 'apex', 'next-racer']) {
+    const r = await runScenario({ seconds: .1, expertDriver });
+    assert(r.rows.every(row => row.actionSource === expertDriver + '-teacher'));
+    assert(r.rows.every(row => row.executed.steer === row.teacherControls.steer));
+  }
+  await assert.rejects(() => runScenario({ seconds: .1, expertDriver: 'apex', mode: 'policy',
+    policy: async (_x, h) => ({ action: [0, .8], hidden: h }) }), /teacher-only comparison/);
+});
 for (const entry of race.entries) for (const bridge of entry.bridges) bridge.dispose?.();
 console.log(JSON.stringify({ passed: checks.length, checks }));

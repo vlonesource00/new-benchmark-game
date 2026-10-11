@@ -12,6 +12,7 @@ const settings = { track: arg('track', 'harbor-ring'), classId: arg('class', 'lm
   disturbanceSteer: +arg('disturbance-steer', 0), disturbanceLongitudinal: +arg('disturbance-longitudinal', 0), disturbanceDuration: +arg('disturbance-duration', .2), disturbancePeriod: +arg('disturbance-period', 3),
   trainingExpertActuator: arg('training-expert-actuator', null),
   rivalGap: +arg('rival-gap', 55), trainSpacing: +arg('train-spacing', 85), rivalSpeed: args.includes('--rival-speed') ? +arg('rival-speed') : null,
+  fastMotor: args.includes('--fast-motor'), motorRate: +arg('motor-rate', 60),
   lagMs: +arg('lag-ms', 0), spikeMs: +arg('spike-ms', 0), spikeAt: +arg('spike-at', 3), speed: +arg('speed', 45),
   stallMs: +arg('stall-ms', 0), stallAt: +arg('stall-at', 3),
   hazardAt: +arg('hazard-at', 0),
@@ -34,6 +35,10 @@ if (settings.mode !== 'teacher') {
   if ((!policy.metadata.supportedTracks.includes(settings.track) || !policy.metadata.supportedClasses.includes(settings.classId)) && !args.includes('--allow-ood'))
     throw Error('Model has not trained on this class/track. Use teacher mode; --allow-ood explicitly records an out-of-domain experiment.');
   settings.policy = policy.step;
+  if (settings.fastMotor) {
+    const { loadFastMotor } = await import('./fast-motor.mjs');
+    settings.motor = loadFastMotor(resolve(HOME, arg('model', 'artifacts/model')), policy.metadata).step;
+  }
 }
 const ver = versions(observationProfile(settings.observationVersion).schema);
 const dataRoot = arg('data-root', 'data');
@@ -44,11 +49,12 @@ if (!args.includes('--replace') && (existsSync(resolve(directory, name + '.jsonl
   throw Error('Episode name already exists. Use a new name, or --replace explicitly for this owned generated episode.');
 const identityFields = ['track', 'classId', 'fixture', 'seed', 'weather', 'start', 'lateral', 'rivalOffset', 'yawOffset', 'speed', 'rival', 'rate'];
 identityFields.push('rivalGap', 'trainSpacing', 'rivalSpeed');
+if (settings.fastMotor) identityFields.push('fastMotor', 'motorRate');
 if (settings.warmupToStart) identityFields.push('warmupToStart', 'velocityYawOffset');
 if (settings.disturbanceSteer || settings.disturbanceLongitudinal) identityFields.push('disturbanceSteer', 'disturbanceLongitudinal', 'disturbanceDuration', 'disturbancePeriod');
 if (settings.trainingExpertActuator) identityFields.push('trainingExpertActuator');
 const episodeId = digest(Object.fromEntries(identityFields.map(k => [k, settings[k]])));
-const manifest = { type: 'manifest', format: 'pulse-episode-v1', episodeId, name, split, settings: { ...settings, policy: undefined },
+const manifest = { type: 'manifest', format: 'pulse-episode-v1', episodeId, name, split, settings: { ...settings, policy: undefined, motor: undefined },
   versions: ver, policy: policy?.metadata ?? null, sampleRate: settings.rate, teacherSuppliesStrategy: true, path: 'native',
   trainingOnly: cleanPrefixTraining || settings.mode === 'dagger' || settings.warmupToStart || !!settings.disturbanceSteer || !!settings.disturbanceLongitudinal,
   cleanPrefixTraining,

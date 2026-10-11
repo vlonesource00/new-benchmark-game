@@ -8,7 +8,8 @@ export class ActionMailbox {
   accept(reply, now) {
     if (reply.epoch !== this.epoch || reply.seq <= this.accepted || reply.base !== this.accepted) { this.stats.obsolete++; return false; }
     if (now - reply.at > this.deadline + 1e-9 || reply.at > now + 1e-9) { this.stats.late++; return false; }
-    if (reply.action?.length !== 2 || reply.hidden?.length !== this.hiddenSize || ![...reply.action, ...reply.hidden].every(Number.isFinite)) { this.stats.invalid++; return false; }
+    if (reply.action?.length !== 2 || reply.hidden?.length !== this.hiddenSize || ![...reply.action, ...reply.hidden].every(Number.isFinite)
+      || (reply.correction !== undefined && (reply.correction?.length !== 2 || !Array.from(reply.correction).every(Number.isFinite)))) { this.stats.invalid++; return false; }
     this.action = reply.action.map(x => clamp(x, -1, 1)); this.hidden = [...reply.hidden]; this.at = reply.at; this.accepted = reply.seq; this.stats.accepted++;
     return true;
   }

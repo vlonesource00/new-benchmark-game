@@ -3,23 +3,26 @@
 import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { createPolicy } from './policy.mjs';
+import { loadFastMotor } from './fast-motor.mjs';
 import { runScenario } from './scenario.mjs';
 import { HOME, versions } from './versions.mjs';
 
 const args = process.argv.slice(2), arg = (k, d) => { const i = args.indexOf('--' + k); return i < 0 ? d : args[i + 1]; };
 const name = arg('name'), model = arg('model'), seconds = +arg('seconds', 12);
 const lagMs = +arg('lag-ms', 0), rate = +arg('rate', 60), stallMs = +arg('stall-ms', 0), stallAt = +arg('stall-at', 3);
-if (!name || !/^[a-z0-9-]+$/i.test(name) || !model || !Number.isFinite(seconds) || seconds < 8 || seconds > 20
+if (!name || !/^[a-z0-9-]+$/i.test(name) || !model || !Number.isFinite(seconds) || seconds < 8 || seconds > 30
   || ![lagMs, stallMs, stallAt].every(Number.isFinite) || lagMs < 0 || lagMs > 50 || stallMs < 0 || stallMs > 500 || stallAt < 0 || ![20, 30, 60, 120].includes(rate))
-  throw Error('Unique name, model and an 8–20 second probe required');
+  throw Error('Unique name, model and an 8–30 second probe required');
 const directory = resolve(HOME, 'artifacts/diagnostics', name);
 if (existsSync(directory)) throw Error('Probe exists; preserve it');
 mkdirSync(directory, { recursive: true });
 const policy = await createPolicy(resolve(HOME, model)), ver = versions(policy.schema);
+const fastMotor = args.includes('--fast-motor');
+const motor = fastMotor ? loadFastMotor(resolve(HOME, model), policy.metadata) : null;
 if (!policy.metadata.supportedTracks.includes('harbor-ring') || !policy.metadata.supportedClasses.includes('lmdh')) {
   await policy.dispose(); throw Error('Probe requires a Harbor GTP model');
 }
-const report = { name, model, seconds, lagMs, rate, stallMs, stallAt, modelSha256: policy.metadata.modelSha256,
+const report = { name, model, seconds, lagMs, rate, stallMs, stallAt, fastMotor, modelSha256: policy.metadata.modelSha256,
   scope: 'Short native development encounters, not complete races. The intervention tests a traffic-branch contribution, not general combat superiority or purposeful tow tracking.', cases: [] };
 const cases = [{ name: 'nominal', rivalGap: 55, lateral: 0, rivalOffset: 0 },
   { name: 'close', rivalGap: 40, lateral: -.3, rivalOffset: .3 },
@@ -32,9 +35,10 @@ try {
     for (const variant of ['visible', 'masked', 'solo']) {
       const settings = { ...c, mode: 'policy', fixture: variant === 'solo' ? 'solo' : 'train', seconds,
         track: 'harbor-ring', classId: 'lmdh', weather: 'clear', start: 20, speed: 45, seed: 1500 + index,
-        observationVersion: policy.metadata.schemaVersion, traceExpert: true, lagMs, rate, stallMs, stallAt };
+        observationVersion: policy.metadata.schemaVersion, traceExpert: true, lagMs, rate, stallMs, stallAt,
+        fastMotor, motorRate: 60 };
       const masked = variant === 'masked';
-      const result = await runScenario({ ...settings, policy: (x, h) => {
+      const result = await runScenario({ ...settings, motor: motor?.step, policy: (x, h) => {
         const input = [...x]; if (masked) input.fill(0, policy.schema.groups.rivals.offset); return policy.step(input, h);
       }, onRow: row => { if (masked) { row.diagnosticPolicyObservation = [...row.observation.normalized]; row.diagnosticPolicyObservation.fill(0, policy.schema.groups.rivals.offset); } } });
       const episode = `${name}-${c.name}-${variant}`, manifest = { type: 'manifest', name: episode, split: 'test', settings,

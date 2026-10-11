@@ -1,7 +1,7 @@
 # PULSE laboratory
 
 A learned recurrent controller with a real simulator recorder, GPU training,
-ONNX inference and scrubbable replays. This is the M0/M1/M2 research laboratory.
+ONNX inference and scrubbable replays. This is the M0/M1/M2/M3 research laboratory.
 PULSE is not yet a certified competitive racer or a selectable driver in the
 production game. Existing drivers and shared physics are untouched.
 
@@ -313,6 +313,55 @@ batch-16 p99 around 0.7 ms for WASM and 5.0 ms for WebGPU. Outputs agreed within
 floating-point tolerance. This favours WASM inference for the current model;
 training still uses CUDA. Re-measure under real game load before choosing the
 production backend. Moving a model to the GPU does not improve its driving logic.
+
+## Outcome learning and two-rate control
+
+The opt-in local motor uses the exact learned clean-air weights, synchronously
+at 60 Hz. The slower ONNX actor still supplies traffic memory and corrections;
+fresh physical front-obstruction checks run at 120 Hz. Local motor export and
+ONNX parity are checked independently. This is a native scheduling experiment,
+not certification that browser rendering or workers never miss a deadline.
+
+```powershell
+Push-Location subjects/pulse
+.venv/Scripts/python.exe training/export_motor.py --model artifacts/models/run-name
+Pop-Location
+node subjects/pulse/tools/check-fast-motor.mjs --model artifacts/models/run-name
+node --import ./scripts/json-loader.mjs subjects/pulse/tools/evaluate.mjs --name unique-traffic-delay-run --model artifacts/models/run-name --fast-motor --traffic-latency --only traffic,traffic-30hz,traffic-lag-1-frame,traffic-blackout-250ms,traffic-blackout-500ms --seconds 30
+```
+
+`counterfactual.mjs` explores bounded smooth control sequences with reactive
+opponents, and rejects any trial whose pre-intervention prefix differs from
+the baseline. `--search adaptive` uses seeded outcome search; `--search gain`
+is an offline diagnostic of the existing learned traffic correction. Neither
+becomes a tactical runtime controller. Only an admitted improving/recovering
+winner is exported. Trial replays remain explicitly labelled as sampled runs.
+
+```powershell
+node --import ./scripts/json-loader.mjs subjects/pulse/tools/counterfactual.mjs --name new-encounter --model artifacts/models/run-name --seconds 30 --branch-at 19 --checkpoint 1400 --search adaptive --dataset outcome-new --split train
+```
+
+Collect a physically distinct validation encounter using `--split validation`
+before fitting. `improve.py` trains on the admitted own-policy proposals; expert
+commands are ignored. Optional anchors use only the frozen parent's predictions.
+The existing learned motor must remain bitwise unchanged. `--whole-episode`,
+with `--batch 1 --burn 0`, tests full recurrent histories without window resets.
+Low selected-action loss still cannot replace an independent physical replay.
+
+```powershell
+Push-Location subjects/pulse
+.venv/Scripts/python.exe training/check_outcomes.py
+.venv/Scripts/python.exe training/improve.py --data data/outcome-new --resume artifacts/models/run-name --out artifacts/models/outcome-run --epochs 25
+.venv/Scripts/python.exe training/export_motor.py --model artifacts/models/outcome-run
+Pop-Location
+node --import ./scripts/json-loader.mjs subjects/pulse/tools/outcome-evaluate.mjs --name new-fitted-test --model artifacts/models/outcome-run --source new-encounter
+node subjects/pulse/tools/check-outcomes.mjs
+```
+
+`search.html?name=new-encounter&evaluation=new-fitted-test` compares sampled
+outcomes, reference drivers and the unassisted fitted NN, with separate replay
+links. It shows fixed-distance time, retained clearances, damage, tyre spend and
+selection cost. Cost is an offline ranking objective, not measured race time.
 
 ## Trace and validity contract
 

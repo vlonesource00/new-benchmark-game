@@ -1,20 +1,68 @@
 # PULSE checkpoint — 11 October 2026
 
-M0 infrastructure works. PULSE now completes clean unassisted full Harbor GTP
-laps below 53 seconds. The latest feedback snapshot repeats four of six solo
-setups cleanly. M1 is **not complete**: other starting poses, traffic and sustained
-added latency still expose failures. Nothing here certifies
-competitive race pace, combat, independent strategy or endurance.
+The clean-air motor now passes six changed-start solo cases and six native
+delay/blackout cases over 120 seconds with the two-rate motor enabled. Harbor
+GTP full laps remain below 53 seconds. Traffic, multiple tracks/classes,
+independent strategy and real game workers are still open milestones.
 
-The new traffic branch supports clean retained overtakes of the first GT3 in
-five short controlled encounters, with a matched masked-input counterfactual.
-It still fails longer traffic/duel tests. Local passing evidence is not a
-completed combat or race-performance milestone.
+Outcome-selected learning now works as a separate path from INTERCEPT command
+imitation. One fitted NN makes two retained traffic passes with zero damage in
+a reused 30-second encounter, without any search intervention. Three short
+matched rival-input ablations support a move contribution. Longer traffic,
+changed gaps and sustained reply lag still fail; this is not a certified racer.
+
+## Latest outcome-learning evidence
+
+All results below are native Harbor GTP, clear weather and soft tyres. These
+are reused development fixtures, not unseen generalization evidence.
+
+- c23's corrective motor repeats six 120-second solo starts cleanly: best valid
+  laps range from 52.52 to 52.83 s. The two-rate c25 experiment also passes all
+  six solo delay cases, including 500 ms straight and corner blackouts. It runs
+  the same learned motor locally at 60 Hz while holding the slower NN's traffic
+  correction. No expert steering or offline route drives the car.
+- c24 short/long traffic refits preserve that motor, but neither passes the
+  complete traffic, GTP duel or hazard gates. Their validation loss is not a
+  production promotion criterion.
+- c32/c33 search sampled smooth own-policy control alternatives with reactive
+  opponents. Only legal, completed outcomes with retained clearances and zero
+  damage or verified matched side rubs were admitted. Failed baselines get no
+  invented numerical advantage. INTERCEPT remains faster in the c32 encounter.
+- c34 trained on admitted own-policy proposals, never teacher command targets.
+  Its motor is preserved bitwise. NN-only c36 reaches 1400 m in **23.797 s**,
+  with **2 passes retained and 0 damage**. The parent took 23.915 s and received
+  unverified contact damage. The changed-gap validation has 3.48% damage and
+  fails admission.
+- c46 tests the same fitted NN over 30 seconds with visible rivals, masked NN
+  rival inputs, and a matched solo run. Nominal, RAZOR GT3 and APEX GT3 trains
+  each produce two clean retained passes. At least one in each case is absent
+  with masked rival inputs and has more than 0.75 m departure from the solo
+  course plus more than 2.05 m side separation. Close/far variants fail. This
+  supports a traffic-move contribution, not GTP duel superiority.
+- c45's nominal 30-second encounter and 250/500 ms traffic blackouts are clean,
+  with two retained passes. 30 Hz inference and one frame of sustained reply
+  lag each cause about 1.46% unverified bumper damage. Solo latency success
+  therefore does not certify traffic latency robustness.
+- Over 120 seconds c34 still fails nominal traffic at 40.34 s and accumulates
+  7.67% damage. Its corrections become large even with all rivals well behind.
+  c37's offline gain search finds a legal 60-second alternative with two held
+  passes, no damage and 53.524 s to 2700 m; this is sampled-control evidence.
+  c38/c41/c43 refits, including whole-history training, have not reproduced
+  that full safe outcome. None replaces c34 as the narrow passing reference.
+
+The current actor has 134,373 parameters, ten logical dense layers across the
+branches, and 64 active traffic GRU units. The learned clean-air motor and
+traffic correction are separate; 67,042 parameters are fitted in the traffic
+refits. No independent tyre, pit, energy or rain strategist has been learned.
+
+Review the sampled alternatives and the fitted NN separately at
+http://127.0.0.1:4181/search.html?name=c32-sequence-gap55-search&evaluation=c36-outcome-first-transfer .
+The NN-only replay is c36-outcome-first-transfer-c32-sequence-gap55-search.
 
 ## Verified infrastructure
 
 - Isolated CUDA Python and Node/ONNX dependencies; real GPU optimizer update.
-- 41 simulator/runtime checks, including partial-lap rejection, legal kerb use, fresh safety during a 500 ms inference
+- 46 simulator/runtime checks, including partial-lap rejection, legal kerb use, fresh safety during a 500 ms inference
   blackout, late/out-of-order rejection and elapsed time since accepted state.
 - 52 local model/data checks: padding/order invariance, initial-function transfer,
   current-state actor/history-mask invariance, expert targets, legality filters,
@@ -27,6 +75,11 @@ completed combat or race-performance milestone.
 - Replays show body, road and full-circuit views, actual pedals, sensors,
   intervention/assistance source, hidden age and physical outcome bookmarks.
 - Each experiment keeps a separate checkpoint and full-rate matched test traces.
+- 12 outcome/search checks and 12 outcome-loader checks reject unsafe, assisted,
+  duplicate or non-improving samples. Targets are selected policy proposals at
+  the observation time, rather than delayed executed commands or teacher labels.
+- Comparison/replay views pass desktop and 450-pixel browser checks. These are
+  viewer checks, not proof of game-worker latency or production integration.
 - Expert-assisted DAgger runs are training data, never independent driving wins.
 - Existing game physics, drivers, main game and production roster are untouched.
 
@@ -389,28 +442,22 @@ baseline for this small actor. These are not production rendering/worker tests.
 
 ## Next work
 
-1. Make the coupled motor policy converge across starting speed/position, judged
-   on physical outcomes. Frozen steering plus supervised pedals is a useful
-   diagnosis/curriculum but has a narrow stable region. Current-state imitation
-   and parameter interpolation have not established robust closed-loop control.
-2. Continue unassisted corrective feedback across the failed offset starts,
-   then evaluate physical motor refinement rather than choose by imitation loss.
-   Preserve c16's conservative offset recovery and c18's faster varied-start
-   checkpoints as explicit baselines; neither supersedes the other's failures.
-3. Extend the traffic branch beyond the first clean retained clearance, including
-   legal post-brush corner states and healthy RAZOR/APEX GT3 trains. Require
-   full-interval outcomes, not just longer time to the first violation.
-4. Require changed-pose and delay/blackout gates, then real browser-worker tests.
-   Do not replace a neural actuator with the expert in independent evaluation.
-5. After those gates: actual retained move passes, fast hazard evasion, multiple
-   tracks/classes, independent strategy, weather/endurance and real workers.
+1. Reproduce a full safe traffic interval with the fitted NN alone, preserving
+   the now-stable clean-air motor and the existing short passing reference.
+   Train from admitted own-policy outcomes and judge physical replay, not loss.
+2. Correct the rear/distant-rival overreaction without losing the nearby move;
+   whole-history fitting has not solved it. Expand outcome coverage only from
+   completed, physically verified trials, with independent physical families.
+3. Fix sustained traffic reply-lag/low-rate failures and test real workers.
+   Solo blackout tolerance does not prove that a held passing correction is safe.
+4. Require repeated retained move passes, changed gaps/poses, healthy opponent
+   trains, GTP duels, hazard delay, and both grid orders before race promotion.
+5. Then expand tracks/classes and independent stint, energy, pit and weather
+   decisions, including whole endurance races under production physics.
 
-Local lab: http://127.0.0.1:4181/ . Select c18-feedback-e50-solo-policy for the
-clean 52.47 s solo lap, or c18-confirmation-solo-policy for the repeated 52.78 s
-snapshot. c18-confirmation also includes its changed-start, traffic and blackout
-failures. Select c16-stable-robustness-solo-policy and
-c16-stable-robustness-solo-offset-policy for the repeated conservative runs.
-The same suite's changed-pose, traffic and blackout replays show remaining failures.
+Local lab: http://127.0.0.1:4181/ . The comparison link near the top opens the
+current NN-only passing evidence. Older c16/c18/c19 replays remain available,
+but their successes and failures belong to those checkpoints, not c34.
 Full traces/reports are generated under artifacts/evaluations and are ignored
 by Git. Models/datasets are also ignored; source and these measured summaries
 can be committed without publishing local machine paths or model files.

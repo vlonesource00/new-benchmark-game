@@ -22,6 +22,7 @@ export async function runScenario(options = {}) {
     disturbanceSteer: 0, disturbanceLongitudinal: 0, disturbanceDuration: .2, disturbancePeriod: 3,
     diagnosticExpertActuator: null, trainingExpertActuator: null,
     rivalGap: 55, trainSpacing: 85, rivalSpeed: null,
+    fastMotor: false, motorRate: 60, expertDriver: 'intercept',
     observationVersion: SCHEMA.version, ...options };
   const { schema, observe: observeAt } = observationProfile(settings.observationVersion);
   if (!['teacher', 'shadow', 'policy', 'dagger'].includes(settings.mode)) throw Error('Invalid mode');
@@ -31,6 +32,12 @@ export async function runScenario(options = {}) {
   if (![settings.seed, settings.start, settings.lateral, settings.rivalOffset, settings.yawOffset, settings.speed, settings.lagMs, settings.spikeMs, settings.spikeAt, settings.stallAt, settings.stallMs, settings.hazardAt].every(Number.isFinite)
     || settings.lagMs < 0 || settings.spikeMs < 0 || settings.stallMs < 0 || settings.speed < 0) throw Error('Finite nonnegative speeds/delays required');
   if (settings.mode !== 'teacher' && !settings.policy) throw Error('shadow/policy requires a checkpoint');
+  if (!['intercept', 'razor', 'apex', 'next-racer'].includes(settings.expertDriver)
+    || (settings.expertDriver !== 'intercept' && (settings.mode !== 'teacher' || settings.traceExpert || settings.probeExpertHistory)))
+    throw Error('Alternative expert is a teacher-only comparison, without INTERCEPT-specific probes');
+  if (settings.fastMotor && (settings.mode !== 'policy' || typeof settings.motor !== 'function'
+    || ![20, 30, 60, 120].includes(settings.motorRate) || settings.diagnosticExpertActuator || settings.trainingExpertActuator))
+    throw Error('Two-rate motor requires unassisted policy mode and a compatible local motor');
   if (settings.diagnosticExpertActuator && (settings.mode !== 'policy' || !['steer', 'longitudinal'].includes(settings.diagnosticExpertActuator)))
     throw Error('Component intervention is a policy-only diagnostic');
   if (settings.trainingExpertActuator && (settings.mode !== 'dagger' || settings.trainingExpertActuator !== 'longitudinal'))
@@ -56,9 +63,12 @@ export async function runScenario(options = {}) {
   const teams = Array.from({ length: count }, (_, i) => ({ id: `pulse-lab-${i}`, index: i, grid: i, starter: 0,
     name: i ? `Rival ${i}` : 'PULSE laboratory', short: i ? `GT${i}` : 'PLS', color: i ? '#51d5df' : '#ffd166',
     classId: i && settings.fixture === 'train' ? 'gt' : settings.classId,
-    drivers: [{ id: i ? settings.rival : 'intercept', kind: 'ai', name: i ? settings.rival : 'INTERCEPT teacher', short: i ? 'RIV' : 'ICP' }] }));
+    drivers: [{ id: i ? settings.rival : settings.expertDriver, kind: 'ai', name: i ? settings.rival : settings.expertDriver + ' reference', short: i ? 'RIV' : 'REF' }] }));
   const mailbox = new ActionMailbox(), delayed = [], rows = [], events = [], teacherMs = [], encoderMs = [], inferenceMs = [], supervisorMs = [];
   let armed = false, current = null, previous = [0, 0], race, acceptedAt = 0;
+  let motorAction = [0, 0], motorPending = null, trafficCorrection = [0, 0], lastMotorRequestAt = 0, motorAcceptedAt = 0;
+  const motorMs = [];
+  const combinedAction = () => motorAction.map((value, i) => Math.max(-1, Math.min(1, value + trafficCorrection[i])));
   const expertQueue = []; let expertHeld = { throttle: 0, brake: 0, steer: 0 };
   const makeBridge = (driver, index, r) => {
     const teacher = createSeatBridge(driver, index, r);
@@ -100,7 +110,7 @@ export async function runScenario(options = {}) {
         car.controls = { ...expertHeld };
       }
       if (settings.mode === 'policy' || (settings.mode === 'dagger' && !current?.expertChosen)) {
-        const proposed = toControls(mailbox.action);
+        const proposed = toControls(settings.fastMotor ? combinedAction() : mailbox.action);
         if (settings.diagnosticExpertActuator === 'steer') proposed.steer = car.controls.steer;
         if (settings.diagnosticExpertActuator === 'longitudinal' || settings.trainingExpertActuator === 'longitudinal') { proposed.throttle = car.controls.throttle; proposed.brake = car.controls.brake; }
         const t = performance.now(), safe = supervise(toAction(proposed), race, car); supervisorMs.push(performance.now() - t);
@@ -122,7 +132,7 @@ export async function runScenario(options = {}) {
         if (current) current.trainingDisturbance ??= { steerDelta: delta, longitudinalDelta, cycle, active };
       }
     };
-    wrapped.reset = snapshot => { teacher.reset?.(snapshot); mailbox.reset(); };
+    wrapped.reset = snapshot => { teacher.reset?.(snapshot); mailbox.reset(); motorAction = [0, 0]; motorPending = null; trafficCorrection = [0, 0]; lastMotorRequestAt = 0; motorAcceptedAt = 0; };
     wrapped.dispose = () => teacher.dispose?.();
     return wrapped;
   };
@@ -189,6 +199,7 @@ export async function runScenario(options = {}) {
     race.rescue = (entry, dt) => { if (entry !== race.entries[1]) rescue(entry, dt); };
   }
   const self = race.cars[0], stride = Math.round(120 / settings.rate), iterations = Math.round(settings.seconds / FIXED_DT);
+  const motorStride = Math.round(120 / settings.motorRate);
   const beforeFuel = self.fuel, beforeDamage = self.damage, startProgress = self.race.progress;
   let cumulativeDamage = 0, lastDamage = self.damage, tick = 0, interventionRows = 0, clippedRows = 0, missingRows = 0, simultaneous = 0;
   let minSpeed = self.speed, maxRoadOffset = Math.abs(self.lateral), offTrackSeconds = 0, trackLimitSeconds = 0, runoffSeconds = 0;
@@ -220,11 +231,23 @@ export async function runScenario(options = {}) {
   const initializationMs = performance.now() - initializationStart, wallStart = performance.now(); armed = true;
   for (tick = 0; tick < iterations && race.phase === 'racing'; tick++) {
     const time = race.time - startAt;
+    if (motorPending && motorPending.due <= time + 1e-9) { motorAction = motorPending.action; motorAcceptedAt = motorPending.at; motorPending = null; }
     if (stopHazard && time >= settings.hazardAt) { stopHazard(); stopHazard = null; }
     for (let i = delayed.length - 1; i >= 0; i--) if (delayed[i].due <= time + 1e-9) {
       const packet = delayed.splice(i, 1)[0], accepted = mailbox.accept(packet.reply, time);
-      if (accepted) acceptedAt = time;
+      if (accepted) { acceptedAt = time; if (settings.fastMotor) trafficCorrection = packet.reply.correction; }
       events.push({ time, type: accepted ? 'reply-accepted' : 'reply-rejected', seq: packet.reply.seq, age: time - packet.reply.at });
+    }
+    if (settings.fastMotor && tick % motorStride === 0) {
+      const observation = observeAt(race, self, { dt: motorStride * FIXED_DT, previous,
+        actionAge: Math.max(0, time - lastMotorRequestAt) });
+      const t = performance.now(), action = settings.motor(observation.normalized);
+      motorMs.push(performance.now() - t);
+      if (action?.length !== 2 || !action.every(Number.isFinite)) throw Error('Invalid local learned-motor action');
+      // Preserve the native actor's one-physics-tick delivery, independent of
+      // traffic reply rate/delay. This is learned dense inference, not an
+      // expert or geometric fallback. Actual browser scheduling is a later gate.
+      motorPending = { due: time + FIXED_DT, at: time, action: [...action] }; lastMotorRequestAt = time;
     }
     if (tick % stride === 0) {
       const stalled = settings.mode !== 'teacher' && time + 1e-9 >= settings.stallAt && time + 1e-9 < settings.stallAt + settings.stallMs / 1000;
@@ -271,6 +294,13 @@ export async function runScenario(options = {}) {
         current.decisionMs = performance.now() - t; inferenceMs.push(current.decisionMs);
         current.policyProposal = result.action;
         const reply = { ...request, action: result.action, hidden: result.hidden };
+        if (settings.fastMotor) {
+          const base = settings.motor(observation.normalized);
+          const g = schema.groups.rivals, hasRival = Array.from({ length: g.count }, (_, i) => observation.normalized[g.offset + i * g.width]).some(Boolean);
+          // Use the committed model's actual actuator delta. Clipped network
+          // outputs stay clipped; empty traffic contributes exactly zero.
+          reply.correction = hasRival ? result.action.map((value, i) => value - base[i]) : [0, 0];
+        }
         const spike = Math.abs(time - settings.spikeAt) < stride * FIXED_DT * .5 ? settings.spikeMs : 0;
         // Wall service time is included in this simulated arrival, not called zero latency.
         const delay = (settings.lagMs + spike + current.decisionMs) / 1000;
@@ -332,12 +362,13 @@ export async function runScenario(options = {}) {
       }
       if ((tick + 1) % stride === 0 || tick + 1 === iterations) {
         const policyDriven = settings.mode === 'policy' || (settings.mode === 'dagger' && !current.expertChosen);
-        current.requested = policyDriven ? [...mailbox.action] : toAction(current.teacherControls ?? current.executed);
+        current.requested = policyDriven ? (settings.fastMotor ? combinedAction() : [...mailbox.action]) : toAction(current.teacherControls ?? current.executed);
+        if (settings.fastMotor) { current.localMotorAction = [...motorAction]; current.trafficCorrection = [...trafficCorrection]; current.localMotorAt = motorAcceptedAt; current.localMotorRequestedAt = lastMotorRequestAt; }
         current.target = toAction(current.executed);
         current.post = pose(self); current.progressDelta = self.race.progress - current.before.progress;
         current.damageAdded = Math.max(0, self.damage - current.before.damage);
         current.actionSource = settings.trainingExpertActuator ? 'training-pedal-curriculum' : settings.diagnosticExpertActuator ? 'diagnostic-assisted-policy' :
-          policyDriven ? 'pulse-policy' : settings.disturbanceSteer || settings.disturbanceLongitudinal ? 'training-disturbed-expert' : settings.mode === 'dagger' ? 'training-expert' : 'intercept-teacher';
+          policyDriven ? settings.fastMotor ? 'pulse-two-rate-policy' : 'pulse-policy' : settings.disturbanceSteer || settings.disturbanceLongitudinal ? 'training-disturbed-expert' : settings.mode === 'dagger' ? 'training-expert' : settings.expertDriver + '-teacher';
         current.acceptedSequence = mailbox.accepted; current.acceptedAt = acceptedAt;
         if (current.safety.length) interventionRows++;
         if (current.observation.clipped.length) clippedRows++;
@@ -367,13 +398,15 @@ export async function runScenario(options = {}) {
     interventionRows, expertRows, expertActuatorRows: settings.diagnosticExpertActuator || settings.trainingExpertActuator ? rows.length : 0,
     clippedRows, missingRows, simultaneousPedalRows: simultaneous, mailbox: mailbox.stats,
     latencyMs: { observation: timing(encoderMs), teacher: timing(teacherMs), inference: timing(inferenceMs), safety: timing(supervisorMs) },
+    localMotor: { enabled: settings.fastMotor, rate: settings.fastMotor ? settings.motorRate : null, latencyMs: timing(motorMs),
+      scope: 'Optional synchronous learned motor; delayed traffic delta and hidden state commit together. Native scheduling, not browser-worker timing.' },
     paceScope: 'Placed fixtures begin partway through a lap. The initial crossing is excluded from fullLaps and bestFullLap.',
     scope: settings.diagnosticExpertActuator ? `Diagnostic only: expert replaces ${settings.diagnosticExpertActuator}. This is assisted driving, never a PULSE gate.` :
       settings.trainingExpertActuator ? 'Training only: expert pedals with learned steering and bounded expert recovery. Autonomous gates must remove all assistance.' :
       settings.disturbanceSteer || settings.disturbanceLongitudinal ? 'Training only: perturbed expert execution; teacherControls label the disturbed physical states. No PULSE performance claim.' :
       settings.mode === 'dagger' ? 'Training only: seeded INTERCEPT/PULSE mixture with expert recovery. No independent PULSE performance claim.' :
       settings.mode === 'shadow' ? 'INTERCEPT drives. PULSE predictions are counterfactual, not racing results.' :
-      settings.mode === 'policy' ? 'Experimental PULSE drives; INTERCEPT labels its states and supplies the unchanged strategy. Native CPU inference.' : 'INTERCEPT demonstration. No PULSE policy driving.' };
+      settings.mode === 'policy' ? 'Experimental PULSE drives; INTERCEPT labels its states and supplies the unchanged strategy. Native CPU inference.' : settings.expertDriver + ' demonstration. No PULSE policy driving.' };
   const outline = Array.from({ length: 320 }, (_, i) => { const p = track.at(i / 320 * track.length); return { x: p.x, z: p.z, s: p.s }; });
   for (const e of race.entries) for (const bridge of e.bridges) bridge.dispose?.();
   return { summary, rows, events, track: { id: track.id, length: track.length, halfWidth: track.halfWidth, curbWidth: track.curbWidth, outline }, schema };
