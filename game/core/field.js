@@ -13,6 +13,9 @@ import { razorState } from '../bridges/razor-state.js';
 import { installRazorStrategy } from '../../subjects/razor/src/strategy.js';
 import { createTempestBridge } from '../bridges/tempest-bridge.js';
 import { installTempestStrategy } from '../../subjects/tempest/src/strategy.js';
+import { createInterceptBridge } from '../bridges/intercept-bridge.js';
+import { interceptState } from '../bridges/intercept-state.js';
+import { installInterceptStrategy } from '../../subjects/intercept/src/strategy.js';
 import { nextRacerState } from '../bridges/next-racer-state.js';
 import { installNativeStrategy } from '../../subjects/next-racer/src/strategy.js';
 import { HumanFilter } from './human.js';
@@ -75,6 +78,9 @@ export function createSeatBridge(driver, index, race) {
     case 'tempest':
       installTempestStrategy(race, race.cars[index]);
       return createTempestBridge({ hostTrack, index, state: car => razorState(race, car) });
+    case 'intercept':
+      installInterceptStrategy(race, race.cars[index]);
+      return createInterceptBridge({ hostTrack, index, state: car => interceptState(race, car) });
     case 'next-racer':
       installNativeStrategy(race,race.cars[index]);
       return createNextRacerBridge({hostTrack,index,state:car=>nextRacerState(race,car)});

@@ -1,6 +1,7 @@
 // Driver pool, team liveries and the random teammate draw.
 
 export const AI_DRIVERS = Object.freeze([
+  { id: 'intercept', name: 'INTERCEPT', short: 'ICP', arch: 'Physics-rate control · committed gap attacks · live stint strategy', anyTrack: true, manage: false, governor: false },
   { id: 'astra',             name: 'ASTRA',        short: 'AST', arch: 'Tactical planner · chassis rollouts',   anyTrack: true },
   { id: 'gemini-supreme-v4', name: 'GEMINI v4',    short: 'GM4', arch: 'MPCC v4 · generic line solver',        anyTrack: true, manage: false },
   { id: 'solstice',          name: 'SOLSTICE',      short: 'SLC', arch: 'Whole-lap line · live axle forces',    anyTrack: true, manage: false, governor: false },
