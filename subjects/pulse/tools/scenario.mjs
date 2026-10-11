@@ -9,7 +9,7 @@ import { observationProfile } from '../src/observations.mjs';
 
 export const pose = c => ({ id: c.id, classId: c.classId, x: c.x, z: c.z, yaw: c.yaw, speed: c.speed,
   s: c.s, lateral: c.lateral, progress: c.race.progress, fuel: c.fuel, damage: c.damage,
-  battery: c.hybrid?.energy ?? 0, controls: { ...c.controls }, tc: c.tcActive, abs: c.absActive,
+  battery: c.hybrid?.energy ?? 0, controls: { ...c.controls }, tc: c.tcActive, abs: c.absActive, ghost: !!c.ghost,
   lap: c.race.lap, lapValid: c.race.valid, gameOfftrack: c.race.offtrack,
   tyres: c.wheels.map(w => ({ core: w.tyre.core, wear: w.tyre.wear, kappa: w.tyre.kappa, alpha: w.tyre.alpha })) });
 
@@ -21,6 +21,7 @@ export async function runScenario(options = {}) {
     expertMix: .5, expertBlockMs: 250, traceExpert: false, probeExpertHistory: false, holdExpert: false, heldExpertLagMs: 0, warmupToStart: false, velocityYawOffset: 0,
     disturbanceSteer: 0, disturbanceLongitudinal: 0, disturbanceDuration: .2, disturbancePeriod: 3,
     diagnosticExpertActuator: null, trainingExpertActuator: null,
+    rivalGap: 55, trainSpacing: 85, rivalSpeed: null,
     observationVersion: SCHEMA.version, ...options };
   const { schema, observe: observeAt } = observationProfile(settings.observationVersion);
   if (!['teacher', 'shadow', 'policy', 'dagger'].includes(settings.mode)) throw Error('Invalid mode');
@@ -47,6 +48,10 @@ export async function runScenario(options = {}) {
   if (!Number.isFinite(settings.velocityYawOffset) || Math.abs(settings.velocityYawOffset) > .2 || (settings.velocityYawOffset && !settings.warmupToStart))
     throw Error('Velocity perturbation requires bounded warm collection');
   if (!(settings.expertMix >= 0 && settings.expertMix <= 1) || !(settings.expertBlockMs >= 50 && settings.expertBlockMs <= 2000)) throw Error('Invalid bounded expert mixture');
+  if (!Number.isFinite(settings.rivalGap) || settings.rivalGap < 12 || settings.rivalGap > 240
+    || !Number.isFinite(settings.trainSpacing) || settings.trainSpacing < 15 || settings.trainSpacing > 220
+    || (settings.rivalSpeed !== null && (!Number.isFinite(settings.rivalSpeed) || settings.rivalSpeed < 0 || settings.rivalSpeed > 90)))
+    throw Error('Invalid bounded traffic placement');
   const count = settings.fixture === 'solo' ? 1 : settings.fixture === 'train' ? 4 : 2;
   const teams = Array.from({ length: count }, (_, i) => ({ id: `pulse-lab-${i}`, index: i, grid: i, starter: 0,
     name: i ? `Rival ${i}` : 'PULSE laboratory', short: i ? `GT${i}` : 'PLS', color: i ? '#51d5df' : '#ffd166',
@@ -133,9 +138,9 @@ export async function runScenario(options = {}) {
   let startAt = race.time;
   for (let i = 0; i < count; i++) {
     const c = race.cars[i], fuel = c.fuel;
-    const s = (settings.warmupToStart ? 20 : settings.start) + (i ? 55 + (i - 1) * 85 : 0),
+    const s = (settings.warmupToStart ? 20 : settings.start) + (i ? settings.rivalGap + (i - 1) * settings.trainSpacing : 0),
       lateral = (settings.warmupToStart ? 0 : settings.lateral) + (i ? ((i % 2) ? .2 : -.2) + settings.rivalOffset : 0);
-    const speed = i ? settings.fixture === 'train' ? 43 : settings.speed : settings.speed;
+    const speed = i ? settings.rivalSpeed ?? (settings.fixture === 'train' ? 43 : settings.speed) : settings.speed;
     c.place(track, s, lateral, speed); c.fuel = fuel;
     if (i === 0 && settings.yawOffset && !settings.warmupToStart) { c.yaw += settings.yawOffset; c.vx = Math.sin(c.yaw) * speed; c.vz = Math.cos(c.yaw) * speed; }
     c.race = { ...c.race, progress: s, previousS: s, lap: 1, lapStart: startAt, finishTime: null };
@@ -192,12 +197,23 @@ export async function runScenario(options = {}) {
   let previousLap = self.race.lap, crossings = 0;
   const fullLaps = [];
   const encounters = new Map(), seenContacts = new Map();
+  const preStepDamage = new Map();
   const originalStewards = race.stewards.step.bind(race.stewards);
   race.stewards.step = dt => {
     for (const pair of race.stewards.pairs) {
       const [a, b, closing] = pair, key = [a, b].sort().join(':');
       if (race.time - (seenContacts.get(key) ?? -99) > .2) events.push({ time: race.time - startAt, type: 'contact', a, b, closing });
       seenContacts.set(key, race.time);
+      if (current && (a === self.id || b === self.id)) {
+        const other = race.cars.find(car => car.id === (a === self.id ? b : a));
+        const otherEntry = race.entries.find(entry => entry.car.id === other.id);
+        const dx = other.x - self.x, dz = other.z - self.z;
+        (current.contactEvidence ??= []).push({ time: race.time - startAt, rival: other.id, closing,
+          activeRival: !otherEntry.pit && !otherEntry.pitPlan && !otherEntry.retired && !other.ghost && other.race.finishTime === null,
+          forward: dx * Math.sin(self.yaw) + dz * Math.cos(self.yaw), lateral: dx * Math.cos(self.yaw) - dz * Math.sin(self.yaw),
+          yawDifference: angle(other.yaw - self.yaw), selfDamageAdded: Math.max(0, self.damage - preStepDamage.get(self.id)),
+          rivalDamageAdded: Math.max(0, other.damage - preStepDamage.get(other.id)) });
+      }
     }
     originalStewards(dt);
   };
@@ -265,6 +281,7 @@ export async function runScenario(options = {}) {
         const safe = supervise(current.policyProposal ?? mailbox.action, race, self); current.safety = safe.reasons; current.shadowSent = safe.controls;
       }
     }
+    for (const car of race.cars) preStepDamage.set(car.id, car.damage);
     race.step(FIXED_DT);
     minSpeed = Math.min(minSpeed, self.speed); maxRoadOffset = Math.max(maxRoadOffset, Math.abs(self.lateral));
     const off = Math.abs(self.lateral) > track.halfWidth;

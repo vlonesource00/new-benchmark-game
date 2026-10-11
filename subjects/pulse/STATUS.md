@@ -6,16 +6,24 @@ setups cleanly. M1 is **not complete**: other starting poses, traffic and sustai
 added latency still expose failures. Nothing here certifies
 competitive race pace, combat, independent strategy or endurance.
 
+The new traffic branch supports clean retained overtakes of the first GT3 in
+five short controlled encounters, with a matched masked-input counterfactual.
+It still fails longer traffic/duel tests. Local passing evidence is not a
+completed combat or race-performance milestone.
+
 ## Verified infrastructure
 
 - Isolated CUDA Python and Node/ONNX dependencies; real GPU optimizer update.
-- 40 simulator/runtime checks, including partial-lap rejection, legal kerb use, fresh safety during a 500 ms inference
+- 41 simulator/runtime checks, including partial-lap rejection, legal kerb use, fresh safety during a 500 ms inference
   blackout, late/out-of-order rejection and elapsed time since accepted state.
-- 27 local model/data checks: padding/order invariance, initial-function transfer,
+- 52 local model/data checks: padding/order invariance, initial-function transfer,
   current-state actor/history-mask invariance, expert targets, legality filters,
   contiguous sequences, splits, explicit v1-to-v2 transfer, isolated pedal learning
   interpolation that cannot alter the frozen steering function, clean-prefix
-  policy feedback and rejection of expert actuator assistance in that collection.
+  policy feedback and rejection of expert actuator assistance in that collection,
+  traffic-memory transfer/reset invariance, batched recurrent output/gradient
+  parity, rejection of severe/wall/repair/rescue states from side-rub data, and
+  motor-refit ownership, initial parity and finite gradients.
 - Replays show body, road and full-circuit views, actual pedals, sensors,
   intervention/assistance source, hidden age and physical outcome bookmarks.
 - Each experiment keeps a separate checkpoint and full-rate matched test traces.
@@ -201,6 +209,137 @@ reply delay at 16.61 s, and the 500 ms corner blackout at 15.18 s. These native
 injected-stall results do not certify real browser worker scheduling or immunity
 to spikes. They establish a limited improvement over the earlier stall failures.
 
+## Traffic branch, corrective data and memory: c19–c22
+
+The c18 traffic failure starts with a rival-conditioned steering change. Masking
+network rivals improves the opening but causes contact; real rivals/wakes/safety
+remain. Therefore removing traffic perception is not a driving fix.
+
+A new learned residual preserves the empty-rival motor while correcting both
+actuators around traffic. It has 93,029 parameters. The traffic-memory variant
+adds 64 recurrent units and has 134,373 parameters, 67,042 trainable. There are
+ten dense layers across parallel branches, with hidden widths summing to 480,
+plus the 64-unit GRU. Its gate implementation uses two additional linear
+matrices. Empty traffic clears the active first 64 mailbox values; the other 64
+values stay zero. This is not the original 128-unit recurrent motor.
+
+The frozen motor keeps the nominal 52.78 s clean full solo lap byte-identical
+through these traffic experiments. It also preserves its failed offset start;
+preserving a function does not remove that function's existing weaknesses.
+
+Traffic expert collection approved 13 of 28 complete demonstrations and
+quarantined 15. Explicit corrective prefixes add 22,405 eligible pre-failure
+rows from those failed demos without rewriting their outcomes. Two rounds of
+unassisted student collection add 16 episodes each; only expert labels train.
+The third round records per-step contact geometry/damage evidence and permits
+later states after verified matched side brushes, with a 3% cumulative bound.
+It contains 35,998 eligible rows out of 57,600 recorded rows. Wall/unknown damage,
+severe impacts, illegal motion, repairs and marshal recovery still stop the
+prefix. A paired strict-cutoff control uses the same raw states and labels.
+
+Native Harbor GTP, clear/soft, 120-second three-GT3 development fixture:
+
+| Candidate | First legal-limit violation | End cumulative damage |
+|---|---:|---:|
+| c18-feedback/epoch-25 | 4.84 s | 12.1% |
+| c19 traffic, minimum imitation loss | 13.31 s | 22.5% |
+| c20 matched control | 13.41 s | 29.1% |
+| c20 student feedback added | 22.70 s | 11.3% |
+| c21 traffic memory/epoch-25 | 40.18 s | 35.4% |
+| c22 strict-contact control, best imitation loss | 30.82 s | 3.5% |
+| c22 permitted-rub feedback, best imitation loss | 46.35 s | 26.2% |
+
+Every candidate still fails the whole-interval driving gate. These first-limit
+times do not mean the car stayed undamaged until then. c21's first damage at
+23.0 s is a 1.7 m/s side brush; later errors cause its much larger final damage.
+The memory variant improves sustained tracking in some cases and worsens damage
+in others. No model is promoted because its imitation loss is lower.
+
+c22 pairs the same 50-epoch run, parent, source episodes and labels with only
+the contact-prefix eligibility changed. Best imitation loss occurs at epoch 1
+for the strict control and epoch 2 for permitted-rub feedback. The latter lasts
+85.81 s before its first track violation in train-close versus 21.92 s for the
+control, but finishes with 4.0% damage; neither is a clean whole encounter.
+Across 13 120-second cases, only nominal solo is clean for either candidate.
+Fixed epoch-25 variants also fail. Healthy RAZOR/APEX GT3 train cases have some
+uncontaminated retained clears, but no clean whole run or same-class RAZOR/APEX
+pass. First-limit time remains a diagnostic, never a success criterion.
+
+A separately labelled c22 nominal run (`c23-failure-nominal`) first brushes a
+GT3 at 14.50 s, 3.39 m/s closing speed, 1.94 m lateral separation and 2.49 m
+forward displacement. It exits track limits at 46.62 s. Public pose and expert
+labels expose steering/pedal errors before that failure; wall/rescue states
+remain excluded. This example is not evidence of 46 clean seconds.
+
+`motorTune` is a separate opt-in experiment to refit context/steer/pedal weights
+while freezing traffic weights. It has no extra inference operators or neurons,
+starts exactly from its parent, and trains 67,331 motor parameters. It deliberately
+gives up the frozen-motor guarantee after learning, so pace, changed starts,
+traffic and delay must all be retested. `motor-feedback-02` supplies 16 additional
+60-second unassisted solo trajectories at varied speeds/offsets, with 57,600 raw
+rows, zero expert actuator rows, and strict clean-prefix admission.
+
+Pause checkpoint: c23's motor-feedback refit completes all six varied-start
+solo cases in the 120-second robustness suite with zero damage, incidents or
+track-limit violations. Each has a valid complete lap, ranging from 52.52 to
+52.83 s. The previously failing s=1000 m / lateral -0.5 m start now completes
+cleanly at 52.52 s. The matched refit without unassisted motor feedback fails
+all six solo cases; fixed epoch-5 variants also fail. These remain reused
+development cases on dry Harbor GTP, not cross-track or unseen certification.
+
+The same c23 candidate still fails the traffic case: first track-limit violation
+at 32.83 s and 17.0% cumulative damage over 120 s. Its two retained-pass records
+do not make that encounter clean. Changing the motor also changes the features
+received by the frozen traffic branch; that branch needs matched corrective
+collection and refitting before this motor can become a combined racer.
+The earlier 300-second stint result and short causal passing tests belong to
+their recorded checkpoints and have not been repeated on c23.
+
+Development resumed at the user's request after the pause review. All c22/c23
+trainers and evaluations had finished at that pause. Retain c23-motor-feedback
+as the new varied-start motor baseline; collect traffic corrections on that
+actual motor, refit only traffic, then retest full traffic, hazards and sustained
+delay before strategy expansion. The collector now appends healthy RAZOR/APEX
+GT3 trains, corner-start duels and hazards, preserving all earlier case seeds
+and train/validation roles. Preserve the main game and lab servers.
+
+`c21-short-pass-attribution` runs five 12-second visible/masked/solo triplets:
+three gaps/offsets plus RAZOR and APEX GT3s. Every visible run is legal and
+undamaged, clears the first GT3 and holds the pass for one second. Overlap
+separation is 2.13–2.45 m, retained speed 263–273 km/h, and maximum departure
+from the matched solo trajectory is 1.84–3.11 m. Every masked run has zero
+retained passes and adds 1.5–12.4% damage. Only neural rival inputs are masked;
+physical rivals, wake, contact and fresh nose safety remain. This supports a
+traffic-maneuver contribution in these short encounters. It does not certify
+clearance of the whole train, same-class duels or a full lap in traffic.
+
+A 500 ms inference blackout at t=3 s retains all five short passing successes.
+With a sustained extra 16.67 ms reply delay, the five openings stay undamaged
+and legal but produce no retained passes within 12 seconds. Earlier full-lap
+delay cases still fail. Latency immunity and real browser workers remain open.
+
+The traffic GRU trainer now batches uninterrupted sequences with cuDNN, preserving
+stepwise mask resets and burn-in gradients. The 50-epoch memory experiment takes
+209 s of training/export time after loading data. Torch/ONNX step exports retain
+basic operators; the training-only GRU alias is not a second serialized model.
+
+The lab adds tow/battery/wear traces, clean versus contact-contaminated retained
+counts and architecture/memory metadata. `combat-report.mjs` reports actual
+clearance speed, separation, front-blocked time, tow exposure, wheelspin and
+braking slip, plus departure/time loss against the matched solo trajectory.
+These diagnostics do not convert every lateral change into a causal move pass.
+Independent stint planning, compound selection, energy decisions and wet/dry
+adaptation remain unproven; this curriculum is still dry Harbor GTP on softs.
+
+The unchanged motor completes the `c22-stint-solo` 300-second no-stop fixture
+with zero damage, incidents, illegal motion or expert actuator assistance.
+Four complete valid laps are 52.70 / 52.72 / 53.24 / 53.73 s, giving 1.03 s
+fade from best to final complete lap. At the endpoint the most worn rear-right
+tyre is 77.8% used and 106.5°C; front-left is 27.5% used and 76.5°C. Those
+imbalanced tyres merit further testing, not a claim of optimal resource spending.
+No pit decisions are active in this motor fixture, and its initial partial lap
+is excluded. The frozen traffic branch cannot improve this clean-air function.
+
 ## Inference backend
 
 c04 has 147,170 parameters. Torch/native ONNX action error ≤2.3e−7, hidden error
@@ -241,6 +380,13 @@ WASM p99 is 0.9/0.8 ms and WebGPU 5.1/11.1 ms over 150 warmed evaluations each.
 All camera/trace views and the narrow viewport pass without page errors or
 overflow. This is a small inference microbench, not a field latency guarantee.
 
+c21's 134,373-parameter memory actor passes native/browser recurrent parity
+within 9e-7. Native CPU batch 1/16 p99 is 0.168/0.206 ms. Edge WASM p99 is
+0.6/1.0 ms; WebGPU is 5.1/9.9 ms, with a batch-16 maximum of 12.1 ms over 150
+warmed evaluations. All camera/resource-chart views and the 450-pixel viewport
+pass without page errors or overflow. CUDA trains; WASM remains the inference
+baseline for this small actor. These are not production rendering/worker tests.
+
 ## Next work
 
 1. Make the coupled motor policy converge across starting speed/position, judged
@@ -251,8 +397,9 @@ overflow. This is a small inference microbench, not a field latency guarantee.
    then evaluate physical motor refinement rather than choose by imitation loss.
    Preserve c16's conservative offset recovery and c18's faster varied-start
    checkpoints as explicit baselines; neither supersedes the other's failures.
-3. Repair the traffic-sensitive steering response. The frozen steering branch
-   still fails early with three GT3s; successful solo laps do not imply combat.
+3. Extend the traffic branch beyond the first clean retained clearance, including
+   legal post-brush corner states and healthy RAZOR/APEX GT3 trains. Require
+   full-interval outcomes, not just longer time to the first violation.
 4. Require changed-pose and delay/blackout gates, then real browser-worker tests.
    Do not replace a neural actuator with the expert in independent evaluation.
 5. After those gates: actual retained move passes, fast hazard evasion, multiple

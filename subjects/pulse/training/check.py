@@ -5,7 +5,8 @@ from pathlib import Path
 import numpy as np
 import torch
 from model import PulsePolicy, transfer_observations
-from data import episodes, windows, assert_disjoint
+from data import episodes, windows, assert_disjoint, light_rub_prefix
+from copy import deepcopy
 from train import rollout_loss
 from interpolate import pedal_weights
 
@@ -59,6 +60,43 @@ with torch.inference_mode():
         parameter.add_(.2)
     assert torch.equal(split_motor(x, h)[0][:, 0], steer_before), 'Pedal learning changed frozen steering'
     assert all(not p.requires_grad for name, p in split_motor.named_parameters() if not name.startswith('pedals.'))
+    traffic = PulsePolicy(schema, instant=True, motorHistoryMask=True, splitMotor=True, trafficResidual=True).eval()
+    traffic.load_parent(split_motor.state_dict())
+    empty = x.clone(); empty[:, g['offset']:] = 0
+    clean_air = split_motor(empty, h)[0]
+    assert torch.equal(traffic(empty, h)[0], clean_air), 'Traffic transfer changed clean-air controls'
+    assert torch.equal(traffic(x, h)[0], clean_air), 'Zero residual did not start from the empty-rival motor'
+    for name, parameter in traffic.named_parameters():
+        if parameter.requires_grad:
+            parameter.add_(.05)
+        assert parameter.requires_grad == name.startswith(('traffic.', 'opponent.')), 'Traffic learning changed the motor ownership'
+    assert torch.equal(traffic(empty, h)[0], clean_air), 'Traffic updates changed clean-air controls'
+    for transformed in [swapped, padded]:
+        assert torch.allclose(traffic(x, h)[0], traffic(transformed, h)[0], atol=1e-6), 'Traffic residual broke padding/order invariance'
+    memory = PulsePolicy(schema, instant=True, motorHistoryMask=True, splitMotor=True, trafficResidual=True, trafficMemory=True).eval()
+    memory.load_parent(traffic.state_dict())
+    assert torch.equal(memory(x, h)[0], traffic(x, h)[0]), 'Memory transfer changed parent actions before learning'
+    assert memory(x, h)[1].shape == h.shape and memory(x, h)[1][:, 64:].count_nonzero() == 0
+    assert memory(empty, h)[1].count_nonzero() == 0, 'Empty traffic must clear latent traffic commitment'
+    for name, parameter in memory.named_parameters():
+        assert parameter.requires_grad == name.startswith(('opponent.', 'traffic.', 'traffic_input_gates.', 'traffic_hidden_gates.'))
+        if parameter.requires_grad:
+            parameter.add_(.01)
+    assert torch.equal(memory(empty, h)[0], clean_air), 'Memory learning changed the preserved clean-air motor'
+    for transformed in [swapped, padded]:
+        for a, b in zip(memory(x, h), memory(transformed, h)):
+            assert torch.allclose(a, b, atol=1e-6), 'Traffic memory leaked opponent order or padding'
+    refit = PulsePolicy(schema, instant=True, motorHistoryMask=True, splitMotor=True, trafficResidual=True, trafficMemory=True, motorTune=True).eval()
+    refit.load_parent(memory.state_dict())
+    for a, b in zip(memory(x, h), refit(x, h)):
+        assert torch.equal(a, b), 'Motor refit changed the initial parent function'
+    for name, parameter in refit.named_parameters():
+        assert parameter.requires_grad == name.startswith(('context.', 'head.', 'pedals.')), 'Motor refit altered traffic ownership'
+    try:
+        PulsePolicy(schema, instant=True, motorTune=True)
+        raise AssertionError('Refit without a preserved split motor was accepted')
+    except ValueError:
+        pass
     blend_a = {'head.weight': torch.ones(2, 3), 'pedals.weight': torch.zeros(1, 3)}
     blend_b = {'head.weight': torch.ones(2, 3), 'pedals.weight': torch.ones(1, 3)}
     blended = pedal_weights(blend_a, blend_b, .5)
@@ -88,6 +126,65 @@ with torch.inference_mode():
             new_x[:, indices[f['name']]] = x[:, i]
         for a, b in zip(instant(x, h), v2(new_x, h)):
             assert torch.allclose(a, b, atol=1e-6), 'Added observations changed the transferred function at initialization'
+
+memory_for_loss = PulsePolicy(schema, instant=True, motorHistoryMask=True, splitMotor=True, trafficResidual=True, trafficMemory=True)
+memory_for_loss.load_state_dict(memory.state_dict())
+with torch.no_grad():
+    memory_for_loss.traffic[0].weight.normal_(0, .03)
+    memory_for_loss.traffic[2].weight.normal_(0, .03)
+memory_loss = rollout_loss(memory_for_loss, xx.clone(), yy.clone(), burn, fresh.clone(), 10)
+memory_loss.backward()
+for branch in [memory_for_loss.traffic_input_gates, memory_for_loss.traffic_hidden_gates]:
+    assert branch.weight.grad is not None and torch.isfinite(branch.weight.grad).all() and branch.weight.grad.abs().sum() > 0, 'Traffic recurrence did not receive finite learning gradients'
+assert all(p.grad is None for p in memory_for_loss.context.parameters()), 'Traffic recurrence updated the frozen motor'
+refit_for_loss = PulsePolicy(schema, instant=True, motorHistoryMask=True, splitMotor=True, trafficResidual=True, trafficMemory=True, motorTune=True)
+refit_loss = rollout_loss(refit_for_loss, xx.clone(), yy.clone(), burn, fresh.clone(), 10)
+refit_loss.backward()
+for branch in [refit_for_loss.context, refit_for_loss.head, refit_for_loss.pedals]:
+    assert any(p.grad is not None and torch.isfinite(p.grad).all() and p.grad.abs().sum() > 0 for p in branch.parameters()), 'Motor refit has no finite learning gradient'
+assert all(p.grad is None for name, p in refit_for_loss.named_parameters() if name.startswith(('opponent.', 'traffic.', 'traffic_input_gates.', 'traffic_hidden_gates.'))), 'Motor refit updated traffic weights'
+
+sequence_x = torch.rand(4, 10, schema['size'])
+sequence_cars = sequence_x[:, :, g['offset']:].reshape(4, 10, g['count'], g['width'])
+sequence_cars[:, :, :, 0] = 1
+sequence_cars[2, :, :, 0] = 0
+sequence_cars[3, 3:5, :, 0] = 0
+sequence_y = torch.rand(4, 10, 2) * 2 - 1
+sequence_fresh = torch.tensor([1., 0., 1., 0.])
+step_model = PulsePolicy(schema, instant=True, motorHistoryMask=True, splitMotor=True, trafficResidual=True, trafficMemory=True)
+step_model.load_state_dict(memory_for_loss.state_dict())
+hh, step_actions = torch.zeros(4, schema['hidden']), []
+for t in range(10):
+    action, hh = step_model(sequence_x[:, t], hh)
+    step_actions.append(action)
+    if t < burn:
+        hh = torch.where(sequence_fresh[:, None].bool(), hh, hh.detach())
+step_actions = torch.stack(step_actions, 1)
+sequence_actions = memory_for_loss.traffic_sequence(sequence_x, burn, sequence_fresh)
+assert torch.allclose(step_actions, sequence_actions, atol=1e-6), 'Batched recurrent training changed masked/reset step outputs'
+weights = 1 + 2 * (sequence_y[:, :, 1:] < -.05).float()
+errors = ((step_actions - sequence_y).square() * torch.cat([weights * 0 + 10, weights], 2)).mean(2)
+step_loss = torch.cat([(errors[:, :burn] * sequence_fresh[:, None]).sum(0) / sequence_fresh.sum(), errors[:, burn:].mean(0)]).mean()
+memory_for_loss.zero_grad(set_to_none=True)
+rollout_loss(memory_for_loss, sequence_x, sequence_y, burn, sequence_fresh, 10).backward()
+step_loss.backward()
+for (name, batched), (_, stepwise) in zip(memory_for_loss.named_parameters(), step_model.named_parameters()):
+    if batched.requires_grad:
+        assert torch.allclose(batched.grad, stepwise.grad, atol=1e-5, rtol=1e-4), f'Batched recurrent training changed gradients: {name}'
+
+rub_steps = [{'before': {'damage': .005 if i > 70 else 0}, 'post': {'damage': .005 if i >= 70 else 0}} for i in range(150)]
+rub_steps[70]['contactEvidence'] = [{'closing': 1.7, 'forward': -3., 'lateral': 1.96, 'yawDifference': .02,
+                                    'selfDamageAdded': .005, 'rivalDamageAdded': .005, 'activeRival': True}]
+assert light_rub_prefix(rub_steps) == 150, 'Measured light side rub must allow later legal feedback states'
+for key, value in [('closing', 7.), ('lateral', .4), ('rivalDamageAdded', .001)]:
+    bad = deepcopy(rub_steps); bad[70]['contactEvidence'][0][key] = value
+    assert light_rub_prefix(bad) == 70, f'Unsafe contact accepted for training: {key}'
+bad = deepcopy(rub_steps); bad[70]['contactEvidence'] = []
+assert light_rub_prefix(bad) == 70, 'Unattributed wall damage was accepted as a side rub'
+bad = deepcopy(rub_steps); bad[90]['post']['damage'] = 0
+assert light_rub_prefix(bad) == 90, 'Repair state was accepted after a rub'
+bad = deepcopy(rub_steps); bad[85]['post']['ghost'] = True
+assert light_rub_prefix(bad) == 85, 'Marshal recovery was accepted after a rub'
 
 with tempfile.TemporaryDirectory() as tmp:
     path = Path(tmp) / 'corrective.jsonl'
@@ -183,9 +280,28 @@ with tempfile.TemporaryDirectory() as tmp:
         raise AssertionError('Assisted pedals were accepted as unassisted feedback')
     except ValueError:
         pass
-print(json.dumps({'passed': 26 + int(schema_v2 is not None), 'v2TransferChecked': schema_v2 is not None, 'checks': ['identical reactive transfer', 'identical current-state skip transfer', 'opponent permutation', 'masked padding',
+    manifest['settings'] = {'mode': 'teacher'}
+    manifest['expertCleanPrefixTraining'] = True
+    save()
+    expert_prefix = episodes(tmp, schema, 'train', corrective=True)
+    assert len(expert_prefix) == 1 and len(expert_prefix[0]['x']) == 70, 'Failed expert prefixes included recovery after contact'
+    manifest['settings'] = {'mode': 'policy'}
+    manifest.pop('expertCleanPrefixTraining')
+    manifest['allowLightRubTraining'] = True
+    for row, rub in zip(steps, rub_steps):
+        row.update(deepcopy(rub))
+    save()
+    permitted = episodes(tmp, schema, 'train', corrective=True)
+    strict = episodes(tmp, schema, 'train', corrective=True, strict_contacts=True)
+    assert len(permitted[0]['x']) == 150 and len(strict[0]['x']) == 71, 'Matched prefix A/B did not change only the contact cutoff'
+print(json.dumps({'passed': 51 + int(schema_v2 is not None), 'v2TransferChecked': schema_v2 is not None, 'checks': ['identical reactive transfer', 'identical current-state skip transfer', 'opponent permutation', 'masked padding',
     'instant memory independence', 'instant opponent invariance', 'motor history invariance', 'vectorized supervised loss parity', 'no student self-labels',
     'contiguous correction windows', 'expert corrective targets', 'whole-episode leakage', 'missing expert rejection',
     'diagnostic data rejection', 'unclean expert rejection', 'legal corrective kerb states', 'finite legality boundary',
     'disturbed expert corrective labels', 'no noisy execution cloning', 'split motor initial parity', 'pedal updates preserve frozen steering', 'failed disturbed expert clean prefix only',
-    'pedal interpolation preserves steering', 'different steering interpolation rejected', 'failed policy clean prefix only', 'assisted feedback rejected']}))
+    'pedal interpolation preserves steering', 'different steering interpolation rejected', 'failed policy clean prefix only', 'assisted feedback rejected',
+    'traffic initial empty-rival parity', 'traffic training ownership', 'traffic preserves clean-air motor', 'traffic padding/order invariance', 'failed expert prefix only',
+    'memory initial action parity', 'memory shape and reset', 'memory training ownership', 'memory preserves clean-air motor', 'memory opponent invariance', 'finite recurrent learning gradients',
+    'batched recurrence action/reset parity', 'batched recurrence gradient/burn parity',
+    'measured side-rub prefix retained', 'severe prefix rejected', 'nose contact prefix rejected', 'asymmetric damage rejected', 'wall prefix rejected', 'repair prefix rejected', 'rescue prefix rejected', 'matched strict/side-rub loader control',
+    'motor refit initial parity', 'motor refit ownership', 'invalid motor refit rejected', 'finite motor refit gradients with frozen traffic']}))

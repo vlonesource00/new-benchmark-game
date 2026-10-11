@@ -15,7 +15,7 @@ try {
   await page.goto('http://127.0.0.1:4181/?episode=' + encodeURIComponent(arg('episode', 'train-traffic-8')));
   await page.waitForFunction(() => document.querySelector('#features tr'));
   for (const camera of ['body', 'road', 'track']) { await page.selectOption('#camera', camera); await page.screenshot({ path: resolve(output, `view-${camera}.png`) }); }
-  for (const mode of ['steer', 'pedals', 'motion']) { await page.selectOption('#chart-mode', mode); await page.screenshot({ path: resolve(output, `trace-${mode}.png`) }); }
+  for (const mode of ['steer', 'pedals', 'motion', 'resources']) { await page.selectOption('#chart-mode', mode); await page.screenshot({ path: resolve(output, `trace-${mode}.png`) }); }
   await page.setViewportSize({ width: 450, height: 950 }); await page.screenshot({ path: resolve(output, 'view-mobile.png') });
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 2);
   await page.setViewportSize({ width: 1400, height: 950 });

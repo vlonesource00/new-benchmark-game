@@ -229,5 +229,14 @@ await test('training disturbance labels precede noisy execution and cannot assis
   assert(r.rows.every(row => row.actionSource === 'training-disturbed-expert'));
   await assert.rejects(() => runScenario({ seconds: 1, disturbanceSteer: .1, mode: 'policy', policy: async (_x, h) => ({ action: [0, 1], hidden: h }) }), /Training disturbances/);
 });
+await test('traffic placement records real gaps, spacing and approach speeds', async () => {
+  const r = await runScenario({ seconds: .1, fixture: 'train', rivalGap: 35, trainSpacing: 70, rivalSpeed: 32 });
+  const cars = r.rows[0].cars;
+  for (let i = 1; i < 4; i++) {
+    assert(Math.abs(cars[i].s - (20 + 35 + (i - 1) * 70)) < 1e-6);
+    assert.equal(cars[i].speed, 32);
+  }
+  await assert.rejects(() => runScenario({ seconds: .1, rivalGap: -1 }), /traffic placement/);
+});
 for (const entry of race.entries) for (const bridge of entry.bridges) bridge.dispose?.();
 console.log(JSON.stringify({ passed: checks.length, checks }));

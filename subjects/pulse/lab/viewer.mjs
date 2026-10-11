@@ -66,6 +66,8 @@ function timeline() {
   const mode = $('chart-mode').value, signed = value => .5 + .5 * Math.max(-1, Math.min(1, value));
   const raw = (r, name) => { const i = featureIndex.get(name); return i === undefined ? 0 : r.observation.raw[i]; };
   const modes = {
+    resources: { label: 'Wake cyan · battery yellow · worst tyre wear red', series: [[r => raw(r, 'ego.wake'), '#51d5df'],
+      [r => raw(r, 'ego.batteryFraction'), '#ffd166'], [r => Math.max(...r.before.tyres.map(t => t.wear)), '#ff7080']] },
     speed: { label: 'Speed cyan · throttle green · brake red', series: [[r => r.before.speed * 3.6 / 360, '#51d5df'], [r => r.executed.throttle, '#50d4b6'], [r => r.executed.brake, '#ff7080']] },
     steer: { label: 'Steering: expert grey · policy cyan · executed yellow', series: [[r => signed(r.teacherControls?.steer ?? 0), '#94a3b8'], [r => signed(r.policyProposal?.[0] ?? 0), '#51d5df'], [r => signed(r.executed.steer), '#ffd166']] },
     pedals: { label: 'Effort: expert grey · policy cyan · executed yellow', series: [[r => signed((r.teacherControls?.throttle ?? 0) - (r.teacherControls?.brake ?? 0)), '#94a3b8'], [r => signed(r.policyProposal?.[1] ?? 0), '#51d5df'], [r => signed(r.executed.throttle - r.executed.brake), '#ffd166']] },
@@ -86,7 +88,10 @@ function render() {
   if (!replay) return;
   const row = replay.rows[index]; $('scrub').value = index; $('clock').textContent = `${format(row.time)} / ${format(replay.summary.seconds)} s`;
   scene(row); timeline();
-  const metrics = [['Speed', format(row.before.speed * 3.6, 1) + ' km/h'], ['Road offset', format(row.before.lateral) + ' m'], ['Fuel', format(row.before.fuel, 1) + ' L'], ['Damage', format(row.before.damage * 100, 1) + '%'], ['Action age', format(row.actionAge * 1000, 1) + ' ms'], ['Retained here', replay.events.filter(e => e.type === 'retained-pass' && e.time <= row.time).length]];
+  const passes = replay.events.filter(e => e.type === 'retained-pass' && e.time <= row.time);
+  const wake = row.observation.raw[featureIndex.get('ego.wake')] ?? 0;
+  const metrics = [['Speed', format(row.before.speed * 3.6, 1) + ' km/h'], ['Road offset', format(row.before.lateral) + ' m'], ['Fuel', format(row.before.fuel, 1) + ' L'], ['Damage', format(row.before.damage * 100, 1) + '%'], ['Action age', format(row.actionAge * 1000, 1) + ' ms'], ['Retained / clean', `${passes.length} / ${passes.filter(e => e.contactContaminated === false).length}`],
+    ['Wake exposure', format(wake * 100, 1) + '%'], ['Worst tyre wear', format(Math.max(...row.before.tyres.map(t => t.wear)) * 100, 1) + '%']];
   $('metrics').replaceChildren(...metrics.map(([label, value]) => { const d = document.createElement('div'); d.className = 'metric'; const a = document.createElement('small'), b = document.createElement('strong'); a.textContent = label; b.textContent = value; d.append(a, b); return d; }));
   const pedals = $('pedals'); pedals.replaceChildren();
   for (const [name, controls] of [['Teacher', row.teacherControls], ['Policy', row.policyProposal ? { steer: row.policyProposal[0], throttle: Math.max(0, row.policyProposal[1]), brake: Math.max(0, -row.policyProposal[1]) } : null], ['Executed', row.executed]]) {
@@ -118,7 +123,8 @@ async function load(url) {
     typeof checkpoint === 'string' && /^artifacts\/(?:model|models\/[a-z0-9-]+(?:\/epoch-[1-9][0-9]{0,2})?)$/i.test(checkpoint) ? checkpoint : 'artifacts/model');
   $('feature-count').textContent = `${replay.schema.size} normalized public features · IDs are debug-only`;
   $('training').textContent = meta ? JSON.stringify({ checkpointForThisReplay: meta.modelSha256, stage: meta.stage,
-    parameters: meta.parameters, actuationUsesRecurrentMemory: meta.actuationUsesRecurrentMemory, checkpointEpoch: meta.checkpointEpoch,
+    architecture: meta.architecture, parameters: meta.parameters, trainableParameters: meta.trainableParameters,
+    activeMemoryUnits: meta.activeMemoryUnits, actuationUsesRecurrentMemory: meta.actuationUsesRecurrentMemory, checkpointEpoch: meta.checkpointEpoch,
     checkpointSelection: meta.checkpointSelection, validationLoss: meta.bestValidationLoss, training: meta.training,
     trainingSeconds: meta.seconds, parent: meta.parentModelSha256, physicsDigest: meta.simulatorDigest }, null, 2) :
     'This is an expert demonstration. No PULSE checkpoint is controlling this replay.';

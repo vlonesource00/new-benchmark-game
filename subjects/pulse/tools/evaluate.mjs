@@ -37,6 +37,15 @@ if (args.includes('--latency')) cases.push(
   { name: 'corner-blackout-250ms', fixture: 'solo', seed: 27, start: 20, lateral: 0, stallAt: 12, stallMs: 250 },
   { name: 'corner-blackout-500ms', fixture: 'solo', seed: 27, start: 20, lateral: 0, stallAt: 12, stallMs: 500 }
 );
+if (args.includes('--combat')) cases.push(
+  { name: 'train-close', fixture: 'train', seed: 93, start: 20, lateral: 0, rivalGap: 40, trainSpacing: 75, rivalOffset: .55 },
+  { name: 'train-separated', fixture: 'train', seed: 97, start: 20, lateral: 0, rivalGap: 90, trainSpacing: 115, rivalOffset: -.45 },
+  { name: 'train-razor', fixture: 'train', rival: 'razor', seed: 101, start: 20, lateral: 0, rivalGap: 55, trainSpacing: 90 },
+  { name: 'train-apex', fixture: 'train', rival: 'apex', seed: 102, start: 20, lateral: 0, rivalGap: 55, trainSpacing: 90 },
+  ...[['razor', 103], ['apex', 107], ['solstice', 109], ['next-racer', 113]].map(([rival, seed]) => ({ name: 'duel-' + rival, fixture: 'pair', seed, start: 20, lateral: 0, rivalGap: 35, rival })),
+  { name: 'stopped', fixture: 'stopped', seed: 127, start: 20, lateral: 0 },
+  { name: 'spun', fixture: 'spun', seed: 131, start: 20, lateral: 0 }
+);
 try {
   // Compile and warm the session before judging driving. Recurrent state is still reset per episode.
   let h = new Array(policy.schema.hidden).fill(0);

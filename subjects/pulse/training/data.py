@@ -5,7 +5,35 @@ from pathlib import Path
 import numpy as np
 
 
-def episodes(directory, schema, expected_split, corrective=False, optional=False):
+def light_rub_prefix(steps):
+    """Allow measured matched side brushes, never unknown/major damage or rescue."""
+    expected = 0.
+    for i, row in enumerate(steps):
+        before, after = row['before'], row.get('post', {})
+        damage, end = before.get('damage', float('nan')), after.get('damage', float('nan'))
+        if not np.isfinite([damage, end]).all() or abs(damage - expected) > 1e-6 or end < damage - 1e-8 or end > .03 or before.get('ghost') or after.get('ghost'):
+            return i
+        added = max(0., end - damage)
+        if added > 1e-8:
+            contacts = row.get('contactEvidence', [])
+            if not contacts or added > .01:
+                return i
+            for contact in contacts:
+                if contact.get('activeRival') is not True:
+                    return i
+                values = [contact.get(k, float('nan')) for k in ['closing', 'forward', 'lateral', 'yawDifference', 'selfDamageAdded', 'rivalDamageAdded']]
+                if not np.isfinite(values).all():
+                    return i
+                closing, forward, lateral, yaw, own, rival = values
+                if closing < 0 or closing > 6 or abs(forward) > 4.5 or abs(lateral) < 1.5 or abs(yaw) > .25 or abs(own - rival) > 1e-6:
+                    return i
+            if abs(sum(c['selfDamageAdded'] for c in contacts) - added) > 1e-6:
+                return i
+        expected = end
+    return len(steps)
+
+
+def episodes(directory, schema, expected_split, corrective=False, optional=False, strict_contacts=False):
     result = []
     for path in sorted(Path(directory).glob('*.jsonl')):
         records = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
@@ -17,13 +45,18 @@ def episodes(directory, schema, expected_split, corrective=False, optional=False
         mode = manifest['settings']['mode']
         disturbance = manifest.get('trainingDisturbance', False)
         clean_prefix = manifest.get('cleanPrefixTraining', False)
-        if clean_prefix and (mode != 'policy' or not manifest.get('trainingOnly') or manifest['settings'].get('trainingExpertActuator')):
-            raise ValueError('Clean-prefix feedback must be unassisted policy collection')
+        allow_rub = manifest.get('allowLightRubTraining', False)
+        if allow_rub and (not clean_prefix or mode != 'policy' or not manifest.get('trainingOnly')):
+            raise ValueError('Light-rub data must declare unassisted policy feedback')
+        allow_rub = allow_rub and not strict_contacts
+        if clean_prefix and (mode not in ['policy', 'teacher'] or not manifest.get('trainingOnly') or manifest['settings'].get('trainingExpertActuator')
+                             or (mode == 'teacher' and not manifest.get('expertCleanPrefixTraining'))):
+            raise ValueError('Clean-prefix feedback must declare unassisted policy or expert-prefix collection')
         if clean_prefix and not corrective:
             raise ValueError('Policy feedback requires expert corrective targets')
         if disturbance and (mode != 'teacher' or not manifest.get('trainingOnly') or not (manifest['settings'].get('disturbanceSteer') or manifest['settings'].get('disturbanceLongitudinal'))):
             raise ValueError('Invalid externally disturbed teacher data')
-        if corrective and mode not in ['policy', 'dagger'] and not disturbance:
+        if corrective and mode not in ['policy', 'dagger'] and not disturbance and not clean_prefix:
             raise ValueError('Correction data must contain student-visited states')
         if disturbance and not corrective:
             raise ValueError('Noisy expert execution cannot become a cloning target; load it as corrections')
@@ -59,13 +92,15 @@ def episodes(directory, schema, expected_split, corrective=False, optional=False
                 limit = r.get('legalTrackLimit', half_width + 1)
                 if not np.isfinite(limit) or limit < half_width:
                     raise ValueError(f'Invalid physical track limit: {path.name}')
-                valid[i] = r['before']['damage'] <= .02 and abs(r['observation']['road']['lateral']) <= limit
+                valid[i] = r['before']['damage'] <= (.03 if allow_rub else .02) and abs(r['observation']['road']['lateral']) <= limit
                 valid[i] &= r['observation']['raw'][1] >= -1
             if disturbance or clean_prefix:
                 # Disturbed expert and unassisted feedback episodes may fail. Learn the clean
                 # prefix only; later wall hits, repairs or marshal relocation
                 # cannot masquerade as successful recovery demonstrations.
-                failures = [i for i, r in enumerate(steps) if not valid[i] or r['before']['damage'] > .001]
+                failures = [i for i, r in enumerate(steps) if not valid[i] or (not allow_rub and r['before']['damage'] > .001)]
+                if allow_rub:
+                    failures.append(light_rub_prefix(steps))
                 if failures:
                     valid[min(failures):] = False
         starts = np.where(valid & np.r_[True, ~valid[:-1]])[0]

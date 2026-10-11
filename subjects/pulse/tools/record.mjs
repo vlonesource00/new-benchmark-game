@@ -11,6 +11,7 @@ const settings = { track: arg('track', 'harbor-ring'), classId: arg('class', 'lm
   velocityYawOffset: +arg('velocity-yaw-offset', 0),
   disturbanceSteer: +arg('disturbance-steer', 0), disturbanceLongitudinal: +arg('disturbance-longitudinal', 0), disturbanceDuration: +arg('disturbance-duration', .2), disturbancePeriod: +arg('disturbance-period', 3),
   trainingExpertActuator: arg('training-expert-actuator', null),
+  rivalGap: +arg('rival-gap', 55), trainSpacing: +arg('train-spacing', 85), rivalSpeed: args.includes('--rival-speed') ? +arg('rival-speed') : null,
   lagMs: +arg('lag-ms', 0), spikeMs: +arg('spike-ms', 0), spikeAt: +arg('spike-at', 3), speed: +arg('speed', 45),
   stallMs: +arg('stall-ms', 0), stallAt: +arg('stall-at', 3),
   hazardAt: +arg('hazard-at', 0),
@@ -20,8 +21,10 @@ if (!['lmdh', 'gt'].includes(settings.classId)) throw Error('class must be lmdh 
 const split = arg('split', settings.mode === 'policy' ? 'test' : 'train'), name = arg('name', `${settings.fixture}-${settings.classId}-${settings.seed}`);
 if (!/^[a-z0-9-]+$/i.test(name) || !['train', 'validation', 'test'].includes(split)) throw Error('Invalid episode name or split');
 const cleanPrefixTraining = args.includes('--clean-prefix-training');
+const allowLightRubTraining = args.includes('--allow-light-rub-training');
 if (cleanPrefixTraining && (settings.mode !== 'policy' || split === 'test' || !settings.traceExpert || settings.trainingExpertActuator))
   throw Error('Clean-prefix feedback requires unassisted policy driving, expert labels and a training/validation split');
+if (allowLightRubTraining && !cleanPrefixTraining) throw Error('Light-rub training requires unassisted clean-prefix feedback');
 let policy;
 if (settings.mode !== 'teacher') {
   const { createPolicy } = await import('./policy.mjs');
@@ -40,6 +43,7 @@ const replayDirectory = resolve(HOME, 'results'); mkdirSync(replayDirectory, { r
 if (!args.includes('--replace') && (existsSync(resolve(directory, name + '.jsonl')) || existsSync(resolve(replayDirectory, name + '.json'))))
   throw Error('Episode name already exists. Use a new name, or --replace explicitly for this owned generated episode.');
 const identityFields = ['track', 'classId', 'fixture', 'seed', 'weather', 'start', 'lateral', 'rivalOffset', 'yawOffset', 'speed', 'rival', 'rate'];
+identityFields.push('rivalGap', 'trainSpacing', 'rivalSpeed');
 if (settings.warmupToStart) identityFields.push('warmupToStart', 'velocityYawOffset');
 if (settings.disturbanceSteer || settings.disturbanceLongitudinal) identityFields.push('disturbanceSteer', 'disturbanceLongitudinal', 'disturbanceDuration', 'disturbancePeriod');
 if (settings.trainingExpertActuator) identityFields.push('trainingExpertActuator');
@@ -48,6 +52,7 @@ const manifest = { type: 'manifest', format: 'pulse-episode-v1', episodeId, name
   versions: ver, policy: policy?.metadata ?? null, sampleRate: settings.rate, teacherSuppliesStrategy: true, path: 'native',
   trainingOnly: cleanPrefixTraining || settings.mode === 'dagger' || settings.warmupToStart || !!settings.disturbanceSteer || !!settings.disturbanceLongitudinal,
   cleanPrefixTraining,
+  allowLightRubTraining,
   trainingDisturbance: !!settings.disturbanceSteer || !!settings.disturbanceLongitudinal,
   labelSource: settings.disturbanceSteer || settings.disturbanceLongitudinal ? 'teacherControls on externally disturbed physical states' : settings.mode === 'dagger' || settings.mode === 'policy' ? 'teacherControls on visited states' : 'executed teacher controls' };
 const dataset = createWriteStream(resolve(directory, name + '.jsonl'));

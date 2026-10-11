@@ -117,11 +117,74 @@ solo tracking but regressed traffic. It is not promoted as a fix.
 separate `--instant` experiment removes recurrence from motor actuation: a small
 current-state actor keeps the mailbox's hidden shape but returns hidden state
 unchanged. Its metadata explicitly says `actuationUsesRecurrentMemory: false`.
-These alternatives diagnose the feedback loop; none has passed autonomous laps.
+These alternatives diagnose the feedback loop. Later split-motor snapshots pass
+some autonomous solo starts; STATUS.md records their remaining failures.
 `--motor-history-mask` is a further instantaneous-actor experiment: request
 history and actual steering are ignored consistently in training and inference.
 Physical motion, tyres, road and opponents remain visible. This tests a
 teacher-forcing shortcut; it is not a deterministic steering controller.
+
+## Traffic motor and attribution probes
+
+The traffic experiment preserves the learned empty-rival split motor and adds
+learned corrections for both steering and signed pedals. `--traffic-residual`
+trains the shared rival encoder and a 64-unit correction head; it does not inject
+an expert line, target speed or command into the network. Empty traffic masks
+guarantee unchanged clean-air actions, including after training.
+
+`--traffic-memory` adds a 64-unit GRU to that traffic correction. The motor still
+uses current physical state. The actor has 134,373 parameters: ten dense layers
+across parallel branches, plus the recurrent layer (implemented with two gate
+matrices). Dense hidden widths sum to 480; there are 64 additional recurrent
+units. The mailbox retains its 128-value contract; only its first 64 values are
+active memory, and empty traffic clears them. This is an experiment, not a
+certified combat controller.
+
+Training uses batched GRU sequences for uninterrupted traffic, with exact
+stepwise handling at traffic-mask resets and detached mid-episode burn-in.
+Output and gradient parity checks cover those cases. Exported inference keeps
+the basic stepwise gate operators for WASM/WebGPU compatibility.
+
+```powershell
+node --import ./scripts/json-loader.mjs subjects/pulse/tools/traffic-curriculum.mjs --name traffic-expert-new --seconds 60 --jobs 6
+node --import ./scripts/json-loader.mjs subjects/pulse/tools/teacher-prefixes.mjs --name teacher-prefixes-new --source traffic-expert-new
+node --import ./scripts/json-loader.mjs subjects/pulse/tools/traffic-feedback.mjs --name traffic-feedback-new --model artifacts/models/name --seconds 60 --jobs 6
+node --import ./scripts/json-loader.mjs subjects/pulse/tools/evaluate.mjs --name combat-new --model artifacts/models/name --seconds 120 --combat
+node subjects/pulse/tools/combat-report.mjs --evaluation combat-new
+node --import ./scripts/json-loader.mjs subjects/pulse/tools/pass-attribution.mjs --name attribution-new --model artifacts/models/name --seconds 12
+```
+
+Traffic placement accepts `--rival-gap`, `--train-spacing`, `--rival-speed` and
+`--rival-offset`. The full evaluation adds matched three-GT3 trains, same-class
+RAZOR/APEX/Solstice/Spearhead duels and stopped/spun cars. Every failed rollout
+remains saved; teacher failures are quarantined. `teacher-prefixes.mjs` retains
+their original summaries and trains only eligible pre-failure rows as explicit
+corrective data, never as a successful whole-race demonstration.
+
+The attribution probe hides rivals from the neural input only in its masked
+variant. Real cars, wakes, collisions and fresh safety remain. It also runs a
+matched solo reference. Rear clearance, one-second retention, absence of damage,
+and displacement from that solo trajectory support a traffic-maneuver
+contribution. The probe's short duration never certifies a whole race or
+purposeful tow use. `--lag-ms`, `--rate` and `--stall-ms` expose timing failures.
+
+Unassisted traffic collection can opt into `--allow-light-rub-training`. It
+requires actual per-step contact evidence: matched closing speed at most 6 m/s,
+side separation, aligned body headings, symmetric small damage and a racing
+rival. Unknown/wall/nose damage, severe contact, illegal motion, repairs and
+marshal recovery end the prefix. At most 3% accumulated verified rub damage is
+eligible. This affects training data only; all driving gates stay unchanged.
+The trainer's `--strict-contact-prefixes` provides a matched conservative
+control using the same raw episodes and labels.
+
+`combat-report.mjs` reports clearance speed, separation, contact contamination,
+tow exposure, front-blocked time, wheelspin and departure/time loss against a
+matched solo trajectory. It never turns an ordinary lateral change into a
+proven maneuver pass. The viewer also plots tow, battery and tyre wear, and
+shows retained and clean retained passes separately.
+`tools/stint-report.mjs --episode name` reads complete valid laps, fuel, battery,
+per-wheel wear/temperature and pedal switching from a saved replay. It excludes
+the initial partial lap and labels no-stop motor tests separately from strategy.
 
 `training/recurrent_probe.py --model artifacts/models/name --episode data/path.jsonl`
 compares uninterrupted expert-observed predictions with short-window error. This
@@ -299,6 +362,14 @@ starting speeds and lateral offsets. The expert supplies labels only. Load the
 new dataset with `--corrections`; the loader admits only the clean prefix before
 the first physical legality/damage failure, excluding later repairs and rescues.
 Its training/validation cases are distinct from the reused development gates.
+
+The trainer's opt-in `--motor-tune` refits the existing context, steering and
+pedal branches while keeping opponent/traffic/memory weights fixed. This adds
+no inference layers and begins with identical parent outputs. It intentionally
+removes the post-training clean-air preservation guarantee: every resulting
+checkpoint must re-pass solo pace, varied starts, traffic and latency gates.
+Normal traffic training continues to freeze the motor. c23 compares refitting
+with and without the explicitly collected unassisted motor corrections.
 
 ```powershell
 node --import ./scripts/json-loader.mjs subjects/pulse/tools/motor-feedback.mjs --name motor-feedback-01 --model artifacts/models/c16-control/epoch-50 --jobs 6 --seconds 120

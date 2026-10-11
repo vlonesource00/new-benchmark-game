@@ -21,8 +21,11 @@ def rollout_loss(model, x, y, burn, fresh, steer_weight):
     if model.instant:
         # Same supervised objective/burn mask, vectorized because actuation has
         # no recurrent dependence. The fresh physical state supplies feedback.
-        a, _ = model(x.reshape(-1, x.shape[-1]), torch.zeros(x.shape[0] * x.shape[1], model.hidden_size, device=x.device))
-        a = a.reshape_as(y)
+        if model.traffic_memory:
+            a = model.traffic_sequence(x, burn, fresh)
+        else:
+            a, _ = model(x.reshape(-1, x.shape[-1]), torch.zeros(x.shape[0] * x.shape[1], model.hidden_size, device=x.device))
+            a = a.reshape_as(y)
         weight = 1 + 2 * (y[:, :, 1:] < -.05).float()
         error = ((a - y).square() * torch.cat([torch.ones_like(weight) * steer_weight, weight], 2)).mean(2)
         if burn and fresh.any():
@@ -64,6 +67,7 @@ def main():
     p.add_argument('--seed', type=int, default=7)
     p.add_argument('--corrections', action='append', default=[], help='Roots with train/validation expert-labelled student episodes')
     p.add_argument('--corrective-weight', type=int, default=3)
+    p.add_argument('--strict-contact-prefixes', action='store_true', help='A/B control: end even explicitly permitted light-rub prefixes at the first damage')
     p.add_argument('--resume', help='Completed compatible checkpoint directory')
     p.add_argument('--transfer-schema', action='store_true', help='Explicitly transfer unchanged v1 inputs into the public v2 conditioning experiment')
     p.add_argument('--lr', type=float, default=3e-4)
@@ -74,6 +78,9 @@ def main():
     p.add_argument('--motor-history-mask', action='store_true', help='Instant motor experiment: ignore request history and actual steering in training/inference')
     p.add_argument('--checkpoint-every', type=int, default=0, help='Save fixed-epoch weights for closed-loop development comparisons')
     p.add_argument('--split-motor', action='store_true', help='Freeze learned steering and fit a separate public-state pedal head')
+    p.add_argument('--traffic-residual', action='store_true', help='Preserve the empty-rival motor and fit learned traffic corrections')
+    p.add_argument('--traffic-memory', action='store_true', help='Learn 64 traffic-memory units while preserving the current-state clean-air motor')
+    p.add_argument('--motor-tune', action='store_true', help='Opt-in refit of the clean-air motor; freeze traffic weights and recheck all driving gates')
     args = p.parse_args()
     if args.epochs < 1 or args.epochs > 200 or not 0 <= args.burn < args.length or not 8 <= args.length <= 512 or not 1 <= args.batch <= 512 or not 1 <= args.corrective_weight <= 10 or not 0 < args.lr < .01 or not 0 <= args.history_dropout <= .9:
         raise ValueError('Invalid bounded training settings')
@@ -96,15 +103,15 @@ def main():
         train.extend(episodes(Path(root) / 'train', schema, 'train'))
         validation.extend(episodes(Path(root) / 'validation', schema, 'validation'))
     for root in args.corrections:
-        train.extend(episodes(Path(root) / 'train', schema, 'train', corrective=True))
-        validation.extend(episodes(Path(root) / 'validation', schema, 'validation', corrective=True, optional=True))
+        train.extend(episodes(Path(root) / 'train', schema, 'train', corrective=True, strict_contacts=args.strict_contact_prefixes))
+        validation.extend(episodes(Path(root) / 'validation', schema, 'validation', corrective=True, optional=True, strict_contacts=args.strict_contact_prefixes))
     assert_disjoint(train, validation)
     identities = ['schemaDigest', 'observationDigest', 'simulatorDigest', 'teacherDigest']
     version = train[0]['manifest']['versions']
     for key in identities:
         if len({e['manifest']['versions'][key] for e in train + validation}) != 1:
             raise ValueError(f'Mixed {key}; rerecord compatible episodes')
-    config = {'reactive': args.reactive, 'contextSkip': args.context_skip, 'instant': args.instant, 'motorHistoryMask': args.motor_history_mask, 'splitMotor': args.split_motor}
+    config = {'reactive': args.reactive, 'contextSkip': args.context_skip, 'instant': args.instant, 'motorHistoryMask': args.motor_history_mask, 'splitMotor': args.split_motor, 'trafficResidual': args.traffic_residual, 'trafficMemory': args.traffic_memory, 'motorTune': args.motor_tune}
     if args.split_motor and not args.resume:
         raise ValueError('Pedal isolation must preserve an existing learned steering policy')
     model = PulsePolicy(schema, **config).to('cuda')
@@ -186,10 +193,18 @@ def main():
             parity.append({'observation': x.tolist(), 'action': a[0].tolist(), 'hidden': h[0].tolist()})
     (out / 'parity.json').write_text(json.dumps(parity))
     architecture = 'PULSE-CURRENT-128' + ('-SPLIT-MOTOR' if args.split_motor else '') if args.instant else 'PULSE-GRU-128' + ('-REACTIVE' if args.reactive else '') + ('-CONTEXT-SKIP' if args.context_skip else '')
+    if args.traffic_residual:
+        architecture += '-TRAFFIC-RESIDUAL'
+    if args.traffic_memory:
+        architecture += '-MEMORY-64'
+    if args.motor_tune:
+        architecture += '-MOTOR-REFIT'
     metadata = {**version, 'schema': schema, 'architecture': architecture,
                 'modelConfig': config, 'parameters': sum(p.numel() for p in model.parameters()),
+                'trainableParameters': sum(p.numel() for p in model.parameters() if p.requires_grad),
                 'trainingRandomnessResetAfterInitialization': True,
-                'actuationUsesRecurrentMemory': not args.instant,
+                'actuationUsesRecurrentMemory': not args.instant or args.traffic_memory,
+                'activeMemoryUnits': 64 if args.traffic_memory else (0 if args.instant else schema['hidden']),
                 'stage': 'M2 corrective imitation prototype; independent racing unproven' if args.corrections else 'M1 prototype behavior clone; competitive driving unproven', 'training': vars(args),
                 'parentModelSha256': parent['modelSha256'] if parent else None,
                 'trainerDigest': hashlib.sha256(b''.join((Path(__file__).parent / file).read_bytes() for file in ['train.py', 'model.py', 'data.py'])).hexdigest(),
