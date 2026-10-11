@@ -18,6 +18,10 @@ const steerScale = +arg('steer-scale', 1), durationScale = +arg('duration-scale'
 const searchMode = arg('search', 'pulses'), searchSettings = { seed: +arg('search-seed', 19),
   population: +arg('population', 20), generations: +arg('generations', 3), duration: +arg('search-duration', 6),
   steerBound: +arg('steer-bound', .1), pedalBound: +arg('pedal-bound', .3) };
+const settle = args.includes('--settle-gain') ? { gain: +arg('settle-gain'), at: +arg('settle-at', 32), transition: 2 } : null;
+if (settle && (!(settle.gain >= 0 && settle.gain <= 1.25) || !Number.isFinite(settle.at)
+  || settle.at < branchAt + searchSettings.duration || settle.at > seconds - 5 || searchMode === 'gain'))
+  throw Error('Bounded offline settlement must follow the search sequence and leave a measured tail');
 if (!name || !/^[a-z0-9-]+$/i.test(name) || !model || !['train', 'validation'].includes(split)
   || (dataset && !/^[a-z0-9-]+$/i.test(dataset)) || !(seconds >= 12 && seconds <= 90)
   || !(branchAt >= 1 && branchAt < seconds - 5) || !(checkpointDistance >= 300 && checkpointDistance <= 4800)
@@ -31,12 +35,14 @@ const settings = { track: 'harbor-ring', classId: 'lmdh', fixture: arg('fixture'
   observationVersion: policy.metadata.schemaVersion, seconds, rate: 60, motorRate: 60,
   seed: +arg('seed', 1501), start: +arg('start', 20), lateral: +arg('lateral', 0),
   rivalGap: +arg('gap', 55), trainSpacing: +arg('spacing', 85), rival: arg('rival', 'intercept') };
+if (args.includes('--tail-gap')) settings.tailGapDelta = +arg('tail-gap');
+if (args.includes('--tail-speed')) settings.tailSpeed = +arg('tail-speed');
 if (!['pair', 'train'].includes(settings.fixture)) throw Error('This first exploration requires moving traffic');
 if (!['pulses', 'adaptive', 'gain'].includes(searchMode) || (searchMode === 'adaptive' && branchAt + searchSettings.duration > seconds))
   throw Error('Invalid search mode or control sequence beyond the encounter');
 const ver = versions(policy.schema), familyId = digest(settings), objective = ENCOUNTER_OBJECTIVE;
 const report = { name, model, modelSha256: policy.metadata.modelSha256, versions: ver, settings, familyId,
-  split, branchAt, checkpointDistance, steerScale, durationScale, objective, searchMode, searchSettings,
+  split, branchAt, checkpointDistance, steerScale, durationScale, objective, searchMode, searchSettings, settle,
   searchDigest: treeDigest(['subjects/pulse/tools/counterfactual.mjs', 'subjects/pulse/src/encounter-outcomes.mjs', 'subjects/pulse/src/control-search.mjs']),
   generations: [], trials: [], references: [], winner: null,
   scope: 'Offline control exploration, not autonomous NN evidence. Whole-race and novel-fixture gates remain mandatory.' };
@@ -79,10 +85,16 @@ try {
   }
   const search = searchMode === 'adaptive' ? controlSearch(searchSettings) : null;
   const run = async candidate => {
+    if (settle) candidate = { ...candidate, settle };
     await warm(); let index = 0;
     const result = await runScenario({ ...settings, mode: 'policy', fastMotor: true, motor: motor.step,
       policy: async (x, h) => {
         const response = await policy.step(x, h), time = index++ / settings.rate;
+        if (settle && time > settle.at) {
+          const blend = (1 - Math.cos(Math.PI * Math.min(1, (time - settle.at) / settle.transition))) / 2;
+          const gain = 1 + (settle.gain - 1) * blend, base = motor.step(x);
+          response.action = response.action.map((value, i) => Math.max(-1, Math.min(1, base[i] + gain * (value - base[i]))));
+        }
         if (candidate.kind === 'traffic-gain') {
           if (time <= branchAt) return response;
           const blend = (1 - Math.cos(Math.PI * Math.min(1, (time - branchAt) / candidate.transition))) / 2;

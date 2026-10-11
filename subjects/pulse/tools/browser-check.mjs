@@ -12,13 +12,31 @@ const browser = await chromium.launch({ channel: arg('channel', 'msedge'), headl
 const page = await browser.newPage({ viewport: { width: 1400, height: 950 } }), errors = [], logs = [];
 page.on('pageerror', error => errors.push(String(error))); page.on('console', message => { if (['warning', 'error'].includes(message.type())) logs.push(message.text()); });
 try {
-  await page.goto('http://127.0.0.1:4181/?episode=' + encodeURIComponent(arg('episode', 'train-traffic-8')));
+  await page.goto('http://127.0.0.1:4181/?episode=' + encodeURIComponent(arg('episode', 'train-traffic-8')) +
+    (arg('time') ? '&t=' + encodeURIComponent(arg('time')) : ''));
   await page.waitForFunction(() => document.querySelector('#features tr'));
   for (const camera of ['body', 'road', 'track']) { await page.selectOption('#camera', camera); await page.screenshot({ path: resolve(output, `view-${camera}.png`) }); }
-  for (const mode of ['steer', 'pedals', 'motion', 'resources']) { await page.selectOption('#chart-mode', mode); await page.screenshot({ path: resolve(output, `trace-${mode}.png`) }); }
+  for (const mode of ['steer', 'pedals', 'motion', 'resources', 'line', 'correction']) { await page.selectOption('#chart-mode', mode); await page.screenshot({ path: resolve(output, `trace-${mode}.png`) }); }
   await page.setViewportSize({ width: 450, height: 950 }); await page.screenshot({ path: resolve(output, 'view-mobile.png') });
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 2);
   await page.setViewportSize({ width: 1400, height: 950 });
+  let audit;
+  if (arg('audit')) {
+    await page.goto('http://127.0.0.1:4181/audit.html?name=' + encodeURIComponent(arg('audit')));
+    await page.waitForFunction(() => document.querySelector('#runs tr'));
+    await page.fill('#find', ''); await page.selectOption('#kind', '');
+    const count = await page.locator('#count').textContent();
+    if (!count || !await page.locator('#runs tr').count()) throw Error('Missing audit inventory');
+    await page.screenshot({ path: resolve(output, 'audit-desktop.png') });
+    await page.selectOption('#kind', 'fitted-NN'); await page.fill('#find', 'c51-gain-transfer-c37');
+    await page.locator('#runs button').first().click();
+    if (!await page.locator('#detail a').count()) throw Error('Missing excursion review links');
+    await page.setViewportSize({ width: 450, height: 950 });
+    const auditOverflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 2);
+    await page.screenshot({ path: resolve(output, 'audit-mobile.png') });
+    audit = { name: arg('audit'), count, overflow: auditOverflow };
+    await page.setViewportSize({ width: 1400, height: 950 });
+  }
   let search;
   if (arg('search')) {
     await page.goto('http://127.0.0.1:4181/search.html?name=' + encodeURIComponent(arg('search')) +
@@ -47,8 +65,8 @@ try {
     inference = await page.evaluate(() => window.pulseResult);
   }
   const result = { browser: 'Microsoft Edge / Playwright', model: arg('model', 'artifacts/model'),
-    episode: arg('episode', 'train-traffic-8'), errors, overflow, search, inference, runtimeWarnings: logs.slice(-15) };
+    episode: arg('episode', 'train-traffic-8'), errors, overflow, search, audit, inference, runtimeWarnings: logs.slice(-15) };
   writeFileSync(resolve(output, args.includes('--views-only') ? 'view-check.json' : 'browser-check.json'), JSON.stringify(result, null, 2));
   console.log(JSON.stringify(result));
-  if (errors.length || overflow || search?.overflow || inference?.error || inference?.measurements?.some(x => x.error)) process.exitCode = 1;
+  if (errors.length || overflow || audit?.overflow || search?.overflow || inference?.error || inference?.measurements?.some(x => x.error)) process.exitCode = 1;
 } finally { await browser.close(); }

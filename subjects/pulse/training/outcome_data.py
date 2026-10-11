@@ -4,6 +4,27 @@ import json
 from pathlib import Path
 import numpy as np
 from data import light_rub_prefix
+from data import assert_disjoint
+
+
+def physical_family(manifest):
+    # Longer/shorter recordings or a different inference schedule must not turn
+    # the same initial encounter into an independent validation family.
+    scheduling = {'seconds', 'rate', 'motorRate', 'lagMs', 'stallMs', 'stallAt',
+                  'spikeMs', 'spikeAt', 'fastMotor', 'mode', 'observationVersion', 'expertDriver'}
+    physical = {k: v for k, v in manifest['settings'].items() if k not in scheduling}
+    # Explicit defaults introduced by the tail-arrival fixture do not create
+    # a new scene or an independent holdout for legacy recordings.
+    for key, default in [('tailGapDelta', 0), ('tailSpeed', None)]:
+        if physical.get(key, default) == default:
+            physical.pop(key, None)
+    return json.dumps(physical, sort_keys=True)
+
+
+def assert_outcome_disjoint(train, validation):
+    assert_disjoint(train, validation)
+    if {physical_family(e['manifest']) for e in train} & {physical_family(e['manifest']) for e in validation}:
+        raise ValueError('Same physical encounter across outcome splits')
 
 
 def outcome_episodes(directory, schema, split):
@@ -56,4 +77,7 @@ def outcome_episodes(directory, schema, split):
     families = [e['manifest']['episodeId'] for e in result]
     if len(families) != len(set(families)):
         raise ValueError('Conflicting winners from the same physical family')
+    initial_states = [physical_family(e['manifest']) for e in result]
+    if len(initial_states) != len(set(initial_states)):
+        raise ValueError('Same physical encounter with different durations/schedules')
     return result

@@ -1,4 +1,6 @@
+import { nearbyFront } from '../src/body-geometry.mjs';
 const $ = id => document.getElementById(id);
+let initialSeek = Number(new URLSearchParams(location.search).get('t'));
 let replay, index = 0, playing = false, elapsed = 0, previousTime = 0, featureIndex = new Map();
 const format = (x, n = 2) => Number.isFinite(x) ? x.toFixed(n) : '—';
 const canvas = $('view'), chart = $('chart');
@@ -66,6 +68,15 @@ function timeline() {
   const mode = $('chart-mode').value, signed = value => .5 + .5 * Math.max(-1, Math.min(1, value));
   const raw = (r, name) => { const i = featureIndex.get(name); return i === undefined ? 0 : r.observation.raw[i]; };
   const modes = {
+    line: { label: 'Offset cyan · asphalt grey · legal wheel envelope red (sampled)',
+      series: [[r => signed(r.before.lateral / (r.legalTrackLimit * 1.2)), '#51d5df'],
+        [r => signed(replay.track.halfWidth / (r.legalTrackLimit * 1.2)), '#94a3b8'],
+        [r => signed(-replay.track.halfWidth / (r.legalTrackLimit * 1.2)), '#94a3b8'],
+        [() => signed(1 / 1.2), '#ff7080'], [() => signed(-1 / 1.2), '#ff7080']] },
+    correction: { label: 'Motor steer grey · traffic steer yellow · traffic effort cyan (±1)',
+      series: [[r => signed(r.localMotorAction?.[0] ?? 0), '#94a3b8'],
+        [r => signed(r.trafficCorrection?.[0] ?? 0), '#ffd166'],
+        [r => signed(r.trafficCorrection?.[1] ?? 0), '#51d5df']] },
     resources: { label: 'Wake cyan · battery yellow · worst tyre wear red', series: [[r => raw(r, 'ego.wake'), '#51d5df'],
       [r => raw(r, 'ego.batteryFraction'), '#ffd166'], [r => Math.max(...r.before.tyres.map(t => t.wear)), '#ff7080']] },
     speed: { label: 'Speed cyan · throttle green · brake red', series: [[r => r.before.speed * 3.6 / 360, '#51d5df'], [r => r.executed.throttle, '#50d4b6'], [r => r.executed.brake, '#ff7080']] },
@@ -78,6 +89,14 @@ function timeline() {
     }, '#51d5df'], [r => signed(Math.atan2(raw(r, 'ego.headingSin'), raw(r, 'ego.headingCos')) / .6), '#ffd166']] }
   }, selected = modes[mode];
   c.fillStyle = '#91a7bc'; c.font = '12px system-ui'; c.fillText(selected.label, 16, 18);
+  // Full-run legality stays in the physics summary; these bands locate the
+  // illegal offsets visible in the sampled trace without inventing a route.
+  c.fillStyle = 'rgba(255,112,128,.12)';
+  replay.rows.forEach((r, i) => {
+    if (Math.abs(r.before.lateral) <= r.legalTrackLimit) return;
+    const start = left + r.time / end * (w - left - 15), next = replay.rows[i + 1]?.time ?? end;
+    c.fillRect(start, 25, Math.max(1, (next - r.time) / end * (w - left - 15)), bottom - 25);
+  });
   if (mode !== 'speed') { c.strokeStyle = '#354d64'; c.beginPath(); c.moveTo(left, bottom - .5 * (h - 50)); c.lineTo(w - 15, bottom - .5 * (h - 50)); c.stroke(); }
   for (const [getter, color] of selected.series) {
     c.strokeStyle = color; c.lineWidth = 1; c.beginPath(); replay.rows.forEach((r, i) => c[i ? 'lineTo' : 'moveTo'](left + r.time / end * (w - left - 15), bottom - getter(r) * (h - 50))); c.stroke();
@@ -92,6 +111,10 @@ function render() {
   const wake = row.observation.raw[featureIndex.get('ego.wake')] ?? 0;
   const metrics = [['Speed', format(row.before.speed * 3.6, 1) + ' km/h'], ['Road offset', format(row.before.lateral) + ' m'], ['Fuel', format(row.before.fuel, 1) + ' L'], ['Damage', format(row.before.damage * 100, 1) + '%'], ['Action age', format(row.actionAge * 1000, 1) + ' ms'], ['Retained / clean', `${passes.length} / ${passes.filter(e => e.contactContaminated === false).length}`],
     ['Wake exposure', format(wake * 100, 1) + '%'], ['Worst tyre wear', format(Math.max(...row.before.tyres.map(t => t.wear)) * 100, 1) + '%']];
+  const front = nearbyFront(row);
+  metrics.push(['Nearest front car', front ? 'Car ' + front.id + ' · ' + format(front.forward) + ' m' : 'Clear within 50 m'],
+    ['Side projection gap', front ? format(front.sideGap) + ' m' : '—'],
+    ['Front projection gap', front ? format(front.frontGap) + ' m' : '—']);
   $('metrics').replaceChildren(...metrics.map(([label, value]) => { const d = document.createElement('div'); d.className = 'metric'; const a = document.createElement('small'), b = document.createElement('strong'); a.textContent = label; b.textContent = value; d.append(a, b); return d; }));
   const pedals = $('pedals'); pedals.replaceChildren();
   for (const [name, controls] of [['Teacher', row.teacherControls], ['Policy', row.policyProposal ? { steer: row.policyProposal[0], throttle: Math.max(0, row.policyProposal[1]), brake: Math.max(0, -row.policyProposal[1]) } : null], ['Executed', row.executed]]) {
@@ -115,13 +138,17 @@ function render() {
 }
 async function load(url) {
   replay = await (await fetch(url)).json(); index = 0; playing = false; $('play').textContent = 'Play'; $('scrub').max = replay.rows.length - 1;
+  if (Number.isFinite(initialSeek) && initialSeek > 0) index = Math.max(0, replay.rows.findIndex(r => r.time >= Math.min(initialSeek, replay.rows.at(-1).time)));
+  initialSeek = 0;
+  const locationUrl = new URL(location.href); locationUrl.searchParams.set('episode', replay.manifest.name); locationUrl.searchParams.delete('t');
+  history.replaceState(null, '', locationUrl);
   featureIndex = new Map(replay.schema.fields.map((field, i) => [field.name, i]));
   $('scope').textContent = `${replay.summary.scope} ${replay.summary.track} · ${replay.summary.classId} · seed ${replay.summary.seed}`;
   $('scope').className = ['policy', 'dagger'].includes(replay.summary.mode) ? 'warn' : '';
   if (replay.manifest.diagnostic) { $('scope').textContent += ' | Diagnostic: ' + replay.manifest.diagnostic; $('scope').className = 'warn'; }
   if (replay.manifest.counterfactual) {
     const c = replay.manifest.counterfactual;
-    $('scope').textContent = (c.label === 'baseline' ? 'Unmodified learned-policy reference. ' :
+    $('scope').textContent = (c.label === 'baseline' && !c.settle ? 'Unmodified learned-policy reference. ' :
       'Offline exploration with sampled controls; this is not a trained NN improvement. ') + $('scope').textContent;
     $('scope').className = 'warn';
   }

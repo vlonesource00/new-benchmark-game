@@ -2,7 +2,7 @@
 import json
 import tempfile
 from pathlib import Path
-from outcome_data import outcome_episodes
+from outcome_data import outcome_episodes, assert_outcome_disjoint, physical_family
 from data import assert_disjoint
 
 checks = []
@@ -65,4 +65,19 @@ try:
     raise AssertionError('family leakage accepted')
 except ValueError:
     checks.append('physical family cannot leak across train and validation')
+other = {**e, 'manifest': {**e['manifest'], 'episodeId': 'different-id', 'settings': {
+    **e['manifest']['settings'], 'seconds': 3, 'rate': 30, 'lagMs': 17}}, 'fingerprint': 'different-labels'}
+assert physical_family(e['manifest']) == physical_family(other['manifest'])
+checks.append('duration and reply timing do not create a new physical family')
+try:
+    assert_outcome_disjoint([e], [other])
+    raise AssertionError('schedule/duration leakage accepted')
+except ValueError:
+    checks.append('same encounter cannot validate itself with different labels or scheduling')
+distinct = {**other, 'manifest': {**other['manifest'], 'settings': {**other['manifest']['settings'], 'seed': 23}}}
+assert_outcome_disjoint([e], [distinct])
+checks.append('physically different encounter remains an allowed holdout')
+defaults = {**e['manifest'], 'settings': {**e['manifest']['settings'], 'tailGapDelta': 0, 'tailSpeed': None}}
+assert physical_family(defaults) == physical_family(e['manifest'])
+checks.append('explicit tail defaults do not manufacture holdout independence')
 print(json.dumps({'passed': len(checks), 'checks': checks}))

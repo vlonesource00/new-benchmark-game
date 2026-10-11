@@ -2,6 +2,7 @@
 import argparse
 import hashlib
 import json
+import shutil
 import time
 from pathlib import Path
 import numpy as np
@@ -9,7 +10,7 @@ import torch
 import onnx
 from model import PulsePolicy
 from data import assert_disjoint, episodes, windows
-from outcome_data import outcome_episodes
+from outcome_data import outcome_episodes, assert_outcome_disjoint
 from train import batch, rollout_loss
 
 
@@ -28,13 +29,17 @@ def main():
     p.add_argument('--anchor-weight', type=float, default=.1)
     p.add_argument('--checkpoint-every', type=int, default=5)
     p.add_argument('--whole-episode', action='store_true', help='Use the complete recorded recurrent history; batch 1 and burn 0')
+    p.add_argument('--traffic-gate', action='store_true', help='Fit a small public-state gain head while preserving the parent NN')
+    p.add_argument('--traffic-gate-mode', choices=['raw', 'clipped'], help='Explicit gain contract; new calibrators default to post-clip actuator deltas')
     args = p.parse_args()
     if not (1 <= args.epochs <= 100 and 64 <= args.length <= 512 and 0 <= args.burn < args.length
-            and 1 <= args.batch <= 128 and 0 < args.lr <= .0001 and 0 <= args.anchor_weight <= 1
+            and 1 <= args.batch <= 128 and 0 < args.lr <= (.003 if args.traffic_gate else .0005) and 0 <= args.anchor_weight <= 1
             and 1 <= args.checkpoint_every <= args.epochs):
         raise ValueError('Invalid bounded improvement settings')
     if args.whole_episode and (args.batch != 1 or args.burn != 0):
         raise ValueError('Whole-episode fitting needs batch 1 and burn 0')
+    if args.traffic_gate_mode and not args.traffic_gate:
+        raise ValueError('Gain contract requires --traffic-gate')
     out, root = Path(args.out), Path(args.resume)
     if out.exists():
         raise ValueError('Preserve completed experiments; choose a new output')
@@ -44,11 +49,18 @@ def main():
     parent = json.loads((root / 'metadata.json').read_text())
     checkpoint = torch.load(root / 'model.pt', map_location='cpu', weights_only=True)
     schema, config = checkpoint['schema'], {**checkpoint['modelConfig'], 'motorTune': False}
+    if args.traffic_gate:
+        config['trafficGate'] = True
+        mode = args.traffic_gate_mode or (checkpoint['modelConfig'].get('trafficGateMode', 'raw')
+                                         if checkpoint['modelConfig'].get('trafficGate') else 'clipped')
+        if checkpoint['modelConfig'].get('trafficGate') and mode != checkpoint['modelConfig'].get('trafficGateMode', 'raw'):
+            raise ValueError('Do not reinterpret an existing calibrated checkpoint; start from its ungated parent')
+        config['trafficGateMode'] = mode
     if not all(config[k] for k in ['instant', 'splitMotor', 'trafficResidual', 'trafficMemory']):
         raise ValueError('Improvement requires the preserved motor and traffic memory')
     train = outcome_episodes(Path(args.data) / 'train', schema, 'train')
     validation = outcome_episodes(Path(args.data) / 'validation', schema, 'validation')
-    assert_disjoint(train, validation)
+    assert_outcome_disjoint(train, validation)
     identities = ['schemaDigest', 'observationDigest', 'simulatorDigest', 'teacherDigest']
     if any(e['manifest']['versions'][k] != parent[k] for e in train + validation for k in identities):
         raise ValueError('Outcome source does not match this physical/input contract')
@@ -57,8 +69,8 @@ def main():
         assert_disjoint(anchors, validation)
         if any(e['manifest']['versions'][k] != parent[k] for e in anchors for k in identities):
             raise ValueError('Parent-anchor source is incompatible')
-    model = PulsePolicy(schema, **config).to('cuda'); model.load_state_dict(checkpoint['weights'])
-    reference = PulsePolicy(schema, **config).to('cuda').eval(); reference.load_state_dict(checkpoint['weights'])
+    model = PulsePolicy(schema, **config).to('cuda'); model.load_parent(checkpoint['weights'])
+    reference = PulsePolicy(schema, **config).to('cuda').eval(); reference.load_parent(checkpoint['weights'])
     for parameter in reference.parameters():
         parameter.requires_grad_(False)
     frozen = {k: v.detach().cpu().clone() for k, v in model.named_parameters() if not v.requires_grad}
@@ -80,6 +92,9 @@ def main():
     sources = ['improve.py', 'outcome_data.py', 'model.py', 'train.py', 'data.py']
     source_hash = lambda: hashlib.sha256(b''.join((Path(__file__).parent / f).read_bytes() for f in sources)).hexdigest()
     started_hash = source_hash(); out.mkdir(parents=True, exist_ok=False)
+    source_archive = out / 'trainer-source'; source_archive.mkdir()
+    for filename in sources:
+        shutil.copy2(Path(__file__).parent / filename, source_archive / filename)
     started, best, history = time.perf_counter(), float('inf'), []
     for epoch in range(1, args.epochs + 1):
         model.train(); losses, anchor_losses = [], []
@@ -143,6 +158,11 @@ def main():
                 'parentModelSha256': parent['modelSha256'], 'trainerDigest': started_hash,
                 'parentTrainerDigest': parent['trainerDigest'], 'parentStage': parent['stage'],
                 'recurrentTraining': 'complete episode from recorded reset' if args.whole_episode else 'reset windows with burn-in',
+                'trainerSourceDirectory': 'trainer-source',
+                'parameters': sum(p.numel() for p in model.parameters()),
+                'trainableParameters': sum(p.numel() for p in model.parameters() if p.requires_grad),
+                'trafficGainCalibration': bool(config.get('trafficGate')),
+                'architecture': parent['architecture'] + ('-GAIN-16' if config.get('trafficGate') and not parent.get('trafficGainCalibration') else ''),
                 'bestValidationLoss': best, 'emptyTrafficMotorPreservedBitwise': True,
                 'trainEpisodes': [e['path'] for e in train], 'validationEpisodes': [e['path'] for e in validation],
                 'outcomeDatasets': [{'file': e['path'], 'split': e['manifest']['split'], 'familyId': e['manifest']['episodeId'],

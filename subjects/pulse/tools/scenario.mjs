@@ -21,7 +21,7 @@ export async function runScenario(options = {}) {
     expertMix: .5, expertBlockMs: 250, traceExpert: false, probeExpertHistory: false, holdExpert: false, heldExpertLagMs: 0, warmupToStart: false, velocityYawOffset: 0,
     disturbanceSteer: 0, disturbanceLongitudinal: 0, disturbanceDuration: .2, disturbancePeriod: 3,
     diagnosticExpertActuator: null, trainingExpertActuator: null,
-    rivalGap: 55, trainSpacing: 85, rivalSpeed: null,
+    rivalGap: 55, trainSpacing: 85, rivalSpeed: null, tailGapDelta: 0, tailSpeed: null,
     fastMotor: false, motorRate: 60, expertDriver: 'intercept',
     observationVersion: SCHEMA.version, ...options };
   const { schema, observe: observeAt } = observationProfile(settings.observationVersion);
@@ -59,6 +59,10 @@ export async function runScenario(options = {}) {
     || !Number.isFinite(settings.trainSpacing) || settings.trainSpacing < 15 || settings.trainSpacing > 220
     || (settings.rivalSpeed !== null && (!Number.isFinite(settings.rivalSpeed) || settings.rivalSpeed < 0 || settings.rivalSpeed > 90)))
     throw Error('Invalid bounded traffic placement');
+  if (!Number.isFinite(settings.tailGapDelta) || Math.abs(settings.tailGapDelta) > 30
+    || (settings.tailSpeed !== null && (!Number.isFinite(settings.tailSpeed) || settings.tailSpeed < 0 || settings.tailSpeed > 90))
+    || (settings.fixture !== 'train' && (settings.tailGapDelta || settings.tailSpeed !== null)))
+    throw Error('Tail-car variation requires bounded moving train traffic');
   const count = settings.fixture === 'solo' ? 1 : settings.fixture === 'train' ? 4 : 2;
   const teams = Array.from({ length: count }, (_, i) => ({ id: `pulse-lab-${i}`, index: i, grid: i, starter: 0,
     name: i ? `Rival ${i}` : 'PULSE laboratory', short: i ? `GT${i}` : 'PLS', color: i ? '#51d5df' : '#ffd166',
@@ -148,9 +152,11 @@ export async function runScenario(options = {}) {
   let startAt = race.time;
   for (let i = 0; i < count; i++) {
     const c = race.cars[i], fuel = c.fuel;
-    const s = (settings.warmupToStart ? 20 : settings.start) + (i ? settings.rivalGap + (i - 1) * settings.trainSpacing : 0),
+    const s = (settings.warmupToStart ? 20 : settings.start) + (i ? settings.rivalGap + (i - 1) * settings.trainSpacing : 0)
+      + (i === count - 1 && settings.fixture === 'train' ? settings.tailGapDelta : 0),
       lateral = (settings.warmupToStart ? 0 : settings.lateral) + (i ? ((i % 2) ? .2 : -.2) + settings.rivalOffset : 0);
-    const speed = i ? settings.rivalSpeed ?? (settings.fixture === 'train' ? 43 : settings.speed) : settings.speed;
+    const speed = i === count - 1 && settings.fixture === 'train' && settings.tailSpeed !== null ? settings.tailSpeed
+      : i ? settings.rivalSpeed ?? (settings.fixture === 'train' ? 43 : settings.speed) : settings.speed;
     c.place(track, s, lateral, speed); c.fuel = fuel;
     if (i === 0 && settings.yawOffset && !settings.warmupToStart) { c.yaw += settings.yawOffset; c.vx = Math.sin(c.yaw) * speed; c.vz = Math.cos(c.yaw) * speed; }
     c.race = { ...c.race, progress: s, previousS: s, lap: 1, lapStart: startAt, finishTime: null };

@@ -23,7 +23,7 @@ def transfer_observations(weights, parent_schema, schema):
 
 
 class PulsePolicy(nn.Module):
-    def __init__(self, schema, reactive=False, contextSkip=False, instant=False, motorHistoryMask=False, splitMotor=False, trafficResidual=False, trafficMemory=False, motorTune=False):
+    def __init__(self, schema, reactive=False, contextSkip=False, instant=False, motorHistoryMask=False, splitMotor=False, trafficResidual=False, trafficMemory=False, motorTune=False, trafficGate=False, trafficGateMode='raw'):
         super().__init__()
         self.schema = schema
         group = schema['groups']['rivals']
@@ -39,6 +39,8 @@ class PulsePolicy(nn.Module):
         self.traffic_residual = trafficResidual
         self.traffic_memory = trafficMemory
         self.motor_tune = motorTune
+        self.traffic_gate = trafficGate
+        self.traffic_gate_mode = trafficGateMode
         self.traffic_memory_size = 64
         if instant and (reactive or contextSkip):
             raise ValueError('Instant actor is a separate bounded control experiment')
@@ -52,6 +54,10 @@ class PulsePolicy(nn.Module):
             raise ValueError('Traffic memory requires the preserved traffic residual')
         if motorTune and not (instant and splitMotor):
             raise ValueError('Motor refitting requires an existing split motor')
+        if trafficGate and (not trafficMemory or motorTune):
+            raise ValueError('Traffic gain calibration requires preserved traffic memory and motor')
+        if trafficGateMode not in ['raw', 'clipped'] or (trafficGateMode != 'raw' and not trafficGate):
+            raise ValueError('Invalid traffic gain action contract')
         history_names = ['ego.previousSteer', 'ego.previousLongitudinal', 'ego.heldSteer', 'ego.heldLongitudinal', 'ego.steering']
         input_mask = torch.ones(self.own_size)
         for i, f in enumerate(schema['fields'][:self.own_size]):
@@ -97,6 +103,17 @@ class PulsePolicy(nn.Module):
             for branch in branches:
                 for parameter in branch.parameters():
                     parameter.requires_grad_(True)
+        if trafficGate:
+            # Calibrate an existing NN correction without changing its motor,
+            # geometry or recurrent state. Public state determines both gains;
+            # there is no prescribed rear-car rule or chosen tactical lane.
+            self.traffic_gain = nn.Sequential(nn.Linear(self.traffic[0].in_features, 16), nn.Tanh(), nn.Linear(16, 2), nn.Tanh())
+            nn.init.zeros_(self.traffic_gain[2].weight)
+            nn.init.zeros_(self.traffic_gain[2].bias)
+            for parameter in self.parameters():
+                parameter.requires_grad_(False)
+            for parameter in self.traffic_gain.parameters():
+                parameter.requires_grad_(True)
         if motorTune:
             # Explicit corrective experiment: refit the existing clean-air
             # motor, keeping traffic weights fixed. Topology and inference
@@ -123,6 +140,21 @@ class PulsePolicy(nn.Module):
         maximum = (car_features * mask - (1 - mask) * 10000).amax(1)
         maximum = maximum * (mask.sum(1) > 0).to(observation.dtype)
         return own_input, own, mean, maximum, mask.sum(1).clamp(0, 1)
+
+    def traffic_action(self, base, inputs, present):
+        correction = self.traffic(inputs) * present
+        if self.traffic_gate and self.traffic_gate_mode == 'raw':
+            # Preserve previously exported calibrators. Their metadata has no
+            # mode, so the constructor default must retain this original math.
+            correction = correction * (1 + self.traffic_gain(inputs))
+        parent = torch.cat([(base[:, :1] + .75 * correction[:, :1]).clamp(-1, 1),
+                            (base[:, 1:] + correction[:, 1:]).clamp(-1, 1)], 1)
+        if self.traffic_gate and self.traffic_gate_mode == 'clipped':
+            # Offline gain search scales the parent actuator delta AFTER its
+            # clipping. Match that contract rather than scaling an unseen raw
+            # residual, which gives different targets at actuator saturation.
+            parent = (parent + self.traffic_gain(inputs) * (parent - base)).clamp(-1, 1)
+        return parent
 
     def traffic_sequence(self, observation, burn, fresh):
         """Training-only sequence batching; exported control remains stepwise.
@@ -176,9 +208,7 @@ class PulsePolicy(nn.Module):
                     h = torch.where(fresh[mixed, None].bool(), h, h.detach())
             memory = memory.index_copy(0, mixed, torch.stack(values, 1))
         inputs = torch.cat([encoded.reshape(-1, self.hidden_size), own_input, memory.reshape(-1, self.traffic_memory_size)], 1)
-        correction = self.traffic(inputs) * present.reshape(-1, 1)
-        action = torch.cat([(base[:, :1] + .75 * correction[:, :1]).clamp(-1, 1),
-                            (base[:, 1:] + correction[:, 1:]).clamp(-1, 1)], 1)
+        action = self.traffic_action(base, inputs, present.reshape(-1, 1))
         return action.reshape(batch, length, 2)
 
     def forward(self, observation, hidden):
@@ -204,11 +234,10 @@ class PulsePolicy(nn.Module):
                     memory = ((1 - update) * candidate + update * hidden[:, :self.traffic_memory_size]) * present
                     next_hidden = torch.cat([memory, torch.zeros_like(hidden[:, self.traffic_memory_size:])], 1)
                     traffic_inputs.append(memory)
-                correction = self.traffic(torch.cat(traffic_inputs, 1))
+                traffic_input = torch.cat(traffic_inputs, 1)
                 # No deterministic lane or expert command enters this branch.
                 # The mask guarantees unchanged clean-air outputs after learning.
-                action = torch.cat([(action[:, :1] + .75 * correction[:, :1] * present).clamp(-1, 1),
-                                    (action[:, 1:] + correction[:, 1:] * present).clamp(-1, 1)], 1)
+                action = self.traffic_action(action, traffic_input, present)
                 return action, next_hidden
             return action, hidden
         ir, iz, inn = self.input_gates(torch.cat([own, mean, maximum], 1)).chunk(3, 1)
@@ -229,6 +258,9 @@ class PulsePolicy(nn.Module):
         return self.head(head_input), next_hidden
 
     def load_parent(self, weights):
+        if self.traffic_gate:
+            weights = dict(weights)
+            weights.update({k: v for k, v in self.state_dict().items() if k.startswith('traffic_gain.') and k not in weights})
         if self.traffic_memory:
             weights = dict(weights)
             weights.update({k: v for k, v in self.state_dict().items()

@@ -494,3 +494,40 @@ still required for causal attribution. Contact-contaminated passes are flagged.
 Generated datasets, models, caches and reports are ignored by Git. Keep private
 paths out of public documentation and publish only source/locks. See PLAN.md for
 the remaining correction, combat, strategy and self-play gates.
+
+### Complete replay and line review
+
+`REVIEW-2026-10-11.md` records the broad audit and its limitations. The new audit
+page separates NN-only, expert, assisted and sampled-control runs and links
+straight to excursions. Line/body diagnostics use the game's actual collision
+box dimensions; they never prescribe a route or change an actuator.
+
+```sh
+node subjects/pulse/tools/audit-replays.mjs --name new-review
+node subjects/pulse/tools/behavior-review.mjs --name new-line-review
+node --import ./scripts/json-loader.mjs subjects/pulse/tools/check-traffic-review.mjs
+node --import ./scripts/json-loader.mjs subjects/pulse/tools/traffic-recovery.mjs --name tail-test --model artifacts/models/run-name --seconds 60
+```
+
+The broad audit reads all replay files and can consume substantial disk I/O.
+The line review reads the pinned reference/encounters documented in its source;
+it is a reproducible diagnostic of those runs, not a fresh physical evaluation.
+The final-car matrix varies only that GT3's arrival while keeping its AI reactive.
+Use repeated `--case episode=relative-artifact-trace.jsonl` arguments to review
+other full traces. The matrix accepts `--seed` and `--only tail-early,tail-late`.
+The viewer's line trace distinguishes asphalt from the legal wheel envelope;
+the correction trace separates the learned motor from the held traffic delta.
+Generated data, reports and recordings are excluded from the lab server's file
+watcher so training can run without interrupting replay viewing.
+
+New outcome trainers archive their exact sources. `--traffic-gate` optionally
+fits a small public-state gain head instead of the full traffic branch. New
+gain heads default to `clipped` actuator deltas; existing raw-gain checkpoints
+remain backward compatible. Calibration permits a learning rate up to 0.003;
+the full traffic branch permits up to 0.0005. All parent/motor ownership checks
+still apply, and no training loss can substitute for NN-only driving gates.
+
+```sh
+.venv/Scripts/python.exe training/check_gate.py
+.venv/Scripts/python.exe training/replay_error.py --model artifacts/models/run-name --parent artifacts/models/parent-name --data data/outcome-new --out artifacts/diagnostics/new-error/report.json
+```

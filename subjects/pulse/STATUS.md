@@ -1,4 +1,4 @@
-# PULSE checkpoint — 11 October 2026
+# PULSE checkpoint — 12 October 2026
 
 The clean-air motor now passes six changed-start solo cases and six native
 delay/blackout cases over 120 seconds with the two-rate motor enabled. Harbor
@@ -6,10 +6,57 @@ GTP full laps remain below 53 seconds. Traffic, multiple tracks/classes,
 independent strategy and real game workers are still open milestones.
 
 Outcome-selected learning now works as a separate path from INTERCEPT command
-imitation. One fitted NN makes two retained traffic passes with zero damage in
-a reused 30-second encounter, without any search intervention. Three short
-matched rival-input ablations support a move contribution. Longer traffic,
-changed gaps and sustained reply lag still fail; this is not a certified racer.
+imitation. The c75 epoch-100 NN reproduces two retained passes and a legal,
+zero-damage 90-second continuation without search interventions. It passes
+six of seven development encounters and two of five changed-arrival 120-second
+cases. Fast/slow/late variants and sustained reply lag still fail; this is not
+a certified racer. Development is paused at the user's quota checkpoint; see
+`HANDOFF-2026-10-12.md` for exact artifacts and the next work.
+
+## Full replay review and current corrective work
+
+The c55 review processed all 1,830 archived replays present at its start; c79
+re-reviewed all 1,982 files present after the new corrective work. See
+`REVIEW-2026-10-11.md` and the review dashboard at
+http://127.0.0.1:4181/audit.html?name=c79-complete-review . It separates expert,
+sampled-control and fitted-NN runs; archived counts are not matched rankings.
+Full traces confirm both bumper contacts at the closing last GT3 and large
+traffic corrections/excursions when the road ahead is clear.
+
+The c53 tail-arrival matrix changes only the final GT3, with reactive opponent
+AI. All five 60-second c34 cases still fail complete admission. c58/c59 search
+finds legal, zero-damage complete corrective encounters; NN-only transfer must
+prove the fitted behavior before promotion. Trainer sources are now archived,
+and explicit tail defaults cannot manufacture train/validation independence.
+
+The optional gain head has 141,015 total parameters and trains only 6,642.
+New calibration uses the actual clipped parent actuator delta, while legacy
+checkpoints retain raw-gain math. c60 epoch 100 learns the intended late gain
+and reaches 2700 m in 53.694 s, but 1.50% unverified damage and 0.542 s illegal
+track use still fail its full encounter. This does not replace c34.
+
+c65 now reproduces one complete 60-second earlier-tail training encounter with
+two retained passes, zero damage and legal track use, using NN commands only.
+It still fails other arrival timings. In the 120-second c70 extension, the same
+case makes a small illegal excursion at about 83 s; all five variations fail
+complete admission. c71/c73 add intermediate arrival and legal 90-second
+corrective training families. c75 epoch 100 now reproduces c73 without its
+offline gain adjustment: two held passes, zero damage, legal for all 90 s,
+4500 m reached in 86.121 s. Its minimum-MSE checkpoint only passes two of seven
+encounters; epoch 75 passes four and epoch 100 passes six. Keep them separate.
+
+The c88 changed-arrival matrix uses a new seed and 120 s per case. Epoch 100
+passes nominal (0.37% verified side rub) and early arrival (zero damage), both
+legal with two held passes. Late/fast/slow variants fail. c89 confirms legal
+120 s solo/offset runs (52.758 / 52.517 s valid best laps), a corner blackout,
+and 250/500 ms traffic blackouts. Traffic 30 Hz and sustained 16.667 ms reply
+lag still fail. Real browser seat workers remain untested.
+
+c92/c93/c94 save complete admitted corrective examples for fast, slow and late
+arrival in `data/outcome-08/train`. These still use offline exploration and
+have not been fitted into a new NN. No c96-or-later trainer has been started.
+The clipped-calibrator resume default now preserves its parent contract; c87
+verifies one resumed CUDA epoch and unchanged clean-air motor weights.
 
 ## Latest outcome-learning evidence
 
@@ -55,7 +102,9 @@ branches, and 64 active traffic GRU units. The learned clean-air motor and
 traffic correction are separate; 67,042 parameters are fitted in the traffic
 refits. No independent tyre, pit, energy or rain strategist has been learned.
 
-Review the sampled alternatives and the fitted NN separately at
+Review the current unaided 90-second fitted-NN reproduction at
+http://127.0.0.1:4181/?episode=c86-e100-transfer-c73-long-clear-recovery .
+Review the earlier sampled alternatives and fitted NN separately at
 http://127.0.0.1:4181/search.html?name=c32-sequence-gap55-search&evaluation=c36-outcome-first-transfer .
 The NN-only replay is c36-outcome-first-transfer-c32-sequence-gap55-search.
 
@@ -75,9 +124,12 @@ The NN-only replay is c36-outcome-first-transfer-c32-sequence-gap55-search.
 - Replays show body, road and full-circuit views, actual pedals, sensors,
   intervention/assistance source, hidden age and physical outcome bookmarks.
 - Each experiment keeps a separate checkpoint and full-rate matched test traces.
-- 12 outcome/search checks and 12 outcome-loader checks reject unsafe, assisted,
+- 12 outcome/search checks and 16 outcome-loader checks reject unsafe, assisted,
   duplicate or non-improving samples. Targets are selected policy proposals at
   the observation time, rather than delayed executed commands or teacher labels.
+- 13 gain-calibration checks preserve the parent motor/memory and explicit
+  clipping contract. Seven review/fixture checks cover collision geometry,
+  gradual lane closure, source provenance and bounded final-car perturbation.
 - Comparison/replay views pass desktop and 450-pixel browser checks. These are
   viewer checks, not proof of game-worker latency or production integration.
 - Expert-assisted DAgger runs are training data, never independent driving wins.
@@ -442,9 +494,9 @@ baseline for this small actor. These are not production rendering/worker tests.
 
 ## Next work
 
-1. Reproduce a full safe traffic interval with the fitted NN alone, preserving
-   the now-stable clean-air motor and the existing short passing reference.
-   Train from admitted own-policy outcomes and judge physical replay, not loss.
+1. Preserve c75 epoch 100's now-safe nominal/early full traffic intervals and
+   fit admitted fast/slow/late examples without regressing those successes.
+   Judge complete physical replay and fixed-epoch checkpoints, not MSE alone.
 2. Correct the rear/distant-rival overreaction without losing the nearby move;
    whole-history fitting has not solved it. Expand outcome coverage only from
    completed, physically verified trials, with independent physical families.
