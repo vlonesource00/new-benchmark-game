@@ -111,6 +111,25 @@ export class Arbiter {
     }
     return out;
   }
+  /**
+   * Off the green the plan re-chose sides of the line several times a second in the pack (lane -6, -3, line, beside +,
+   * -4.5 m in 3 s), each join reversing the curvature the jerk-limited steering was still carrying. For startSide
+   * seconds of the opening lap the car keeps the side of the line it took the green on: challengers on the other side
+   * (lanes and beside moves) are dropped; the line itself and the incumbent stay.
+   */
+  startFilter(props, me, now) {
+    const d = this.driver, T = d.options.startSide, g = d.greenT;
+    if (!(T > 0) || g == null || !(now - g < T)) { this.startSign = undefined; return; }
+    if (this.startSign === undefined) {
+      const line = d.line, st = line.stationOf(me.s), off = me.d - line.sample(line.lat, Math.floor(st), st % 1, 0);
+      this.startSign = Math.abs(off) > (d.options.startSideMin ?? 0.75) ? Math.sign(off) : 0;
+    }
+    const sg = this.startSign; if (!sg) return;
+    for (let k = props.length - 1; k >= 0; k--) {
+      const q = props[k]; if (q.hold || q.forced) continue;
+      if (q.beside ? q.beside.side === -sg : OFFSETS[q.first] * sg < 0) props.splice(k, 1);
+    }
+  }
   release() { this.rollout.busy.clear(); if (this.path) this.rollout.busy.add(this.path); }
   decide(p, me, car, field, now) {
     const d = this.driver, o = d.options, line = d.line, R = this.rollout, lam = o.commit ?? 0.01;
@@ -122,6 +141,7 @@ export class Arbiter {
     const hold = o.holdCandidate !== false && this.path && this.plan ? { hold: this.path, K: p.K, dS: p.dS, first: this.first, last: this.plan.last, tow: this.plan.tow, segs: null } : null;
     if (hold) props.unshift(hold);
     if (o.beside !== false) props.push(...this.beside(p, me));
+    this.startFilter(props, me, now);
     R.busy.clear(); if (this.path) R.busy.add(this.path);
     let best = null; const evs = [];
     for (const prop of props) {

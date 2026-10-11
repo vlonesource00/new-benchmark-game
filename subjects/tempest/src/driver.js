@@ -174,6 +174,8 @@ export class TempestDriver {
     this.cursor = c.i;
     if (real.gear > 0 && line.cap[c.i] === Infinity) line.gearSeen[c.i] = real.gear;
     const state = context.state ?? {}; this.state = state;
+    // the green: the start window (opening lap only) the arbiter commits one side of the line through
+    if (state.formation || state.phase === 'grid') this.greenT = null; else if ((real.race?.lap ?? 0) <= 1) this.greenT ??= t; else this.greenT = -Infinity;
     const boxing = Boolean(real.race?.boxThisLap || state.pitPlan) && !state.pit, toPit = boxing ? this.pitGuide.toEntry(real.s ?? 0) : Infinity;
     const field = this.field;
     field.frame = this.options.lineFrame === true ? this.line : null;

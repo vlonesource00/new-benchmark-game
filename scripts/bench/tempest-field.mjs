@@ -61,17 +61,18 @@ async function work([trackName, lapsArg, seedArg, weather, cls, optsArg, aisArg,
     for (const d of mine) for (const [k, v] of Object.entries(opts)) if (JSON.stringify(d.options[k]) !== JSON.stringify(v)) throw new Error(`option ${k} did not take`);
   }
   const n = race.cars.length, made = new Array(n).fill(0), lost = new Array(n).fill(0);
-  let prev = null, tick = 0; const cap = 140 * laps * Math.max(1, track.length / 3000) + 200, t0 = performance.now();
+  let prev = null, tick = 0; const g10 = new Array(n).fill(0), g60 = new Array(n).fill(0); const cap = 140 * laps * Math.max(1, track.length / 3000) + 200, t0 = performance.now();
   while (race.phase !== 'finished' && race.time < cap) {
     step();
     if (race.formation || ++tick % 60) continue;
     const ord = race.order().map((c) => race.cars.indexOf(c)), pos = new Array(n); ord.forEach((ci, p) => { pos[ci] = p; });
     if (prev) for (let i = 0; i < n; i++) { if (pos[i] < prev[i]) made[i] += prev[i] - pos[i]; else if (pos[i] > prev[i]) lost[i] += pos[i] - prev[i]; }
     prev = pos;
+    const sg = race.time - (race.greenAt ?? 0); if (sg < 10.5) pos.forEach((p, i) => { g10[i] = p + 1; }); if (sg < 60.5) pos.forEach((p, i) => { g60[i] = p + 1; });
     if (performance.now() - t0 > 570000) break;
   }
   const ord = race.order();
-  const rows = race.cars.map((c, i) => { const st = race.stewards.of(race.entries[i]); return { ai: ids[i], grid: i + 1, place: ord.indexOf(c) + 1, made: made[i], lost: lost[i], best: c.race.bestLap,
+  const rows = race.cars.map((c, i) => { const st = race.stewards.of(race.entries[i]); return { ai: ids[i], grid: i + 1, place: ord.indexOf(c) + 1, made: made[i], lost: lost[i], g10: g10[i], g60: g60[i], best: c.race.bestLap,
     inc: st.inc, dq: st.dq, kinds: st.log.reduce((m, l) => (m[l.kind] = (m[l.kind] ?? 0) + l.points, m), {}), t42: st.log.find((l, k, a) => a.slice(0, k + 1).reduce((s, x) => s + x.points, 0) >= 41)?.time, dmg: +(c.damage * 100).toFixed(1), assoc: race.entries[i].bridges[0]?.driver?.combat?.stats?.associatedPasses ?? null }; });
   const out = mine.map((d) => d.arbiter?.outcomes?.books()).filter(Boolean);
   if (seats?.hosts.some((h) => h?.failed)) throw new Error('seat worker failed');
@@ -98,11 +99,11 @@ for (const f of results.filter((r) => r.error)) console.log('FAILED', f.task.joi
 const ok = results.filter((r) => !r.error), agg = {};
 for (const r of ok) {
   console.log(`${r.track.padEnd(12)} ${r.seed} ${r.weather} ${r.finished ? '' : 'UNFINISHED '}contacts ${r.contacts} severe ${r.severe} | ` + r.rows.slice().sort((a, b) => a.place - b.place).map((w) => `P${w.place} ${w.ai.slice(0, 4)}(g${w.grid} +${w.made}/-${w.lost} i${w.inc} d${w.dmg})`).join(' '));
-  for (const w of r.rows) { const a = (agg[w.ai] ??= { n: 0, place: 0, made: 0, lost: 0, inc: 0, dmg: 0, best: 0, bn: 0, wins: 0 }); a.n++; a.place += w.place; a.made += w.made; a.lost += w.lost; a.inc += w.inc; a.dmg += w.dmg; if (w.best) { a.best += w.best; a.bn++; } if (w.place === 1) a.wins++; }
+  for (const w of r.rows) { const a = (agg[w.ai] ??= { n: 0, place: 0, made: 0, lost: 0, inc: 0, dmg: 0, best: 0, bn: 0, wins: 0, g10: 0, g60: 0 }); a.n++; a.g10 += w.g10 ?? 0; a.g60 += w.g60 ?? 0; a.place += w.place; a.made += w.made; a.lost += w.lost; a.inc += w.inc; a.dmg += w.dmg; if (w.best) { a.best += w.best; a.bn++; } if (w.place === 1) a.wins++; }
 }
-console.log('\nAI          cars  place  wins  ranks+   ranks-  inc   dmg%  best   (ranks: sampled order changes)');
+console.log('\nAI          cars  place  wins  ranks+   ranks-  inc   dmg%  best   g+10  g+60  (ranks: sampled order changes)');
 for (const [ai, a] of Object.entries(agg).sort((x, y) => x[1].place / x[1].n - y[1].place / y[1].n))
-  console.log(`${ai.padEnd(11)} ${String(a.n).padStart(4)}  ${(a.place / a.n).toFixed(2)}  ${String(a.wins).padStart(4)}  ${(a.made / a.n).toFixed(2).padStart(7)}  ${(a.lost / a.n).toFixed(2).padStart(7)}  ${(a.inc / a.n).toFixed(1).padStart(4)}  ${(a.dmg / a.n).toFixed(1).padStart(4)}  ${a.bn ? (a.best / a.bn).toFixed(2) : '-'}`);
+  console.log(`${ai.padEnd(11)} ${String(a.n).padStart(4)}  ${(a.place / a.n).toFixed(2)}  ${String(a.wins).padStart(4)}  ${(a.made / a.n).toFixed(2).padStart(7)}  ${(a.lost / a.n).toFixed(2).padStart(7)}  ${(a.inc / a.n).toFixed(1).padStart(4)}  ${(a.dmg / a.n).toFixed(1).padStart(4)}  ${a.bn ? (a.best / a.bn).toFixed(2) : '-'}  ${(a.g10 / a.n).toFixed(2)}  ${(a.g60 / a.n).toFixed(2)}`);
 // TEMPEST clearance outcomes, per car per race
 const ob = ok.flatMap((r) => r.out ?? []), per = (f) => (ob.reduce((x, b) => x + f(b), 0) / Math.max(1, ob.length)).toFixed(2);
 if (ob.length) {
