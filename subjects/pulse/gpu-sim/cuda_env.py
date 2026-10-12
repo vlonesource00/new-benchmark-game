@@ -50,7 +50,7 @@ class SceneBank:
 
 
 class GpuEnv:
-    def __init__(self, bank, envs, dtype=torch.float32, seed=0, record=0, families=None, ids=None, sequential=False, offset_lag=0., early_stop=True, rivals=None):
+    def __init__(self, bank, envs, dtype=torch.float32, seed=0, record=0, families=None, ids=None, sequential=False, offset_lag=0., early_stop=True, rivals=None, rival_offset_lag=0.):
         self.sequential, self.cursor = sequential, 0
         self.early_stop = early_stop  # training: end 3 s after a severe contact; evaluation runs the full scene like JS
         self.offset_lag = offset_lag  # PlanExecutor offsetLag (s): low-pass on committed lane offsets
@@ -122,6 +122,7 @@ class GpuEnv:
         self.ego_rescued = torch.zeros(envs, dtype=torch.bool, device=dev)
         # Distilled rivals (training/fit_rivals.py): per car the driver index of the rival policy, -1 = stand-in.
         self.rivals = rivals
+        self.rival_offset_lag = rival_offset_lag  # s: the ego's offsetLag low-pass on distilled rival offsets
         self.rival_driver = torch.full((self.B,), -1, dtype=torch.long, device=dev)
         nodes = torch.tensor(m['trackGeometry']['nodes'], dtype=torch.float64, device=dev)
         self.node_x, self.node_z, self.node_s, self.node_tx, self.node_tz = (nodes[:, i] for i in range(5))
@@ -376,7 +377,12 @@ class GpuEnv:
         obs = normalize(raw, self.obs_scale, self.obs_lo, self.obs_hi)
         with torch.no_grad():
             plan = self.rivals(obs.float(), self.rival_driver[r])
-        self.x.plans[r] = plan.to(self.dtype); self.x.plan_seq[r] += 1; self.x.plan_at[r] = self._clock
+        plan = plan.to(self.dtype)
+        if self.rival_offset_lag > 0:
+            k = 1 - math.exp(-self.RIVAL_STEPS * DT / self.rival_offset_lag)
+            prev = self.x.plans[r, :3]
+            plan[:, :3] = torch.where((self.x.plan_seq[r] > 0)[:, None], prev + k * (plan[:, :3] - prev), plan[:, :3])
+        self.x.plans[r] = plan; self.x.plan_seq[r] += 1; self.x.plan_at[r] = self._clock
 
     def rescue(self):
         """race.js rescue() for every car after the car steps: a car slower than 1.5 m/s for 4 s (race time >= 6 s) is

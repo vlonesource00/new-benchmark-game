@@ -37,6 +37,7 @@ def main():
     p.add_argument('--families', default=None); p.add_argument('--ids', default=None, help='comma-separated scene ids')
     p.add_argument('--offset-lag', type=float, default=0.); p.add_argument('--dtype', default='float64'); p.add_argument('--full', action='store_true', help='no early stop after a severe contact (matched JS evaluation)')
     p.add_argument('--rivals', default=None, help='distilled rival policy (training/fit_rivals.py); default executor stand-ins')
+    p.add_argument('--rival-offset-lag', type=float, default=.4, help='low-pass (s) on distilled rival offsets')
     p.add_argument('--each', action='store_true', help='every pool scene exactly once (episodes = pool size)')
     a = p.parse_args()
     torch.manual_seed(a.seed)
@@ -44,7 +45,7 @@ def main():
     model, schema = load_policy(a.model)
     env = GpuEnv(bank, a.envs, dtype=getattr(torch, a.dtype), seed=a.seed, record=a.record, families=a.families.split(',') if a.families else None,
                  ids=a.ids.split(',') if a.ids else None, sequential=a.each, offset_lag=a.offset_lag, early_stop=not a.full,
-                 rivals=load_rivals(a.rivals) if a.rivals else None)
+                 rivals=load_rivals(a.rivals) if a.rivals else None, rival_offset_lag=a.rival_offset_lag)
     h0 = warm_hidden(model, schema)
     hidden = h0.expand(a.envs, -1).clone()
     results, ticks, t0 = [], 0, time.time()
