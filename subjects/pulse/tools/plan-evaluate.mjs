@@ -6,7 +6,7 @@ import { HOME, digest } from './versions.mjs';
 import { driveCases } from './drive-cases.mjs';
 const args = process.argv.slice(2), arg = key => { const i = args.indexOf('--' + key); return i < 0 ? null : args[i + 1]; };
 const name = arg('name'), model = arg('model'), source = arg('source');
-const allowed = new Set(['--name', '--model', '--source', '--plan', '--shard', '--shards', '--roadBounds', '--edgeBlend', '--edgeRamp', '--frontalGuard', '--routeOrigin', '--feedback', '--joinState', '--sideGuard']);
+const allowed = new Set(['--name', '--model', '--source', '--plan', '--shard', '--shards', '--roadBounds', '--edgeBlend', '--edgeRamp', '--frontalGuard', '--routeOrigin', '--feedback', '--joinState', '--sideGuard', '--traces']);
 if (args.length % 2 || args.some((x, i) => i % 2 === 0 && !allowed.has(x))) throw Error('Unsupported or incomplete plan evaluation option');
 const planExecution = { roadBounds: arg('roadBounds') ?? 'asphalt-body', edgeBlend: Number(arg('edgeBlend') ?? 0), edgeRamp: Number(arg('edgeRamp') ?? 0),
   frontalGuard: arg('frontalGuard') ?? 'supervisor-v1', routeOrigin: arg('routeOrigin') ?? 'rolling-v1',

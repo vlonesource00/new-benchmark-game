@@ -64,7 +64,7 @@ for (let it = 1; it <= iterations; it++) {
       if (dev.ok > best.ok) best = { ...dev, model: evaluated, iteration: at };
       writeFileSync(resolve(root, 'best.json'), JSON.stringify(best, null, 2));
       log({ type: 'dev', iteration: at, model: evaluated, dev, best });
-    }));
+    }, error => log({ type: 'dev', iteration: at, model: evaluated, error: error.message.slice(0, 400) })));  // a failed check never stops training
   }
 }
 await Promise.all(pending);
