@@ -20,7 +20,8 @@ function spark(history) {
 
 function card(j, now) {
   const fraction = j.total ? Math.min(1, j.done / j.total) : 0, elapsed = j.start == null ? NaN : (j.state === 'running' ? now : j.updated) - j.start;
-  const rate = j.done > 0 && Number.isFinite(elapsed) ? elapsed / j.done : null;
+  // Shards run in parallel: the time one case takes is elapsed x shards / cases done.
+  const rate = j.done > 0 && Number.isFinite(elapsed) ? elapsed * (j.shards?.length ?? 1) / j.done : null;
   const shards = j.shards ? `<div class="shards">${j.shards.map(s => `<div>${esc(s.name)} · ${count(s.done)}/${s.total ?? '?'}
     <div class="bar"><i style="width:${s.total ? s.done / s.total * 100 : 0}%"></i></div></div>`).join('')}</div>` : '';
   return `<section class="job ${j.state}"><header><h2>${esc(j.name)} <span>${esc(j.kind)}</span></h2><span class="state">${j.state}</span></header>
