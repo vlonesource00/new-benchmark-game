@@ -38,9 +38,12 @@ def main():
     p.add_argument('--offset-lag', type=float, default=0.); p.add_argument('--dtype', default='float64'); p.add_argument('--full', action='store_true', help='no early stop after a severe contact (matched JS evaluation)')
     p.add_argument('--rivals', default=None, help='distilled rival policy (training/fit_rivals.py); default executor stand-ins')
     p.add_argument('--rival-offset-lag', type=float, default=.4, help='low-pass (s) on distilled rival offsets')
+    p.add_argument('--heldout-of', default=None, help='scene ids held out by a ppo_gpu.py checkpoint (its metadata)')
     p.add_argument('--each', action='store_true', help='every pool scene exactly once (episodes = pool size)')
     a = p.parse_args()
     torch.manual_seed(a.seed)
+    if a.heldout_of:
+        a.ids = ','.join(json.loads((Path(a.heldout_of) / 'metadata.json').read_text())['ppoGpu']['heldOut'])
     bank = SceneBank(a.bank)
     model, schema = load_policy(a.model)
     env = GpuEnv(bank, a.envs, dtype=getattr(torch, a.dtype), seed=a.seed, record=a.record, families=a.families.split(',') if a.families else None,

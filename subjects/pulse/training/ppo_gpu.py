@@ -19,6 +19,7 @@ sys.path.insert(0, HERE); sys.path.insert(0, os.path.join(HERE, '..', 'gpu-sim')
 from plan_model import PlanPolicy
 from checkpoint_state import atomic_json, atomic_checkpoint
 from cuda_env import SceneBank, GpuEnv, REWARD
+from fit_rivals import load_rivals
 
 
 def features(model, obs, hidden):
@@ -114,6 +115,10 @@ def main():
     p.add_argument('--gamma', type=float, default=.995); p.add_argument('--lam', type=float, default=.95)
     p.add_argument('--offset-lag', type=float, default=.15); p.add_argument('--dtype', default='float64')
     p.add_argument('--seed', type=int, default=1); p.add_argument('--cap', type=int, default=0)
+    p.add_argument('--rivals', default=None, help='distilled rivals (fit_rivals.py); default executor stand-ins')
+    p.add_argument('--rival-offset-lag', type=float, default=.4)
+    p.add_argument('--holdout', type=int, default=4, help='every k-th pool scene is held out for validation (0: none)')
+    p.add_argument('--stagger', type=float, default=60., help='s: desynchronise episode phases before the first iteration')
     a = p.parse_args()
     root, out = Path(a.parent), Path(a.out)
     if out.exists() or any(out.parent.glob(out.name + '-it*')):
@@ -130,13 +135,31 @@ def main():
         value.load_state_dict(torch.load(root / 'value.pt', map_location='cuda', weights_only=True))
     popt = torch.optim.Adam(model.intent.parameters(), lr=a.lr); vopt = torch.optim.Adam(value.parameters(), lr=1e-3)
     bank = SceneBank(a.bank)
-    env = GpuEnv(bank, a.envs, dtype=getattr(torch, a.dtype), seed=a.seed, families=a.families.split(','), offset_lag=a.offset_lag)
+    pool = [s['id'] for s in bank.scenes if s['family'] in a.families.split(',')]
+    held = pool[::a.holdout] if a.holdout else []
+    train_ids = [i for i in pool if i not in set(held)]
+    env = GpuEnv(bank, a.envs, dtype=getattr(torch, a.dtype), seed=a.seed, ids=train_ids, offset_lag=a.offset_lag,
+                 rivals=load_rivals(a.rivals) if a.rivals else None, rival_offset_lag=a.rival_offset_lag)
     E, log_sigma = a.envs, math.log(a.sigma)
     h0 = warm_hidden(model, schema); hidden = h0.expand(E, -1).clone()
     noise = torch.zeros(E, 4, device='cuda'); noise_at = torch.full((E,), -1e9, dtype=torch.float64, device='cuda')
     cum = torch.zeros(E, dtype=torch.float64, device='cuda')  # env.reward already credited
     ticks = int(round(a.horizon * 120)); cap = a.cap or E * (ticks // 2 + 4)  # at most one request per two ticks (one in flight)
     parent_meta = json.loads((root / 'metadata.json').read_text())
+    # Synchronised starts make whole iterations see the same scene phase; end each env once at a random time first.
+    if a.stagger > 0:
+        cut = torch.randint(int(a.stagger * 120), (E,), device='cuda')
+        for tick in range(int(a.stagger * 120)):
+            idx, obs = env.decisions()
+            if len(idx):
+                with torch.no_grad():
+                    act, nh = model(obs.float(), hidden[idx])
+                env.post(idx, act); hidden[idx] = nh
+            done = env.physics()
+            stop = torch.unique(torch.cat([done, (cut == tick).nonzero().squeeze(1)]))
+            if len(stop):
+                env.end(stop); hidden[stop] = h0
+        cum = env.reward.clone()
     history = []
     for it in range(1, a.iterations + 1):
         t0 = time.time(); ro = Rollout(cap, width, E); finished = []
@@ -204,7 +227,7 @@ def main():
             dest = out.parent / f'{out.name}-it{it:03d}'
             meta = dict(parent_meta)
             meta.update({'checkpointDirectory': dest.as_posix(), 'parentModelSha256': parent_meta.get('modelSha256'), 'stage': 'GPU PPO fine-tune',
-                         'ppoGpu': {'arguments': vars(a), 'reward': REWARD, 'iteration': it, 'history': history}})
+                         'ppoGpu': {'arguments': vars(a), 'reward': REWARD, 'iteration': it, 'heldOut': held, 'history': history}})
             export(model, value, dest, schema, config, {'ppoGpu': vars(a), 'reward': REWARD, 'iteration': it}, meta)
             print('saved', dest, flush=True)
 
