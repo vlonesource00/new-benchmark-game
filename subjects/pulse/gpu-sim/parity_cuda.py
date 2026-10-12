@@ -12,6 +12,9 @@ p.add_argument('--ref', required=True)
 p.add_argument('--dtype', default='float64')
 p.add_argument('--top', type=int, default=8)
 p.add_argument('--bench', type=int, default=0, help='environments for a throughput run (0: skip)')
+p.add_argument('--unordered', action='store_true', help='one physics launch per tick (training mode) instead of slot order')
+p.add_argument('--max-rel', type=float, default=None, help='fail (exit 1) if any teacher-forced field error exceeds this relative bound')
+p.add_argument('--max-free', type=float, default=None, help='fail (exit 1) if the 1 s free-run position error exceeds this many metres')
 a = p.parse_args()
 dtype, dev = getattr(torch, a.dtype), 'cuda'
 meta = json.load(open(os.path.join(a.ref, 'meta.json')))
@@ -51,6 +54,7 @@ def err(pred, truth):
 
 w = make()
 w.lay_rubber = meta.get('rubber', True)
+w.ordered = not a.unordered
 worst = torch.zeros(F, device=dev, dtype=dtype)
 scale = states.reshape(-1, F).abs().amax(0).clamp(min=1e-9)
 miss = 0
@@ -61,12 +65,19 @@ for t in range(S):
     if pack:
         miss += ((closing > 0).sum(1) != contacts[:, t]).sum().item()
     worst = torch.maximum(worst, err(w.state(), states[:, t + 1].reshape(C * N, F)).amax(0))
-order = (worst / scale).argsort(descending=True)
+rel = worst / scale
+order = rel.argsort(descending=True)
+failures = []
+if a.max_rel is not None and rel.max().item() > a.max_rel:
+    failures.append(f'teacher-forced {fields[order[0].item()]} rel {rel.max().item():.2e} > {a.max_rel:.0e}')
+if pack and miss:
+    failures.append(f'{miss} contact-count mismatches')
 print(f'CUDA teacher-forced ({a.dtype}, {C} envs x {N} slots, {S} steps)' + (f', contact-count mismatches {miss}' if pack else ''))
 for k in order[:a.top].tolist():
     print(f'  {fields[k]:22s} {worst[k].item():.3e}  rel {worst[k].item() / scale[k].item():.2e}')
 w = make()
 w.lay_rubber = meta.get('rubber', True)
+w.ordered = not a.unordered
 w.load_state(states[:, 0].reshape(C * N, F))
 col = {f: k for k, f in enumerate(fields)}
 for t in range(S):
@@ -75,6 +86,8 @@ for t in range(S):
         st, tr = w.state()[mask], states[:, t + 1].reshape(C * N, F)[mask]
         pos = torch.hypot(st[:, col['x']] - tr[:, col['x']], st[:, col['z']] - tr[:, col['z']])
         print(f'  free-run {(t + 1) / 120:>4.0f} s  position median {pos.median().item():.2e} p90 {pos.quantile(.9).item():.2e} max {pos.max().item():.2e} m')
+        if t + 1 == 120 and a.max_free is not None and pos.max().item() > a.max_free:
+            failures.append(f'1 s free-run max {pos.max().item():.2e} m > {a.max_free:.0e}')
 
 if a.bench:
     E = a.bench
@@ -82,9 +95,16 @@ if a.bench:
     idx = torch.arange(E * N) % (C * N)
     bw = CudaWorld([classes[i] for i in idx.tolist()], E, N, meta['trackGeometry'], dtype, active=active.reshape(-1)[idx].view(E, N))
     bw.load_state(src[idx.to(dev)])
+    bw.ordered = not a.unordered
     u = torch.full((E * N,), .6, device=dev, dtype=dtype); z = torch.zeros_like(u)
     for _ in range(20): bw.step(1 / 120, u, z, z, z)
     torch.cuda.synchronize(); t0 = time.time()
     for _ in range(200): bw.step(1 / 120, u, z, z, z)
     torch.cuda.synchronize(); dt = (time.time() - t0) / 200
-    print(f'throughput {a.dtype}: {E} envs x {N} slots, {dt * 1e3:.3f} ms/tick, {E * N / dt / 1e6:.1f} M car-steps/s, {E / dt / 120:.0f} env-seconds/s')
+    print(f'throughput {a.dtype} {"unordered" if a.unordered else "slot-ordered"}: {E} envs x {N} slots, {dt * 1e3:.3f} ms/tick, {E * N / dt / 1e6:.1f} M car-steps/s, {E / dt / 120:.0f} env-seconds/s')
+
+if failures:
+    print('PARITY FAIL: ' + '; '.join(failures))
+    sys.exit(1)
+if a.max_rel is not None or a.max_free is not None:
+    print('PARITY PASS')

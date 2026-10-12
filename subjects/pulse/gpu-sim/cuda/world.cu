@@ -22,10 +22,14 @@ __device__ Spec load_spec(const double* table, int k) {
   t.length = length; t.half = half; t.curb = curb; t.runoff = runoff; t.barrier = barrier; t.laneWidth = laneWidth;
 
 // inputs: [B, 5] throttle, brake, steer, wake, hybridForce. rubber: [envs, cells] float32. tyres: [B, 5] compound.
+// slot < 0: every car at once. slot >= 0: only that slot of every environment; launching slots 0..N-1 in turn
+// reproduces race.js exactly, where a car reads the rubber laid earlier in the same tick by the cars before it.
 extern "C" __global__ void step_cars(real* S, int B, int slots, const int* cls, const double* specs, TRACK_ARGS,
     float* rubber, int cells, const real* inputs, const real* tempGrip, const real* ambient, const unsigned char* alive,
-    int layRubber, int* node, const real* tyres, real dt) {
-  const int c = blockIdx.x * blockDim.x + threadIdx.x; if (c >= B) return;
+    int layRubber, int* node, const real* tyres, real dt, int slot) {
+  const int n = blockIdx.x * blockDim.x + threadIdx.x;
+  if (slot >= 0 ? n >= B / slots : n >= B) return;
+  const int c = slot >= 0 ? n * slots + slot : n;
   MAKE_TRACK
   const Spec sp = load_spec(specs, cls[c]); const int env = c / slots;
   const real* in = inputs + c * 5, *ty = tyres + c * 5;

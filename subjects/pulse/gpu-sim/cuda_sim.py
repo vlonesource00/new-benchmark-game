@@ -56,6 +56,7 @@ class CudaWorld:
         self.pairs = slots * (slots - 1) // 2
         self.closing = torch.zeros(envs, max(1, self.pairs), device=dev, dtype=dtype)
         self.lay_rubber = True
+        self.ordered = True  # per-slot launches: exact JS rubber order (~10% slower than one launch with ordered=False)
         # Per-car compound [gripScale, wearScale, optimum, heat, coldPressure]; default = the Vehicle's own medium tyre.
         self.tyres = (torch.tensor(tyres, dtype=dtype) if tyres is not None else torch.tensor([[1., 1., 85., 1., 1.65]], dtype=dtype).expand(self.B, 5)).to(dev).contiguous()
         self._views()
@@ -89,9 +90,14 @@ class CudaWorld:
             self.mod.get_function('wakes')(*self.grid(B), (v['S'], cp.int32(B), cp.int32(self.N), v['alive'], v['wake']))
             wake = self.wake
         torch.stack([throttle, brake, steer, wake.to(self.dtype), hybrid_force], 1, out=self.inputs)
-        self.mod.get_function('step_cars')(*self.grid(B), (v['S'], cp.int32(B), cp.int32(self.N), v['cls'], v['specs'], *self.track_args(),
-                                                           v['rubber'], cp.int32(self.cells), v['inputs'], v['temp_grip'], v['ambient'],
-                                                           v['alive'], cp.int32(1 if self.lay_rubber else 0), v['node'], v['tyres'], self.real(dt)))
+        args = (v['S'], cp.int32(B), cp.int32(self.N), v['cls'], v['specs'], *self.track_args(), v['rubber'], cp.int32(self.cells),
+                v['inputs'], v['temp_grip'], v['ambient'], v['alive'], cp.int32(1 if self.lay_rubber else 0), v['node'], v['tyres'], self.real(dt))
+        step = self.mod.get_function('step_cars')
+        if self.ordered and self.N > 1:
+            for slot in range(self.N):
+                step(*self.grid(self.E), (*args, cp.int32(slot)))
+        else:
+            step(*self.grid(B), (*args, cp.int32(-1)))
         if self.N > 1:
             self.mod.get_function('collisions')(*self.grid(self.E), (v['S'], cp.int32(B), cp.int32(self.N), cp.int32(self.E), v['cls'],
                                                                      v['specs'], v['alive'], v['ghost'], v['closing']))

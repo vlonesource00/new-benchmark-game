@@ -205,9 +205,12 @@ __device__ void vehicle_step(real* Sv, int B, int c, const Spec& sp, const Track
     moment += forceX * wzo - forceZ * wxo;
     brakeTemp[i] = clampr(brakeTemp[i] + (brakeTorque * fabs(omega[i]) * .00009 - (brakeTemp[i] - 24) * (.02 + speed * .0007)) * dt, 24, 1000);
     if (su.asphalt && load >= 10 && alive && layRubber) {
-      const float cur = rubber[su.cell];
-      const float next = (float)fmin(fmax((double)cur + (double)(dt * (.0005 + rmin(ty[i].slipPower, (real)30000) * .0000001)), 0.0), 1.0);
-      atomicAdd(&rubber[su.cell], next - cur);
+      // track.deposit: clamp(cell + inc, 0, 1) stored as float32. A compare-and-swap loop applies the clamp to the
+      // value actually replaced, so concurrent writers to one cell can never overshoot and a lone writer rounds once (as JS).
+      const double inc = (double)(dt * (.0005 + rmin(ty[i].slipPower, (real)30000) * .0000001));
+      int* cell = (int*)&rubber[su.cell]; int seen = *cell, prior;
+      do { prior = seen; const float next = (float)fmin(fmax((double)__int_as_float(prior) + inc, 0.0), 1.0);
+        seen = atomicCAS(cell, prior, __float_as_int(next)); } while (seen != prior);
     }
   }
   ax = dampr(ax, fz / mass, 16, dt); ay = dampr(ay, fx / mass, 16, dt);
