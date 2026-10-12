@@ -30,16 +30,17 @@ export function smoothUpper(value, upper, width) {
  * expert actuation. A held spatial route receives fresh physics feedback.
  */
 export class PlanExecutor {
-  constructor(track, car, { frontalGuard = 'supervisor-v1', roadBounds = 'asphalt-body', edgeBlend = 0,
+  constructor(track, car, { frontalGuard = 'supervisor-v1', roadBounds = 'asphalt-body', edgeBlend = 0, edgeRamp = 0,
     routeOrigin = 'rolling-v1', feedback = 'escape-v1', joinState = 'body-v1', ...unsupported } = {}) {
     if (Object.keys(unsupported).length) throw Error('Unsupported plan execution option: ' + Object.keys(unsupported).join(', '));
     if (!['supervisor-v1', 'live-body-speed-v1'].includes(frontalGuard)) throw Error('Unknown experimental frontal guard');
-    if (!['asphalt-body', 'kerb-centre'].includes(roadBounds)) throw Error('Unknown experimental road bound');
+    if (!['asphalt-body', 'kerb-centre', 'line-kerb-v1'].includes(roadBounds)) throw Error('Unknown experimental road bound');
     if (!Number.isFinite(edgeBlend) || edgeBlend < 0 || edgeBlend > 2) throw Error('Invalid experimental edge blend');
+    if (!Number.isFinite(edgeRamp) || edgeRamp < 0 || edgeRamp > 80) throw Error('Invalid experimental edge ramp');
     if (!['rolling-v1', 'request-v1'].includes(routeOrigin)) throw Error('Unknown experimental route origin');
     if (!['escape-v1', 'course-v1'].includes(feedback)) throw Error('Unknown experimental route feedback');
     if (!['body-v1', 'reference-v1'].includes(joinState)) throw Error('Unknown experimental route join');
-    this.frontalGuard = frontalGuard; this.roadBounds = roadBounds; this.edgeBlend = edgeBlend; this.routeOrigin = routeOrigin;
+    this.frontalGuard = frontalGuard; this.roadBounds = roadBounds; this.edgeBlend = edgeBlend; this.edgeRamp = edgeRamp; this.routeOrigin = routeOrigin;
     this.feedback = feedback; this.joinState = joinState;
     const config = settingsFor(track.id);
     this.options = { ...config, ...config.perClass?.[car.classId] };
@@ -120,7 +121,7 @@ export class PlanExecutor {
       points[i].curvature = clamp(2 * (after - before) / (distances[i + 1] - distances[i - 1]), -.008, .008);
     }
     const n = Math.min(base.N - 22, Math.ceil((distances.at(-1) + start) / base.ds));
-    const shift = new Float64Array(n + 1); let segment = 0, travelled = 0, clippedStations = 0, maxEdgeCorrection = 0;
+    const shift = new Float64Array(n + 1), corrections = new Float64Array(n + 1), along = new Float64Array(n + 1); let segment = 0, travelled = 0, clippedStations = 0, maxEdgeCorrection = 0;
     for (let j = 0; j <= n; j++) {
       const x = travelled - start;
       while (segment < points.length - 2 && x > distances[segment + 1]) segment++;
@@ -128,16 +129,33 @@ export class PlanExecutor {
       let offset = x < 0 ? joinOffset + slope * x + .5 * curvature * x * x
         : quintic(a, b, b.distance - a.distance, x - a.distance);
       const i = base.idx(i0 + j), h = base.h[i], q = this.course.track.nearest(base.px[i] + Math.cos(h) * offset, base.pz[i] - Math.sin(h) * offset),
-        bound = this.roadBounds === 'kerb-centre' ? this.course.track.halfWidth + (this.course.track.curbWidth ?? 0) - .15
-          : this.course.track.halfWidth - 1.12,
+        asphalt = this.course.track.halfWidth - 1.12, kerb = this.course.track.halfWidth + (this.course.track.curbWidth ?? 0) - .15,
+        // line-kerb-v1: kerb grip is 0.88 and bumpy, while the speed envelope
+        // assumes asphalt. Only use as much kerb as the reference line already
+        // uses at this station; an offset never pushes wider onto it.
+        upper = this.roadBounds === 'kerb-centre' ? kerb : this.roadBounds === 'line-kerb-v1' ? clamp(base.lat[i], asphalt, kerb) : asphalt,
+        lower = this.roadBounds === 'kerb-centre' ? kerb : this.roadBounds === 'line-kerb-v1' ? clamp(-base.lat[i], asphalt, kerb) : asphalt,
         projection = Math.max(.3, Math.cos(angle(h - this.course.track.at(q.s).heading))),
-        bounded = smoothUpper(-smoothUpper(-q.lateral, bound, this.edgeBlend), bound, this.edgeBlend),
+        bounded = smoothUpper(-smoothUpper(-q.lateral, lower, this.edgeBlend), upper, this.edgeBlend),
         correction = (q.lateral - bounded) / projection;
       if (Math.abs(correction) > .001) clippedStations++;
-      maxEdgeCorrection = Math.max(maxEdgeCorrection, Math.abs(correction)); offset -= correction;
-      shift[j] = offset;
+      maxEdgeCorrection = Math.max(maxEdgeCorrection, Math.abs(correction));
+      shift[j] = offset; corrections[j] = correction; along[j] = x;
       travelled += base.len[i];
     }
+    // A pointwise clip leaves a curvature kink that the speed envelope reads as
+    // a corner (0.5 m clip -> k 16e-3 vs 6e-3, 69 -> 35 m/s). edgeRamp eases
+    // into each clip with a raised-cosine dilation: never nearer the edge than
+    // the raw clip, and tapered from the join so the car's own position holds.
+    // Each edge is eased separately so an S-bend's opposite clips never mask each other.
+    const outer = corrections.map(c => Math.max(0, c)), inner = corrections.map(c => Math.min(0, c));
+    if (this.edgeRamp > 0) for (let j = 0; j <= n; j++) for (let m = 0; m <= n; m++) {
+      const c = corrections[m], d = Math.abs(along[j] - along[m]);
+      if (!c || d >= this.edgeRamp) continue;
+      const eased = c * (.5 + .5 * Math.cos(Math.PI * d / this.edgeRamp)) * clamp(along[j] / this.edgeRamp, 0, 1);
+      if (c > 0) outer[j] = Math.max(outer[j], eased); else inner[j] = Math.min(inner[j], eased);
+    }
+    for (let j = 0; j <= n; j++) shift[j] -= outer[j] + inner[j];
     const path = this.lanes[this.slot]; this.slot = 1 - this.slot;
     if (path.window) for (const key of ['px', 'pz', 'len', 'h', 'k', 'ks', 'dk', 'lat', 'vmax', 'v', 'vbrk', 'st'])
       for (let j = -14; j <= path.window.n + 16; j++) { const i = base.idx(path.window.i0 + j); path[key][i] = base[key][i]; }
@@ -165,7 +183,7 @@ export class PlanExecutor {
         baseSpeed: base.vmax[i], curvature: path.ks[i], baseCurvature: base.ks[i], lateral: path.lat[i] };
     }
     this.compileTrace = { roadBounds: this.roadBounds, edgeBlend: this.edgeBlend, routeOrigin: this.routeOrigin,
-      joinState: this.joinState, referenceJoin, joinOffset, bodyOffset: cur.e,
+      joinState: this.joinState, edgeRamp: this.edgeRamp, referenceJoin, joinOffset, bodyOffset: cur.e,
       consumed, remainingDistances: distances.slice(1), clippedStations, maxEdgeCorrection, floor };
   }
   step(car, cars, dt, { time = 0, state = {} } = {}) {

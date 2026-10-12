@@ -10,14 +10,14 @@ import { timingProfile } from './timing-profiles.mjs';
 import { archiveExecution } from './archive-execution.mjs';
 
 const args = process.argv.slice(2), arg = key => { const i = args.indexOf('--' + key); return i < 0 ? null : args[i + 1]; };
-const allowed = new Set(['--name', '--seconds', '--offsets', '--profiles', '--routeOrigin', '--feedback', '--joinState']);
+const allowed = new Set(['--name', '--seconds', '--offsets', '--profiles', '--routeOrigin', '--feedback', '--joinState', '--roadBounds', '--edgeRamp']);
 if (args.length % 2 || args.some((x, i) => i % 2 === 0 && !allowed.has(x))) throw Error('Unsupported or incomplete execution probe option');
 const name = arg('name'), seconds = Number(arg('seconds') ?? 120),
   offsets = (arg('offsets') ?? '0,0.3,-0.3,1,-1').split(',').map(Number),
   profiles = (arg('profiles') ?? 'native').split(',');
 if (!name || !/^[a-z0-9-]+$/i.test(name) || !Number.isFinite(seconds) || seconds < 10 || seconds > 180
   || offsets.some(x => !Number.isFinite(x) || Math.abs(x) > 6)) throw Error('Bounded name, duration and offsets required');
-const planExecution = { roadBounds: 'kerb-centre', frontalGuard: 'live-body-speed-v1',
+const planExecution = { roadBounds: arg('roadBounds') ?? 'kerb-centre', edgeRamp: Number(arg('edgeRamp') ?? 0), frontalGuard: 'live-body-speed-v1',
   routeOrigin: arg('routeOrigin') ?? 'rolling-v1', feedback: arg('feedback') ?? 'escape-v1',
   joinState: arg('joinState') ?? 'body-v1' };
 const output = resolve(HOME, 'artifacts/route-execution-probes', name);
