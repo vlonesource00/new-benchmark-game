@@ -26,13 +26,19 @@ p.add_argument('--max-discrete', type=float, default=None, help='share of ticks 
 p.add_argument('--max-flips', type=float, default=None, help='share of ticks whose controls differ by more than --max-control (default 0 float64, 1e-3 float32)')
 p.add_argument('--max-drift', type=float, default=None, help='closed-loop median position drift in m (default 1e-6 float64, 1e-2 float32)')
 p.add_argument('--max-clean-drift', type=float, default=None, help='worst drift over clean cases in m (default 1e-6 float64, 5e-2 float32)')
-p.add_argument('--max-outcome', type=float, default=None, help='share of cases whose race outcome differs (default .05 float64, .1 float32)')
+p.add_argument('--max-outcome', type=float, default=None, help='float32: share of cases whose race outcome differs (default .1); float64 allows only KNOWN_BOUNDARY')
 a = p.parse_args()
 dtype, dev = getattr(torch, a.dtype), 'cuda'
 f64 = dtype == torch.float64
 max_control = a.max_control if a.max_control is not None else (1e-9 if f64 else 2e-2)
 max_discrete = a.max_discrete if a.max_discrete is not None else (0 if f64 else 2e-3)
-max_outcome = a.max_outcome if a.max_outcome is not None else (.05 if f64 else .1)
+max_outcome = a.max_outcome if a.max_outcome is not None else .1
+# float64 regression cases whose outcome separates at a documented physics boundary (never tolerated elsewhere):
+#   exec-v1 case 36: exact (<4e-13 m) until 3.85 s, when the ego's outside wheel sits on the runoff edge
+#   (|lateral| 21.53 + 0.86 = 22.39 vs halfWidth + curb + runoff 22.45); a last-bit difference takes the other
+#   surface branch for one tick (w1 fx 403 N apart) and the trajectories separate. The clean-window gate still
+#   requires it exact before then, and it must keep diverging only there (a change means the port changed).
+KNOWN_BOUNDARY = {'exec-v1': {36}}
 max_clean = a.max_clean_drift if a.max_clean_drift is not None else (1e-6 if f64 else 5e-2)
 max_flips = a.max_flips if a.max_flips is not None else (0 if f64 else 1e-3)
 max_drift = a.max_drift if a.max_drift is not None else (1e-6 if f64 else 1e-2)
@@ -156,6 +162,10 @@ diff = {'damage': (end[:, 0, fd] - ref[:, 0, fd]).abs() > .002, 'track limit': o
 bad = torch.zeros(C, dtype=torch.bool, device=dev)
 for k, v in diff.items():
     print(f'  outcome {k:12s} differs in {int(v.sum())}/{C} cases {v.nonzero().squeeze(1).tolist()}'); bad |= v
-if bad.double().mean().item() > max_outcome: failures.append(f'race outcome differs in {int(bad.sum())}/{C} cases (> {max_outcome:.0%})')
+if f64:
+    known = KNOWN_BOUNDARY.get(os.path.basename(os.path.normpath(a.ref)), set())
+    got_bad = set(bad.nonzero().squeeze(1).tolist())
+    if got_bad != known: failures.append(f'float64 outcome differences {sorted(got_bad)} != documented boundary cases {sorted(known)}')
+elif bad.double().mean().item() > max_outcome: failures.append(f'race outcome differs in {int(bad.sum())}/{C} cases (> {max_outcome:.0%})')
 print('PASS' if not failures else 'FAIL: ' + '; '.join(failures))
 sys.exit(1 if failures else 0)
