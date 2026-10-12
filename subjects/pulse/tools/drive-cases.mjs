@@ -32,7 +32,7 @@ export async function driveCases({ name, model, cases, provenance = {}, actor = 
     const executionSource = archiveExecution(output);
     const report = { name, model, actor, planExecution, modelSha256: policy.metadata.modelSha256, versions: ver, provenance, executionSource,
       contractDigest: digest({ cases, actor, planExecution, modelSha256: policy.metadata.modelSha256, versions: ver }),
-      status: 'running', caseCount: cases.length, startedAt: Date.now(), cases: [],
+      status: 'running', caseCount: cases.length, startedAt: Date.now(), pid: process.pid, cases: [],
       scope: 'Unassisted PULSE physical driving. Frame transport is emulated; no actual browser Worker certification. Fixed service profiles are reproducible scheduling probes.' };
     atomicJSON(resolve(output, 'report.json'), report);
     let h = new Array(policy.schema.hidden).fill(0);

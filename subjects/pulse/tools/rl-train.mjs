@@ -43,7 +43,7 @@ async function evaluate(model, tag) {
 }
 let model = arg('model'), best = { ok: -1 };
 if (arg('baseline')) best = { ok: +arg('baseline'), model, iteration: 0 };
-writeFileSync(resolve(root, 'config.json'), JSON.stringify({ name, plan: planPath, start: model, workers, perWorker, iterations, evalEvery, sigma, bc, store, bcWeight: arg('bc-weight', '.5'), weights, ppoEpochs: arg('ppo-epochs', '4'), lr: arg('lr', '3e-4') }, null, 2));
+writeFileSync(resolve(root, 'config.json'), JSON.stringify({ name, plan: planPath, start: model, workers, perWorker, iterations, evalEvery, sigma, bc, store, pid: process.pid, bcWeight: arg('bc-weight', '.5'), weights, ppoEpochs: arg('ppo-epochs', '4'), lr: arg('lr', '3e-4') }, null, 2));
 const pending = [];
 for (let it = 1; it <= iterations; it++) {
   const started = Date.now(), dir = resolve(store, `it-${String(it).padStart(3, '0')}`);

@@ -8,6 +8,8 @@ const RECENT = 12 * 3600e3, STALE = 20 * 60e3, FINISHED_SHOWN = 8;
 const json = path => { try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return null; } };
 const dirs = path => existsSync(path) ? readdirSync(path, { withFileTypes: true }).filter(d => d.isDirectory() || d.isSymbolicLink()).map(d => d.name) : [];
 const stat = path => { try { return statSync(path); } catch { return null; } };
+// Jobs record their process id; a dead process is stalled at once (null: no pid recorded, fall back to timing).
+const alive = pid => { if (!pid) return null; try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
 
 function part(kind, name, file, done, total, startedAt, finished, extra = {}) {
   const s = stat(file); if (!s) return null;
@@ -17,7 +19,8 @@ function part(kind, name, file, done, total, startedAt, finished, extra = {}) {
   // A crashed job leaves its report 'running': silence longer than 4 units of its own pace (min 3 min) means stalled.
   const pace = start != null && done > 0 ? (updated - start) / done : null;
   const quiet = pace ? Math.max(3 * 60e3, 4 * pace) : STALE;
-  const state = finished ? 'complete' : now - updated > quiet ? 'stalled' : 'running';
+  const live = alive(extra.pid);
+  const state = finished ? 'complete' : live === false || (live == null && now - updated > quiet) ? 'stalled' : 'running';
   return { kind, name, done, total: finished && total == null ? done : total, start, updated, state, ...extra };
 }
 
@@ -50,13 +53,13 @@ export function jobs(root) {
   const teacher = resolve(root, 'artifacts/teacher');
   for (const name of dirs(teacher)) {
     const file = resolve(teacher, name, 'report.json'), r = json(file); if (!r) continue;
-    parts.push(part('Teacher labels', name, file, r.cases?.length ?? 0, r.caseCount ?? null, r.startedAt, r.status !== 'running'));
+    parts.push(part('Teacher labels', name, file, r.cases?.length ?? 0, r.caseCount ?? null, r.startedAt, r.status !== 'running', { pid: r.pid }));
   }
   const suites = resolve(root, 'artifacts/driving-suites');
   for (const name of dirs(suites)) {
     const file = resolve(suites, name, 'report.json'), r = json(file); if (!r) continue;
     parts.push(part('Evaluation', name, file, r.cases?.length ?? 0, r.caseCount ?? null, r.startedAt, r.status !== 'running',
-      { succeeded: r.status === 'complete' ? r.succeeded : undefined }));
+      { succeeded: r.status === 'complete' ? r.succeeded : undefined, pid: r.pid }));
   }
   const models = resolve(root, 'artifacts/models');
   for (const name of dirs(models)) {
@@ -83,9 +86,9 @@ export function jobs(root) {
     const last = log.at(-1), best = json(resolve(rl, name, 'best.json'));
     const file = log.length ? logFile : configFile;
     // A live loop always has its current iteration folder (rollouts, then the GPU update).
-    const alive = finished || existsSync(current);
+    const running = finished || existsSync(current);
     parts.push(part('RL (PPO)', name, file, log.length + fraction, config.iterations, stat(configFile)?.birthtimeMs, finished, {
-      ...(alive ? {} : { state: 'stalled' }),
+      pid: config.pid, ...(running ? {} : { state: 'stalled' }),
       eta: pace ? pace * (config.iterations - log.length - fraction) * 1e3 : null,
       detail: [`iteration ${log.length + (finished ? 0 : 1)}/${config.iterations}`, finished ? null : rolled >= perIteration ? `${rolled} rollouts done · PPO update on GPU` : `${rolled}/${perIteration} rollouts (CPU)`,
         last ? `train success ${(last.success * 100).toFixed(0)}% · return ${last.meanReturn.toFixed(1)} · damage ${(last.damage * 100).toFixed(1)}%` : null,
