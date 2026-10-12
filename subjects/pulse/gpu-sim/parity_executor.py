@@ -3,7 +3,13 @@
 1. Teacher-forced: every tick the world state is the reference's; the executor's own state (course profile,
    lanes, observer history, controller memory) runs free. Compares its controls and internals per tick.
 2. Closed loop: physics + executor run free from the first state (rivals replay their recorded inputs);
-   reports the executor car's position drift.
+   reports the executor car's position drift and its race outcome per case (damage, track legality, order
+   against every rival at the end) against the reference.
+Contacts and surface edges (kerb/runoff) are discontinuities: a last-bit rounding difference can take the other
+branch there and the trajectories separate chaotically. So drift is gated worst-case over every case while it is
+clean (before its first reference contact or track-limit excursion), plus the median overall and per-case race
+outcome agreement afterwards. float64 must be exact while clean; float32 gets small tolerances and a small share
+of mismatched discrete ticks (rounding flips the controller's thresholds).
 Exits 1 when a gate fails."""
 import argparse, json, os, sys
 import numpy as np
@@ -16,14 +22,18 @@ p = argparse.ArgumentParser()
 p.add_argument('--ref', required=True)
 p.add_argument('--dtype', default='float64')
 p.add_argument('--max-control', type=float, default=None, help='largest steer/throttle/brake error (default 1e-9 float64, 2e-2 float32)')
-p.add_argument('--max-discrete', type=int, default=None, help='allowed compile/path/cursor mismatch ticks (default 0 float64)')
+p.add_argument('--max-discrete', type=float, default=None, help='share of ticks with a compile/path/cursor mismatch (default 0 float64, 2e-3 float32)')
 p.add_argument('--max-flips', type=float, default=None, help='share of ticks whose controls differ by more than --max-control (default 0 float64, 1e-3 float32)')
-p.add_argument('--max-drift', type=float, default=None, help='closed-loop position drift gate in m: max over cases (float64, default 1e-6), median (float32, default 1e-2)')
+p.add_argument('--max-drift', type=float, default=None, help='closed-loop median position drift in m (default 1e-6 float64, 1e-2 float32)')
+p.add_argument('--max-clean-drift', type=float, default=None, help='worst drift over clean cases in m (default 1e-6 float64, 5e-2 float32)')
+p.add_argument('--max-outcome', type=float, default=None, help='share of cases whose race outcome differs (default .05 float64, .1 float32)')
 a = p.parse_args()
 dtype, dev = getattr(torch, a.dtype), 'cuda'
 f64 = dtype == torch.float64
 max_control = a.max_control if a.max_control is not None else (1e-9 if f64 else 2e-2)
-max_discrete = a.max_discrete if a.max_discrete is not None else (0 if f64 else 10 ** 9)
+max_discrete = a.max_discrete if a.max_discrete is not None else (0 if f64 else 2e-3)
+max_outcome = a.max_outcome if a.max_outcome is not None else (.05 if f64 else .1)
+max_clean = a.max_clean_drift if a.max_clean_drift is not None else (1e-6 if f64 else 5e-2)
 max_flips = a.max_flips if a.max_flips is not None else (0 if f64 else 1e-3)
 max_drift = a.max_drift if a.max_drift is not None else (1e-6 if f64 else 1e-2)
 meta = json.load(open(os.path.join(a.ref, 'meta.json')))
@@ -78,9 +88,9 @@ print(f'executor teacher-forced ({a.dtype}, {C} cases, {S} ticks):')
 for k in OUTPUTS:
     e = err[..., col[k]]
     if k in ('compiles', 'path', 'cursor'):
-        bad = (e > .5).sum().item()
-        print(f'  {k:13s} mismatched ticks {bad}')
-        if bad > max_discrete: failures.append(f'{k} mismatched on {bad} ticks')
+        bad = (e > .5).sum().item(); share = bad / e.numel()
+        print(f'  {k:13s} mismatched ticks {bad} ({share:.1e})')
+        if share > max_discrete: failures.append(f'{k} mismatched on {bad} ticks ({share:.1e} > {max_discrete:.0e})')
     else:
         print(f'  {k:13s} max {e.max().item():.3e}')
 first = (err[..., [col['steer'], col['throttle'], col['brake']]].amax(-1) > max_control) | (err[..., [col['compiles'], col['path'], col['cursor']]].amax(-1) > .5)
@@ -99,7 +109,16 @@ if flips > max_flips: failures.append(f'control flips {flips:.2e} > {max_flips:.
 # 2. Closed loop: the executor drives slot 0, rivals replay their recorded inputs.
 w, x = make(); x.reset()
 ex_lane = torch.tensor(lanes, device=dev)
-drift = {}
+drift, clean = {}, {}
+fx, fz, fl, fd, fs = (fields.index(k) for k in ('x', 'z', 'lateral', 'damage', 's'))
+# Track legality as the game rule: |lateral| - track/2 beyond halfWidth + curb (both classes: 1.72 m track).
+limit = meta['trackGeometry']['halfWidth'] + meta['trackGeometry']['curbWidth'] + 1.72 / 2
+ref_dmg = states[..., fd].amax(-1)  # any car's damage per (case, tick)
+first = lambda h: h[0].item() + 1 if len(h) else S + 1
+ref_off = states[:, :, 0, fl].abs() > limit
+first_event = torch.tensor([min(first((ref_dmg[k, 1:] > ref_dmg[k, :-1] + 1e-12).nonzero()), first(ref_off[k, 1:].nonzero()))
+                            for k in range(C)], device=dev)
+off_got = torch.zeros(C, dtype=torch.bool, device=dev)
 for t in range(S):
     if t:
         # The executor's own executed brake from the previous tick (rivals: their recorded one).
@@ -110,16 +129,33 @@ for t in range(S):
     lon = (out[:, col['throttle']] - out[:, col['brake']]).clamp(-1, 1)
     u[ex_lane, 0], u[ex_lane, 1], u[ex_lane, 2] = lon.clamp(min=0), (-lon).clamp(min=0), out[:, col['steer']].clamp(-1, 1)
     w.step(DT, u[:, 0], u[:, 1], u[:, 2], u[:, 3])
+    off_got |= w.state()[ex_lane, fl].abs() > limit
     if t + 1 in (120, 360, 600, 1200, 2400):
         st, tr = w.state()[ex_lane], states[:, t + 1, 0]
         pos = torch.hypot(st[:, fields.index('x')] - tr[:, fields.index('x')], st[:, fields.index('z')] - tr[:, fields.index('z')])
         worst = pos.argmax().item(); dmg = states[worst, :, :, fields.index('damage')].amax(-1)
-        hit = (dmg[1:] > dmg[:-1]).nonzero(); drift[t + 1] = (pos.max() if f64 else pos.median()).item()
+        hit = (dmg[1:] > dmg[:-1]).nonzero(); drift[t + 1] = pos.median().item()
+        pre = first_event > t + 1
+        clean[t + 1] = (pos[pre].max().item() if pre.any() else 0., int(pre.sum()))
         print(f'  closed loop {(t + 1) * DT:>4.0f} s  executor position median {pos.median().item():.2e} max {pos.max().item():.2e} m'
               f' (case {worst}, first reference contact {hit[0].item() * DT if len(hit) else None} s)')
-# Closed-loop drift: float64 must track the reference exactly (max over cases, every checkpoint); float32
-# rounding drifts chaotically after contacts, so its gate is the median.
 for tick, d in drift.items():
-    if d > max_drift: failures.append(f'closed-loop {"max" if f64 else "median"} drift {d:.2e} m > {max_drift:.0e} at {tick * DT:.0f} s')
+    if d > max_drift: failures.append(f'closed-loop median drift {d:.2e} m > {max_drift:.0e} at {tick * DT:.0f} s')
+    m, n = clean[tick]
+    print(f'  {tick * DT:>4.0f} s  worst drift over {n} clean cases (no contact or track-limit excursion yet) {m:.2e} m')
+    if m > max_clean: failures.append(f'clean drift {m:.2e} m > {max_clean:.0e} at {tick * DT:.0f} s')
+# Race outcome of the executor car per case: final damage (within 0.2 %), ever beyond the track limit,
+# and the order against every active rival at the end (progress along s, wrapped).
+end, ref = w.state().view(C, N, F), states[:, S]
+off_ref = ref_off.any(1)
+L = meta['trackGeometry']['length']
+order = lambda st: (torch.remainder(st[:, 1:, fs] - st[:, :1, fs] + L / 2, L) - L / 2) > 0
+act = active[:, 1:].to(dev)
+diff = {'damage': (end[:, 0, fd] - ref[:, 0, fd]).abs() > .002, 'track limit': off_got != off_ref,
+        'order': ((order(end) != order(ref)) & act).any(1)}
+bad = torch.zeros(C, dtype=torch.bool, device=dev)
+for k, v in diff.items():
+    print(f'  outcome {k:12s} differs in {int(v.sum())}/{C} cases {v.nonzero().squeeze(1).tolist()}'); bad |= v
+if bad.double().mean().item() > max_outcome: failures.append(f'race outcome differs in {int(bad.sum())}/{C} cases (> {max_outcome:.0%})')
 print('PASS' if not failures else 'FAIL: ' + '; '.join(failures))
 sys.exit(1 if failures else 0)

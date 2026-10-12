@@ -6,12 +6,12 @@ import { HOME, digest } from './versions.mjs';
 import { driveCases } from './drive-cases.mjs';
 const args = process.argv.slice(2), arg = key => { const i = args.indexOf('--' + key); return i < 0 ? null : args[i + 1]; };
 const name = arg('name'), model = arg('model'), source = arg('source');
-const allowed = new Set(['--name', '--model', '--source', '--plan', '--shard', '--shards', '--roadBounds', '--edgeBlend', '--edgeRamp', '--frontalGuard', '--routeOrigin', '--feedback', '--joinState', '--sideGuard', '--traces', '--cases']);
+const allowed = new Set(['--name', '--model', '--source', '--plan', '--shard', '--shards', '--roadBounds', '--edgeBlend', '--edgeRamp', '--frontalGuard', '--routeOrigin', '--feedback', '--joinState', '--sideGuard', '--offsetLag', '--traces', '--cases']);
 if (args.length % 2 || args.some((x, i) => i % 2 === 0 && !allowed.has(x))) throw Error('Unsupported or incomplete plan evaluation option');
 const planExecution = { roadBounds: arg('roadBounds') ?? 'asphalt-body', edgeBlend: Number(arg('edgeBlend') ?? 0), edgeRamp: Number(arg('edgeRamp') ?? 0),
   frontalGuard: arg('frontalGuard') ?? 'supervisor-v1', routeOrigin: arg('routeOrigin') ?? 'rolling-v1',
   feedback: arg('feedback') ?? 'escape-v1', joinState: arg('joinState') ?? 'body-v1',
-  ...(arg('sideGuard') ? { sideGuard: arg('sideGuard') } : {}) };
+  ...(arg('sideGuard') ? { sideGuard: arg('sideGuard') } : {}), ...(arg('offsetLag') ? { offsetLag: Number(arg('offsetLag')) } : {}) };
 if (!name || !model || !(source || arg('plan'))) throw Error('--name --model and --source report or --plan required');
 // --plan: development cases straight from a frozen generated plan (sharded for parallel runs).
 const fromPlan = () => { const text = readFileSync(resolve(HOME, arg('plan')), 'utf8'), { digest: expected, ...content } = JSON.parse(text);

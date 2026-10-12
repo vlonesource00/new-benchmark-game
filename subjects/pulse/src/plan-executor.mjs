@@ -33,7 +33,7 @@ const SIDE_GAP = 2.7, SIDE_LENGTH = 5.5, SIDE_HORIZON = 100, SIDE_ACCEL = 6;
  */
 export class PlanExecutor {
   constructor(track, car, { frontalGuard = 'supervisor-v1', roadBounds = 'asphalt-body', edgeBlend = 0, edgeRamp = 0,
-    routeOrigin = 'rolling-v1', feedback = 'escape-v1', joinState = 'body-v1', sideGuard = 'off', ...unsupported } = {}) {
+    routeOrigin = 'rolling-v1', feedback = 'escape-v1', joinState = 'body-v1', sideGuard = 'off', offsetLag = 0, ...unsupported } = {}) {
     if (Object.keys(unsupported).length) throw Error('Unsupported plan execution option: ' + Object.keys(unsupported).join(', '));
     if (!['supervisor-v1', 'live-body-speed-v1'].includes(frontalGuard)) throw Error('Unknown experimental frontal guard');
     if (!['asphalt-body', 'kerb-centre', 'line-kerb-v1'].includes(roadBounds)) throw Error('Unknown experimental road bound');
@@ -43,7 +43,12 @@ export class PlanExecutor {
     if (!['escape-v1', 'course-v1'].includes(feedback)) throw Error('Unknown experimental route feedback');
     if (!['body-v1', 'reference-v1'].includes(joinState)) throw Error('Unknown experimental route join');
     if (!['off', 'clearance-v1'].includes(sideGuard)) throw Error('Unknown experimental side guard');
+    if (!Number.isFinite(offsetLag) || offsetLag < 0 || offsetLag > 1) throw Error('Invalid experimental offset lag');
     this.sideGuard = sideGuard;
+    // offsetLag (s): first-order low-pass on the committed lane offsets. The learned route's near knot jitters from
+    // reply to reply (median 0.17 m, p90 1 m on straights); at 250 km/h each jump is a lane change in 0.4 s, so the
+    // car weaves, the slide guard lifts and the hybrid (throttle > 0.8) never deploys. Speed is not filtered.
+    this.offsetLag = offsetLag;
     this.frontalGuard = frontalGuard; this.roadBounds = roadBounds; this.edgeBlend = edgeBlend; this.edgeRamp = edgeRamp; this.routeOrigin = routeOrigin;
     this.feedback = feedback; this.joinState = joinState;
     const config = settingsFor(track.id);
@@ -88,7 +93,12 @@ export class PlanExecutor {
     const origin = this.requests.get(sequence);
     if (this.routeOrigin === 'request-v1' && (!origin || Math.abs(origin.at - at) > 1e-9))
       throw Error('Accepted plan has no matching observation origin');
-    this.goal = decodePlan(action); this.sequence = sequence; this.at = at;
+    const goal = decodePlan(action);
+    if (this.offsetLag > 0 && this.sequence > 0) {
+      const a = 1 - Math.exp(-Math.max(0, at - this.at) / this.offsetLag);
+      goal.offsets = goal.offsets.map((x, i) => this.goal.offsets[i] + a * (x - this.goal.offsets[i]));
+    }
+    this.goal = goal; this.sequence = sequence; this.at = at;
     this.origin = origin ?? null;
     for (const seq of this.requests.keys()) if (seq <= sequence) this.requests.delete(seq);
   }
