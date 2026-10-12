@@ -11,7 +11,7 @@ import { createPolicy } from './policy.mjs';
 import { PlanExecutor } from '../src/plan-executor.mjs';
 import { PLAN_CONTRACT } from '../src/plan-contract.mjs';
 import { runScenario } from './scenario.mjs';
-import { encounterOutcome } from '../src/encounter-outcomes.mjs';
+import { encounterOutcome, ENCOUNTER_OBJECTIVE, RACE_DAMAGE_OBJECTIVE } from '../src/encounter-outcomes.mjs';
 import { archiveExecution } from './archive-execution.mjs';
 import { Course } from '../../intercept/src/course.js';
 import { Observer } from '../../intercept/src/observer.js';
@@ -20,13 +20,14 @@ import { Battle } from '../../intercept/src/battle.js';
 import { Outcomes } from '../../intercept/src/outcomes.js';
 
 const args = process.argv.slice(2), arg = (key, fallback) => { const i = args.indexOf('--' + key); return i < 0 ? fallback : args[i + 1]; };
-const allowed = new Set(['--name', '--model', '--plan', '--cases', '--validation', '--data-out', '--only', '--replays', '--dagger']);
+const allowed = new Set(['--name', '--model', '--plan', '--cases', '--validation', '--data-out', '--only', '--replays', '--dagger', '--objective']);
 if (args.length % 2 || args.some((x, i) => i % 2 === 0 && !allowed.has(x))) throw Error('Unsupported or incomplete teacher option');
 const name = arg('name'), model = arg('model'), planPath = arg('plan'), dataRoot = arg('data-out');
 const caseIds = (arg('cases') ?? '').split(',').filter(Boolean), validation = new Set((arg('validation') ?? '').split(',').filter(Boolean));
 if (!name || !/^[a-z0-9-]+$/i.test(name) || !model || !planPath || !caseIds.length || !dataRoot) throw Error('--name --model --plan --cases --data-out required');
 const plan = JSON.parse(readFileSync(resolve(HOME, planPath), 'utf8')), { digest: expected, ...content } = plan;
-if (plan.format !== 'pulse-generated-encounters-v1' || digest(content) !== expected) throw Error('Frozen plan changed');
+const fieldPlan = plan.format === 'pulse-generated-field-v3';
+if (!['pulse-generated-encounters-v1', 'pulse-generated-field-v3'].includes(plan.format) || digest(content) !== expected) throw Error('Frozen plan changed');
 const scenes = caseIds.map(id => plan.cases.find(c => c.id === id));
 if (scenes.some(s => !s || s.split !== 'train')) throw Error('Only generated TRAIN-pool cases may be taught');
 const output = resolve(HOME, 'artifacts/teacher', name);
@@ -51,6 +52,8 @@ const allReplays = arg('replays') === 'all';
 // every visited state is labelled with the teacher's answer, so the student
 // learns to recover from its own mistakes rather than only teacher states.
 const dagger = arg('dagger') === 'beta-0.5';
+const objective = { official: ENCOUNTER_OBJECTIVE, race10: RACE_DAMAGE_OBJECTIVE }[arg('objective', 'official')];
+if (!objective) throw Error('--objective must be official or race10');
 if (arg('dagger') && !dagger) throw Error('Only --dagger beta-0.5 is supported');
 if (dagger) candidates.splice(0, Infinity, candidates.find(c => c.side === 'battle'));
 
@@ -139,13 +142,15 @@ try {
           if (!dagger || Math.floor(context.time / 2) % 2 === 0) step.action = label;
           return step;
         } });
-      const outcome = encounterOutcome(result, { seconds: settings.seconds, checkpointDistance: scene.checkpointDistance });
-      const failures = Object.entries(scene.requirements ?? {}).filter(([k, m]) => !(result.summary[k] >= m)).map(([k]) => k);
+      const outcome = encounterOutcome(result, { seconds: settings.seconds, checkpointDistance: scene.checkpointDistance, objective });
+      const measured = k => k === 'validFullLaps' ? result.summary.fullLaps.filter(l => l.valid).length : result.summary[k];
+      const failures = Object.entries(scene.requirements ?? {}).filter(([k, m]) => !(k === 'unpassedTraffic' ? measured(k) <= m : measured(k) >= m)).map(([k]) => k);
       // Label admission (not the official success rule): INTERCEPT GT rivals sometimes leave
       // the road unprovoked and are then hazards, so require every rival that stayed
       // racing traffic to be passed and retained, and at least two such passes.
       const racing = (result.summary.encounters ?? []).filter(e => e.kind === 'traffic');
-      const complete = !scene.requirements?.retainedPasses || failures.length === 0
+      // Field plans: requirements (all slower traffic passed, hazards cleared, a valid lap) are the admission.
+      const complete = fieldPlan ? failures.length === 0 : !scene.requirements?.retainedPasses || failures.length === 0
         || racing.length >= 2 && racing.every(e => Number.isFinite(e.retained));
       const ok = dagger || outcome.admissible && complete;
       tried.push({ label: candidate.label, admissible: outcome.admissible, complete, official: outcome.admissible && !failures.length, racing: racing.length, failures: [...outcome.failures ?? [], ...failures],
@@ -155,7 +160,7 @@ try {
       if (dagger) winner = { candidate, outcome, result, settings, labels };
       else if (ok && (!winner || outcome.costSeconds < winner.outcome.costSeconds)) winner = { candidate, outcome, result, settings };
       // Solo and hazard cases have one natural answer; stop at the first success.
-      if (ok && !scene.requirements?.retainedPasses) break;
+      if (ok && (fieldPlan ? scene.family === 'solo' : !scene.requirements?.retainedPasses)) break;
     }
     const entry = { id: scene.id, split, physicalFamily: scene.physicalFamily, tried, selected: winner?.candidate.label ?? null };
     if (winner) {
@@ -179,7 +184,7 @@ try {
           generatedCase: scene.id, requestHistory: 'accepted-seat-requests-v1', source: 'teacher:' + winner.candidate.label,
           dagger: dagger ? 'beta-0.5 2 s blocks; target = shadow teacher label at visited state' : null,
           labelSource: 'Event-triggered pass teacher in reference-offset coordinates; privileged reference line, public rivals',
-          admission: winner.outcome, labelAdmission: 'admissible + all on-road traffic passed and retained (>=2)', retainedPasses: winner.result.summary.retainedPasses, steps: rows.length };
+          admission: winner.outcome, labelAdmission: 'admissible + all on-road traffic passed and retained (>=2)', objective: objective.version, retainedPasses: winner.result.summary.retainedPasses, steps: rows.length };
         writeFileSync(file, [head, ...rows.map((r, i) => ({ type: 'plan-target', index: i, reset: i === 0, request: r.request,
           observation: r.observation.normalized, target: dagger ? winner.labels.get(r.request.seq) : r.planProposal }))].map(r => JSON.stringify(r)).join('\n') + '\n');
         entry.exported = dataRoot + '/' + split + '/' + episode + '.jsonl'; entry.replay = '/?episode=' + episode;

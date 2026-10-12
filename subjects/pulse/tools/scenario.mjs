@@ -29,7 +29,15 @@ export async function runScenario(options = {}) {
     observationVersion: SCHEMA.version, ...options };
   const { schema, observe: observeAt } = observationProfile(settings.observationVersion);
   if (!['teacher', 'shadow', 'policy', 'dagger'].includes(settings.mode)) throw Error('Invalid mode');
-  if (!['solo', 'pair', 'train', 'stopped', 'spun'].includes(settings.fixture)) throw Error('Invalid fixture');
+  if (!['solo', 'pair', 'train', 'stopped', 'spun', 'field'].includes(settings.fixture)) throw Error('Invalid fixture');
+  // Generated field: each rival has its own driver, class, placement and an
+  // optional stop/spin time (0 = already stopped). Speeds are physical m/s.
+  if (settings.fixture === 'field' && (!Array.isArray(settings.field) || settings.field.length < 1 || settings.field.length > 6
+    || settings.field.some(f => typeof f.driver !== 'string' || !['gt', 'lmdh'].includes(f.classId)
+      || !(f.gap >= -80 && f.gap <= 400) || !(Math.abs(f.lateral) <= 9) || !(f.speed >= 0 && f.speed <= 90)
+      || !(f.stopAt === null || f.stopAt === undefined || f.stopAt >= 0 && f.stopAt <= 120)
+      || ![null, undefined, 'stopped', 'spun'].includes(f.hazard) || (!f.hazard) !== (f.stopAt === null || f.stopAt === undefined))))
+    throw Error('Invalid bounded generated field');
   if (![20, 30, 60, 120].includes(settings.rate)) throw Error('rate must be 20, 30, 60 or 120');
   if (!(settings.seconds > 0 && settings.seconds <= 600)) throw Error('Duration must be between 0 and 600 seconds');
   if (![settings.seed, settings.start, settings.lateral, settings.rivalOffset, settings.yawOffset, settings.speed, settings.lagMs, settings.spikeMs, settings.spikeAt, settings.stallAt, settings.stallMs, settings.hazardAt].every(Number.isFinite)
@@ -77,11 +85,12 @@ export async function runScenario(options = {}) {
     || (settings.tailSpeed !== null && (!Number.isFinite(settings.tailSpeed) || settings.tailSpeed < 0 || settings.tailSpeed > 90))
     || (settings.fixture !== 'train' && (settings.tailGapDelta || settings.tailSpeed !== null)))
     throw Error('Tail-car variation requires bounded moving train traffic');
-  const count = settings.fixture === 'solo' ? 1 : settings.fixture === 'train' ? 4 : 2;
+  const count = settings.fixture === 'field' ? 1 + settings.field.length : settings.fixture === 'solo' ? 1 : settings.fixture === 'train' ? 4 : 2;
+  const fieldAt = i => settings.fixture === 'field' && i ? settings.field[i - 1] : null;
   const teams = Array.from({ length: count }, (_, i) => ({ id: `pulse-lab-${i}`, index: i, grid: i, starter: 0,
     name: i ? `Rival ${i}` : 'PULSE laboratory', short: i ? `GT${i}` : 'PLS', color: i ? '#51d5df' : '#ffd166',
-    classId: i && settings.fixture === 'train' ? 'gt' : settings.classId,
-    drivers: [{ id: i ? settings.rival : settings.expertDriver, kind: 'ai', name: i ? settings.rival : settings.expertDriver + ' reference', short: i ? 'RIV' : 'REF' }] }));
+    classId: fieldAt(i)?.classId ?? (i && settings.fixture === 'train' ? 'gt' : settings.classId),
+    drivers: [{ id: i ? fieldAt(i)?.driver ?? settings.rival : settings.expertDriver, kind: 'ai', name: i ? fieldAt(i)?.driver ?? settings.rival : settings.expertDriver + ' reference', short: i ? 'RIV' : 'REF' }] }));
   const mailbox = new ActionMailbox({ actionSize: settings.planFactory ? PLAN_CONTRACT.width : 2 }), delayed = [], rows = [], events = [], teacherMs = [], encoderMs = [], inferenceMs = [], supervisorMs = [];
   let armed = false, current = null, previous = [0, 0], race, acceptedAt = 0;
   let planExecutor = null;
@@ -169,14 +178,15 @@ export async function runScenario(options = {}) {
   let startAt = race.time;
   for (let i = 0; i < count; i++) {
     const c = race.cars[i], fuel = c.fuel;
-    const s = (settings.warmupToStart ? 20 : settings.start) + (i ? settings.rivalGap + (i - 1) * settings.trainSpacing : 0)
+    const f = fieldAt(i);
+    const s = f ? settings.start + f.gap : (settings.warmupToStart ? 20 : settings.start) + (i ? settings.rivalGap + (i - 1) * settings.trainSpacing : 0)
       + (i === count - 1 && settings.fixture === 'train' ? settings.tailGapDelta : 0),
-      lateral = (settings.warmupToStart ? 0 : settings.lateral) + (i ? ((i % 2) ? .2 : -.2) + settings.rivalOffset : 0);
-    const speed = i === count - 1 && settings.fixture === 'train' && settings.tailSpeed !== null ? settings.tailSpeed
+      lateral = f ? f.lateral : (settings.warmupToStart ? 0 : settings.lateral) + (i ? ((i % 2) ? .2 : -.2) + settings.rivalOffset : 0);
+    const speed = f ? f.speed : i === count - 1 && settings.fixture === 'train' && settings.tailSpeed !== null ? settings.tailSpeed
       : i ? settings.rivalSpeed ?? (settings.fixture === 'train' ? 43 : settings.speed) : settings.speed;
-    c.place(track, s, lateral, speed); c.fuel = fuel;
+    c.place(track, ((s % track.length) + track.length) % track.length, lateral, speed); c.fuel = fuel;
     if (i === 0 && settings.yawOffset && !settings.warmupToStart) { c.yaw += settings.yawOffset; c.vx = Math.sin(c.yaw) * speed; c.vz = Math.cos(c.yaw) * speed; }
-    c.race = { ...c.race, progress: s, previousS: s, lap: 1, lapStart: startAt, finishTime: null };
+    c.race = { ...c.race, progress: s, previousS: c.s, lap: 1, lapStart: startAt, finishTime: null };
     c.gear = c.classId === 'lmdh' ? 4 : 3;
     race.fitTyres(c, 'soft', true);
     race.entries[i].strategist.decide = () => null;
@@ -221,6 +231,19 @@ export async function runScenario(options = {}) {
     const rescue = race.rescue.bind(race);
     race.rescue = (entry, dt) => { if (entry !== race.entries[1]) rescue(entry, dt); };
   }
+  const fieldHazards = settings.fixture === 'field' ? settings.field.map((f, k) => f.hazard ? { ...f, i: k + 1, done: false } : null).filter(Boolean) : [];
+  const fieldStop = h => {
+    const c = race.cars[h.i], fuel = c.fuel, state = c.race, damage = c.damage;
+    c.place(track, c.s, c.lateral, 0); c.fuel = fuel; c.race = state; c.damage = damage;
+    if (h.hazard === 'spun') c.yaw += Math.PI * .55;
+    race.entries[h.i].bridges[0].update = car => { car.controls = { throttle: 0, brake: 1, steer: 0 }; };
+    events.push({ time: race.time - startAt, type: 'hazard-stop', id: c.id, s: c.s }); h.done = true;
+  };
+  for (const h of fieldHazards) if (h.stopAt === 0) fieldStop(h);
+  if (fieldHazards.length) {
+    const rescue = race.rescue.bind(race), held = new Set(fieldHazards.map(h => race.entries[h.i]));
+    race.rescue = (entry, dt) => { if (!held.has(entry)) rescue(entry, dt); };
+  }
   const self = race.cars[0], stride = Math.round(120 / settings.rate), iterations = Math.round(settings.seconds / FIXED_DT);
   const motorStride = Math.round(120 / settings.motorRate);
   const beforeFuel = self.fuel, beforeDamage = self.damage, startProgress = self.race.progress;
@@ -231,7 +254,11 @@ export async function runScenario(options = {}) {
   let expertRows = 0, expertBlock = -1, blockExpert = false, guardUntil = -1, mixSeed = (settings.seed ^ 0x50314) >>> 0;
   let previousLap = self.race.lap, crossings = 0;
   const fullLaps = [];
-  const encounters = new Map(), seenContacts = new Map();
+  const encounters = new Map(), seenContacts = new Map(), rivalStats = new Map();
+  let selfSevere = 0;
+  // Generated fields classify a rival as a hazard beyond the kerb's outer edge:
+  // Harbor's hairpin racing line legally runs at +8.9 m on the kerb.
+  const offRoad = settings.fixture === 'field' ? track.halfWidth + (track.curbWidth ?? 0) + .5 : track.halfWidth + .8;
   const preStepDamage = new Map();
   const originalStewards = race.stewards.step.bind(race.stewards);
   race.stewards.step = dt => {
@@ -239,6 +266,7 @@ export async function runScenario(options = {}) {
       const [a, b, closing] = pair, key = [a, b].sort().join(':');
       if (race.time - (seenContacts.get(key) ?? -99) > .2) events.push({ time: race.time - startAt, type: 'contact', a, b, closing });
       seenContacts.set(key, race.time);
+      if ((a === self.id || b === self.id) && closing > 6) selfSevere++;
       if (current && (a === self.id || b === self.id)) {
         const other = race.cars.find(car => car.id === (a === self.id ? b : a));
         const otherEntry = race.entries.find(entry => entry.car.id === other.id);
@@ -266,6 +294,7 @@ export async function runScenario(options = {}) {
     }
     if (motorPending && motorPending.due <= time + 1e-9) { motorAction = motorPending.action; motorAcceptedAt = motorPending.at; motorPending = null; }
     if (stopHazard && time >= settings.hazardAt) { stopHazard(); stopHazard = null; }
+    for (const h of fieldHazards) if (!h.done && time >= h.stopAt) fieldStop(h);
     for (let i = delayed.length - 1; i >= 0; i--) if (delayed[i].due <= time + 1e-9) {
       const packet = delayed.splice(i, 1)[0], accepted = mailbox.accept(packet.reply, time);
       if (accepted) { acceptedAt = time; if (settings.fastMotor) trafficCorrection = packet.reply.correction; }
@@ -385,10 +414,18 @@ export async function runScenario(options = {}) {
       current.substepDamage = self.damage;
       if (damageAdded > .001) events.push({ time, type: 'damage', added: damageAdded, total: cumulativeDamage, speed: self.speed });
       for (let i = 1; i < count; i++) {
+        const o = race.cars[i], r = rivalStats.get(i) ?? { id: o.id, maxLateral: 0, minSpeed: Infinity, departures: [], damage: 0 };
+        rivalStats.set(i, r); r.maxLateral = Math.max(r.maxLateral, Math.abs(o.lateral)); r.damage = o.damage;
+        if (time > 2) r.minSpeed = Math.min(r.minSpeed, o.speed);
+        const out = o.speed < 7 || Math.abs(o.lateral) > offRoad;
+        if (out && !r.out) r.departures.push({ time: Math.round(time * 10) / 10, s: Math.round(o.s), gapToSelf: Math.round(gap(o.s, self.s, track.length)) });
+        r.out = out;
+      }
+      for (let i = 1; i < count; i++) {
         const other = race.cars[i], ds = gap(other.s, self.s, track.length);
         let e = encounters.get(i);
         const entry = race.entries[i], nonRacing = !!entry.pit || !!entry.pitPlan || !!entry.retired || other.ghost || other.race.finishTime !== null;
-        const kind = other.speed < 7 || Math.abs(other.lateral) > track.halfWidth + .8 ? 'hazard' :
+        const kind = other.speed < 7 || Math.abs(other.lateral) > offRoad ? 'hazard' :
           other.classId !== self.classId ? 'traffic' : Math.abs(other.race.progress - self.race.progress) > track.length * .5 ? 'lapping' : 'race';
         if (!e && !nonRacing && ds > 0 && ds < 120) { e = { id: other.id, kind, start: time, initialOffset: self.lateral, overlap: null, clear: null, retained: null, damage0: cumulativeDamage }; encounters.set(i, e); }
         if (!e || e.retained !== null) continue;
@@ -445,6 +482,11 @@ export async function runScenario(options = {}) {
     cumulativeDamage, endDamage: self.damage, initialDamage: beforeDamage, contacts: race.contacts, severe: race.collisionStats.severeContacts,
     retainedPasses: [...encounters.values()].filter(e => e.retained !== null && e.kind !== 'hazard').length,
     hazardsCleared: [...encounters.values()].filter(e => e.retained !== null && e.kind === 'hazard').length, encounters: [...encounters.values()],
+    rivals: [...rivalStats.values()].map(({ out, ...r }) => r),
+    // Slower-class cars still racing at the end and not behind PULSE by a car length.
+    selfSevere, encountersCleared: [...encounters.values()].filter(e => e.retained !== null).length,
+    unpassedTraffic: race.cars.slice(1).filter(o => o.classId !== self.classId && o.speed >= 7
+      && Math.abs(o.lateral) <= offRoad && o.race.progress > self.race.progress - 5.5).length,
     interventionRows, expertRows, expertActuatorRows: settings.diagnosticExpertActuator || settings.trainingExpertActuator ? rows.length : 0,
     clippedRows, missingRows, simultaneousPedalRows: simultaneous, mailbox: mailbox.stats,
     ...(seatTiming ? { seatTiming: { ...seatTiming.stats, transport: settings.transport,

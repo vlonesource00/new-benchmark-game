@@ -6,13 +6,20 @@ import { HOME, digest } from './versions.mjs';
 import { driveCases } from './drive-cases.mjs';
 const args = process.argv.slice(2), arg = key => { const i = args.indexOf('--' + key); return i < 0 ? null : args[i + 1]; };
 const name = arg('name'), model = arg('model'), source = arg('source');
-const allowed = new Set(['--name', '--model', '--source', '--roadBounds', '--edgeBlend', '--edgeRamp', '--frontalGuard', '--routeOrigin', '--feedback', '--joinState']);
+const allowed = new Set(['--name', '--model', '--source', '--plan', '--shard', '--shards', '--roadBounds', '--edgeBlend', '--edgeRamp', '--frontalGuard', '--routeOrigin', '--feedback', '--joinState']);
 if (args.length % 2 || args.some((x, i) => i % 2 === 0 && !allowed.has(x))) throw Error('Unsupported or incomplete plan evaluation option');
 const planExecution = { roadBounds: arg('roadBounds') ?? 'asphalt-body', edgeBlend: Number(arg('edgeBlend') ?? 0), edgeRamp: Number(arg('edgeRamp') ?? 0),
   frontalGuard: arg('frontalGuard') ?? 'supervisor-v1', routeOrigin: arg('routeOrigin') ?? 'rolling-v1',
   feedback: arg('feedback') ?? 'escape-v1', joinState: arg('joinState') ?? 'body-v1' };
-if (!name || !model || !source) throw Error('--name --model --source driving report required');
-const bytes = readFileSync(resolve(HOME, source)), report = JSON.parse(bytes);
+if (!name || !model || !(source || arg('plan'))) throw Error('--name --model and --source report or --plan required');
+// --plan: development cases straight from a frozen generated plan (sharded for parallel runs).
+const fromPlan = () => { const text = readFileSync(resolve(HOME, arg('plan')), 'utf8'), { digest: expected, ...content } = JSON.parse(text);
+  if (digest(content) !== expected) throw Error('Frozen plan changed');
+  const shard = Number(arg('shard') ?? 0), shards = Number(arg('shards') ?? 1);
+  return { bytes: text, report: { status: 'complete', versions: content.versions, provenance: { plan: arg('plan'), planDigest: expected },
+    cases: content.cases.filter(c => c.split === 'development').filter((_, i) => i % shards === shard)
+      .map(c => ({ ...c, outcome: { checkpointDistance: c.checkpointDistance } })) } }; };
+const { bytes, report } = arg('plan') ? fromPlan() : (b => ({ bytes: b, report: JSON.parse(b) }))(readFileSync(resolve(HOME, source)));
 if (report.status !== 'complete' || report.provenance?.role === 'final-test') throw Error('Completed development source required; final-test cases stay sealed');
 let generated = new Map();
 if (report.provenance?.plan) {
@@ -26,6 +33,6 @@ const cases = report.cases.map(c => ({ id: c.id, settings: c.settings, group: c.
   requirements: c.requirements, checkpointDistance: c.outcome?.checkpointDistance,
   physicalFamily: c.physicalFamily ?? generated.get(c.id)?.physicalFamily, split: 'development' }));
 const result = await driveCases({ name, model, actor: 'plan', planExecution, cases, provenance: { role: 'Matched plan-vs-actuator development',
-  source, sourceDigest: digest(bytes.toString()), sourceVersions: report.versions,
+  source: source ?? arg('plan'), sourceDigest: digest(bytes.toString()), sourceVersions: report.versions,
   selectionMetric: 'Admissibility and retained passes first; pace, delay sensitivity and execution cost second.' } });
-console.log(JSON.stringify({ name, accepted: result.accepted, succeeded: result.succeeded, total: result.cases.length }));
+console.log(JSON.stringify({ name, accepted: result.accepted, succeeded: result.succeeded, race10: result.race10, total: result.cases.length }));

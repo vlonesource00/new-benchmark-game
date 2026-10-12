@@ -9,6 +9,15 @@ export const ENCOUNTER_OBJECTIVE = Object.freeze({
   minimumGainSeconds: .05
 });
 
+// User allowance (2026-10-12): up to 10% damage over a full race is valid.
+// A 70 s generated encounter keeps the official 3% cap (about a third of the
+// race budget, since encounters are dense combat) but rubs need not be
+// side-verified. Any single hit above
+// 1%, a rescue/ghost, or a severe contact involving PULSE still fails; a
+// severe crash between two rivals is their incident, not PULSE's.
+export const RACE_DAMAGE_OBJECTIVE = Object.freeze({ ...ENCOUNTER_OBJECTIVE,
+  version: 'pulse-encounter-outcome-race10-v2', damageBudget: .03, rubVerification: false, severeScope: 'self' });
+
 export function timeAtDistance(rows, distance) {
   if (!Number.isFinite(distance) || distance <= 0 || !rows.length) throw Error('Invalid encounter checkpoint');
   const origin = rows[0].before.progress;
@@ -22,7 +31,7 @@ export function timeAtDistance(rows, distance) {
   return null;
 }
 
-export function damageIsVerifiedRub(rows, budget = .03) {
+export function damageIsVerifiedRub(rows, budget = .03, verifyContacts = true) {
   let expected = rows[0]?.before.damage;
   if (!Number.isFinite(expected) || expected > 1e-8) return false;
   for (const row of rows) {
@@ -31,7 +40,9 @@ export function damageIsVerifiedRub(rows, budget = .03) {
       || after < before - 1e-8 || after > budget || row.before.ghost || row.post.ghost) return false;
     const added = Math.max(0, after - before);
     if (added > 1e-8) {
-      if (added > .01 || !row.contactEvidence?.length) return false;
+      if (added > .01) return false;
+      if (!verifyContacts) { expected = after; continue; }
+      if (!row.contactEvidence?.length) return false;
       let accounted = 0;
       for (const c of row.contactEvidence) {
         const values = ['closing', 'forward', 'lateral', 'yawDifference', 'selfDamageAdded', 'rivalDamageAdded'].map(k => c[k]);
@@ -55,10 +66,10 @@ export function encounterOutcome(result, { seconds, checkpointDistance = 600, ob
   if (!numeric.every(k => Number.isFinite(s[k]))) failures.push('missing/nonfinite-summary');
   if (s.endedEarly || s.seconds < seconds - 1e-6 || s.dq) failures.push('incomplete/disqualified');
   if (s.trackLimitSeconds > 0) failures.push('illegal-track-use');
-  if (s.severe > 0) failures.push('severe-contact-in-field');
+  if ((objective.severeScope === 'self' ? s.selfSevere ?? s.severe : s.severe) > 0) failures.push('severe-contact-in-field');
   if (s.minFuel < 1) failures.push('fuel-starvation');
   if (s.missingRows || s.expertRows || s.expertActuatorRows) failures.push('missing-sensors/expert-assistance');
-  if (s.cumulativeDamage > objective.damageBudget || !damageIsVerifiedRub(rows, objective.damageBudget)) failures.push('unverified/excess-damage-or-rescue');
+  if (s.cumulativeDamage > objective.damageBudget || !damageIsVerifiedRub(rows, objective.damageBudget, objective.rubVerification !== false)) failures.push('unverified/excess-damage-or-rescue');
   const checkpointSeconds = timeAtDistance(rows, checkpointDistance);
   if (checkpointSeconds === null) failures.push('checkpoint-not-reached');
   const tyreStart = rows[0].before.tyres, tyreEnd = rows.at(-1).post.tyres;
