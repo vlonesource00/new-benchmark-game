@@ -2,6 +2,7 @@ import { defineConfig } from '../../../node_modules/vite/dist/node/index.js';
 import { fileURLToPath } from 'node:url';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { jobs } from './jobs-api.mjs';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const repo = resolve(root, '../..');
 export default defineConfig({ root, cacheDir: resolve(root, 'artifacts/vite-cache'),
@@ -14,6 +15,9 @@ export default defineConfig({ root, cacheDir: resolve(root, 'artifacts/vite-cach
       const episodes = existsSync(directory) ? readdirSync(directory).filter(n => n.endsWith('.json')).map(name => ({ name, url: '/results/' + name })) : [];
       res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(episodes));
     });
+    server.middlewares.use('/api/jobs', (_req, res) => {
+      res.setHeader('Content-Type', 'application/json'); res.setHeader('Cache-Control', 'no-store'); res.end(JSON.stringify(jobs(root)));
+    });
     server.middlewares.use('/ort/', (req, res, next) => {
       const name = req.url?.split('?')[0]?.slice(1);
       if (!name || !/^ort-wasm[-a-z.]+\.(wasm|mjs)$/.test(name)) return next();
@@ -22,5 +26,5 @@ export default defineConfig({ root, cacheDir: resolve(root, 'artifacts/vite-cach
       res.setHeader('Content-Type', name.endsWith('.wasm') ? 'application/wasm' : 'text/javascript'); res.end(readFileSync(path));
     });
   } }],
-  build: { target: 'esnext', outDir: resolve(root, 'artifacts/lab-dist'), rollupOptions: { input: { lab: resolve(root, 'index.html'), gpu: resolve(root, 'gpu.html'), search: resolve(root, 'search.html'), audit: resolve(root, 'audit.html') } } }
+  build: { target: 'esnext', outDir: resolve(root, 'artifacts/lab-dist'), rollupOptions: { input: { lab: resolve(root, 'index.html'), gpu: resolve(root, 'gpu.html'), search: resolve(root, 'search.html'), audit: resolve(root, 'audit.html'), jobs: resolve(root, 'jobs.html') } } }
 });

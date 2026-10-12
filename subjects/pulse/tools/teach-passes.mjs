@@ -121,7 +121,7 @@ function teacher(candidate, executor) {
 
 const report = { name, model, actionContract: PLAN_CONTRACT.version, versions: ver, status: 'running', planExecution,
   plan: planPath, planDigest: expected, modelSha256: policy.metadata.modelSha256, candidates: candidates.map(c => c.label),
-  scope: 'Offline teacher labels for TRAIN-pool cases; never a learned driving result.', cases: [] };
+  scope: 'Offline teacher labels for TRAIN-pool cases; never a learned driving result.', caseCount: scenes.length, startedAt: Date.now(), cases: [] };
 mkdirSync(output, { recursive: true }); mkdirSync(resolve(HOME, 'results'), { recursive: true });
 report.executionSource = archiveExecution(output);
 try {
