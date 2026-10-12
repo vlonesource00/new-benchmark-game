@@ -14,7 +14,10 @@ function part(kind, name, file, done, total, startedAt, finished, extra = {}) {
   // Without a recorded start, a finished job's file birth time is unreliable (data moves to E:).
   const now = Date.now(), updated = s.mtimeMs, start = startedAt ?? (finished ? null : s.birthtimeMs);
   if (now - updated > RECENT) return null;
-  const state = finished ? 'complete' : now - updated > STALE ? 'stalled' : 'running';
+  // A crashed job leaves its report 'running': silence longer than 4 units of its own pace (min 3 min) means stalled.
+  const pace = start != null && done > 0 ? (updated - start) / done : null;
+  const quiet = pace ? Math.max(3 * 60e3, 4 * pace) : STALE;
+  const state = finished ? 'complete' : now - updated > quiet ? 'stalled' : 'running';
   return { kind, name, done, total: finished && total == null ? done : total, start, updated, state, ...extra };
 }
 
@@ -79,7 +82,10 @@ export function jobs(root) {
     const pace = log.length ? log.reduce((n, e) => n + e.seconds, 0) / log.length : null;
     const last = log.at(-1), best = json(resolve(rl, name, 'best.json'));
     const file = log.length ? logFile : configFile;
+    // A live loop always has its current iteration folder (rollouts, then the GPU update).
+    const alive = finished || existsSync(current);
     parts.push(part('RL (PPO)', name, file, log.length + fraction, config.iterations, stat(configFile)?.birthtimeMs, finished, {
+      ...(alive ? {} : { state: 'stalled' }),
       eta: pace ? pace * (config.iterations - log.length - fraction) * 1e3 : null,
       detail: [`iteration ${log.length + (finished ? 0 : 1)}/${config.iterations}`, finished ? null : rolled >= perIteration ? `${rolled} rollouts done · PPO update on GPU` : `${rolled}/${perIteration} rollouts (CPU)`,
         last ? `train success ${(last.success * 100).toFixed(0)}% · return ${last.meanReturn.toFixed(1)} · damage ${(last.damage * 100).toFixed(1)}%` : null,
