@@ -289,8 +289,11 @@ export async function runScenario(options = {}) {
   };
   const initializationMs = performance.now() - initializationStart, wallStart = performance.now(); armed = true;
   if (settings.planFactory) planExecutor = settings.planFactory(track, self);
-  for (tick = 0; tick < iterations && race.phase === 'racing'; tick++) {
+  // Optional training-only early stop, checked each simulated second (evaluations never pass stopWhen).
+  let stopped = false;
+  for (tick = 0; tick < iterations && race.phase === 'racing' && !stopped; tick++) {
     const time = race.time - startAt;
+    if (settings.stopWhen && tick && tick % 120 === 0) stopped = !!settings.stopWhen({ time, self, events, startProgress });
     const stalled = settings.mode !== 'teacher' && time + 1e-9 >= settings.stallAt && time + 1e-9 < settings.stallAt + settings.stallMs / 1000;
     const frameReply = seatTiming?.advance(tick, time, { blocked: stalled });
     if (frameReply) {

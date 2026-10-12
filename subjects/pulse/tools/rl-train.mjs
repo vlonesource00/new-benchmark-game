@@ -58,7 +58,7 @@ for (let it = 1; it <= iterations; it++) {
   const next = `artifacts/models/${name}-it${String(it).padStart(3, '0')}`;
   const out = await run(python, ['ppo_plan.py', '--parent', resolve(HOME, model), '--rollouts', flat, '--out', resolve(HOME, next),
     ...(bc ? ['--bc', resolve(HOME, bc), '--bc-weight', arg('bc-weight', '.5'), '--cache', arg('cache', 'C:/pulse-store/cache')] : []), '--seed', String(it),
-    '--epochs', arg('ppo-epochs', '4'), '--lr', arg('lr', '3e-4')], { cwd: resolve(HOME, 'training') });
+    '--epochs', arg('ppo-epochs', '4'), '--lr', arg('lr', '3e-4'), ...(it === 1 && args.includes('--fresh-value') ? ['--fresh-value'] : [])], { cwd: resolve(HOME, 'training') });
   const report = JSON.parse(out.trim().split('\n').filter(l => l.startsWith('{')).at(-1));
   rmSync(dir, { recursive: true, force: true });
   model = next;

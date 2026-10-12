@@ -22,14 +22,16 @@ from plan_model import PlanPolicy
 from ppo_parse import parse_rollout, parse_targets
 from checkpoint_state import atomic_json, atomic_checkpoint
 
-REWARD = {'progress': 1 / 50, 'damage': 300., 'offtrack': 2., 'contact': .5, 'severe': 5., 'jerk': .2,
+# Contacts cost what they cost the evaluation, charged when they happen: the success bonus at the
+# end of a 70 s scene is invisible to a decision 40 s earlier (horizon ~7 s at gamma .995 / ~30 Hz).
+REWARD = {'progress': 1 / 50, 'damage': 300., 'offtrack': 2., 'contact': 3., 'severe': 10., 'jerk': .2,
           'pass': 3., 'hazard': 2., 'success': 5.}
 
 
 def episode_tensors(parsed, model, schema):
     head, summary, a = parsed
     steps = a['time']
-    if head['format'] != 'pulse-rl-rollout-v1' or head['schema'] != schema or summary['type'] != 'summary' or len(steps) < 64:
+    if head['format'] != 'pulse-rl-rollout-v2' or head['schema'] != schema or summary['type'] != 'summary' or len(steps) < 64:
         return None
     with torch.inference_mode():
         inputs, present = model.sequence_inputs(torch.from_numpy(a['observation']).cuda())
@@ -39,7 +41,16 @@ def episode_tensors(parsed, model, schema):
     r = np.zeros(len(steps))
     r[:-1] += REWARD['progress'] * np.diff(prog)
     r[:-1] -= REWARD['damage'] * np.clip(np.diff(dmg), 0, None)
-    r -= REWARD['offtrack'] * dt * (np.abs(lat) > head['limit'])
+    # Track limits by the game's own wheel/kerb rule (violation intervals from the simulator).
+    outside, start = np.zeros(len(t), dtype=bool), None
+    for e in sorted(summary['events'], key=lambda e: e['time']):
+        if e['type'] == 'track-limit-violation' and start is None:
+            start = e['time']
+        elif e['type'] == 'inside-track-limits' and start is not None:
+            outside |= (t >= start) & (t < e['time']); start = None
+    if start is not None:
+        outside |= t >= start
+    r -= REWARD['offtrack'] * dt * outside
     r[:-1] -= REWARD['jerk'] * np.abs(np.diff(steer))
     for e in summary['events']:
         k = min(len(t) - 1, int(np.searchsorted(t, e['time'])))
@@ -52,7 +63,7 @@ def episode_tensors(parsed, model, schema):
     if summary['success']:
         r[-1] += REWARD['success']
     return {'inputs': inputs.clone(), 'present': present.clone(),
-            'action': torch.from_numpy(a['action']).cuda(), 'rewardNp': r,
+            'action': torch.from_numpy(a['raw']).cuda(), 'fresh': torch.from_numpy(a['fresh'] > 0).cuda(), 'rewardNp': r,
             'reward': torch.tensor(r, device='cuda', dtype=torch.float32), 'summary': summary,
             'case': head['case'], 'sigma': head['sigma']}
 
@@ -65,9 +76,10 @@ def discounted(x, factor):
     return out
 
 
-def gae(reward, value, gamma, lam):
+def gae(reward, value, gamma, lam, truncated=False):
+    # An early-stopped scene is cut, not ended: its remainder is bootstrapped from the last value.
     v = value.detach().cpu().numpy().astype(np.float64)
-    delta = reward + gamma * np.append(v[1:], 0.) - v
+    delta = reward + gamma * np.append(v[1:], v[-1] if truncated else 0.) - v
     adv = discounted(delta, gamma * lam)
     adv = torch.tensor(adv, device=value.device, dtype=torch.float32)
     return adv, adv + value
@@ -101,7 +113,8 @@ def main():
     p.add_argument('--gamma', type=float, default=.995); p.add_argument('--lam', type=float, default=.95)
     p.add_argument('--seed', type=int, default=11)
     p.add_argument('--cache', default=None); p.add_argument('--bc-stride', type=int, default=2)
-    p.add_argument('--procs', type=int, default=12)
+    p.add_argument('--procs', type=int, default=8)
+    p.add_argument('--fresh-value', action='store_true')
     args = p.parse_args()
     root, out = Path(args.parent), Path(args.out)
     if out.exists():
@@ -115,7 +128,8 @@ def main():
     frozen = {k: v.detach().cpu().clone() for k, v in model.encoder.state_dict().items()}
     width = schema['hidden'] + model.encoder.own_size + 64
     value = nn.Sequential(nn.Linear(width, 128), nn.Tanh(), nn.Linear(128, 128), nn.Tanh(), nn.Linear(128, 1)).to('cuda')
-    warm = not (root / 'value.pt').exists()
+    p_fresh = args.fresh_value  # a changed reward invalidates the parent's critic
+    warm = p_fresh or not (root / 'value.pt').exists()
     if not warm:
         value.load_state_dict(torch.load(root / 'value.pt', map_location='cuda', weights_only=True))
     pool = ProcessPoolExecutor(args.procs)
@@ -134,22 +148,26 @@ def main():
     with torch.no_grad():
         for e in episodes:
             v = value(e['inputs']).squeeze(1)
-            e['adv'], e['ret'] = gae(e['rewardNp'], v, args.gamma, args.lam)
+            e['adv'], e['ret'] = gae(e['rewardNp'], v, args.gamma, args.lam, e['summary'].get('truncated', False))
             mean = model.intent(e['inputs']) * e['present']
             e['logp'] = (-.5 * ((e['action'] - mean) / sigma).square() - log_sigma).sum(1)
     cat = lambda k: torch.cat([e[k] for e in episodes])
     inputs, present, action, adv, ret, old = cat('inputs'), cat('present'), cat('action'), cat('adv'), cat('ret'), cat('logp')
-    adv = (adv - adv.mean()) / (adv.std() + 1e-8)
+    fresh = cat('fresh')
+    # Value learns on every step; the policy only on exploration decisions (one per hold).
+    pa = fresh.nonzero().squeeze(1)
+    adv = (adv - adv[pa].mean()) / (adv[pa].std() + 1e-8)
     bc = None
     if args.bc:
         bc = bc_inputs(args.bc, model, args.cache or Path(args.bc) / 'ppo-cache', args.bc_stride, pool)
     pool.shutdown()
     popt = torch.optim.Adam(model.intent.parameters(), lr=args.lr)
-    n, stats = len(adv), []
+    n, stats = len(pa), []
     for epoch in range(args.epochs):
-        order = torch.randperm(n, device='cuda'); kls = []
-        for s in range(0, n, 4096):
-            idx = order[s:s + 4096]
+        order = pa[torch.randperm(n, device='cuda')]; kls = []
+        for s in range(0, n, 512):
+            idx = order[s:s + 512]
+            vidx = torch.randint(len(ret), (4096,), device='cuda')
             mean = model.intent(inputs[idx]) * present[idx]
             logp = (-.5 * ((action[idx] - mean) / sigma).square() - log_sigma).sum(1)
             ratio = (logp - old[idx]).exp()
@@ -160,7 +178,7 @@ def main():
                 pred = model.intent(bc[0][j].float()) * bc[1][j].float()
                 loss = loss + args.bc_weight * ((pred - bc[2][j]).square() * pred.new_tensor([4., 4., 4., 1.])).mean()
             popt.zero_grad(); loss.backward(); torch.nn.utils.clip_grad_norm_(model.intent.parameters(), .5); popt.step()
-            vopt.zero_grad(); vl = (value(inputs[idx]).squeeze(1) - ret[idx]).square().mean(); vl.backward(); vopt.step()
+            vopt.zero_grad(); vl = (value(inputs[vidx]).squeeze(1) - ret[vidx]).square().mean(); vl.backward(); vopt.step()
             kls.append((old[idx] - logp.detach()).mean().item())
         stats.append({'epoch': epoch + 1, 'kl': float(np.mean(kls)), 'policyLoss': pg.item(), 'valueLoss': vl.item()})
         if np.mean(kls) > args.target_kl:

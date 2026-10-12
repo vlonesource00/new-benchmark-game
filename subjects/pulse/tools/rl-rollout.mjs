@@ -27,14 +27,22 @@ try {
   for (const scene of scenes) {
     const file = resolve(out, scene.id + '.jsonl');
     if (existsSync(file)) throw Error('Preserve rollout ' + file);
-    const means = new Map(), sampled = new Map();
+    const means = new Map(), sampled = new Map(), raw = new Map(), fresh = new Set();
     let noise = [0, 0, 0, 0], heldUntil = -1;
     const settings = { ...scene.settings, mode: 'policy', fastMotor: false, observationVersion: policy.metadata.schemaVersion,
       actionContract: PLAN_CONTRACT.version, planExecution };
-    const result = await runScenario({ ...settings, planFactory: (track, car) => new PlanExecutor(track, car, planExecution),
+    // Stop 3 s after a severe contact involving PULSE: the scene has failed under every rule. (Stopping
+    // after the checkpoint would cut requirements measured over the whole scene, e.g. a valid full lap.)
+    const stopWhen = ({ time, self, events }) => {
+      const severe = events.find(e => e.type === 'contact' && (e.a === self.id || e.b === self.id) && (e.closing ?? 0) > 6);
+      return severe && time > severe.time + 3;
+    };
+    const result = await runScenario({ ...settings, stopWhen, planFactory: (track, car) => new PlanExecutor(track, car, planExecution),
       policy: async (observation, hidden, context) => {
         const step = await policy.step(observation, hidden);
-        if (context.time >= heldUntil) { noise = noise.map(() => gauss() * sigma); heldUntil = context.time + hold; }
+        // One exploration decision per hold: PPO scores its likelihood once, on the unclipped sample.
+        if (context.time >= heldUntil) { noise = noise.map(() => gauss() * sigma); heldUntil = context.time + hold; fresh.add(context.seq); }
+        raw.set(context.seq, step.action.map((m, i) => m + noise[i]));
         means.set(context.seq, step.action.slice());
         step.action = step.action.map((m, i) => Math.max(-1, Math.min(1, m + noise[i])));
         sampled.set(context.seq, step.action.slice());
@@ -45,16 +53,16 @@ try {
     const o = encounterOutcome(result, { seconds: settings.seconds, checkpointDistance: scene.checkpointDistance, objective: RACE_DAMAGE_OBJECTIVE });
     const sm = result.summary, measured = k => k === 'validFullLaps' ? sm.fullLaps.filter(l => l.valid).length : sm[k];
     const unmet = Object.entries(scene.requirements ?? {}).filter(([k, m]) => !(k === 'unpassedTraffic' ? measured(k) <= m : measured(k) >= m)).map(([k]) => k);
-    const head = { type: 'manifest', format: 'pulse-rl-rollout-v1', case: scene.id, family: scene.family, sigma, hold, seed, model,
+    const head = { type: 'manifest', format: 'pulse-rl-rollout-v2', case: scene.id, family: scene.family, sigma, hold, seed, model,
       modelSha256: policy.metadata.modelSha256, schema: policy.schema, settings, limit: result.track.halfWidth + (result.track.curbWidth ?? 0) };
     const lines = rows.map((r, i) => ({ type: 'step', index: i, reset: i === 0, time: r.time, observation: r.observation.normalized,
-      action: sampled.get(r.request.seq), mean: means.get(r.request.seq), progress: r.before.progress, speed: r.before.speed,
+      action: sampled.get(r.request.seq), raw: raw.get(r.request.seq), fresh: fresh.has(r.request.seq), mean: means.get(r.request.seq), progress: r.before.progress, speed: r.before.speed,
       lateral: r.before.lateral, damage: r.before.damage, steer: r.before.controls.steer }));
-    const events = result.events.filter(e => ['retained-pass', 'hazard-cleared', 'contact', 'track-limit-violation', 'damage'].includes(e.type))
+    const events = result.events.filter(e => ['retained-pass', 'hazard-cleared', 'contact', 'track-limit-violation', 'inside-track-limits', 'damage'].includes(e.type))
       .map(e => ({ type: e.type, time: e.time, added: e.added, closing: e.closing, self: e.a === rows[0]?.before.id || e.b === rows[0]?.before.id }));
     const summary = { type: 'summary', admissible: o.admissible, failures: o.failures, unmet, success: o.admissible && !unmet.length,
       checkpointSeconds: o.checkpointSeconds, damage: sm.cumulativeDamage, trackLimitSeconds: sm.trackLimitSeconds, passes: sm.retainedPasses,
-      hazards: sm.hazardsCleared, unpassedTraffic: sm.unpassedTraffic, selfSevere: sm.selfSevere, progress: sm.progress, events };
+      truncated: sm.endedEarly, hazards: sm.hazardsCleared, unpassedTraffic: sm.unpassedTraffic, selfSevere: sm.selfSevere, progress: sm.progress, events };
     writeFileSync(file, [head, ...lines, summary].map(x => JSON.stringify(x)).join('\n') + '\n');
     console.log(JSON.stringify({ case: scene.id, steps: lines.length, success: summary.success, damage: +sm.cumulativeDamage.toFixed(3), passes: sm.retainedPasses }));
   }

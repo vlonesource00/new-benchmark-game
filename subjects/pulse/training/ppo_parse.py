@@ -9,7 +9,7 @@ def parse_rollout(file):
     lines = [json.loads(l) for l in Path(file).read_text().splitlines() if l.strip()]
     head, steps, summary = lines[0], [l for l in lines if l['type'] == 'step'], lines[-1]
     return head, summary, {k: np.array([s[k] for s in steps], dtype=np.float32) for k in
-                           ('observation', 'action', 'time', 'progress', 'damage', 'lateral', 'steer')}
+                           ('observation', 'action', 'raw', 'fresh', 'time', 'progress', 'damage', 'lateral', 'steer')}
 
 
 def parse_targets(file, stride):
