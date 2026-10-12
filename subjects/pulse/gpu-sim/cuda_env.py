@@ -7,7 +7,9 @@ Policy-mode order per tick as tools/scenario.mjs: accept/observe -> executor -> 
 training/ppo_plan.py and tools/rl-rollout.mjs (race10 objective).
 
 Known approximations (validate on the JS development suite, the final judge):
-  - rivals are executor stand-ins, not INTERCEPT/APEX/RAZOR/TEMPEST/Gemini; no rescue, no penalties/black flags;
+  - rivals are executor stand-ins, not INTERCEPT/APEX/RAZOR/TEMPEST/Gemini; no penalties/black flags;
+  - marshal rescue as race.js (parked 4 s -> centreline, stopped, ghost 2 s) except field hazard cars, which
+    scenario.mjs holds out of it; stewards' recovery points not added;
   - ego energy intent uses INTERCEPT's deployment() with exit from the executor's target/feed, fight = false;
   - seat timing: src/seat-timing.mjs exactly (frameSteps, frame and reply jitter from the scene's schedule seed);
   - laps by line crossings; a lap is valid when no track-limit time occurred in it.
@@ -48,8 +50,9 @@ class SceneBank:
 
 
 class GpuEnv:
-    def __init__(self, bank, envs, dtype=torch.float32, seed=0, record=0, families=None, ids=None, sequential=False, offset_lag=0.):
+    def __init__(self, bank, envs, dtype=torch.float32, seed=0, record=0, families=None, ids=None, sequential=False, offset_lag=0., early_stop=True):
         self.sequential, self.cursor = sequential, 0
+        self.early_stop = early_stop  # training: end 3 s after a severe contact; evaluation runs the full scene like JS
         self.offset_lag = offset_lag  # PlanExecutor offsetLag (s): low-pass on committed lane offsets
         self.bank, self.E, self.N = bank, envs, bank.slots
         self.B, self.dtype, dev = envs * self.N, dtype, 'cuda'
@@ -114,6 +117,11 @@ class GpuEnv:
         self.line_s = [torch.tensor(m['classes'][n]['line']['st'], dtype=torch.float64, device=dev) for n in names]
         self.line_lat = [torch.tensor(m['classes'][n]['line']['lat'], dtype=torch.float64, device=dev) for n in names]
         self.rival_goal = torch.zeros(self.B, dtype=torch.float64, device=dev)
+        # Marshal rescue (race.js rescue): per car parked time and ghost time; the ego's rescue fails the episode.
+        self.stuck = torch.zeros(self.B, dtype=torch.float64, device=dev); self.rescue_ghost = torch.zeros(self.B, dtype=torch.float64, device=dev)
+        self.ego_rescued = torch.zeros(envs, dtype=torch.bool, device=dev)
+        nodes = torch.tensor(m['trackGeometry']['nodes'], dtype=torch.float64, device=dev)
+        self.node_x, self.node_z, self.node_s, self.node_tx, self.node_tz = (nodes[:, i] for i in range(5))
         sch = m['observation']['fields']
         self.obs_scale = torch.tensor([q['scale'] for q in sch], dtype=dtype, device=dev)
         self.obs_lo = torch.tensor([q['min'] for q in sch], dtype=dtype, device=dev)
@@ -163,6 +171,7 @@ class GpuEnv:
             # Sequence -2: the tick-0 rival post (+1 = -1) differs from the executor's initial 0, so it commits before the first step.
             self.x.plan_seq[b] = -2
         self.prev_damage[lanes] = self.S('damage')[lanes].double()
+        self.stuck[lanes] = 0; self.rescue_ghost[lanes] = 0; self.w.ghost[lanes] = 0; self.ego_rescued[envs] = False
 
     def _reset_one(self, e, k):
         sc, N, f = self.bank.scenes[k], self.N, self.f
@@ -342,10 +351,48 @@ class GpuEnv:
         self.race.intent[self.ego.long(), 1] = torch.where(gtp, harvest, math.nan)
         force = self.race.hybrid(self.controls, DT)
         s0 = self.S('s').double().clone()
-        closing = w.step(DT, self.controls[:, 0], self.controls[:, 1], self.controls[:, 2], force)
+        closing = w.step(DT, self.controls[:, 0], self.controls[:, 1], self.controls[:, 2], force, before_collisions=self.rescue)
         self.race.stewards(DT)
         self.t += DT; self.tick += 1; self._clock += DT; self._ticks += 1
         return self.score(s0, closing.double())
+
+    def rescue(self):
+        """race.js rescue() for every car after the car steps: a car slower than 1.5 m/s for 4 s (race time >= 6 s) is
+        lifted onto the centreline at its s (track.at linear node interpolation), stopped in first gear, ghosted 2 s."""
+        self.rescue_ghost = (self.rescue_ghost - DT).clamp(min=0)
+        speed = self.S('speed').double()
+        race_time = (self.race_time0 + self.t).repeat_interleave(self.N)
+        # scenario.mjs holds field hazard cars out of the rescue (they stay where they stopped).
+        held = torch.cat([torch.zeros(self.E, 1, dtype=torch.bool, device='cuda'), self.hz_kind > 0], 1).reshape(-1)
+        moving = (speed > 1.5) | (race_time < 6) | ~self.w.alive.bool() | held
+        self.stuck = torch.where(moving, torch.zeros_like(self.stuck), self.stuck + DT)
+        due = self.stuck >= 4
+        if due.any():
+            b = due.nonzero().squeeze(1)
+            s = torch.remainder(self.S('s')[b].double(), self.length)
+            lo = (torch.searchsorted(self.node_s, s, right=True) - 1).clamp(min=0)
+            hi = (lo + 1) % len(self.node_s)
+            span = torch.where(lo == len(self.node_s) - 1, self.length - self.node_s[lo], self.node_s[hi] - self.node_s[lo])
+            u = ((s - self.node_s[lo]) / span).clamp(0, 1)
+            lerp = lambda a: a[lo] + (a[hi] - a[lo]) * u
+            put = lambda k, v: self.S(k).index_copy_(0, b, v.to(self.dtype) if torch.is_tensor(v) else torch.full((len(b),), v, dtype=self.dtype, device='cuda'))
+            put('x', lerp(self.node_x)); put('z', lerp(self.node_z)); put('yaw', torch.atan2(lerp(self.node_tx), lerp(self.node_tz)))
+            put('lateral', 0.)
+            for k in ('vx', 'vz', 'u', 'v', 'speed', 'yawRate', 'steering'):
+                put(k, 0.)
+            put('gear', 1.)
+            for wh in range(4):
+                put(f'w{wh}.omega', 0.); put(f'w{wh}.steer', 0.)
+            self.stuck[b] = 0; self.rescue_ghost[b] = 2
+            ego = b[b % self.N == 0]
+            if len(ego):
+                self.ego_rescued[ego // self.N] = True
+            if self.record:
+                for bb in b.tolist():
+                    e = bb // self.N
+                    if e < self.record and self.recordings[e] is not None:
+                        self.recordings[e]['events'].append({'time': round(self.t[e].item(), 3), 'type': 'rescue', 'with': bb % self.N})
+        self.w.ghost.copy_((self.rescue_ghost > 0).to(torch.uint8))
 
     def score(self, s0, closing):
         E, N, B = self.E, self.N, self.B
@@ -411,7 +458,7 @@ class GpuEnv:
             r += ps.sum(1) * REWARD['pass'] + hz.sum(1) * REWARD['hazard']
         if self.record:
             self._record(fresh, done_enc)
-        end = (self.t >= self.seconds - 1e-9) | (self.t > self.severe_at + 3)
+        end = (self.t >= self.seconds - 1e-9) | (self.early_stop & (self.t > self.severe_at + 3))
         return end.nonzero().squeeze(1)
 
     def outcome(self, idx):
@@ -420,7 +467,7 @@ class GpuEnv:
         ego = self.ego.long()[idx]
         complete = self.t[idx] >= self.seconds[idx] - 1e-9
         admissible = complete & (self.limit_time[idx] <= 0) & torch.isinf(self.severe_at[idx]) & (self.cum_damage[idx] <= OBJECTIVE['damageBudget']) \
-            & ~self.big_hit[idx] & (self.progress[ego] >= OBJECTIVE['checkpoint'])
+            & ~self.big_hit[idx] & ~self.ego_rescued[idx] & (self.progress[ego] >= OBJECTIVE['checkpoint'])
         g = lambda k: self.S(k).double().view(E, N)[idx]
         cls = self.w.cls.view(E, N)[idx]
         unpassed = ((cls[:, 1:] != cls[:, :1]) & (g('speed')[:, 1:] >= 7) & (g('lateral')[:, 1:].abs() <= self.offroad)

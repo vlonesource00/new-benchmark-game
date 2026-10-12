@@ -38,7 +38,7 @@ max_outcome = a.max_outcome if a.max_outcome is not None else .1
 #   (|lateral| 21.53 + 0.86 = 22.39 vs halfWidth + curb + runoff 22.45); a last-bit difference takes the other
 #   surface branch for one tick (w1 fx 403 N apart) and the trajectories separate. The clean-window gate still
 #   requires it exact before then, and it must keep diverging only there (a change means the port changed).
-KNOWN_BOUNDARY = {'exec-v1': {36}}
+KNOWN_BOUNDARY = {'exec-v1': {36: 462}}  # case: first tick the executor car is > 1e-9 m from the reference (+-3)
 max_clean = a.max_clean_drift if a.max_clean_drift is not None else (1e-6 if f64 else 5e-2)
 max_flips = a.max_flips if a.max_flips is not None else (0 if f64 else 1e-3)
 max_drift = a.max_drift if a.max_drift is not None else (1e-6 if f64 else 1e-2)
@@ -125,6 +125,7 @@ ref_off = states[:, :, 0, fl].abs() > limit
 first_event = torch.tensor([min(first((ref_dmg[k, 1:] > ref_dmg[k, :-1] + 1e-12).nonzero()), first(ref_off[k, 1:].nonzero()))
                             for k in range(C)], device=dev)
 off_got = torch.zeros(C, dtype=torch.bool, device=dev)
+first_sep = torch.full((C,), S + 1, dtype=torch.long, device=dev)
 for t in range(S):
     if t:
         # The executor's own executed brake from the previous tick (rivals: their recorded one).
@@ -135,7 +136,10 @@ for t in range(S):
     lon = (out[:, col['throttle']] - out[:, col['brake']]).clamp(-1, 1)
     u[ex_lane, 0], u[ex_lane, 1], u[ex_lane, 2] = lon.clamp(min=0), (-lon).clamp(min=0), out[:, col['steer']].clamp(-1, 1)
     w.step(DT, u[:, 0], u[:, 1], u[:, 2], u[:, 3])
-    off_got |= w.state()[ex_lane, fl].abs() > limit
+    st_now = w.state()[ex_lane]
+    off_got |= st_now[:, fl].abs() > limit
+    sep = torch.hypot(st_now[:, fx] - states[:, t + 1, 0, fx], st_now[:, fz] - states[:, t + 1, 0, fz]) > 1e-9
+    first_sep = torch.where(sep & (first_sep > S), torch.full_like(first_sep, t + 1), first_sep)
     if t + 1 in (120, 360, 600, 1200, 2400):
         st, tr = w.state()[ex_lane], states[:, t + 1, 0]
         pos = torch.hypot(st[:, fields.index('x')] - tr[:, fields.index('x')], st[:, fields.index('z')] - tr[:, fields.index('z')])
@@ -165,7 +169,10 @@ for k, v in diff.items():
 if f64:
     known = KNOWN_BOUNDARY.get(os.path.basename(os.path.normpath(a.ref)), set())
     got_bad = set(bad.nonzero().squeeze(1).tolist())
-    if got_bad != known: failures.append(f'float64 outcome differences {sorted(got_bad)} != documented boundary cases {sorted(known)}')
+    if got_bad != set(known): failures.append(f'float64 outcome differences {sorted(got_bad)} != documented boundary cases {sorted(known)}')
+    for k, tick in known.items():
+        got = int(first_sep[k]); print(f'  boundary case {k}: first separation tick {got} (documented {tick})')
+        if abs(got - tick) > 3: failures.append(f'boundary case {k} separates at tick {got}, documented {tick}')
 elif bad.double().mean().item() > max_outcome: failures.append(f'race outcome differs in {int(bad.sum())}/{C} cases (> {max_outcome:.0%})')
 print('PASS' if not failures else 'FAIL: ' + '; '.join(failures))
 sys.exit(1 if failures else 0)

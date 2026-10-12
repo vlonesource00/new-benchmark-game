@@ -84,8 +84,9 @@ class CudaWorld:
     def state(self):
         return self.S.T
 
-    def step(self, dt, throttle, brake, steer, hybrid_force, wake=None):
-        """One race tick. wake=None computes slipstream from the cars (multi-car); returns closing [env, pair]."""
+    def step(self, dt, throttle, brake, steer, hybrid_force, wake=None, before_collisions=None):
+        """One race tick. wake=None computes slipstream from the cars (multi-car); returns closing [env, pair].
+        before_collisions(): race-level work between the car steps and the collision pass (race.js: marshal rescue, ghosting)."""
         v, B = self.v, self.B
         if wake is None:
             self.mod.get_function('wakes')(*self.grid(B), (v['S'], cp.int32(B), cp.int32(self.N), v['alive'], v['wake']))
@@ -99,6 +100,8 @@ class CudaWorld:
                 step(*self.grid(self.E), (*args, cp.int32(slot)))
         else:
             step(*self.grid(B), (*args, cp.int32(-1)))
+        if before_collisions is not None:
+            before_collisions()
         if self.N > 1:
             self.mod.get_function('collisions')(*self.grid(self.E), (v['S'], cp.int32(B), cp.int32(self.N), cp.int32(self.E), v['cls'],
                                                                      v['specs'], v['alive'], v['ghost'], v['closing']))
