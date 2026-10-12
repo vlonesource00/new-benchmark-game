@@ -32,7 +32,9 @@ export function generateField({ seed, train, development, finalTest, lmdh, gt })
           field.push({ driver: pick(RIVAL_POOL), classId: 'gt', gap: round(gap), lateral: lane(gt, s), speed: round(at(gt, s).speed * u(.88, .98)), hazard: null, stopAt: null }); } };
       if (family === 'traffic') {
         traffic(1 + Math.floor(draw() * 4), u(25, 120));
-        if (draw() < .3) { const s = start - u(15, 60); field.push({ driver: pick(RIVAL_POOL), classId: 'lmdh', gap: round(s - start), lateral: lane(lmdh, s), speed: round(at(lmdh, s).speed * u(.93, 1)), hazard: null, stopAt: null }); }
+        // Pressure from behind builds gradually: rival AIs need a moment after spawn,
+        // so the GTP starts 30-70 m back and no faster than PULSE.
+        if (draw() < .3) { const s = start - u(30, 70); field.push({ driver: pick(RIVAL_POOL), classId: 'lmdh', gap: round(s - start), lateral: lane(lmdh, s), speed: round(Math.min(settings.speed, at(lmdh, s).speed * u(.93, 1))), hazard: null, stopAt: null }); }
         requirements = { encountersCleared: 1, unpassedTraffic: 0 };
       } else if (family === 'hazard') {
         const gap = u(60, 260), s = start + gap, sudden = draw() < .5;
@@ -43,7 +45,7 @@ export function generateField({ seed, train, development, finalTest, lmdh, gt })
         if (draw() < .5) traffic(1, gap + u(30, 90));
         requirements = { hazardsCleared: 1, unpassedTraffic: 0 };
       } else if (family === 'race') {
-        for (let k = 0, gap = u(12, 50); k < 1 + Math.floor(draw() * 2); k++, gap += u(20, 50)) { const s = start + gap;
+        for (let k = 0, gap = u(20, 60); k < 1 + Math.floor(draw() * 2); k++, gap += u(20, 50)) { const s = start + gap;
           field.push({ driver: pick(RIVAL_POOL), classId: 'lmdh', gap: round(gap), lateral: lane(lmdh, s), speed: round(at(lmdh, s).speed * u(.9, .98)), hazard: null, stopAt: null }); }
         requirements = {};
       } else requirements = { validFullLaps: 1 };
@@ -57,7 +59,7 @@ export function generateField({ seed, train, development, finalTest, lmdh, gt })
         checkpointDistance: family === 'solo' ? 4500 : 2600, requirements });
     }
   }
-  return { format: 'pulse-generated-field-v3', seed, counts: { train, development, finalTest }, rivalPool: RIVAL_POOL, cases,
+  return { format: 'pulse-generated-field-v4', seed, counts: { train, development, finalTest }, rivalPool: RIVAL_POOL, cases,
     finalTestRule: 'Freeze the selected model and evaluation rules before running final-test. Do not tune or train from final-test outcomes.',
     scope: 'Harbor Ring, clear weather, GTP on soft tyres. Whole-lap starts at reference-lap states; mixed-AI GT traffic, GTP pressure, standing and sudden hazards, solo laps.' };
 }

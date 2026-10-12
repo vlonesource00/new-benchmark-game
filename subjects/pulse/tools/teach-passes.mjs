@@ -26,8 +26,8 @@ const name = arg('name'), model = arg('model'), planPath = arg('plan'), dataRoot
 const caseIds = (arg('cases') ?? '').split(',').filter(Boolean), validation = new Set((arg('validation') ?? '').split(',').filter(Boolean));
 if (!name || !/^[a-z0-9-]+$/i.test(name) || !model || !planPath || !caseIds.length || !dataRoot) throw Error('--name --model --plan --cases --data-out required');
 const plan = JSON.parse(readFileSync(resolve(HOME, planPath), 'utf8')), { digest: expected, ...content } = plan;
-const fieldPlan = plan.format === 'pulse-generated-field-v3';
-if (!['pulse-generated-encounters-v1', 'pulse-generated-field-v3'].includes(plan.format) || digest(content) !== expected) throw Error('Frozen plan changed');
+const fieldPlan = /^pulse-generated-field-v[34]$/.test(plan.format);
+if (!(plan.format === 'pulse-generated-encounters-v1' || fieldPlan) || digest(content) !== expected) throw Error('Frozen plan changed');
 const scenes = caseIds.map(id => plan.cases.find(c => c.id === id));
 if (scenes.some(s => !s || s.split !== 'train')) throw Error('Only generated TRAIN-pool cases may be taught');
 const output = resolve(HOME, 'artifacts/teacher', name);

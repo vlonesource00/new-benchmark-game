@@ -26,12 +26,14 @@ export function smoothUpper(value, upper, width) {
   return upper - 2 * width * (t * t * t - .5 * t * t * t * t);
 }
 
+const SIDE_GAP = 2.7, SIDE_LENGTH = 5.5, SIDE_HORIZON = 100, SIDE_ACCEL = 6;
+
 /** Execution only: no Battle, candidate search, attack/defence decisions or
  * expert actuation. A held spatial route receives fresh physics feedback.
  */
 export class PlanExecutor {
   constructor(track, car, { frontalGuard = 'supervisor-v1', roadBounds = 'asphalt-body', edgeBlend = 0, edgeRamp = 0,
-    routeOrigin = 'rolling-v1', feedback = 'escape-v1', joinState = 'body-v1', ...unsupported } = {}) {
+    routeOrigin = 'rolling-v1', feedback = 'escape-v1', joinState = 'body-v1', sideGuard = 'off', ...unsupported } = {}) {
     if (Object.keys(unsupported).length) throw Error('Unsupported plan execution option: ' + Object.keys(unsupported).join(', '));
     if (!['supervisor-v1', 'live-body-speed-v1'].includes(frontalGuard)) throw Error('Unknown experimental frontal guard');
     if (!['asphalt-body', 'kerb-centre', 'line-kerb-v1'].includes(roadBounds)) throw Error('Unknown experimental road bound');
@@ -40,6 +42,8 @@ export class PlanExecutor {
     if (!['rolling-v1', 'request-v1'].includes(routeOrigin)) throw Error('Unknown experimental route origin');
     if (!['escape-v1', 'course-v1'].includes(feedback)) throw Error('Unknown experimental route feedback');
     if (!['body-v1', 'reference-v1'].includes(joinState)) throw Error('Unknown experimental route join');
+    if (!['off', 'clearance-v1'].includes(sideGuard)) throw Error('Unknown experimental side guard');
+    this.sideGuard = sideGuard;
     this.frontalGuard = frontalGuard; this.roadBounds = roadBounds; this.edgeBlend = edgeBlend; this.edgeRamp = edgeRamp; this.routeOrigin = routeOrigin;
     this.feedback = feedback; this.joinState = joinState;
     const config = settingsFor(track.id);
@@ -121,6 +125,13 @@ export class PlanExecutor {
       points[i].curvature = clamp(2 * (after - before) / (distances[i + 1] - distances[i - 1]), -.008, .008);
     }
     const n = Math.min(base.N - 22, Math.ceil((distances.at(-1) + start) / base.ds));
+    // clearance-v1: wherever the route will be alongside a forecast rival body,
+    // keep SIDE_GAP between centres on the side the plan already takes. It is a
+    // moving lane bound, eased like the road edges; with no room it is dropped
+    // and the frontal guard governs.
+    const track = this.course.track, sideRivals = this.sideGuard === 'clearance-v1'
+      ? this.observer.list.filter(r => Math.abs(r.ds) < 90 && r.car !== car) : [], mySpeed = Math.max(5, car.speed);
+    let sideStations = 0;
     const shift = new Float64Array(n + 1), corrections = new Float64Array(n + 1), along = new Float64Array(n + 1); let segment = 0, travelled = 0, clippedStations = 0, maxEdgeCorrection = 0;
     for (let j = 0; j <= n; j++) {
       const x = travelled - start;
@@ -137,7 +148,13 @@ export class PlanExecutor {
         lower = this.roadBounds === 'kerb-centre' ? kerb : this.roadBounds === 'line-kerb-v1' ? clamp(-base.lat[i], asphalt, kerb) : asphalt,
         projection = Math.max(.3, Math.cos(angle(h - this.course.track.at(q.s).heading))),
         bounded = smoothUpper(-smoothUpper(-q.lateral, lower, this.edgeBlend), upper, this.edgeBlend),
-        correction = (q.lateral - bounded) / projection;
+        side = sideRivals.length && x >= 0 && x <= SIDE_HORIZON ? this.sideBound(sideRivals, q, x / mySpeed, upper, lower, track) : null,
+        boundedSide = side ? smoothUpper(-smoothUpper(-bounded, side.lower, this.edgeBlend), side.upper, this.edgeBlend) : bounded,
+        // Side escapes are limited to what a SIDE_ACCEL lateral manoeuvre reaches by
+        // this station (bang-bang: a t^2 / 4): at 68 m/s ~0.8 m over 50 m, never a step.
+        sideReach = .3 + SIDE_ACCEL * (Math.max(0, x) / mySpeed) ** 2 / 4,
+        correction = (q.lateral - bounded) / projection + clamp((bounded - boundedSide) / projection, -sideReach, sideReach);
+      if (side) sideStations++;
       if (Math.abs(correction) > .001) clippedStations++;
       maxEdgeCorrection = Math.max(maxEdgeCorrection, Math.abs(correction));
       shift[j] = offset; corrections[j] = correction; along[j] = x;
@@ -184,16 +201,31 @@ export class PlanExecutor {
     }
     this.compileTrace = { roadBounds: this.roadBounds, edgeBlend: this.edgeBlend, routeOrigin: this.routeOrigin,
       joinState: this.joinState, edgeRamp: this.edgeRamp, referenceJoin, joinOffset, bodyOffset: cur.e,
-      consumed, remainingDistances: distances.slice(1), clippedStations, maxEdgeCorrection, floor };
+      consumed, remainingDistances: distances.slice(1), clippedStations, maxEdgeCorrection, floor, sideStations };
+  }
+  sideBound(rivals, q, t, upper, lower, track) {
+    let up = upper, low = lower, hit = false;
+    for (const r of rivals) {
+      const p = this.observer.at(r, t), g = ((p.s - q.s) % track.length + 1.5 * track.length) % track.length - .5 * track.length;
+      if (Math.abs(g) > SIDE_LENGTH || Math.abs(p.d - q.lateral) > SIDE_GAP + 2) continue;
+      const side = Math.abs(q.lateral - p.d) > .2 ? Math.sign(q.lateral - p.d) : (upper - p.d > p.d + lower ? 1 : -1);
+      if (side > 0) low = Math.min(low, -(p.d + SIDE_GAP)); else up = Math.min(up, p.d - SIDE_GAP);
+      hit = true;
+    }
+    // No lane between the bounds: leave the route to the frontal guard.
+    return hit && up >= -low + .2 ? { upper: up, lower: low } : null;
   }
   step(car, cars, dt, { time = 0, state = {} } = {}) {
     this.course.tick(car, dt); this.observer.update(car, cars, state, time);
     const line = this.course.line, cur = line.closest(car.x, car.z), age = Math.max(0, time - this.at), offsets = this.goal.offsets;
     const changed = offsets.some((x, i) => Math.abs(x - this.compiledOffsets[i]) > .18);
     const elapsed = time - this.compiledAt, renew = this.path !== line && elapsed > .25 && age < .1;
-    if ((changed || renew) && elapsed >= .05) {
+    // A car near and within reach laterally keeps the side bound fresh at 10 Hz.
+    const sideNear = this.sideGuard === 'clearance-v1' && this.observer.list.some(r => r.car !== car
+      && r.ds > -SIDE_LENGTH && r.ds < Math.max(25, 2.5 * (car.speed - r.v) + 10) && Math.abs(r.d - car.lateral) < SIDE_GAP + 2.5);
+    if ((changed || renew || sideNear && elapsed >= .1) && elapsed >= .05) {
       const started = performance.now();
-      if (offsets.every(x => Math.abs(x) < .12) && Math.abs(cur.e) < .3) { this.path = line; this.compileTrace = null; }
+      if (!sideNear && offsets.every(x => Math.abs(x) < .12) && Math.abs(cur.e) < .3) { this.path = line; this.compileTrace = null; }
       else this.compile(car, cur, offsets);
       this.compiledOffsets = [...offsets]; this.compiledAt = time; this.compiles++;
       this.compileMs.push(performance.now() - started);
@@ -218,7 +250,7 @@ export class PlanExecutor {
     const cursor = this.controller.cur, selectedRoute = Array.from({ length: 20 }, (_, i) => ({
       x: path.sample(path.px, cursor.i, cursor.f, i * 9), z: path.sample(path.pz, cursor.i, cursor.f, i * 9),
       speed: path.sample(path.vbrk, cursor.i, cursor.f, i * 9) }));
-    this.trace = { contract: PLAN_CONTRACT.version, frontalGuard: this.frontalGuard, routeOrigin: this.routeOrigin, feedback: this.feedback,
+    this.trace = { contract: PLAN_CONTRACT.version, frontalGuard: this.frontalGuard, sideGuard: this.sideGuard, routeOrigin: this.routeOrigin, feedback: this.feedback,
       joinState: this.joinState,
       epoch: this.epoch,
       origin: this.origin, sequence: this.sequence, age,

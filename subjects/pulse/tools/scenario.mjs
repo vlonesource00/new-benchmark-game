@@ -232,12 +232,19 @@ export async function runScenario(options = {}) {
     race.rescue = (entry, dt) => { if (entry !== race.entries[1]) rescue(entry, dt); };
   }
   const fieldHazards = settings.fixture === 'field' ? settings.field.map((f, k) => f.hazard ? { ...f, i: k + 1, done: false } : null).filter(Boolean) : [];
+  // Standing hazards (stopAt 0) are placed stopped. A sudden hazard is a real
+  // physical incident: the driver locks the brakes (and for 'spun' snaps the
+  // steering for 0.6 s) and the car decelerates and rotates through physics.
   const fieldStop = h => {
-    const c = race.cars[h.i], fuel = c.fuel, state = c.race, damage = c.damage;
-    c.place(track, c.s, c.lateral, 0); c.fuel = fuel; c.race = state; c.damage = damage;
-    if (h.hazard === 'spun') c.yaw += Math.PI * .55;
-    race.entries[h.i].bridges[0].update = car => { car.controls = { throttle: 0, brake: 1, steer: 0 }; };
-    events.push({ time: race.time - startAt, type: 'hazard-stop', id: c.id, s: c.s }); h.done = true;
+    const c = race.cars[h.i], at = race.time, flick = h.lateral >= 0 ? -1 : 1;
+    if (h.stopAt === 0) {
+      const fuel = c.fuel, state = c.race, damage = c.damage;
+      c.place(track, c.s, c.lateral, 0); c.fuel = fuel; c.race = state; c.damage = damage;
+      if (h.hazard === 'spun') c.yaw += Math.PI * .55;
+    }
+    race.entries[h.i].bridges[0].update = car => { car.controls = { throttle: 0, brake: 1,
+      steer: h.hazard === 'spun' && race.time - at < .6 ? flick : 0 }; };
+    events.push({ time: race.time - startAt, type: 'hazard-stop', id: c.id, s: c.s, sudden: h.stopAt > 0 }); h.done = true;
   };
   for (const h of fieldHazards) if (h.stopAt === 0) fieldStop(h);
   if (fieldHazards.length) {
