@@ -18,12 +18,14 @@ p.add_argument('--dtype', default='float64')
 p.add_argument('--max-control', type=float, default=None, help='largest steer/throttle/brake error (default 1e-9 float64, 2e-2 float32)')
 p.add_argument('--max-discrete', type=int, default=None, help='allowed compile/path/cursor mismatch ticks (default 0 float64)')
 p.add_argument('--max-flips', type=float, default=None, help='share of ticks whose controls differ by more than --max-control (default 0 float64, 1e-3 float32)')
+p.add_argument('--max-drift', type=float, default=None, help='closed-loop position drift gate in m: max over cases (float64, default 1e-6), median (float32, default 1e-2)')
 a = p.parse_args()
 dtype, dev = getattr(torch, a.dtype), 'cuda'
 f64 = dtype == torch.float64
 max_control = a.max_control if a.max_control is not None else (1e-9 if f64 else 2e-2)
 max_discrete = a.max_discrete if a.max_discrete is not None else (0 if f64 else 10 ** 9)
 max_flips = a.max_flips if a.max_flips is not None else (0 if f64 else 1e-3)
+max_drift = a.max_drift if a.max_drift is not None else (1e-6 if f64 else 1e-2)
 meta = json.load(open(os.path.join(a.ref, 'meta.json')))
 fields, S, N, C, DT = meta['fields'], meta['steps'], meta['slots'], len(meta['cases']), meta['dt']
 F, O = len(fields), len(OUTPUTS)
@@ -69,7 +71,7 @@ for t in range(S):
     if t:
         x.prev_brake.copy_(inputs[:, t - 1, :, 1].reshape(-1)); x.wake.copy_(wakes[:, t - 1].reshape(-1).clamp(max=.95))
     commit(x, t)
-    got[:, t] = x.step(t * DT, DT)
+    got[:, t] = x.step(t * DT, DT)[:, :O]
 col = {k: i for i, k in enumerate(OUTPUTS)}
 err = (got - outputs).abs()
 print(f'executor teacher-forced ({a.dtype}, {C} cases, {S} ticks):')
@@ -97,9 +99,11 @@ if flips > max_flips: failures.append(f'control flips {flips:.2e} > {max_flips:.
 # 2. Closed loop: the executor drives slot 0, rivals replay their recorded inputs.
 w, x = make(); x.reset()
 ex_lane = torch.tensor(lanes, device=dev)
+drift = {}
 for t in range(S):
     if t:
-        x.prev_brake.copy_(inputs[:, t - 1, :, 1].reshape(-1)); x.wake.copy_(w.wake.clamp(max=.95))
+        # The executor's own executed brake from the previous tick (rivals: their recorded one).
+        x.prev_brake.copy_(u[:, 1]); x.wake.copy_(w.wake.clamp(max=.95))
     commit(x, t)
     out = x.step(t * DT, DT)
     u = inputs[:, t].reshape(C * N, 4).clone()
@@ -110,8 +114,12 @@ for t in range(S):
         st, tr = w.state()[ex_lane], states[:, t + 1, 0]
         pos = torch.hypot(st[:, fields.index('x')] - tr[:, fields.index('x')], st[:, fields.index('z')] - tr[:, fields.index('z')])
         worst = pos.argmax().item(); dmg = states[worst, :, :, fields.index('damage')].amax(-1)
-        hit = (dmg[1:] > dmg[:-1]).nonzero()
+        hit = (dmg[1:] > dmg[:-1]).nonzero(); drift[t + 1] = (pos.max() if f64 else pos.median()).item()
         print(f'  closed loop {(t + 1) * DT:>4.0f} s  executor position median {pos.median().item():.2e} max {pos.max().item():.2e} m'
               f' (case {worst}, first reference contact {hit[0].item() * DT if len(hit) else None} s)')
+# Closed-loop drift: float64 must track the reference exactly (max over cases, every checkpoint); float32
+# rounding drifts chaotically after contacts, so its gate is the median.
+for tick, d in drift.items():
+    if d > max_drift: failures.append(f'closed-loop {"max" if f64 else "median"} drift {d:.2e} m > {max_drift:.0e} at {tick * DT:.0f} s')
 print('PASS' if not failures else 'FAIL: ' + '; '.join(failures))
 sys.exit(1 if failures else 0)

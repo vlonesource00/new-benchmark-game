@@ -31,7 +31,8 @@ enum { R_CLOCK, R_GRIP, R_MARGIN, R_COMPILEDAT, R_AT, R_GOAL0, R_GOAL1, R_GOAL2,
   R_KC, R_ACCEL, R_COMPILES, R_HTIME, R_HV = R_HTIME + MAX_SLOTS, R_HBODY = R_HV + MAX_SLOTS, XR = R_HBODY + MAX_SLOTS };
 enum { I_REBUILD, I_COUNTDOWN, I_SLOT, I_PATH, I_WIN0, I_WIN1, I_WI0, I_WI1, I_WN0, I_WN1, I_PROFSRC, I_PROFCOUNT,
   I_CURSOR, I_CPATH, I_SEQ, I_HVALID, I_HREF = I_HVALID + MAX_SLOTS, XI = I_HREF + MAX_SLOTS };
-enum { OUT_STEER, OUT_THROTTLE, OUT_BRAKE, OUT_KC, OUT_ACCEL, OUT_GRIP, OUT_COMPILES, OUT_PATH, OUT_CURSOR, OUT_NOSECAP, OUT_W };
+enum { OUT_STEER, OUT_THROTTLE, OUT_BRAKE, OUT_KC, OUT_ACCEL, OUT_GRIP, OUT_COMPILES, OUT_PATH, OUT_CURSOR, OUT_NOSECAP,
+  OUT_TARGET, OUT_FEED, OUT_SOURCE, OUT_W };  // controller trace (INTERCEPT's energy rule reads target/feed/source)
 
 __device__ __forceinline__ int lidx(int i, int N) { return ((i % N) + N) % N; }
 __device__ __forceinline__ real angler(real a) { return atan2(sin(a), cos(a)); }
@@ -534,4 +535,5 @@ __device__ void executor_step_one(const ExArgs& A, const Track& t, int e, double
   out[OUT_STEER] = clampr(steer, -1, 1); out[OUT_THROTTLE] = throttle; out[OUT_BRAKE] = brake; out[OUT_KC] = xr[R_KC];
   out[OUT_ACCEL] = xr[R_ACCEL]; out[OUT_GRIP] = xr[R_GRIP]; out[OUT_COMPILES] = xr[R_COMPILES]; out[OUT_PATH] = xi[I_PATH];
   out[OUT_CURSOR] = xi[I_CURSOR]; out[OUT_NOSECAP] = isfinite(nose.cap) ? nose.cap : -1;
+  out[OUT_TARGET] = target; out[OUT_FEED] = feed; out[OUT_SOURCE] = source;
 }

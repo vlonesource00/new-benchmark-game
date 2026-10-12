@@ -10,7 +10,8 @@ from cuda_sim import cupy
 
 HERE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cuda')
 LINE_KEYS = ['px', 'pz', 'len', 'h', 'k', 'ks', 'dk', 'lat', 'st']
-OUTPUTS = ['steer', 'throttle', 'brake', 'kc', 'acceleration', 'grip', 'compiles', 'path', 'cursor', 'noseCap']
+OUTPUTS = ['steer', 'throttle', 'brake', 'kc', 'acceleration', 'grip', 'compiles', 'path', 'cursor', 'noseCap']  # parity-checked
+TRACE = OUTPUTS + ['target', 'feed', 'source']  # full output row; source 0 profile, 1 wake, 2 nose
 _modules = {}
 
 
