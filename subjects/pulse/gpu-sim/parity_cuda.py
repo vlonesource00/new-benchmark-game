@@ -30,7 +30,8 @@ else:
     classes = [c['classId'] for c in meta['cases']]
 mask = active.reshape(-1).to(dev)
 make = lambda: CudaWorld(classes, C, N, meta['trackGeometry'], dtype, [c['tempGrip'] for c in meta['cases']],
-                         [c['ambient'] for c in meta['cases']], active)
+                         [c['ambient'] for c in meta['cases']], active,
+                         [c['tyre'] for c in meta['cases']] if 'tyre' in meta['cases'][0] else None)
 yaw = fields.index('yaw')
 
 

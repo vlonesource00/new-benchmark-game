@@ -88,13 +88,16 @@ __device__ Surface track_surface(const Track& t, real x, real z, const float* ru
 
 struct Tyre { real kappa, alpha, fx, fy, surf, core, inner, outer, pressure, wear, slipPower, util; };
 
-__device__ void tyre_force(Tyre& y, real vx, real vy, real omega, real load, real grip, real h, real radius, real ambient, real cold) {
+// Compound parameters (race.fitTyres): gripScale, wearScale, optimum, heat, coldPressure. Dry road (wet = 0).
+struct Compound { real gripScale, wearScale, optimum, heat, cold; };
+
+__device__ void tyre_force(Tyre& y, real vx, real vy, real omega, real load, real grip, real h, real radius, real ambient, const Compound& k) {
   const real speed = rmax(fabs(vx), (real)2.5);
   y.kappa = dampr(y.kappa, clampr((omega * radius - vx) / speed, -2, 2), speed / .32, h);
   y.alpha = dampr(y.alpha, atan2(vy, speed), speed / .45, h);
   const real wg = 1 - .10 * y.wear - 1.2 * pow(rmax(y.wear - .72, (real)0), (real)2);
-  const real tg = 1.48 * clampr(1 - pow((y.core - 85) / 105, (real)2), .65, 1) * clampr(1 - fabs(y.pressure - 2.15) * .13, .8, 1)
-    * clampr(1 - .13 * log(rmax(load / 3300, (real).1)), .68, 1.18) * wg;
+  const real tg = 1.48 * clampr(1 - pow((y.core - k.optimum) / 105, (real)2), .65, 1) * clampr(1 - fabs(y.pressure - 2.15) * .13, .8, 1)
+    * clampr(1 - .13 * log(rmax(load / 3300, (real).1)), .68, 1.18) * wg * k.gripScale;
   const real peak = rmax(grip * load * tg, (real)0);
   const real sx = y.kappa * 10.5, sy = tan(clampr(y.alpha, -1.2, 1.2)) * 8.6, slip = hypot(sx, sy);
   const real shape = tanh(slip) * (1 - .16 * clampr((slip - 1.4) / 5, 0, 1));
@@ -106,16 +109,16 @@ __device__ void tyre_force(Tyre& y, real vx, real vy, real omega, real load, rea
   const real sp = clampr(fabs(fx * (omega * radius - vx)) + fabs(fy * vy), 0, 180000);
   y.slipPower = sp;
   const real rolling = load * fabs(vx) * .012, cooling = (y.surf - ambient) * (46 + fabs(vx) * 2.2);
-  y.surf = clampr(y.surf + (sp * .55 + rolling - cooling - (y.surf - y.core) * 75) / 6000 * h, ambient, 210);
+  y.surf = clampr(y.surf + (sp * .55 * k.heat + rolling - cooling - (y.surf - y.core) * 75) / 6000 * h, ambient, 210);
   y.core = clampr(y.core + ((y.surf - y.core) * 75 + rolling * .3 - (y.core - ambient) * 4) / 18000 * h, ambient, 170);
   y.inner = y.surf + fabs(CAMBER) * 75; y.outer = y.surf - fabs(CAMBER) * 45;
-  y.pressure = (cold + 1.01325) * ((y.core + 273.15) / (ambient + 273.15)) - 1.01325;
-  y.wear = clampr(y.wear + sp * h * 1.7e-10 * (1 + rmax(y.surf - 115, (real)0) / 35), 0, 1);
+  y.pressure = (k.cold + 1.01325) * ((y.core + 273.15) / (ambient + 273.15)) - 1.01325;
+  y.wear = clampr(y.wear + k.wearScale * sp * h * 1.7e-10 * (1 + rmax(y.surf - 115, (real)0) / 35), 0, 1);
 }
 
 // One physics tick of one car (Vehicle.step). Reads and writes its state column; lays rubber with atomics.
 __device__ void vehicle_step(real* Sv, int B, int c, const Spec& sp, const Track& t, float* rubber, real dt,
-    real throttleIn, real brakeIn, real steerIn, real wake, real hybridForce, real tempGrip, real ambient, bool alive, bool layRubber, int* node) {
+    real throttleIn, real brakeIn, real steerIn, real wake, real hybridForce, real tempGrip, real ambient, bool alive, bool layRubber, int* node, const Compound& compound) {
   #define F_(k) Sv[(k) * B + c]
   real x = F_(X), z = F_(Z), yaw = F_(YAW), vx = F_(VX), vz = F_(VZ), yawRate = F_(YAWRATE);
   real ax = F_(AX), ay = F_(AY), roll = F_(ROLL), pitch = F_(PITCH), heave = F_(HEAVE), steering = F_(STEERING);
@@ -129,7 +132,6 @@ __device__ void vehicle_step(real* Sv, int B, int c, const Spec& sp, const Track
     y.pressure = F_(WF(w, PRESSURE)); y.wear = F_(WF(w, WEAR)); y.slipPower = F_(WF(w, SLIPPOWER));
     y.fx = F_(WF(w, FX)); y.fy = F_(WF(w, FY)); y.inner = F_(WF(w, INNER)); y.outer = F_(WF(w, OUTER)); y.util = F_(WF(w, UTIL));
   }
-  const real cold = 1.65;
   const real cy = cos(yaw), sy = sin(yaw);
   const real u = vx * sy + vz * cy, v = vx * cy - vz * sy, speed = hypot(u, v);
   steering = dampr(steering, clampr(steerIn, -1, 1) * sp.steeringLock, 12, dt);
@@ -155,7 +157,7 @@ __device__ void vehicle_step(real* Sv, int B, int c, const Spec& sp, const Track
   const real longT = clampr(ax, -22, 18) * mass * sp.cg / sp.wheelbase, latT = clampr(ay, -25, 25) * mass * sp.cg / sp.track;
   const real frontLoad = mass * 9.81 * sp.frontWeight - longT + downforce * sp.frontAero;
   const real rearLoad = mass * 9.81 * (1 - sp.frontWeight) + longT + downforce * sp.rearAero;
-  const Surface center = track_surface(t, x, z, rubber, tempGrip, *node, 8);
+  const Surface center = track_surface(t, x, z, rubber, tempGrip, *node, 16);
   *node = center.p.node;
   real fx = 0, fz = -drag * signr(u), moment = -yawRate * 130;
   const real torqueCurve = clampr(1 - pow((rpm - 5500) / 6700, (real)2), .45, 1);
@@ -169,7 +171,7 @@ __device__ void vehicle_step(real* Sv, int B, int c, const Spec& sp, const Track
     if (front && fabs(steering) > .0001) wsteer[i] = atan(sp.wheelbase / (sp.wheelbase / tan(steering) - wxo));
     const real ws = wsteer[i];
     const real wx = x + wxo * cy + wzo * sy, wz = z - wxo * sy + wzo * cy;
-    const Surface su = track_surface(t, wx, wz, rubber, tempGrip, center.p.node, 3);
+    const Surface su = track_surface(t, wx, wz, rubber, tempGrip, center.p.node, 12);
     const real axle = front ? frontLoad : rearLoad;
     const real targetLoad = rmax(axle / 2 - signr(wxo) * latT * (front ? .52 : .48), (real)0);
     const real spring = front ? sp.springFront : sp.springRear;
@@ -192,7 +194,7 @@ __device__ void vehicle_step(real* Sv, int B, int c, const Spec& sp, const Track
     const real grip = su.grip * sp.tyreGrip;
     real avgFx = 0, avgFy = 0; const real h = dt / 4;
     for (int k = 0; k < 4; k++) {
-      tyre_force(ty[i], tvx, tvy, omega[i], load, grip, h, sp.radius, ambient, cold);
+      tyre_force(ty[i], tvx, tvy, omega[i], load, grip, h, sp.radius, ambient, compound);
       const real unbraked = omega[i] + (wheelDrive - ty[i].fx * sp.radius) / sp.wheelInertia * h;
       const real brakeStep = brakeTorque / sp.wheelInertia * h;
       omega[i] = clampr(signr(unbraked) * rmax(fabs(unbraked) - brakeStep, (real)0), -300, 520);

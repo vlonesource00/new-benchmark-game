@@ -9,12 +9,14 @@ import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { Vehicle } from '../../../game/engine/sim/vehicle.js';
 import { Track } from '../../../game/engine/sim/track.js';
+import { createTyre } from '../../../game/engine/sim/tyre.js';
 import { clamp, angle, random } from '../../../game/engine/sim/math.js';
 import { CAR_FIELDS, WHEEL_FIELDS, TYRE_FIELDS } from './reference-fields.mjs';
+import { COMPOUNDS, TYRE_HEAT } from '../../../game/core/rules.js';
 
 const args = process.argv.slice(2), arg = (k, d) => { const i = args.indexOf('--' + k); return i < 0 ? d : args[i + 1]; };
 const out = resolve(arg('out')), cases = +arg('cases', 300), seconds = +arg('seconds', 10), seed = +arg('seed', 1);
-const trackId = arg('track', 'harbor-ring'), DT = 1 / 120, steps = Math.round(seconds / DT);
+const compounds = args.includes('--compounds'), trackId = arg('track', 'harbor-ring'), DT = 1 / 120, steps = Math.round(seconds / DT);
 if (existsSync(out)) throw Error('Preserve reference ' + out);
 mkdirSync(out, { recursive: true });
 
@@ -41,7 +43,14 @@ for (let k = 0; k < cases; k++) {
   car.yaw += wild ? uniform(-.25, .25) : uniform(-.04, .04);
   const grip = uniform(18, 34), wake = rand() < .3 ? uniform(0, .6) : 0, hybrid = classId === 'lmdh' && rand() < .5 ? uniform(0, 3500) : 0;
   let target = uniform(-4, 4), steerNoise = 0, pedalNoise = 0, stab = 0;
-  meta.cases.push({ classId, wild, s0, lat0, v0, tempGrip: track.tempGrip, ambient: track.ambient });
+  // --compounds: race.fitTyres with a random dry compound, warm or cold, and a race wear multiplier.
+  let tyre = [1, 1, 85, 1, car.setup.pressure];
+  if (compounds) {
+    const c = Object.values(COMPOUNDS)[Math.floor(rand() * 3)], warm = rand() < .7, wearScale = c.wear * uniform(1, 6);
+    for (const w of car.wheels) w.tyre = createTyre(car.setup.pressure, { compound: c.id, gripScale: c.grip, wearScale, optimum: c.optimum, heat: c.heat * TYRE_HEAT[classId], warm });
+    tyre = [c.grip, wearScale, c.optimum, c.heat * TYRE_HEAT[classId], car.setup.pressure];
+  }
+  meta.cases.push({ classId, wild, s0, lat0, v0, tempGrip: track.tempGrip, ambient: track.ambient, tyre });
   const base = k * (steps + 1) * fields.length;
   states.set(read(car), base);
   for (let t = 0; t < steps; t++) {

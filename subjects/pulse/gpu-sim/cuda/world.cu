@@ -21,16 +21,17 @@ __device__ Spec load_spec(const double* table, int k) {
 #define MAKE_TRACK Track t; t.x = tx_; t.z = tz_; t.s = ts_; t.tx = ttx_; t.tz = ttz_; t.curv = tc_; t.count = count; \
   t.length = length; t.half = half; t.curb = curb; t.runoff = runoff; t.barrier = barrier; t.laneWidth = laneWidth;
 
-// inputs: [B, 5] throttle, brake, steer, wake, hybridForce. rubber: [envs, cells] float32.
+// inputs: [B, 5] throttle, brake, steer, wake, hybridForce. rubber: [envs, cells] float32. tyres: [B, 5] compound.
 extern "C" __global__ void step_cars(real* S, int B, int slots, const int* cls, const double* specs, TRACK_ARGS,
     float* rubber, int cells, const real* inputs, const real* tempGrip, const real* ambient, const unsigned char* alive,
-    int layRubber, int* node, real dt) {
+    int layRubber, int* node, const real* tyres, real dt) {
   const int c = blockIdx.x * blockDim.x + threadIdx.x; if (c >= B) return;
   MAKE_TRACK
   const Spec sp = load_spec(specs, cls[c]); const int env = c / slots;
-  const real* in = inputs + c * 5;
+  const real* in = inputs + c * 5, *ty = tyres + c * 5;
+  const Compound k = { ty[0], ty[1], ty[2], ty[3], ty[4] };
   vehicle_step(S, B, c, sp, t, rubber + (size_t)env * cells, dt, in[0], in[1], in[2], in[3], in[4], tempGrip[env], ambient[env],
-    alive[c] != 0, layRubber != 0, node + c);
+    alive[c] != 0, layRubber != 0, node + c, k);
 }
 
 // Global nearest node of every car (start of an episode).

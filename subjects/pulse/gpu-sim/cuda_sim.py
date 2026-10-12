@@ -14,8 +14,10 @@ _modules = {}
 def module(dtype):
     name = 'double' if dtype == torch.float64 else 'float'
     if name not in _modules:
-        src = open(os.path.join(HERE, 'world.cu'), encoding='utf-8').read()
-        _modules[name] = cp.RawModule(code=src, options=('-std=c++17', f'-Dreal={name}', '-I' + HERE))
+        # Inline the header: CuPy's compile cache keys on the source text, so an edited header must change it.
+        read = lambda f: open(os.path.join(HERE, f), encoding='utf-8').read()
+        src = read('world.cu').replace('#include "physics.cuh"', read('physics.cuh'))
+        _modules[name] = cp.RawModule(code=src, options=('-std=c++17', f'-Dreal={name}'))
     return _modules[name]
 
 
@@ -24,7 +26,7 @@ def cupy(t):
 
 
 class CudaWorld:
-    def __init__(self, class_ids, envs, slots, geometry, dtype=torch.float64, temp_grip=None, ambient=None, active=None):
+    def __init__(self, class_ids, envs, slots, geometry, dtype=torch.float64, temp_grip=None, ambient=None, active=None, tyres=None):
         dev = 'cuda'
         self.E, self.N, self.B, self.dtype = envs, slots, envs * slots, dtype
         self.mod = module(dtype)
@@ -54,11 +56,13 @@ class CudaWorld:
         self.pairs = slots * (slots - 1) // 2
         self.closing = torch.zeros(envs, max(1, self.pairs), device=dev, dtype=dtype)
         self.lay_rubber = True
+        # Per-car compound [gripScale, wearScale, optimum, heat, coldPressure]; default = the Vehicle's own medium tyre.
+        self.tyres = (torch.tensor(tyres, dtype=dtype) if tyres is not None else torch.tensor([[1., 1., 85., 1., 1.65]], dtype=dtype).expand(self.B, 5)).to(dev).contiguous()
         self._views()
 
     def _views(self):
         self.v = {k: cupy(getattr(self, k)) for k in ['S', 'node', 'inputs', 'wake', 'closing', 'cls', 'specs', 'rubber',
-                                                    'temp_grip', 'ambient', 'alive', 'ghost']}
+                                                    'temp_grip', 'ambient', 'alive', 'ghost', 'tyres']}
         self.v_track = [cupy(c) for c in self.track_cols]
         self.real = cp.float64 if self.dtype == torch.float64 else cp.float32
 
@@ -87,7 +91,7 @@ class CudaWorld:
         torch.stack([throttle, brake, steer, wake.to(self.dtype), hybrid_force], 1, out=self.inputs)
         self.mod.get_function('step_cars')(*self.grid(B), (v['S'], cp.int32(B), cp.int32(self.N), v['cls'], v['specs'], *self.track_args(),
                                                            v['rubber'], cp.int32(self.cells), v['inputs'], v['temp_grip'], v['ambient'],
-                                                           v['alive'], cp.int32(1 if self.lay_rubber else 0), v['node'], self.real(dt)))
+                                                           v['alive'], cp.int32(1 if self.lay_rubber else 0), v['node'], v['tyres'], self.real(dt)))
         if self.N > 1:
             self.mod.get_function('collisions')(*self.grid(self.E), (v['S'], cp.int32(B), cp.int32(self.N), cp.int32(self.E), v['cls'],
                                                                      v['specs'], v['alive'], v['ghost'], v['closing']))
