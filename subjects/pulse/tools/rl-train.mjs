@@ -14,6 +14,11 @@ const store = resolve(arg('store', 'C:/pulse-store/rl'), name), root = resolve(H
 if (!name || !planPath || existsSync(root)) throw Error('--name (new) and --plan required');
 mkdirSync(root, { recursive: true }); mkdirSync(store, { recursive: true });
 const plan = JSON.parse(readFileSync(resolve(HOME, planPath), 'utf8')), train = plan.cases.filter(c => c.split === 'train').map(c => c.id);
+// --family-weights hazard=3,traffic=1.5: practise weak scene types more often (sampling only; evaluation is unchanged).
+const weights = Object.fromEntries((arg('family-weights') ?? '').split(',').filter(Boolean).map(p => p.split('=')).map(([k, w]) => [k, +w]));
+const family = id => (id.match(/traffic|race|hazard|solo/) ?? ['other'])[0], weightOf = id => weights[family(id)] ?? 1;
+const cumulative = []; train.reduce((n, id) => (cumulative.push(n + weightOf(id)), n + weightOf(id)), 0);
+const pick = () => { const x = draw() * cumulative.at(-1); return train[cumulative.findIndex(c => c > x)]; };
 const log = entry => { appendFileSync(resolve(root, 'log.jsonl'), JSON.stringify(entry) + '\n'); console.log(JSON.stringify(entry)); };
 const run = (cmd, argv, opts = {}) => new Promise((ok, fail) => {
   const p = spawn(cmd, argv, { cwd: opts.cwd ?? HOME, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
@@ -38,11 +43,11 @@ async function evaluate(model, tag) {
 }
 let model = arg('model'), best = { ok: -1 };
 if (arg('baseline')) best = { ok: +arg('baseline'), model, iteration: 0 };
-writeFileSync(resolve(root, 'config.json'), JSON.stringify({ name, plan: planPath, start: model, workers, perWorker, iterations, evalEvery, sigma, bc, store }, null, 2));
+writeFileSync(resolve(root, 'config.json'), JSON.stringify({ name, plan: planPath, start: model, workers, perWorker, iterations, evalEvery, sigma, bc, store, bcWeight: arg('bc-weight', '.5'), weights, ppoEpochs: arg('ppo-epochs', '4'), lr: arg('lr', '3e-4') }, null, 2));
 const pending = [];
 for (let it = 1; it <= iterations; it++) {
   const started = Date.now(), dir = resolve(store, `it-${String(it).padStart(3, '0')}`);
-  const picks = Array.from({ length: workers * perWorker }, () => train[Math.floor(draw() * train.length)]);
+  const picks = Array.from({ length: workers * perWorker }, pick);
   // Distinct files per worker: a scene drawn twice goes to different workers' folders.
   await Promise.all(Array.from({ length: workers }, (_, w) => run('node', [...node, 'tools/rl-rollout.mjs', '--out', resolve(dir, 'w' + w),
     '--model', model, '--plan', planPath, '--sigma', sigma, '--seed', String(it * 1000 + w),
@@ -52,7 +57,8 @@ for (let it = 1; it <= iterations; it++) {
     for (const f of readdirSync(resolve(dir, w))) writeFileSync(resolve(flat, `${w}-${f}`), readFileSync(resolve(dir, w, f)));
   const next = `artifacts/models/${name}-it${String(it).padStart(3, '0')}`;
   const out = await run(python, ['ppo_plan.py', '--parent', resolve(HOME, model), '--rollouts', flat, '--out', resolve(HOME, next),
-    ...(bc ? ['--bc', resolve(HOME, bc), '--bc-weight', arg('bc-weight', '.5'), '--cache', arg('cache', 'C:/pulse-store/cache')] : []), '--seed', String(it)], { cwd: resolve(HOME, 'training') });
+    ...(bc ? ['--bc', resolve(HOME, bc), '--bc-weight', arg('bc-weight', '.5'), '--cache', arg('cache', 'C:/pulse-store/cache')] : []), '--seed', String(it),
+    '--epochs', arg('ppo-epochs', '4'), '--lr', arg('lr', '3e-4')], { cwd: resolve(HOME, 'training') });
   const report = JSON.parse(out.trim().split('\n').filter(l => l.startsWith('{')).at(-1));
   rmSync(dir, { recursive: true, force: true });
   model = next;
