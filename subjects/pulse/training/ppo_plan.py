@@ -11,31 +11,30 @@ import argparse
 import hashlib
 import json
 import math
+import os
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 import numpy as np
 import torch
 from torch import nn
 import onnx
 from plan_model import PlanPolicy
+from ppo_parse import parse_rollout, parse_targets
 from checkpoint_state import atomic_json, atomic_checkpoint
 
 REWARD = {'progress': 1 / 50, 'damage': 300., 'offtrack': 2., 'contact': .5, 'severe': 5., 'jerk': .2,
           'pass': 3., 'hazard': 2., 'success': 5.}
 
 
-def episode_tensors(file, model, schema):
-    lines = [json.loads(l) for l in Path(file).read_text().splitlines() if l.strip()]
-    head, steps, summary = lines[0], [l for l in lines if l['type'] == 'step'], lines[-1]
+def episode_tensors(parsed, model, schema):
+    head, summary, a = parsed
+    steps = a['time']
     if head['format'] != 'pulse-rl-rollout-v1' or head['schema'] != schema or summary['type'] != 'summary' or len(steps) < 64:
         return None
-    x = torch.tensor([s['observation'] for s in steps], device='cuda')
     with torch.inference_mode():
-        inputs, present = model.sequence_inputs(x)
-    t = np.array([s['time'] for s in steps])
-    prog = np.array([s['progress'] for s in steps])
-    dmg = np.array([s['damage'] for s in steps])
-    lat = np.array([s['lateral'] for s in steps])
-    steer = np.array([s['steer'] for s in steps])
+        inputs, present = model.sequence_inputs(torch.from_numpy(a['observation']).cuda())
+    t = a['time'].astype(np.float64)
+    prog, dmg, lat, steer = (a[k].astype(np.float64) for k in ('progress', 'damage', 'lateral', 'steer'))
     dt = np.diff(t, append=t[-1] + (t[-1] - t[-2]))
     r = np.zeros(len(steps))
     r[:-1] += REWARD['progress'] * np.diff(prog)
@@ -53,20 +52,44 @@ def episode_tensors(file, model, schema):
     if summary['success']:
         r[-1] += REWARD['success']
     return {'inputs': inputs.clone(), 'present': present.clone(),
-            'action': torch.tensor([s['action'] for s in steps], device='cuda'),
+            'action': torch.from_numpy(a['action']).cuda(), 'rewardNp': r,
             'reward': torch.tensor(r, device='cuda', dtype=torch.float32), 'summary': summary,
             'case': head['case'], 'sigma': head['sigma']}
 
 
+def discounted(x, factor):
+    # Reverse discounted sum on the CPU (a per-element CUDA loop costs a kernel launch per step).
+    out, run = np.empty_like(x), 0.
+    for k in range(len(x) - 1, -1, -1):
+        run = x[k] + factor * run; out[k] = run
+    return out
+
+
 def gae(reward, value, gamma, lam):
-    adv = torch.zeros_like(reward)
-    last = 0.
-    for k in range(len(reward) - 1, -1, -1):
-        nxt = value[k + 1] if k + 1 < len(reward) else 0.
-        delta = reward[k] + gamma * nxt - value[k]
-        last = delta + gamma * lam * last
-        adv[k] = last
+    v = value.detach().cpu().numpy().astype(np.float64)
+    delta = reward + gamma * np.append(v[1:], 0.) - v
+    adv = discounted(delta, gamma * lam)
+    adv = torch.tensor(adv, device=value.device, dtype=torch.float32)
     return adv, adv + value
+
+
+def bc_inputs(bc_dir, model, cache_dir, stride, pool):
+    # The encoder is frozen, so encoded teacher rows are identical every iteration: encode once, cache on disk.
+    key = hashlib.sha256(b''.join(v.detach().cpu().numpy().tobytes() for v in model.encoder.state_dict().values())).hexdigest()[:16]
+    cache = Path(cache_dir) / f'bc-{Path(bc_dir).name}-s{stride}-{key}.pt'
+    if cache.exists():
+        x, p, y = torch.load(cache, weights_only=True)
+        return x.cuda(), p.cuda(), y.cuda()
+    files = sorted((Path(bc_dir) / 'train').glob('*.jsonl'))
+    xs, ps, ys = [], [], []
+    for obs, target in pool.map(parse_targets, files, [stride] * len(files), chunksize=4):
+        with torch.inference_mode():
+            i, pr = model.sequence_inputs(torch.from_numpy(obs).cuda())
+        xs.append(i.half().cpu()); ps.append(pr.half().cpu()); ys.append(torch.from_numpy(target))
+    x, p, y = torch.cat(xs), torch.cat(ps), torch.cat(ys)
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    tmp = cache.with_suffix('.tmp'); torch.save((x, p, y), tmp); os.replace(tmp, cache)
+    return x.cuda(), p.cuda(), y.cuda()
 
 
 def main():
@@ -77,6 +100,8 @@ def main():
     p.add_argument('--clip', type=float, default=.2); p.add_argument('--target-kl', type=float, default=.02)
     p.add_argument('--gamma', type=float, default=.995); p.add_argument('--lam', type=float, default=.95)
     p.add_argument('--seed', type=int, default=11)
+    p.add_argument('--cache', default=None); p.add_argument('--bc-stride', type=int, default=2)
+    p.add_argument('--procs', type=int, default=12)
     args = p.parse_args()
     root, out = Path(args.parent), Path(args.out)
     if out.exists():
@@ -93,24 +118,23 @@ def main():
     warm = not (root / 'value.pt').exists()
     if not warm:
         value.load_state_dict(torch.load(root / 'value.pt', map_location='cuda', weights_only=True))
-    episodes = [e for e in (episode_tensors(f, model, schema) for f in sorted(Path(args.rollouts).glob('*.jsonl'))) if e]
+    pool = ProcessPoolExecutor(args.procs)
+    files = sorted(Path(args.rollouts).glob('*.jsonl'))
+    episodes = [e for e in (episode_tensors(r, model, schema) for r in pool.map(parse_rollout, files)) if e]
     if len(episodes) < 8:
         raise ValueError('Too few rollouts')
     sigma = episodes[0]['sigma']; log_sigma = math.log(sigma)
     vopt = torch.optim.Adam(value.parameters(), lr=1e-3)
     if warm:  # a new critic first fits Monte Carlo returns
         for e in episodes:
-            g, mc = 0., torch.zeros_like(e['reward'])
-            for k in range(len(mc) - 1, -1, -1):
-                g = e['reward'][k] + args.gamma * g; mc[k] = g
-            e['mc'] = mc
+            e['mc'] = torch.tensor(discounted(e['rewardNp'], args.gamma), device='cuda', dtype=torch.float32)
         for _ in range(300):
             e = episodes[rng.integers(len(episodes))]
             vopt.zero_grad(); loss = (value(e['inputs']).squeeze(1) - e['mc']).square().mean(); loss.backward(); vopt.step()
     with torch.no_grad():
         for e in episodes:
             v = value(e['inputs']).squeeze(1)
-            e['adv'], e['ret'] = gae(e['reward'], v, args.gamma, args.lam)
+            e['adv'], e['ret'] = gae(e['rewardNp'], v, args.gamma, args.lam)
             mean = model.intent(e['inputs']) * e['present']
             e['logp'] = (-.5 * ((e['action'] - mean) / sigma).square() - log_sigma).sum(1)
     cat = lambda k: torch.cat([e[k] for e in episodes])
@@ -118,14 +142,8 @@ def main():
     adv = (adv - adv.mean()) / (adv.std() + 1e-8)
     bc = None
     if args.bc:
-        xs, ps, ys = [], [], []
-        for f in sorted((Path(args.bc) / 'train').glob('*.jsonl')):
-            rows = [json.loads(l) for l in f.read_text().splitlines()[1:] if l.strip()]
-            x = torch.tensor([r['observation'] for r in rows], device='cuda')
-            with torch.inference_mode():
-                i, pr = model.sequence_inputs(x)
-            xs.append(i.clone()); ps.append(pr.clone()); ys.append(torch.tensor([r['target'] for r in rows], device='cuda'))
-        bc = (torch.cat(xs), torch.cat(ps), torch.cat(ys))
+        bc = bc_inputs(args.bc, model, args.cache or Path(args.bc) / 'ppo-cache', args.bc_stride, pool)
+    pool.shutdown()
     popt = torch.optim.Adam(model.intent.parameters(), lr=args.lr)
     n, stats = len(adv), []
     for epoch in range(args.epochs):
@@ -139,7 +157,7 @@ def main():
             loss = pg
             if bc is not None:
                 j = torch.randint(len(bc[2]), (2048,), device='cuda')
-                pred = model.intent(bc[0][j]) * bc[1][j]
+                pred = model.intent(bc[0][j].float()) * bc[1][j].float()
                 loss = loss + args.bc_weight * ((pred - bc[2][j]).square() * pred.new_tensor([4., 4., 4., 1.])).mean()
             popt.zero_grad(); loss.backward(); torch.nn.utils.clip_grad_norm_(model.intent.parameters(), .5); popt.step()
             vopt.zero_grad(); vl = (value(inputs[idx]).squeeze(1) - ret[idx]).square().mean(); vl.backward(); vopt.step()

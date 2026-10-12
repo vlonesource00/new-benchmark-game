@@ -12,7 +12,7 @@ import { PLAN_CONTRACT } from '../src/plan-contract.mjs';
 import { archiveExecution } from './archive-execution.mjs';
 
 const atomicJSON = (path, value) => { writeFileSync(path + '.tmp', JSON.stringify(value, null, 2) + '\n'); renameSync(path + '.tmp', path); };
-export async function driveCases({ name, model, cases, provenance = {}, actor = 'actuator', planExecution = {} }) {
+export async function driveCases({ name, model, cases, provenance = {}, actor = 'actuator', planExecution = {}, traces = true }) {
   if (!['actuator', 'plan'].includes(actor)) throw Error('Unknown actor contract');
   if (actor !== 'plan' && Object.keys(planExecution).length) throw Error('Plan execution options cannot change an actuator evaluation');
   if (!/^[a-z0-9-]+$/i.test(name) || !cases.length || cases.some(c => !/^[a-z0-9-]+$/i.test(c.id))
@@ -53,8 +53,9 @@ export async function driveCases({ name, model, cases, provenance = {}, actor = 
       const manifest = { type: 'manifest', format: 'pulse-episode-v1', name: episode, episodeId: digest({ settings, modelSha256: policy.metadata.modelSha256 }),
         split: 'test', neverTraining: true, settings, policy: policy.metadata, versions: ver, path: settings.transport ?? 'native',
         evaluationRole: c.split ?? 'development', physicalFamily: c.physicalFamily ?? null, teacherSuppliesStrategy: true };
-      writeFileSync(resolve(output, c.id + '.jsonl'), [manifest, ...result.rows, { type: 'summary', ...result.summary }].map(r => JSON.stringify(r)).join('\n') + '\n');
-      atomicJSON(resolve(HOME, 'results', episode + '.json'), { manifest, ...result, rows: result.rows.filter((_, i) => i % 3 === 0) });
+      // Without traces (RL development checks) only the report is kept: ~1.4 GB per 10 cases saved.
+      if (traces) writeFileSync(resolve(output, c.id + '.jsonl'), [manifest, ...result.rows, { type: 'summary', ...result.summary }].map(r => JSON.stringify(r)).join('\n') + '\n');
+      if (traces) atomicJSON(resolve(HOME, 'results', episode + '.json'), { manifest, ...result, rows: result.rows.filter((_, i) => i % 3 === 0) });
       const entry = { id: c.id, split: c.split ?? 'development', physicalFamily: c.physicalFamily ?? null,
         group: c.group ?? null, profile: c.profile ?? null, settings, outcome,
         requirements: c.requirements ?? {}, requirementFailures, succeeded: outcome.admissible && !requirementFailures.length,
@@ -62,7 +63,7 @@ export async function driveCases({ name, model, cases, provenance = {}, actor = 
         fullLaps: result.summary.fullLaps, bestFullLap: result.summary.bestFullLap, summary: result.summary,
         firstTrackViolation: result.events.find(e => e.type === 'track-limit-violation')?.time ?? null,
         firstContact: result.events.find(e => e.type === 'contact' && (e.a === result.rows[0].before.id || e.b === result.rows[0].before.id)) ?? null,
-        replay: '/?episode=' + episode, trace: 'artifacts/driving-suites/' + name + '/' + c.id + '.jsonl' };
+        replay: traces ? '/?episode=' + episode : null, trace: traces ? 'artifacts/driving-suites/' + name + '/' + c.id + '.jsonl' : null };
       report.cases.push(entry); atomicJSON(resolve(output, 'report.json'), report);
       console.log(JSON.stringify({ case: c.id, admissible: outcome.admissible, failures: outcome.failures, race10: race10.admissible, required: requirementFailures,
         passes: result.summary.retainedPasses, damage: result.summary.cumulativeDamage, illegalSeconds: result.summary.trackLimitSeconds,

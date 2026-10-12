@@ -33,7 +33,7 @@ if (report.cases.some(c => c.split === 'final-test' || generated.get(c.id)?.spli
 const cases = report.cases.map(c => ({ id: c.id, settings: c.settings, group: c.group, profile: c.profile,
   requirements: c.requirements, checkpointDistance: c.outcome?.checkpointDistance,
   physicalFamily: c.physicalFamily ?? generated.get(c.id)?.physicalFamily, split: 'development' }));
-const result = await driveCases({ name, model, actor: 'plan', planExecution, cases, provenance: { role: 'Matched plan-vs-actuator development',
+const result = await driveCases({ name, model, actor: 'plan', planExecution, cases, traces: arg('traces') !== 'off', provenance: { role: 'Matched plan-vs-actuator development',
   source: source ?? arg('plan'), sourceDigest: digest(bytes.toString()), sourceVersions: report.versions,
   selectionMetric: 'Admissibility and retained passes first; pace, delay sensitivity and execution cost second.' } });
 console.log(JSON.stringify({ name, accepted: result.accepted, succeeded: result.succeeded, race10: result.race10, total: result.cases.length }));

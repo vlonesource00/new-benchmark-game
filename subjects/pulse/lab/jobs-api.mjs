@@ -67,7 +67,10 @@ export function jobs(root) {
   for (const name of dirs(rl)) {
     const config = json(resolve(rl, name, 'config.json')); if (!config) continue;
     const logFile = resolve(rl, name, 'log.jsonl'), configFile = resolve(rl, name, 'config.json');
-    const log = existsSync(logFile) ? readFileSync(logFile, 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l)) : [];
+    const lines = existsSync(logFile) ? readFileSync(logFile, 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l)) : [];
+    // Development checks run in the background and log their own lines.
+    const log = lines.filter(e => e.type !== 'dev'), devs = new Map(lines.filter(e => e.type === 'dev').map(e => [e.iteration, e.dev]));
+    for (const e of log) if (devs.has(e.iteration)) e.dev = devs.get(e.iteration);
     const store = config.store ?? resolve('E:/pulse-store/rl', name), perIteration = config.workers * config.perWorker;
     const current = resolve(store, `it-${String(log.length + 1).padStart(3, '0')}`);
     let rolled = 0;
