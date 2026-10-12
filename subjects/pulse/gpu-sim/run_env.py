@@ -10,6 +10,7 @@ sys.path.insert(0, HERE); sys.path.insert(0, os.path.join(HERE, '..', 'training'
 from cuda_env import SceneBank, GpuEnv
 from plan_model import PlanPolicy
 from fit_rivals import load_rivals
+from job_progress import JobProgress
 
 
 def load_policy(path):
@@ -53,6 +54,7 @@ def main():
     hidden = h0.expand(a.envs, -1).clone()
     results, ticks, t0 = [], 0, time.time()
     if a.each: a.episodes = len(env.pool)
+    job = JobProgress('GPU evaluation', Path(a.out).name if a.out else f'run-env-{int(t0)}', a.episodes)
     while len(results) < a.episodes:
         idx, obs = env.decisions()
         if len(idx):
@@ -63,6 +65,8 @@ def main():
             env.post(idx, act)
             hidden[idx] = nh
         done = env.physics(); ticks += 1
+        if ticks % 600 == 0:
+            job.update(len(results), f'{a.model} · {sum(r["success"] for r in results)}/{len(results)} succeeded so far · {ticks * a.envs / 120 / (time.time() - t0):.0f} sim-s/s')
         if len(done):
             res = env.end(done)
             hidden[done] = h0
@@ -71,6 +75,7 @@ def main():
                     results.append({k: (v[i].item() if torch.is_tensor(v) else v) for k, v in res.items()})
     torch.cuda.synchronize()
     wall = time.time() - t0
+    job.update(min(len(results), a.episodes), f'{a.model} · {sum(r["success"] for r in results[:a.episodes])}/{a.episodes} succeeded', status='complete')
     fam = {}
     for r in results[:a.episodes]:
         f = bank.scenes[r['scene']]['family']; d = fam.setdefault(f, {'n': 0, 'success': 0, 'admissible': 0, 'severe': 0, 'limit': 0, 'passes': 0., 'damage': 0.})

@@ -4,7 +4,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-const RECENT = 12 * 3600e3, STALE = 20 * 60e3, FINISHED_SHOWN = 8;
+const RECENT = 12 * 3600e3, STALE = 20 * 60e3, FINISHED_SHOWN = 30;
 const json = path => { try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return null; } };
 const dirs = path => existsSync(path) ? readdirSync(path, { withFileTypes: true }).filter(d => d.isDirectory() || d.isSymbolicLink()).map(d => d.name) : [];
 const stat = path => { try { return statSync(path); } catch { return null; } };
@@ -27,8 +27,8 @@ function part(kind, name, file, done, total, startedAt, finished, extra = {}) {
 function group(parts) {
   const groups = new Map();
   for (const p of parts.filter(Boolean)) {
-    const key = p.kind + ':' + p.name.replace(/-\d+$/, '');
-    const g = groups.get(key) ?? { kind: p.kind, name: p.name.replace(/-\d+$/, ''), shards: [] };
+    const base = p.kind.startsWith('GPU') ? p.name : p.name.replace(/-\d+$/, ''), key = p.kind + ':' + base;
+    const g = groups.get(key) ?? { kind: p.kind, name: base, shards: [] };
     g.shards.push(p); groups.set(key, g);
   }
   const now = Date.now();
@@ -95,7 +95,16 @@ export function jobs(root) {
         best ? `best dev ${best.ok}/${best.total ?? '?'} (it ${best.iteration})` : null].filter(Boolean).join(' · '),
       history: log.map(e => ({ iteration: e.iteration, success: e.success, meanReturn: e.meanReturn, damage: e.damage, dev: e.dev ?? null })) }));
   }
+  // GPU PPO and GPU evaluations (gpu-sim/job_progress.py) write one progress file each.
+  const gpu = resolve(root, 'artifacts/gpu-jobs');
+  if (existsSync(gpu)) for (const f of readdirSync(gpu).filter(f => f.endsWith('.json'))) {
+    const file = resolve(gpu, f), j = json(file); if (!j) continue;
+    const pace = j.done > 0 ? (stat(file).mtimeMs - j.startedAt) / j.done : null;
+    parts.push(part(j.kind, j.name, file, j.done, j.total, j.startedAt, j.status === 'complete', {
+      pid: j.status === 'complete' ? undefined : j.pid, detail: j.detail,
+      eta: pace && j.status !== 'complete' ? pace * (j.total - j.done) : null, history: j.history?.length ? j.history : undefined }));
+  }
   const grouped = group(parts);
-  for (const g of grouped) if (g.kind === 'RL (PPO)') g.history = parts.find(p => p && p.kind === g.kind && p.name === g.name)?.history ?? [];
+  for (const g of grouped) if (g.kind === 'RL (PPO)' || g.kind === 'GPU PPO') g.history = parts.find(p => p && p.kind === g.kind && p.name === g.name)?.history ?? [];
   return { now: Date.now(), jobs: grouped };
 }

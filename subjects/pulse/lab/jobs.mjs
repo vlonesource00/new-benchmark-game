@@ -38,7 +38,10 @@ async function refresh() {
     const { now, jobs } = await (await fetch('/api/jobs', { cache: 'no-store' })).json();
     const running = jobs.filter(j => j.state === 'running').length;
     scope.textContent = `${running} running · ${jobs.length - running} recent finished or stalled · updated ${clock(now)}`;
-    root.innerHTML = jobs.length ? jobs.map(j => card(j, now)).join('') : '<p id="empty">No job has written progress in the last 12 hours.</p>';
+    // Running jobs first; finished and stalled ones stay in a closed list (its open state survives the 5 s refresh).
+    const open = document.getElementById('finished')?.open ?? false, rest = jobs.filter(j => j.state !== 'running');
+    root.innerHTML = (running ? jobs.filter(j => j.state === 'running').map(j => card(j, now)).join('') : '<p id="empty">Nothing running right now.</p>')
+      + (rest.length ? `<details id="finished"${open ? ' open' : ''}><summary>Finished or stalled (${rest.length})</summary>${rest.map(j => card(j, now)).join('')}</details>` : '');
   } catch (e) { scope.textContent = 'Job state unavailable: ' + e.message; }
 }
 refresh(); setInterval(refresh, 5000);

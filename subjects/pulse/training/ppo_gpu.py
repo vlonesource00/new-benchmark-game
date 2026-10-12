@@ -20,6 +20,7 @@ from plan_model import PlanPolicy
 from checkpoint_state import atomic_json, atomic_checkpoint
 from cuda_env import SceneBank, GpuEnv, REWARD
 from fit_rivals import load_rivals
+from job_progress import JobProgress
 
 
 def features(model, obs, hidden):
@@ -146,6 +147,8 @@ def main():
     cum = torch.zeros(E, dtype=torch.float64, device='cuda')  # env.reward already credited
     ticks = int(round(a.horizon * 120)); cap = a.cap or E * (ticks // 2 + 4)  # at most one request per two ticks (one in flight)
     parent_meta = json.loads((root / 'metadata.json').read_text())
+    job = JobProgress('GPU PPO', out.name, a.iterations)
+    job.update(0, f'desynchronising {E} environments ({a.stagger:.0f} s), then {a.iterations} iterations of {a.horizon:.0f} s')
     # Synchronised starts make whole iterations see the same scene phase; end each env once at a random time first.
     if a.stagger > 0:
         cut = torch.randint(int(a.stagger * 120), (E,), device='cuda')
@@ -223,6 +226,10 @@ def main():
                         'limitSeconds': round(cat['limit'].mean().item(), 2), 'severe': round(cat['severe'].double().mean().item(), 3),
                         'byFamily': {f: round(float(np.mean([s for s, g in zip(cat['success'].tolist(), fam) if g == f])), 3) for f in sorted(set(fam))}})
         history.append(row); print(json.dumps(row), flush=True)
+        fam = ' · '.join(f'{k} {v * 100:.0f}%' for k, v in row.get('byFamily', {}).items())
+        job.update(it, f"iteration {it}/{a.iterations} · reward/s {row['meanReward']:.3f} · train success {fam or '—'} · damage {row.get('damage', 0) * 100:.1f}% · {row['wallSeconds']:.0f} s/iteration",
+                   {'iteration': it, 'success': row.get('success', history[-2].get('success', 0) if len(history) > 1 else 0), 'meanReturn': row['meanReward'],
+                    'damage': row.get('damage', 0), 'dev': None}, status='complete' if it == a.iterations else 'running')
         if it % a.save_every == 0 or it == a.iterations:
             dest = out.parent / f'{out.name}-it{it:03d}'
             meta = dict(parent_meta)
