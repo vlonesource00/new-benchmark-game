@@ -49,6 +49,7 @@ class CudaWorld:
         act = torch.ones(envs, slots, dtype=torch.bool) if active is None else torch.as_tensor(active).bool()
         self.alive = act.reshape(-1).to(dev, torch.uint8).contiguous()
         self.ghost = torch.zeros(self.B, device=dev, dtype=torch.uint8)
+        self.flags = torch.zeros(self.B, device=dev, dtype=torch.uint8)  # bit 0 absActive, bit 1 tcActive (last step)
         self.S = torch.zeros(FIELDS, self.B, device=dev, dtype=dtype)
         self.node = torch.zeros(self.B, device=dev, dtype=torch.int32)
         self.inputs = torch.zeros(self.B, 5, device=dev, dtype=dtype)
@@ -62,7 +63,7 @@ class CudaWorld:
         self._views()
 
     def _views(self):
-        self.v = {k: cupy(getattr(self, k)) for k in ['S', 'node', 'inputs', 'wake', 'closing', 'cls', 'specs', 'rubber',
+        self.v = {k: cupy(getattr(self, k)) for k in ['S', 'node', 'inputs', 'wake', 'closing', 'cls', 'specs', 'rubber', 'flags',
                                                     'temp_grip', 'ambient', 'alive', 'ghost', 'tyres']}
         self.v_track = [cupy(c) for c in self.track_cols]
         self.real = cp.float64 if self.dtype == torch.float64 else cp.float32
@@ -91,7 +92,7 @@ class CudaWorld:
             wake = self.wake
         torch.stack([throttle, brake, steer, wake.to(self.dtype), hybrid_force], 1, out=self.inputs)
         args = (v['S'], cp.int32(B), cp.int32(self.N), v['cls'], v['specs'], *self.track_args(), v['rubber'], cp.int32(self.cells),
-                v['inputs'], v['temp_grip'], v['ambient'], v['alive'], cp.int32(1 if self.lay_rubber else 0), v['node'], v['tyres'], self.real(dt))
+                v['inputs'], v['temp_grip'], v['ambient'], v['alive'], cp.int32(1 if self.lay_rubber else 0), v['node'], v['tyres'], v['flags'], self.real(dt))
         step = self.mod.get_function('step_cars')
         if self.ordered and self.N > 1:
             for slot in range(self.N):

@@ -291,6 +291,8 @@ export async function runScenario(options = {}) {
   if (settings.planFactory) planExecutor = settings.planFactory(track, self);
   // Optional training-only early stop, checked each simulated second (evaluations never pass stopWhen).
   let stopped = false;
+  // Diagnostic hook (GPU parity recorder): the race as the main loop begins, after every placement.
+  settings.raceHook?.(race);
   for (tick = 0; tick < iterations && race.phase === 'racing' && !stopped; tick++) {
     const time = race.time - startAt;
     if (settings.stopWhen && tick && tick % 120 === 0) stopped = !!settings.stopWhen({ time, self, events, startProgress });

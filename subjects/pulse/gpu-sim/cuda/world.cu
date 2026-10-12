@@ -26,7 +26,7 @@ __device__ Spec load_spec(const double* table, int k) {
 // reproduces race.js exactly, where a car reads the rubber laid earlier in the same tick by the cars before it.
 extern "C" __global__ void step_cars(real* S, int B, int slots, const int* cls, const double* specs, TRACK_ARGS,
     float* rubber, int cells, const real* inputs, const real* tempGrip, const real* ambient, const unsigned char* alive,
-    int layRubber, int* node, const real* tyres, real dt, int slot) {
+    int layRubber, int* node, const real* tyres, unsigned char* flags, real dt, int slot) {
   const int n = blockIdx.x * blockDim.x + threadIdx.x;
   if (slot >= 0 ? n >= B / slots : n >= B) return;
   const int c = slot >= 0 ? n * slots + slot : n;
@@ -35,7 +35,7 @@ extern "C" __global__ void step_cars(real* S, int B, int slots, const int* cls, 
   const real* in = inputs + c * 5, *ty = tyres + c * 5;
   const Compound k = { ty[0], ty[1], ty[2], ty[3], ty[4] };
   vehicle_step(S, B, c, sp, t, rubber + (size_t)env * cells, dt, in[0], in[1], in[2], in[3], in[4], tempGrip[env], ambient[env],
-    alive[c] != 0, layRubber != 0, node + c, k);
+    alive[c] != 0, layRubber != 0, node + c, k, flags + c);
 }
 
 // Global nearest node of every car (start of an episode).

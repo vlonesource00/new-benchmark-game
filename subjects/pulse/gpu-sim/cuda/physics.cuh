@@ -118,7 +118,8 @@ __device__ void tyre_force(Tyre& y, real vx, real vy, real omega, real load, rea
 
 // One physics tick of one car (Vehicle.step). Reads and writes its state column; lays rubber with atomics.
 __device__ void vehicle_step(real* Sv, int B, int c, const Spec& sp, const Track& t, float* rubber, real dt,
-    real throttleIn, real brakeIn, real steerIn, real wake, real hybridForce, real tempGrip, real ambient, bool alive, bool layRubber, int* node, const Compound& compound) {
+    real throttleIn, real brakeIn, real steerIn, real wake, real hybridForce, real tempGrip, real ambient, bool alive, bool layRubber, int* node, const Compound& compound,
+    unsigned char* flag) {
   #define F_(k) Sv[(k) * B + c]
   real x = F_(X), z = F_(Z), yaw = F_(YAW), vx = F_(VX), vz = F_(VZ), yawRate = F_(YAWRATE);
   real ax = F_(AX), ay = F_(AY), roll = F_(ROLL), pitch = F_(PITCH), heave = F_(HEAVE), steering = F_(STEERING);
@@ -164,6 +165,7 @@ __device__ void vehicle_step(real* Sv, int B, int c, const Spec& sp, const Track
   const real drive = throttle * sp.maxTorque * torqueCurve * ratio * .91 * (1 - damage * .28);
   const real rearSlip = rmax(ty[2].kappa, ty[3].kappa);
   const real tc = clampr(1 - rmax(rearSlip - (.14 - TC_LEVEL * .009), (real)0) * TC_LEVEL * .7, .18, 1);
+  bool absActive = false;  // vehicle.js absActive / tcActive (observation inputs)
   for (int i = 0; i < 4; i++) {
     const bool front = i < 2;
     const real wxo = (i % 2 == 0 ? -1 : 1) * sp.track / 2, wzo = front ? (1 - sp.frontWeight) * sp.wheelbase : -sp.frontWeight * sp.wheelbase;
@@ -183,6 +185,7 @@ __device__ void vehicle_step(real* Sv, int B, int c, const Spec& sp, const Track
     const real lvx = v + yawRate * wzo, lvz = u - yawRate * wxo;
     const real tvx = lvz * cs + lvx * sn, tvy = lvx * cs - lvz * sn;
     const real absF = speed > 3 ? clampr(1 + rmin(ty[i].kappa + .13, (real)0) * (4 + ABS_LEVEL), .06, 1) : 1;
+    absActive = absActive || absF < .8;
     const real bias = front ? sp.brakeBias : 1 - sp.brakeBias;
     const real brakeTorque = brake * sp.brakeTorque * bias * absF;
     real wheelDrive = 0;
@@ -213,6 +216,7 @@ __device__ void vehicle_step(real* Sv, int B, int c, const Spec& sp, const Track
         seen = atomicCAS(cell, prior, __float_as_int(next)); } while (seen != prior);
     }
   }
+  if (flag) *flag = (absActive ? 1 : 0) | (tc < .92 ? 2 : 0);
   ax = dampr(ax, fz / mass, 16, dt); ay = dampr(ay, fx / mass, 16, dt);
   vx += (fx * cy + fz * sy) / mass * dt; vz += (-fx * sy + fz * cy) / mass * dt;
   yawRate = clampr(yawRate + moment / sp.yawInertia * dt, -3, 3);
