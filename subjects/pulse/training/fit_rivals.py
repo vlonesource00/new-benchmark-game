@@ -2,12 +2,13 @@
 
 Recordings (tools/record-rivals.mjs) hold each rival's PULSE-schema observation from its own seat at 30 Hz. Labels
 are hindsight plans in the executor's contract: the rival's realised offset from its class racing line 30/70/120 m
-further along its own path (/ offsetMetres), and a speed cap from its speed 30 m on ((v - ceiling) / span). The GPU
+further along its own path (/ offsetMetres), and a speed cap from the most it reached over the next 120 m ((v - ceiling) / span). The GPU
 executor then drives each rival along the intentions its real driver showed: lane choice, door closing, defence,
 lifting in traffic. Request-context and strategy fields are masked (rivals have no request transport).
   python training/fit_rivals.py --records C:/pulse-store/rivals/r02 --bank C:/pulse-store/scenes/c186-train --out artifacts/rivals/r02-mlp
 """
 import argparse, json, os, sys
+from collections import deque
 from pathlib import Path
 import numpy as np
 import torch
@@ -19,6 +20,7 @@ from checkpoint_state import atomic_json
 DRIVERS = ['apex', 'razor', 'tempest', 'gemini-supreme-v4']
 MASK = list(range(10, 16)) + list(range(20, 24)) + list(range(34, 39))  # request context; laps/stint/tyre/pit call; compound (per env on GPU)
 COLUMNS = 8
+SPEED_WINDOW = 120.  # m
 
 
 class RivalPolicy(nn.Module):
@@ -54,8 +56,21 @@ def labels(rows, line_s, line_lat, length, contract):
         valid &= j < len(rows)
         j = np.minimum(j, len(rows) - 1)
         out[:, k] = np.clip(e[j] / contract['offsetMetres'], -1, 1)
-    j = np.minimum(np.searchsorted(prog, prog + 30), len(rows) - 1)
-    out[:, 3] = np.clip((speed[j] - contract['speedCeiling']) / contract['speedSpan'], -1, 0)
+    # The plan speed is a cap on the executor's own profile: the most the driver reached over the next SPEED_WINDOW
+    # metres binds only where it really was slower (lifting in traffic, defending), never while accelerating.
+    end = np.searchsorted(prog, prog + SPEED_WINDOW)
+    valid &= end < len(rows)
+    cap, window = np.empty(len(rows)), deque()
+    hi = 0
+    for k in range(len(rows)):
+        while hi < len(rows) and hi <= end[k]:
+            while window and speed[window[-1]] <= speed[hi]:
+                window.pop()
+            window.append(hi); hi += 1
+        while window[0] < k:
+            window.popleft()
+        cap[k] = speed[window[0]]
+    out[:, 3] = np.clip((cap - contract['speedCeiling']) / contract['speedSpan'], -1, 0)
     return out, valid
 
 
