@@ -66,22 +66,35 @@ class Track:
         return dict(x=x, z=z, tx=tx / mag, tz=tz / mag, nx=nx, nz=nz, s=s, index=lo,
                     curvature=self.curv[lo] + (self.curv[hi] - self.curv[lo]) * t)
 
-    def nearest(self, x, z):
-        # Global nearest node: equals the JS 30 m grid search whenever the car is within 30 m of the road.
-        d = (self.x[None, :] - x[:, None]) ** 2 + (self.z[None, :] - z[:, None]) ** 2
-        i = d.argmin(1)
+    def nearest(self, x, z, guess=None, window=8):
+        # Nearest node: equals the JS 30 m grid search whenever the car is within 30 m of the road.
+        # With a guess (the car's node last step) only nodes within +-window are scanned.
+        if guess is None:
+            d = (self.x[None, :] - x[:, None]) ** 2 + (self.z[None, :] - z[:, None]) ** 2
+            i = d.argmin(1)
+        else:
+            idx = (guess[:, None] + torch.arange(-window, window + 1, device=guess.device)[None, :]) % self.count
+            d = (self.x[idx] - x[:, None]) ** 2 + (self.z[idx] - z[:, None]) ** 2
+            i = idx.gather(1, d.argmin(1, keepdim=True)).squeeze(1)
+        p = self._project(x, z, i)
+        p['node'] = i
+        return p
+
+    def _project(self, x, z, i):
         along = (x - self.x[i]) * self.tx[i] + (z - self.z[i]) * self.tz[i]
         p = self.at(self.s[i] + along)
         p['lateral'] = (x - p['x']) * p['nx'] + (z - p['z']) * p['nz']
         return p
 
-    def surface(self, x, z, rubber, temp_grip):
-        p = self.nearest(x, z)
+    def surface(self, x, z, rubber, base, temp_grip, guess=None, window=8):
+        # rubber: flat float32 store of all environments; base: each lane's offset into it.
+        p = self.nearest(x, z, guess, window)
         lat = p['lateral']
         l = lat.abs()
         lane = torch.clamp(torch.floor((lat + self.half) / self.lane_width), 0, 12).long()
         cell = p['index'] * 13 + lane
-        rub = rubber.gather(1, cell[:, None]).squeeze(1).to(x.dtype)
+        cell = base + cell
+        rub = rubber[cell].to(x.dtype)
         asphalt = l < self.half
         kerb = ~asphalt & (l < self.half + self.curb)
         gravel = ~asphalt & ~kerb & (l < self.half + self.curb + self.runoff - 1)
@@ -96,7 +109,8 @@ class Track:
 class Cars:
     """State of B cars as tensors; field names mirror the JS objects."""
 
-    def __init__(self, class_ids, track, device='cuda', dtype=torch.float64, temp_grip=None, ambient=None):
+    def __init__(self, class_ids, track, device='cuda', dtype=torch.float64, temp_grip=None, ambient=None, env=None):
+        # env: environment of each lane; cars of one environment share the track rubber (default: one car each).
         B = len(class_ids)
         self.B, self.device, self.dtype, self.track = B, device, dtype, track
         f = lambda v: torch.tensor(v, device=device, dtype=dtype)
@@ -112,7 +126,12 @@ class Cars:
         self.wheel_x = side[None, :] * self.spec_track[:, None] / 2
         fw, wb = self.spec_frontWeight[:, None], self.spec_wheelbase[:, None]
         self.wheel_z = torch.cat([((1 - fw) * wb).expand(B, 2), (-fw * wb).expand(B, 2)], 1)
-        self.rubber = torch.zeros(B, track.count * 13, device=device, dtype=torch.float32)  # Float32Array in JS
+        self.env = torch.arange(B, device=device) if env is None else torch.as_tensor(env, device=device)
+        self.envs = int(self.env.max().item()) + 1
+        self.alive = torch.ones(B, dtype=torch.bool, device=device)  # empty slots lay no rubber
+        self.lay_rubber = True
+        self.base = self.env * (track.count * 13)
+        self.rubber = torch.zeros(self.envs * track.count * 13, device=device, dtype=torch.float32)  # Float32Array in JS
 
     def load_state(self, values, fields):
         """values: [B, F] reference state rows, fields: names (car, w{i}.x, w{i}.tyre.x)."""
@@ -127,6 +146,7 @@ class Cars:
         for name in ['kappa', 'alpha', 'fx', 'fy', 'surface', 'core', 'inner', 'outer', 'pressure', 'wear', 'slipPower', 'utilisation']:
             setattr(self, 't_' + name, torch.stack([v[:, col[f'w{i}.tyre.{name}']] for i in range(4)], 1).clone())
         self.cold_pressure = torch.full_like(self.x, 1.65)
+        self.node = self.track.nearest(self.x, self.z)['node']
 
     def state(self, fields):
         out = []
@@ -218,7 +238,8 @@ class Cars:
         lat_t = torch.clamp(self.ay, -25, 25) * mass * self.spec_cg / self.spec_track
         front_load = mass * 9.81 * self.spec_frontWeight - long_t + downforce * self.spec_frontAero
         rear_load = mass * 9.81 * (1 - self.spec_frontWeight) + long_t + downforce * self.spec_rearAero
-        center = tr.surface(self.x, self.z, self.rubber, self.temp_grip)
+        center = tr.surface(self.x, self.z, self.rubber, self.base, self.temp_grip, self.node, 8)
+        self.node = center['node']
         self.s, self.lateral = center['s'], center['lateral']
         fx = torch.zeros_like(self.x)
         fz = -drag * torch.sign(self.u)
@@ -240,7 +261,7 @@ class Cars:
             ws = self.wheel_steer[:, i]
             wx = self.x + wx_off * c + wz_off * s
             wz = self.z - wx_off * s + wz_off * c
-            surface = tr.surface(wx, wz, self.rubber, self.temp_grip)
+            surface = tr.surface(wx, wz, self.rubber, self.base, self.temp_grip, center['node'], 3)
             axle = front_load if front else rear_load
             target_load = torch.clamp(axle / 2 - torch.sign(wx_off) * lat_t * (.52 if front else .48), min=0)
             spring = self.spec_springFront if front else self.spec_springRear
@@ -283,12 +304,13 @@ class Cars:
             self.brakeTemp[:, i] = torch.clamp(self.brakeTemp[:, i] + (brake_torque * self.omega[:, i].abs() * .00009
                                                - (self.brakeTemp[:, i] - 24) * (.02 + self.speed * .0007)) * dt, 24, 1000)
             # Rubber laid by this wheel (asphalt, loaded); the next wheel reads it.
-            lay = surface['asphalt'] & (load >= 10)
+            lay = surface['asphalt'] & (load >= 10) & self.alive & self.lay_rubber
             add = (dt * (.0005 + torch.clamp(self.t_slipPower[:, i], max=30000) * .0000001)).float()
-            cell = surface['cell'][:, None]
-            cur = self.rubber.gather(1, cell).squeeze(1)
+            cell = surface['cell']
+            cur = self.rubber[cell]
             new = torch.clamp(cur.double() + add.double(), 0, 1).float() if self.dtype == torch.float64 else torch.clamp(cur + add, 0, 1)
-            self.rubber.scatter_(1, cell, torch.where(lay, new, cur)[:, None])
+            # Cars sharing a cell this tick all lay rubber (JS lays them one car after another).
+            self.rubber.index_put_((cell,), torch.where(lay, new - cur, torch.zeros_like(cur)), accumulate=True)
         self.ax = damp(self.ax, fz / mass, 16, dt)
         self.ay = damp(self.ay, fx / mass, 16, dt)
         self.vx = self.vx + (fx * c + fz * s) / mass * dt
@@ -319,3 +341,95 @@ class Cars:
         self.vz = torch.where(bounce, self.vz - nz * side * out * 1.1, self.vz)
         self.damage = torch.where(bounce, torch.clamp(self.damage + out * .005, 0, 1), self.damage)
         self.impact = torch.where(bounce, torch.clamp(out / 15, 0, 1), self.impact)
+
+
+class World:
+    """E environments of N car slots (lane = env * N + slot), stepped like core/race.js:
+    wakes from the positions before the tick, each car's physics, then pairwise
+    collisions in the JS pair order (i < j), each pair resolved across all environments at once.
+    Inactive slots neither wake nor collide; ghosts collide only with non-ghosts (as in JS)."""
+
+    def __init__(self, class_ids, envs, slots, track, device='cuda', dtype=torch.float64, temp_grip=None, ambient=None, active=None):
+        self.E, self.N = envs, slots
+        env = torch.arange(envs, device=device).repeat_interleave(slots)
+        per_lane = lambda v: None if v is None else [v[k // slots] for k in range(envs * slots)]
+        self.cars = Cars(class_ids, track, device, dtype, per_lane(temp_grip), per_lane(ambient), env)
+        self.active = torch.ones(envs, slots, dtype=torch.bool, device=device) if active is None else torch.as_tensor(active, device=device)
+        self.cars.alive = self.active.reshape(-1).clone()
+        self.ghost = torch.zeros(envs, slots, dtype=torch.bool, device=device)
+        self.pairs = [(i, j) for i in range(slots) for j in range(i + 1, slots)]
+        level, last = [], [-1] * slots  # round of each pair: after the latest earlier pair touching either car
+        for i, j in self.pairs:
+            level.append(max(last[i], last[j]) + 1)
+            last[i] = last[j] = level[-1]
+        as_t = lambda v: torch.tensor(v, device=device, dtype=torch.long)
+        self.rounds = [(as_t([self.pairs[p][0] for p in ps]), as_t([self.pairs[p][1] for p in ps]), as_t(ps))
+                       for r in range(max(level, default=-1) + 1) for ps in [[p for p, l in enumerate(level) if l == r]]]
+
+    def view(self, t):
+        return t.view(self.E, self.N)
+
+    def wakes(self):
+        c = self.cars
+        x, z, yaw = self.view(c.x), self.view(c.z), self.view(c.yaw)
+        dx, dz = x[:, :, None] - x[:, None, :], z[:, :, None] - z[:, None, :]  # [env, car, other]
+        so, co = torch.sin(yaw)[:, None, :], torch.cos(yaw)[:, None, :]
+        behind = -(dx * so + dz * co)
+        lateral = (dx * co - dz * so).abs()
+        cone = 2.4 + behind * .050
+        eye = torch.eye(self.N, dtype=torch.bool, device=x.device)[None]
+        ok = (behind > 1.5) & (behind < 110) & (lateral < cone) & ~eye & self.active[:, None, :]
+        w = torch.where(ok, torch.exp(-behind / 55) * (1 - (lateral / torch.where(ok, cone, 1.)) ** 2), torch.zeros_like(behind))
+        return w.amax(2).reshape(-1)
+
+    def collisions(self):
+        """Returns the closing speed of every contact this tick: [env, pair] (0 where none), pairs in JS order."""
+        c = self.cars
+        x, z, yaw, vx, vz = (self.view(t).clone() for t in (c.x, c.z, c.yaw, c.vx, c.vz))
+        damage, impact, mass = self.view(c.damage).clone(), self.view(c.impact).clone(), self.view(c.spec_mass)
+        closings = torch.zeros(self.E, len(self.pairs), device=x.device, dtype=x.dtype)
+        # Pairs sharing no car commute, so each round resolves disjoint pairs at once, in an order
+        # that keeps every car's pairs in the JS sequence: results are identical to the i<j loop.
+        for I, J, P in self.rounds:
+            dx, dz = x[:, J] - x[:, I], z[:, J] - z[:, I]
+            near = (dx * dx + dz * dz <= 28) & ~(self.ghost[:, I] & self.ghost[:, J]) & self.active[:, I] & self.active[:, J]
+            ya, yb = yaw[:, I], yaw[:, J]
+            ar = (torch.cos(ya), -torch.sin(ya)); af = (torch.sin(ya), torch.cos(ya))
+            br = (torch.cos(yb), -torch.sin(yb)); bf = (torch.sin(yb), torch.cos(yb))
+            depth = torch.full_like(dx, math.inf)
+            nx, nz = torch.zeros_like(dx), torch.zeros_like(dx)
+            hit = near.clone()
+            for axis in (ar, af, br, bf):
+                dot = lambda v: (axis[0] * v[0] + axis[1] * v[1]).abs()
+                proj = dx * axis[0] + dz * axis[1]
+                overlap = .98 * (dot(ar) + dot(br)) + 2.28 * (dot(af) + dot(bf)) - proj.abs()
+                hit = hit & (overlap > 0)
+                better = overlap < depth
+                sign = torch.where(proj == 0, torch.ones_like(proj), torch.sign(proj))
+                depth = torch.where(better, overlap, depth)
+                nx, nz = torch.where(better, axis[0] * sign, nx), torch.where(better, axis[1] * sign, nz)
+            ma, mb = mass[:, I], mass[:, J]
+            share_a, share_b = mb / (ma + mb), ma / (ma + mb)
+            d = torch.where(hit, depth, torch.zeros_like(depth))
+            x[:, I] = x[:, I] - nx * d * share_a; z[:, I] = z[:, I] - nz * d * share_a
+            x[:, J] = x[:, J] + nx * d * share_b; z[:, J] = z[:, J] + nz * d * share_b
+            closing = (vx[:, I] - vx[:, J]) * nx + (vz[:, I] - vz[:, J]) * nz
+            touch = hit & (closing > 0)
+            impulse = closing * 1.1 / (1 / ma + 1 / mb)
+            same = ma == mb
+            da = torch.where(touch, torch.where(same, closing * .55, impulse / ma), torch.zeros_like(closing))
+            db = torch.where(touch, torch.where(same, closing * .55, impulse / mb), torch.zeros_like(closing))
+            vx[:, I] = vx[:, I] - nx * da; vz[:, I] = vz[:, I] - nz * da
+            vx[:, J] = vx[:, J] + nx * db; vz[:, J] = vz[:, J] + nz * db
+            for K in (I, J):
+                damage[:, K] = torch.where(touch, torch.clamp(damage[:, K] + closing * .003, 0, 1), damage[:, K])
+                impact[:, K] = torch.where(touch, torch.clamp(closing / 12, 0, 1), impact[:, K])
+            closings[:, P] = torch.where(touch, closing, torch.zeros_like(closing))
+        for name, t in (('x', x), ('z', z), ('vx', vx), ('vz', vz), ('damage', damage), ('impact', impact)):
+            setattr(c, name, t.reshape(-1))
+        return closings
+
+    def step(self, dt, throttle, brake, steer, hybrid_force):
+        wake = self.wakes()
+        self.cars.step(dt, throttle, brake, steer, wake, hybrid_force)
+        return self.collisions()

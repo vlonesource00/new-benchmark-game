@@ -10,6 +10,7 @@ import { resolve } from 'node:path';
 import { Vehicle } from '../../../game/engine/sim/vehicle.js';
 import { Track } from '../../../game/engine/sim/track.js';
 import { clamp, angle, random } from '../../../game/engine/sim/math.js';
+import { CAR_FIELDS, WHEEL_FIELDS, TYRE_FIELDS } from './reference-fields.mjs';
 
 const args = process.argv.slice(2), arg = (k, d) => { const i = args.indexOf('--' + k); return i < 0 ? d : args[i + 1]; };
 const out = resolve(arg('out')), cases = +arg('cases', 300), seconds = +arg('seconds', 10), seed = +arg('seed', 1);
@@ -17,11 +18,7 @@ const trackId = arg('track', 'harbor-ring'), DT = 1 / 120, steps = Math.round(se
 if (existsSync(out)) throw Error('Preserve reference ' + out);
 mkdirSync(out, { recursive: true });
 
-export const CAR_FIELDS = ['x', 'z', 'yaw', 'vx', 'vz', 'yawRate', 'u', 'v', 'speed', 'ax', 'ay', 'roll', 'pitch', 'heave',
-  'steering', 'gear', 'rpm', 'shiftTimer', 'fuel', 'damage', 'impact', 's', 'lateral'];
-export const WHEEL_FIELDS = ['omega', 'compression', 'load', 'brakeTemp', 'steer'];
-export const TYRE_FIELDS = ['kappa', 'alpha', 'fx', 'fy', 'surface', 'core', 'inner', 'outer', 'pressure', 'wear', 'slipPower', 'utilisation'];
-export const INPUT_FIELDS = ['throttle', 'brake', 'steer', 'wake', 'hybridForce'];
+const INPUT_FIELDS = ['throttle', 'brake', 'steer', 'wake', 'hybridForce'];
 const fields = [...CAR_FIELDS, ...[0, 1, 2, 3].flatMap(w => [...WHEEL_FIELDS.map(f => `w${w}.${f}`), ...TYRE_FIELDS.map(f => `w${w}.tyre.${f}`)])];
 const read = car => [...CAR_FIELDS.map(f => car[f]), ...car.wheels.flatMap(w => [...WHEEL_FIELDS.map(f => w[f]), ...TYRE_FIELDS.map(f => w.tyre[f])])];
 
