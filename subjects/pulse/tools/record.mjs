@@ -4,9 +4,11 @@ import { once } from 'node:events';
 import { runScenario } from './scenario.mjs';
 import { HOME, versions, digest } from './versions.mjs';
 import { observationProfile } from '../src/observations.mjs';
+import { seatTimingOptions } from '../src/seat-timing.mjs';
 const args = process.argv.slice(2), arg = (k, d) => { const i = args.indexOf('--' + k); return i < 0 ? d : args[i + 1]; };
 const settings = { track: arg('track', 'harbor-ring'), classId: arg('class', 'lmdh'), fixture: arg('fixture', 'solo'),
   seconds: +arg('seconds', 60), seed: +arg('seed', 7), rate: +arg('rate', 60), mode: arg('mode', 'teacher'), weather: arg('weather', 'clear'),
+  ...seatTimingOptions(args),
   observationVersion: arg('observation-version', 'pulse-observation-v1'), warmupToStart: args.includes('--warmup-to-start'),
   velocityYawOffset: +arg('velocity-yaw-offset', 0),
   disturbanceSteer: +arg('disturbance-steer', 0), disturbanceLongitudinal: +arg('disturbance-longitudinal', 0), disturbanceDuration: +arg('disturbance-duration', .2), disturbancePeriod: +arg('disturbance-period', 3),
@@ -50,12 +52,13 @@ if (!args.includes('--replace') && (existsSync(resolve(directory, name + '.jsonl
 const identityFields = ['track', 'classId', 'fixture', 'seed', 'weather', 'start', 'lateral', 'rivalOffset', 'yawOffset', 'speed', 'rival', 'rate'];
 identityFields.push('rivalGap', 'trainSpacing', 'rivalSpeed');
 if (settings.fastMotor) identityFields.push('fastMotor', 'motorRate');
+if (settings.transport === 'seat-frame') identityFields.push('transport', 'frameSteps', 'lagFrames', 'lagJitter', 'frameJitter', 'scheduleSeed', 'replyServiceMs');
 if (settings.warmupToStart) identityFields.push('warmupToStart', 'velocityYawOffset');
 if (settings.disturbanceSteer || settings.disturbanceLongitudinal) identityFields.push('disturbanceSteer', 'disturbanceLongitudinal', 'disturbanceDuration', 'disturbancePeriod');
 if (settings.trainingExpertActuator) identityFields.push('trainingExpertActuator');
 const episodeId = digest(Object.fromEntries(identityFields.map(k => [k, settings[k]])));
 const manifest = { type: 'manifest', format: 'pulse-episode-v1', episodeId, name, split, settings: { ...settings, policy: undefined, motor: undefined },
-  versions: ver, policy: policy?.metadata ?? null, sampleRate: settings.rate, teacherSuppliesStrategy: true, path: 'native',
+  versions: ver, policy: policy?.metadata ?? null, sampleRate: settings.rate, teacherSuppliesStrategy: true, path: settings.transport,
   trainingOnly: cleanPrefixTraining || settings.mode === 'dagger' || settings.warmupToStart || !!settings.disturbanceSteer || !!settings.disturbanceLongitudinal,
   cleanPrefixTraining,
   allowLightRubTraining,

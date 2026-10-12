@@ -4,9 +4,11 @@ import { resolve } from 'node:path';
 import { observationProfile } from '../src/observations.mjs';
 import { digest, versions } from './versions.mjs';
 
-export async function createPolicy(directory, { batch = 1 } = {}) {
+export async function createPolicy(directory, { batch = 1, actionContract = 'pulse-actuators-v1' } = {}) {
   if (![1, 16].includes(batch)) throw Error('Exported batch must be 1 or 16');
   const metadata = JSON.parse(readFileSync(resolve(directory, 'metadata.json'), 'utf8'));
+  if ((metadata.actionContract ?? 'pulse-actuators-v1') !== actionContract)
+    throw Error('Policy action semantics mismatch; lane/pace intentions and actuators require different executors.');
   const { schema: SCHEMA } = observationProfile(metadata.schemaVersion), current = versions(SCHEMA);
   if (metadata.schemaDigest !== digest(SCHEMA) || metadata.simulatorDigest !== current.simulatorDigest || metadata.observationDigest !== current.observationDigest)
     throw Error('Checkpoint schema/physics mismatch. Re-record/retrain; do not silently evaluate old models.');

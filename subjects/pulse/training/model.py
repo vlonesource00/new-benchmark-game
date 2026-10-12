@@ -160,7 +160,8 @@ class PulsePolicy(nn.Module):
         """Training-only sequence batching; exported control remains stepwise.
 
         cuDNN runs uninterrupted traffic sequences. Windows crossing an empty
-        traffic state use the exact reset-aware cell. Mid-episode burn-in is
+        traffic state use the reset-aware cell, or equivalent packed intervals
+        when explicitly enabled for a complete-history fit. Mid-episode burn-in is
         detached, matching rollout_loss's existing truncated-gradient contract.
         """
         batch, length, _ = observation.shape
@@ -174,7 +175,10 @@ class PulsePolicy(nn.Module):
         # never uses it; exported ONNX still contains only the basic cell ops.
         gru = self.__dict__.get('_training_gru')
         if gru is None:
-            gru = nn.GRU(self.hidden_size, self.traffic_memory_size, batch_first=True).to(observation.device)
+            # Random scratch initialization is discarded when parameters are
+            # aliased below. Do not perturb saved RNG state when recreating it.
+            with torch.random.fork_rng(devices=[]):
+                gru = nn.GRU(self.hidden_size, self.traffic_memory_size, batch_first=True).to(observation.device)
             gru.weight_ih_l0, gru.weight_hh_l0 = self.traffic_input_gates.weight, self.traffic_hidden_gates.weight
             gru.bias_ih_l0, gru.bias_hh_l0 = self.traffic_input_gates.bias, self.traffic_hidden_gates.bias
             gru.flatten_parameters()
@@ -195,7 +199,10 @@ class PulsePolicy(nn.Module):
                 values, _ = gru(inputs)
             memory = memory.index_copy(0, indices, values)
         mixed = torch.where(~uninterrupted & (present > 0).any(1).squeeze(1))[0]
-        if mixed.numel():
+        if mixed.numel() and not burn and getattr(self, 'packed_traffic_training', False):
+            from segmented_gru import segmented_memory
+            memory = memory.index_copy(0, mixed, segmented_memory(gru, encoded[mixed], present[mixed]))
+        elif mixed.numel():
             h = torch.zeros(mixed.numel(), self.traffic_memory_size, device=observation.device)
             values = []
             for t in range(length):

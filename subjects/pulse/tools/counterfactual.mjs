@@ -8,12 +8,25 @@ import { loadFastMotor } from './fast-motor.mjs';
 import { runScenario } from './scenario.mjs';
 import { encounterOutcome, ENCOUNTER_OBJECTIVE } from '../src/encounter-outcomes.mjs';
 import { controlSearch, smoothControlDelta } from '../src/control-search.mjs';
+import { seatTimingOptions } from '../src/seat-timing.mjs';
+import { readFileSync } from 'node:fs';
 
 const args = process.argv.slice(2), arg = (key, fallback) => {
   const i = args.indexOf('--' + key); return i < 0 ? fallback : args[i + 1];
 };
 const name = arg('name'), model = arg('model'), split = arg('split', 'train'), dataset = arg('dataset');
-const seconds = +arg('seconds', 20), branchAt = +arg('branch-at', 3), checkpointDistance = +arg('checkpoint', 600);
+let generated = null, generatedPlan = null;
+if (args.includes('--plan')) {
+  generatedPlan = JSON.parse(readFileSync(resolve(HOME, arg('plan')), 'utf8'));
+  const { digest: expected, ...content } = generatedPlan;
+  if (generatedPlan.format !== 'pulse-generated-encounters-v1' || digest(content) !== expected) throw Error('Altered generated plan');
+  generated = generatedPlan.cases.find(c => c.id === arg('case'));
+  if (!generated || generated.split !== 'train') throw Error('Search and training use the training pool only; preserve development and final-test cases');
+  if (['seed', 'start', 'lateral', 'gap', 'spacing', 'tail-gap', 'tail-speed', 'fixture'].some(k => args.includes('--' + k)))
+    throw Error('A generated scene must preserve its physical identity');
+}
+const seconds = +arg('seconds', generated?.settings.seconds ?? 20), branchAt = +arg('branch-at', 3),
+  checkpointDistance = +arg('checkpoint', generated?.checkpointDistance ?? 600);
 const steerScale = +arg('steer-scale', 1), durationScale = +arg('duration-scale', 1);
 const searchMode = arg('search', 'pulses'), searchSettings = { seed: +arg('search-seed', 19),
   population: +arg('population', 20), generations: +arg('generations', 3), duration: +arg('search-duration', 6),
@@ -35,15 +48,21 @@ const settings = { track: 'harbor-ring', classId: 'lmdh', fixture: arg('fixture'
   observationVersion: policy.metadata.schemaVersion, seconds, rate: 60, motorRate: 60,
   seed: +arg('seed', 1501), start: +arg('start', 20), lateral: +arg('lateral', 0),
   rivalGap: +arg('gap', 55), trainSpacing: +arg('spacing', 85), rival: arg('rival', 'intercept') };
+if (generated) Object.assign(settings, generated.settings, { seconds, observationVersion: policy.metadata.schemaVersion });
+if (!generated || args.includes('--transport')) Object.assign(settings, seatTimingOptions(args));
 if (args.includes('--tail-gap')) settings.tailGapDelta = +arg('tail-gap');
 if (args.includes('--tail-speed')) settings.tailSpeed = +arg('tail-speed');
 if (!['pair', 'train'].includes(settings.fixture)) throw Error('This first exploration requires moving traffic');
 if (!['pulses', 'adaptive', 'gain'].includes(searchMode) || (searchMode === 'adaptive' && branchAt + searchSettings.duration > seconds))
   throw Error('Invalid search mode or control sequence beyond the encounter');
 const ver = versions(policy.schema), familyId = digest(settings), objective = ENCOUNTER_OBJECTIVE;
+if (generatedPlan) for (const key of ['simulatorDigest', 'observationDigest', 'schemaDigest'])
+  if (generatedPlan.versions[key] !== ver[key]) throw Error('Generated source contract changed: ' + key);
 const report = { name, model, modelSha256: policy.metadata.modelSha256, versions: ver, settings, familyId,
   split, branchAt, checkpointDistance, steerScale, durationScale, objective, searchMode, searchSettings, settle,
   searchDigest: treeDigest(['subjects/pulse/tools/counterfactual.mjs', 'subjects/pulse/src/encounter-outcomes.mjs', 'subjects/pulse/src/control-search.mjs']),
+  generatedPlan: generatedPlan?.digest ?? null, generatedCase: generated?.id ?? null,
+  teacherComparison: settings.transport === 'seat-frame' ? 'Native expert viability references, not matched worker comparisons.' : 'Native physical reference encounters.',
   generations: [], trials: [], references: [], winner: null,
   scope: 'Offline control exploration, not autonomous NN evidence. Whole-race and novel-fixture gates remain mandatory.' };
 const prefixHash = rows => digest(rows.filter(r => r.time < branchAt - 1e-9).map(r => ({
@@ -54,8 +73,9 @@ const save = (label, result, exploration) => {
   const episode = name + '-' + label, manifest = { type: 'manifest', format: 'pulse-episode-v1',
     name: episode, episodeId: digest({ familyId, label }), split: 'test', settings: { ...settings,
       mode: exploration ? 'policy' : 'teacher', fastMotor: !!exploration,
+      transport: exploration ? settings.transport ?? 'native' : 'native',
       expertDriver: exploration ? 'intercept' : label.replace('reference-', '') },
-    versions: ver, policy: exploration ? policy.metadata : null, path: 'native', neverTraining: true,
+    versions: ver, policy: exploration ? policy.metadata : null, path: exploration ? settings.transport ?? 'native' : 'native', neverTraining: true,
     counterfactual: exploration ? { ...exploration, branchAt } : null, scope: report.scope };
   writeFileSync(resolve(output, label + '.jsonl'), [manifest, ...result.rows, { type: 'summary', ...result.summary }]
     .map(r => JSON.stringify(r)).join('\n') + '\n');
@@ -88,8 +108,9 @@ try {
     if (settle) candidate = { ...candidate, settle };
     await warm(); let index = 0;
     const result = await runScenario({ ...settings, mode: 'policy', fastMotor: true, motor: motor.step,
-      policy: async (x, h) => {
-        const response = await policy.step(x, h), time = index++ / settings.rate;
+      policy: async (x, h, context) => {
+        const response = await policy.step(x, h), time = settings.transport === 'seat-frame' ? context.time : index / settings.rate;
+        index++;
         if (settle && time > settle.at) {
           const blend = (1 - Math.cos(Math.PI * Math.min(1, (time - settle.at) / settle.transition))) / 2;
           const gain = 1 + (settle.gain - 1) * blend, base = motor.step(x);
@@ -130,7 +151,7 @@ try {
     report.generations.push({ generation, ...search.update(trials) }); persist();
   }
   for (const expertDriver of ['intercept', 'razor', 'apex', 'next-racer']) {
-    const result = await runScenario({ ...settings, mode: 'teacher', expertDriver });
+    const result = await runScenario({ ...settings, transport: 'native', mode: 'teacher', expertDriver });
     const outcome = encounterOutcome(result, { seconds, checkpointDistance });
     report.references.push({ expertDriver, outcome, ...save('reference-' + expertDriver, result, null) }); persist();
   }
@@ -152,8 +173,10 @@ try {
       settings: { ...settings, mode: 'policy', fastMotor: true }, versions: ver, policy: policy.metadata,
       trainingOnly: true, outcomeTraining: true, outcome: { objective, familyId, candidate: winner.candidate,
         baseline: baselineOutcome, selected: winner.outcome, gainSeconds: report.gainSeconds },
-      labelSource: 'selected-policy-proposal; teacherControls are ignored', searchDigest: report.searchDigest, path: 'native' };
-    const rows = winningResult.rows.map(r => ({ ...r, outcomeTarget: r.policyProposal }));
+      labelSource: 'selected-policy-proposal; teacherControls are ignored', searchDigest: report.searchDigest, path: settings.transport ?? 'native',
+      ...(settings.transport === 'seat-frame' ? { requestHistory: 'accepted-seat-requests-v1' } : {}),
+      ...(generated ? { generatedPlan: generatedPlan.digest, generatedCase: generated.id, physicalFamily: generated.physicalFamily } : {}) };
+    const rows = winningResult.rows.map(r => ({ ...r, outcomeTarget: r.policyProposal ?? null }));
     writeFileSync(file, [manifest, ...rows, { type: 'summary', ...winningResult.summary }].map(r => JSON.stringify(r)).join('\n') + '\n');
     report.trainingFile = file;
   }

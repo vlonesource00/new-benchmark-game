@@ -12,6 +12,7 @@ from model import PulsePolicy
 from data import assert_disjoint, episodes, windows
 from outcome_data import outcome_episodes, assert_outcome_disjoint
 from train import batch, rollout_loss
+from checkpoint_state import atomic_checkpoint, atomic_json, capture_state, restore_state
 
 
 def main():
@@ -29,6 +30,8 @@ def main():
     p.add_argument('--anchor-weight', type=float, default=.1)
     p.add_argument('--checkpoint-every', type=int, default=5)
     p.add_argument('--whole-episode', action='store_true', help='Use the complete recorded recurrent history; batch 1 and burn 0')
+    p.add_argument('--continue-run', action='store_true', help='Continue this output from its atomic optimizer/RNG checkpoint')
+    p.add_argument('--packed-memory', action='store_true', help='Batch reset-separated traffic intervals during training only')
     p.add_argument('--traffic-gate', action='store_true', help='Fit a small public-state gain head while preserving the parent NN')
     p.add_argument('--traffic-gate-mode', choices=['raw', 'clipped'], help='Explicit gain contract; new calibrators default to post-clip actuator deltas')
     args = p.parse_args()
@@ -41,8 +44,10 @@ def main():
     if args.traffic_gate_mode and not args.traffic_gate:
         raise ValueError('Gain contract requires --traffic-gate')
     out, root = Path(args.out), Path(args.resume)
-    if out.exists():
+    if out.exists() and not args.continue_run:
         raise ValueError('Preserve completed experiments; choose a new output')
+    if args.continue_run and (not (out / 'resume.pt').exists() or (out / 'metadata.json').exists()):
+        raise ValueError('Continue requires an unfinished run with a full resume checkpoint')
     if not torch.cuda.is_available():
         raise RuntimeError('CUDA training required')
     torch.set_num_threads(4); torch.manual_seed(args.seed)
@@ -71,6 +76,7 @@ def main():
             raise ValueError('Parent-anchor source is incompatible')
     model = PulsePolicy(schema, **config).to('cuda'); model.load_parent(checkpoint['weights'])
     reference = PulsePolicy(schema, **config).to('cuda').eval(); reference.load_parent(checkpoint['weights'])
+    model.packed_traffic_training = reference.packed_traffic_training = args.packed_memory
     for parameter in reference.parameters():
         parameter.requires_grad_(False)
     frozen = {k: v.detach().cpu().clone() for k, v in model.named_parameters() if not v.requires_grad}
@@ -89,14 +95,35 @@ def main():
         raise ValueError('Insufficient complete winner windows')
     optimizer = torch.optim.AdamW((p for p in model.parameters() if p.requires_grad), lr=args.lr, weight_decay=1e-4)
     rng = np.random.default_rng(args.seed)
-    sources = ['improve.py', 'outcome_data.py', 'model.py', 'train.py', 'data.py']
+    sources = ['improve.py', 'outcome_data.py', 'model.py', 'train.py', 'data.py', 'checkpoint_state.py', 'segmented_gru.py']
     source_hash = lambda: hashlib.sha256(b''.join((Path(__file__).parent / f).read_bytes() for f in sources)).hexdigest()
-    started_hash = source_hash(); out.mkdir(parents=True, exist_ok=False)
-    source_archive = out / 'trainer-source'; source_archive.mkdir()
-    for filename in sources:
-        shutil.copy2(Path(__file__).parent / filename, source_archive / filename)
-    started, best, history = time.perf_counter(), float('inf'), []
-    for epoch in range(1, args.epochs + 1):
+    started_hash = source_hash()
+    contract = {'arguments': {k: v for k, v in vars(args).items() if k != 'continue_run'},
+                'trainerDigest': started_hash,
+                'parentCheckpointSha256': hashlib.sha256((root / 'model.pt').read_bytes()).hexdigest(),
+                'outcomes': [{'file': e['path'], 'sha256': e['fileDigest']} for e in train + validation],
+                'anchors': [{'file': e['path'], 'fingerprint': e['fingerprint']} for e in anchors]}
+    source_archive = out / 'trainer-source'
+    first_epoch, elapsed, best, history, best_checkpoint = 1, 0.0, float('inf'), [], None
+    if args.continue_run:
+        archived_hash = hashlib.sha256(b''.join((source_archive / f).read_bytes() for f in sources)).hexdigest()
+        if archived_hash != started_hash:
+            raise ValueError('Archived training source changed; preserve this experiment')
+        saved = restore_state(out / 'resume.pt', model, optimizer, rng, contract)
+        first_epoch, elapsed = saved['epoch'] + 1, saved['seconds']
+        history, best_checkpoint = saved['history'], saved['bestCheckpoint']
+        best = min(row['validationLoss'] for row in history)
+        if any(not torch.equal(dict(model.named_parameters())[k].detach().cpu(), v) for k, v in frozen.items()):
+            raise ValueError('Resume changed the preserved motor')
+        atomic_checkpoint(out / 'model.pt', best_checkpoint)
+        print(json.dumps({'resumedAfterEpoch': saved['epoch'], 'optimizerAndRngRestored': True}), flush=True)
+    else:
+        out.mkdir(parents=True, exist_ok=False); source_archive.mkdir()
+        for filename in sources:
+            shutil.copy2(Path(__file__).parent / filename, source_archive / filename)
+        atomic_json(out / 'run.json', {'contract': contract, 'status': 'running', 'plannedEpochs': args.epochs})
+    started = time.perf_counter()
+    for epoch in range(first_epoch, args.epochs + 1):
         model.train(); losses, anchor_losses = [], []
         permutation = rng.permutation(len(train_windows))
         for start in range(0, len(permutation), args.batch):
@@ -130,12 +157,18 @@ def main():
                'parentAnchorLoss': float(np.mean(anchor_losses)) if anchor_losses else None}
         history.append(row)
         if row['validationLoss'] < best:
-            best = row['validationLoss']; torch.save({'weights': model.state_dict(), 'schema': schema, 'modelConfig': config}, out / 'model.pt')
+            best = row['validationLoss']
+            best_checkpoint = {'weights': {k: v.detach().cpu().clone() for k, v in model.state_dict().items()},
+                               'schema': schema, 'modelConfig': config, 'epoch': epoch}
+            atomic_checkpoint(out / 'model.pt', best_checkpoint)
         if epoch % args.checkpoint_every == 0:
             folder = out / 'checkpoints'; folder.mkdir(exist_ok=True)
-            torch.save({'weights': model.state_dict(), 'schema': schema, 'modelConfig': config, 'epoch': epoch}, folder / ('epoch-' + str(epoch) + '.pt'))
+            atomic_checkpoint(folder / ('epoch-' + str(epoch) + '.pt'),
+                              {'weights': model.state_dict(), 'schema': schema, 'modelConfig': config, 'epoch': epoch})
+        seconds = elapsed + time.perf_counter() - started
+        atomic_checkpoint(out / 'resume.pt', capture_state(model, optimizer, rng, contract, epoch, best_checkpoint, history, seconds))
         print(json.dumps(row), flush=True)
-        (out / 'training.json').write_text(json.dumps({'history': history, 'seconds': time.perf_counter() - started}, indent=2))
+        atomic_json(out / 'training.json', {'history': history, 'seconds': seconds})
     if source_hash() != started_hash:
         raise RuntimeError('Training source changed mid-run')
     if any(not torch.equal(dict(model.named_parameters())[k].detach().cpu(), v) for k, v in frozen.items()):
@@ -157,7 +190,8 @@ def main():
                 'checkpointSelection': 'minimum held-out selected-action error; independent physical gates required',
                 'parentModelSha256': parent['modelSha256'], 'trainerDigest': started_hash,
                 'parentTrainerDigest': parent['trainerDigest'], 'parentStage': parent['stage'],
-                'recurrentTraining': 'complete episode from recorded reset' if args.whole_episode else 'reset windows with burn-in',
+                'recurrentTraining': ('complete accepted request chain from recorded reset' if any(e['manifest']['settings'].get('transport') == 'seat-frame' for e in train + validation)
+                                      else 'complete episode from recorded reset') if args.whole_episode else 'reset windows with burn-in',
                 'trainerSourceDirectory': 'trainer-source',
                 'parameters': sum(p.numel() for p in model.parameters()),
                 'trainableParameters': sum(p.numel() for p in model.parameters() if p.requires_grad),
@@ -166,14 +200,21 @@ def main():
                 'bestValidationLoss': best, 'emptyTrafficMotorPreservedBitwise': True,
                 'trainEpisodes': [e['path'] for e in train], 'validationEpisodes': [e['path'] for e in validation],
                 'outcomeDatasets': [{'file': e['path'], 'split': e['manifest']['split'], 'familyId': e['manifest']['episodeId'],
-                                     'sha256': e['fileDigest'], 'weight': e['weight'], 'outcome': e['manifest']['outcome']} for e in train + validation],
+                                     'sha256': e['fileDigest'], 'weight': e['weight'], 'outcome': e['manifest']['outcome'],
+                                     'requestHistory': e['manifest'].get('requestHistory', 'native-accepted-sequence'),
+                                     'recordedFrames': e['recordedFrames'], 'acceptedSteps': e['acceptedSteps']} for e in train + validation],
                 'outcomeTargets': 'admitted sampled-policy proposals; no expert command targets',
                 'parentAnchorData': args.anchor_data, 'parentAnchorTargets': 'frozen parent NN predictions, never teacherControls',
                 'modelSha256': {str(n): hashlib.sha256((out / ('policy-' + str(n) + '.onnx')).read_bytes()).hexdigest() for n in [1, 16]},
-                'seconds': time.perf_counter() - started}
+                'seconds': elapsed + time.perf_counter() - started,
+                'completedEpochs': args.epochs, 'trainingStatus': 'complete',
+                'checkpointEpoch': best_checkpoint['epoch'], 'atomicResumeState': 'resume.pt'}
     # Parent imitation datasets are lineage, not the inputs of this new trainer.
     metadata['parentImitationDatasets'] = metadata.pop('datasets', metadata.get('parentImitationDatasets', []))
-    (out / 'metadata.json').write_text(json.dumps(metadata, indent=2))
+    inherited = ['imitationLossAtCheckpoint', 'checkpointDirectory', 'snapshotSha256', 'snapshotExporterDigest']
+    metadata['parentCheckpointMetadata'] = {k: metadata.pop(k) for k in inherited if k in metadata}
+    atomic_json(out / 'metadata.json', metadata)
+    atomic_json(out / 'run.json', {'contract': contract, 'status': 'complete', 'completedEpochs': args.epochs})
     print(json.dumps({'complete': True, 'seconds': metadata['seconds'], 'preservedMotor': True}))
 
 

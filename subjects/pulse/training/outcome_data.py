@@ -11,7 +11,8 @@ def physical_family(manifest):
     # Longer/shorter recordings or a different inference schedule must not turn
     # the same initial encounter into an independent validation family.
     scheduling = {'seconds', 'rate', 'motorRate', 'lagMs', 'stallMs', 'stallAt',
-                  'spikeMs', 'spikeAt', 'fastMotor', 'mode', 'observationVersion', 'expertDriver'}
+                  'spikeMs', 'spikeAt', 'fastMotor', 'mode', 'observationVersion', 'expertDriver',
+                  'transport', 'frameSteps', 'lagFrames', 'lagJitter', 'frameJitter', 'scheduleSeed', 'replyServiceMs'}
     physical = {k: v for k, v in manifest['settings'].items() if k not in scheduling}
     # Explicit defaults introduced by the tail-arrival fixture do not create
     # a new scene or an independent holdout for legacy recordings.
@@ -25,6 +26,38 @@ def assert_outcome_disjoint(train, validation):
     assert_disjoint(train, validation)
     if {physical_family(e['manifest']) for e in train} & {physical_family(e['manifest']) for e in validation}:
         raise ValueError('Same physical encounter across outcome splits')
+
+
+def accepted_request_rows(rows):
+    """Reconstruct the chain actually committed by the single-in-flight seat.
+
+    Busy frames and rejected requests do not update recurrent memory. A flat
+    unroll of every recorded observation trains a different state trajectory.
+    """
+    requests, accepted, live, sequence = {}, [], 0, 0
+    for row in rows:
+        before = row.get('acceptedBefore')
+        if not isinstance(before, int) or before < live or row.get('acceptedSequence') != before:
+            raise ValueError('Invalid seat acceptance sequence')
+        if before != live:
+            request = requests.get(before)
+            if request is None or request['request']['base'] != live:
+                raise ValueError('Seat reply does not descend from accepted memory')
+            accepted.append(request)
+            live = before
+        request = row.get('request')
+        if request is not None:
+            sequence += 1
+            if (request.get('seq') != sequence or request.get('base') != live
+                    or row.get('inFlight') or not np.isfinite(request.get('dt', float('nan')))
+                    or not 0 < request['dt'] <= .1):
+                raise ValueError('Overlapping or malformed seat request')
+            requests[sequence] = row
+        elif row.get('policyProposal') is not None or row.get('outcomeTarget') is not None:
+            raise ValueError('A busy frame cannot contain a new network target')
+    if not accepted:
+        raise ValueError('No accepted seat requests')
+    return accepted
 
 
 def outcome_episodes(directory, schema, split):
@@ -61,6 +94,15 @@ def outcome_episodes(directory, schema, split):
                     or r['observation'].get('missing') or not np.isfinite(r.get('legalTrackLimit', float('nan')))
                     or abs(r['before']['lateral']) > r['legalTrackLimit']):
                 raise ValueError('Invalid control source, sensors or legality')
+        frames, seat_frame = steps, m.get('settings', {}).get('transport') == 'seat-frame'
+        if seat_frame:
+            if m.get('requestHistory') != 'accepted-seat-requests-v1':
+                raise ValueError('Frame transport must declare its accepted-state training contract')
+            steps = accepted_request_rows(frames)
+            if len(steps) < 64:
+                raise ValueError('Too few accepted seat requests')
+        elif s.get('mailbox', {}).get('obsolete', 0) or s.get('mailbox', {}).get('late', 0):
+            raise ValueError('Overlapping native replies cannot train with a flat recurrent history')
         x = np.asarray([r['observation']['normalized'] for r in steps], dtype=np.float32)
         y = np.asarray([r['outcomeTarget'] for r in steps], dtype=np.float32)
         if x.shape != (len(steps), schema['size']) or y.shape != (len(steps), 2) or not np.isfinite(x).all() or not np.isfinite(y).all() or (np.abs(y) > 1).any():
@@ -68,7 +110,8 @@ def outcome_episodes(directory, schema, split):
         # One winner per physical family. Opposite sampled controls at the same
         # state are not averaged into an unexecutable compromise.
         result.append({'manifest': m, 'x': x, 'y': y, 'path': path.name, 'start_index': 0,
-                       'corrective': False, 'fresh': bool(steps[0].get('reset')),
+                       'corrective': False, 'fresh': bool(frames[0].get('reset')) and (not seat_frame or steps[0]['request']['base'] == 0),
+                       'recordedFrames': len(frames), 'acceptedSteps': len(steps),
                        'weight': 1 + min(4, int(max(0, gain or 0) / .25)),
                        'fingerprint': hashlib.sha256(x.tobytes() + y.tobytes()).hexdigest(),
                        'fileDigest': hashlib.sha256(path.read_bytes()).hexdigest()})

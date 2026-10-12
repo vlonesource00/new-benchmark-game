@@ -2,13 +2,16 @@ import { toControls, clamp } from './schema.mjs';
 
 // Hidden state is committed with the accepted action, never with a late reply.
 export class ActionMailbox {
-  constructor({ deadline = .1, hiddenSize = 128 } = {}) { this.deadline = deadline; this.hiddenSize = hiddenSize; this.reset(); }
-  reset() { this.epoch = (this.epoch ?? 0) + 1; this.seq = 0; this.accepted = 0; this.at = 0; this.action = [0, 0]; this.hidden = new Array(this.hiddenSize).fill(0); this.stats = { accepted: 0, late: 0, obsolete: 0, invalid: 0 }; }
+  constructor({ deadline = .1, hiddenSize = 128, actionSize = 2 } = {}) {
+    if (![2, 4].includes(actionSize)) throw Error('Unknown action width');
+    this.deadline = deadline; this.hiddenSize = hiddenSize; this.actionSize = actionSize; this.reset();
+  }
+  reset() { this.epoch = (this.epoch ?? 0) + 1; this.seq = 0; this.accepted = 0; this.at = 0; this.action = new Array(this.actionSize).fill(0); this.hidden = new Array(this.hiddenSize).fill(0); this.stats = { accepted: 0, late: 0, obsolete: 0, invalid: 0 }; }
   request(now) { return { epoch: this.epoch, seq: ++this.seq, base: this.accepted, at: now, hidden: [...this.hidden] }; }
   accept(reply, now) {
     if (reply.epoch !== this.epoch || reply.seq <= this.accepted || reply.base !== this.accepted) { this.stats.obsolete++; return false; }
     if (now - reply.at > this.deadline + 1e-9 || reply.at > now + 1e-9) { this.stats.late++; return false; }
-    if (reply.action?.length !== 2 || reply.hidden?.length !== this.hiddenSize || ![...reply.action, ...reply.hidden].every(Number.isFinite)
+    if (reply.action?.length !== this.actionSize || reply.hidden?.length !== this.hiddenSize || ![...reply.action, ...reply.hidden].every(Number.isFinite)
       || (reply.correction !== undefined && (reply.correction?.length !== 2 || !Array.from(reply.correction).every(Number.isFinite)))) { this.stats.invalid++; return false; }
     this.action = reply.action.map(x => clamp(x, -1, 1)); this.hidden = [...reply.hidden]; this.at = reply.at; this.accepted = reply.seq; this.stats.accepted++;
     return true;

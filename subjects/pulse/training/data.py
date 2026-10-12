@@ -38,6 +38,8 @@ def episodes(directory, schema, expected_split, corrective=False, optional=False
     for path in sorted(Path(directory).glob('*.jsonl')):
         records = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
         manifest = records[0]
+        if manifest.get('settings', {}).get('transport') == 'seat-frame':
+            raise ValueError('Seat-frame data requires accepted-state recurrent training, not a frame-by-frame unroll')
         if manifest['type'] != 'manifest' or manifest['split'] != expected_split:
             raise ValueError(f'Bad manifest/split: {path.name}')
         if manifest.get('neverTraining'):

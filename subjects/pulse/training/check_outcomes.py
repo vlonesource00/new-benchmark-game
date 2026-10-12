@@ -2,7 +2,7 @@
 import json
 import tempfile
 from pathlib import Path
-from outcome_data import outcome_episodes, assert_outcome_disjoint, physical_family
+from outcome_data import outcome_episodes, assert_outcome_disjoint, physical_family, accepted_request_rows
 from data import assert_disjoint
 
 checks = []
@@ -80,4 +80,56 @@ checks.append('physically different encounter remains an allowed holdout')
 defaults = {**e['manifest'], 'settings': {**e['manifest']['settings'], 'tailGapDelta': 0, 'tailSpeed': None}}
 assert physical_family(defaults) == physical_family(e['manifest'])
 checks.append('explicit tail defaults do not manufacture holdout independence')
+
+
+def seat_records():
+    rs = records()
+    rs[0]['settings']['transport'] = 'seat-frame'
+    rs[0]['requestHistory'] = 'accepted-seat-requests-v1'
+    rs[0]['settings']['seconds'] = rs[-1]['seconds'] = 4
+    rows = []
+    for i in range(240):
+        r = json.loads(json.dumps(rs[1]))
+        r['reset'], r['time'], r['inFlight'] = i == 0, i / 60, i % 2 == 1
+        r['acceptedBefore'] = r['acceptedSequence'] = (i + 1) // 2
+        if i % 2:
+            r['request'] = None
+            r['outcomeTarget'] = None
+        else:
+            r['request'] = {'seq': i // 2 + 1, 'base': i // 2, 'at': i / 60, 'dt': 1 / 30}
+        rows.append(r)
+    return [rs[0], *rows, rs[-1]]
+
+
+seat = load(seat_records())[0]
+assert len(seat['x']) == 120 and seat['recordedFrames'] == 240 and seat['fresh']
+checks.append('busy frames do not advance the learned recurrent state')
+rs = seat_records()
+rs[2]['acceptedBefore'] = rs[2]['acceptedSequence'] = 0
+rs[3]['acceptedBefore'] = rs[3]['acceptedSequence'] = rs[3]['request']['base'] = 0
+seat = load(rs)[0]
+assert len(seat['x']) == 119 and seat['fresh']
+checks.append('rejected first reply is omitted; the next accepted request still starts at zero memory')
+rs = seat_records(); rs[3]['request']['base'] = 0
+try:
+    load(rs)
+    raise AssertionError('incorrect parent accepted')
+except ValueError:
+    checks.append('false request ancestry is rejected')
+rs = seat_records(); rs[2]['outcomeTarget'] = [0, 1]
+try:
+    load(rs)
+    raise AssertionError('busy-frame target accepted')
+except ValueError:
+    checks.append('a frame without inference cannot supply a neural target')
+rs = seat_records(); del rs[0]['requestHistory']
+try:
+    load(rs)
+    raise AssertionError('undeclared timing contract accepted')
+except ValueError:
+    checks.append('seat data cannot silently fall back to a frame-by-frame unroll')
+same_scene = {**e['manifest'], 'settings': {**e['manifest']['settings'], 'transport': 'seat-frame',
+    'frameSteps': 4, 'lagFrames': 2, 'frameJitter': 2, 'lagJitter': 1, 'replyServiceMs': 0, 'scheduleSeed': 43}}
+assert physical_family(same_scene) == physical_family(e['manifest'])
+checks.append('frame cadence, lag and schedule seeds cannot manufacture holdout independence')
 print(json.dumps({'passed': len(checks), 'checks': checks}))

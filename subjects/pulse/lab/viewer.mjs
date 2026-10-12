@@ -45,6 +45,11 @@ function scene(row) {
   // Preview is a sensor of the centre of the road, never a claimed policy route.
   if (mode !== 'track') { c.strokeStyle = '#889fb2'; c.setLineDash([5, 5]); c.beginPath(); row.observation.preview.forEach((p, i) => c[i ? 'lineTo' : 'moveTo'](...project(p))); c.stroke(); c.setLineDash([]); }
   const history = replay.rows.slice(Math.max(0, index - 60), index + 1);
+  if (mode !== 'road' && row.planTrace?.selectedRoute) {
+    c.strokeStyle = '#50d4b6'; c.lineWidth = 2; c.setLineDash([7, 4]); c.beginPath();
+    row.planTrace.selectedRoute.forEach((p, i) => c[i ? 'lineTo' : 'moveTo'](...project(p)));
+    c.stroke(); c.setLineDash([]);
+  }
   c.strokeStyle = '#ffd166'; c.lineWidth = 2; c.beginPath(); history.forEach((r, i) => c[i ? 'lineTo' : 'moveTo'](...project(r.before))); c.stroke();
   for (const car of visibleCars) {
     const [x, y] = project(car); const color = car.id === ego.id ? '#ffd166' : car.speed < 5 ? '#ff7080' : '#51d5df';
@@ -115,6 +120,22 @@ function render() {
   metrics.push(['Nearest front car', front ? 'Car ' + front.id + ' · ' + format(front.forward) + ' m' : 'Clear within 50 m'],
     ['Side projection gap', front ? format(front.sideGap) + ' m' : '—'],
     ['Front projection gap', front ? format(front.frontGap) + ' m' : '—']);
+  if (replay.summary.seatTiming) metrics.push(['Seat frame', String(row.frame)],
+    ['Worker elapsed time', format(row.workerDt * 1000, 1) + ' ms'],
+    ['Traffic request', row.request ? '#' + row.request.seq + ' from #' + row.request.base : 'Held; no new inference']);
+  const planSource = replay.manifest.planSource === 'fixed-offset' || replay.manifest.diagnostic?.startsWith('Fixed-route') ? 'Fixed' : replay.manifest.diagnostic ? 'Recorded' : 'NN';
+  if (row.planTrace) metrics.push([planSource + ' route knots', row.planTrace.requestedOffsets ? row.planTrace.requestedOffsets.map(x => format(x, 1)).join(' / ') + ' m'
+      : format(row.planTrace.requestedOffset) + ' m from course'],
+    [planSource + ' speed request', row.planTrace.requestedSpeed !== undefined ? format(row.planTrace.requestedSpeed * 3.6, 1) + ' km/h' : format(row.planTrace.pace * 100, 1) + '% profile'],
+    ['Controller target', format(row.planTrace.target * 3.6, 1) + ' km/h'],
+    ['Route age / rebuilds', format(row.planTrace.compiledAge, 2) + ' s / ' + row.planTrace.compiles],
+    ['Controller constraint', row.planTrace.source + ' / ' + row.planTrace.pedal]);
+  if (row.planTrace?.activeFeedback) metrics.push(['Route feedback', row.planTrace.activeFeedback],
+    ['Tracking error', format(row.planTrace.pathError, 3) + ' m'],
+    ['Reference join', row.planTrace.compiler?.referenceJoin ? 'Active route retained' : 'Initial body join'],
+    ['Observed route origin', row.planTrace.routeOrigin === 'request-v1' ? 'Request; consumed ' + format(row.planTrace.compiler?.consumed ?? 0, 1) + ' m' : 'Rolling prototype']);
+  if (row.planTrace?.compiler) metrics.push(['Edge correction / stations', format(row.planTrace.compiler.maxEdgeCorrection, 2) + ' m / ' + row.planTrace.compiler.clippedStations],
+    ['Route speed floor', format(row.planTrace.compiler.floor.speed * 3.6, 1) + ' km/h at road ' + format(row.planTrace.compiler.floor.roadS, 0) + ' m']);
   $('metrics').replaceChildren(...metrics.map(([label, value]) => { const d = document.createElement('div'); d.className = 'metric'; const a = document.createElement('small'), b = document.createElement('strong'); a.textContent = label; b.textContent = value; d.append(a, b); return d; }));
   const pedals = $('pedals'); pedals.replaceChildren();
   for (const [name, controls] of [['Teacher', row.teacherControls], ['Policy', row.policyProposal ? { steer: row.policyProposal[0], throttle: Math.max(0, row.policyProposal[1]), brake: Math.max(0, -row.policyProposal[1]) } : null], ['Executed', row.executed]]) {
@@ -125,7 +146,9 @@ function render() {
   $('constraints').textContent = `${row.actionSource ?? replay.summary.mode}${row.expertChosen ? ' · expert assistance: ' + row.expertReason : ''}. ` +
     (row.safety.length ? `Safety: ${row.safety.join(', ')}${replay.summary.mode === 'shadow' ? ' (counterfactual)' : ''}` : 'No safety override at this observation.');
   $('latency').textContent = JSON.stringify({ decisionMs: row.decisionMs, recurrentDt: row.recurrentDt, requestDt: row.decisionDt,
-    hiddenNorm: row.hiddenNorm, sequence: row.acceptedSequence, expertController: row.teacherTrace,
+    hiddenNorm: row.hiddenNorm, sequence: row.acceptedSequence, acceptedBefore: row.acceptedBefore,
+    frame: row.frame, workerDt: row.workerDt, request: row.request, inFlight: row.inFlight,
+    seatTiming: replay.summary.seatTiming, expertController: row.teacherTrace, planController: row.planTrace,
     localMotor: row.localMotorAction, localMotorAt: row.localMotorAt,
     trafficCorrection: row.trafficCorrection, exploration: replay.manifest.counterfactual,
     expertHistoryProbe: row.teacherHistoryProbe, trainingDisturbance: row.trainingDisturbance,
@@ -162,7 +185,8 @@ async function load(url) {
     activeMemoryUnits: meta.activeMemoryUnits, actuationUsesRecurrentMemory: meta.actuationUsesRecurrentMemory, checkpointEpoch: meta.checkpointEpoch,
     checkpointSelection: meta.checkpointSelection, validationLoss: meta.bestValidationLoss, training: meta.training,
     trainingSeconds: meta.seconds, parent: meta.parentModelSha256, physicsDigest: meta.simulatorDigest }, null, 2) :
-    'This is an expert demonstration. No PULSE checkpoint is controlling this replay.';
+    (replay.manifest.diagnostic ? 'Recorded-route diagnostic. A fixed controller follows offline targets; no NN decides this route.'
+      : 'This is an expert demonstration. No PULSE checkpoint is controlling this replay.');
   $('events').replaceChildren();
   for (const event of replay.events.filter(e => e.type !== 'reply-accepted').slice(0, 150)) { const button = document.createElement('button'); button.className = 'event'; button.textContent = `${format(event.time)} s · ${event.type === 'off-track' ? 'asphalt-edge' : event.type}${event.id !== undefined ? ' car ' + event.id : ''}`;
     button.onclick = () => { index = Math.max(0, replay.rows.findIndex(r => r.time >= event.time)); render(); }; $('events').append(button); }

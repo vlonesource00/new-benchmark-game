@@ -6,6 +6,8 @@ import { halfCarInside } from '../../../game/engine/sim/racecraft-policy.js';
 import { observe, toAction, toControls, gap, angle, SCHEMA } from '../src/schema.mjs';
 import { ActionMailbox, supervise, timing } from '../src/runtime.mjs';
 import { observationProfile } from '../src/observations.mjs';
+import { SeatTiming } from '../src/seat-timing.mjs';
+import { PLAN_CONTRACT } from '../src/plan-contract.mjs';
 
 export const pose = c => ({ id: c.id, classId: c.classId, x: c.x, z: c.z, yaw: c.yaw, speed: c.speed,
   s: c.s, lateral: c.lateral, progress: c.race.progress, fuel: c.fuel, damage: c.damage,
@@ -23,6 +25,7 @@ export async function runScenario(options = {}) {
     diagnosticExpertActuator: null, trainingExpertActuator: null,
     rivalGap: 55, trainSpacing: 85, rivalSpeed: null, tailGapDelta: 0, tailSpeed: null,
     fastMotor: false, motorRate: 60, expertDriver: 'intercept',
+    transport: 'native', frameSteps: 2, lagFrames: 0, lagJitter: 0, frameJitter: 0, scheduleSeed: 7, replyServiceMs: null,
     observationVersion: SCHEMA.version, ...options };
   const { schema, observe: observeAt } = observationProfile(settings.observationVersion);
   if (!['teacher', 'shadow', 'policy', 'dagger'].includes(settings.mode)) throw Error('Invalid mode');
@@ -32,6 +35,17 @@ export async function runScenario(options = {}) {
   if (![settings.seed, settings.start, settings.lateral, settings.rivalOffset, settings.yawOffset, settings.speed, settings.lagMs, settings.spikeMs, settings.spikeAt, settings.stallAt, settings.stallMs, settings.hazardAt].every(Number.isFinite)
     || settings.lagMs < 0 || settings.spikeMs < 0 || settings.stallMs < 0 || settings.speed < 0) throw Error('Finite nonnegative speeds/delays required');
   if (settings.mode !== 'teacher' && !settings.policy) throw Error('shadow/policy requires a checkpoint');
+  if (settings.planFactory && (settings.mode !== 'policy' || settings.fastMotor || settings.diagnosticExpertActuator
+    || settings.trainingExpertActuator || settings.actionContract !== PLAN_CONTRACT.version))
+    throw Error('Plan execution requires its explicit action contract and unassisted policy mode');
+  if (!settings.planFactory && settings.actionContract === PLAN_CONTRACT.version)
+    throw Error('Lane/pace intentions cannot drive raw actuators');
+  if (!['native', 'seat-frame'].includes(settings.transport)) throw Error('Invalid transport');
+  if (settings.transport === 'seat-frame' && (settings.mode === 'teacher' || settings.holdExpert))
+    throw Error('Seat-frame transport currently requires a policy; held teacher uses its separate diagnostic');
+  if (settings.replyServiceMs !== null && (!Number.isFinite(settings.replyServiceMs) || settings.replyServiceMs < 0 || settings.replyServiceMs > 2000))
+    throw Error('Invalid emulated inference service time');
+  const seatTiming = settings.transport === 'seat-frame' ? new SeatTiming({ ...settings, step: FIXED_DT }) : null;
   if (!['intercept', 'razor', 'apex', 'next-racer'].includes(settings.expertDriver)
     || (settings.expertDriver !== 'intercept' && (settings.mode !== 'teacher' || settings.traceExpert || settings.probeExpertHistory)))
     throw Error('Alternative expert is a teacher-only comparison, without INTERCEPT-specific probes');
@@ -68,8 +82,9 @@ export async function runScenario(options = {}) {
     name: i ? `Rival ${i}` : 'PULSE laboratory', short: i ? `GT${i}` : 'PLS', color: i ? '#51d5df' : '#ffd166',
     classId: i && settings.fixture === 'train' ? 'gt' : settings.classId,
     drivers: [{ id: i ? settings.rival : settings.expertDriver, kind: 'ai', name: i ? settings.rival : settings.expertDriver + ' reference', short: i ? 'RIV' : 'REF' }] }));
-  const mailbox = new ActionMailbox(), delayed = [], rows = [], events = [], teacherMs = [], encoderMs = [], inferenceMs = [], supervisorMs = [];
+  const mailbox = new ActionMailbox({ actionSize: settings.planFactory ? PLAN_CONTRACT.width : 2 }), delayed = [], rows = [], events = [], teacherMs = [], encoderMs = [], inferenceMs = [], supervisorMs = [];
   let armed = false, current = null, previous = [0, 0], race, acceptedAt = 0;
+  let planExecutor = null;
   let motorAction = [0, 0], motorPending = null, trafficCorrection = [0, 0], lastMotorRequestAt = 0, motorAcceptedAt = 0;
   const motorMs = [];
   const combinedAction = () => motorAction.map((value, i) => Math.max(-1, Math.min(1, value + trafficCorrection[i])));
@@ -114,7 +129,9 @@ export async function runScenario(options = {}) {
         car.controls = { ...expertHeld };
       }
       if (settings.mode === 'policy' || (settings.mode === 'dagger' && !current?.expertChosen)) {
-        const proposed = toControls(settings.fastMotor ? combinedAction() : mailbox.action);
+        const proposed = planExecutor ? planExecutor.step(car, cars, dt, { time: context.time - startAt, state: context })
+          : toControls(settings.fastMotor ? combinedAction() : mailbox.action);
+        if (planExecutor && current) current.planTrace = { ...planExecutor.trace };
         if (settings.diagnosticExpertActuator === 'steer') proposed.steer = car.controls.steer;
         if (settings.diagnosticExpertActuator === 'longitudinal' || settings.trainingExpertActuator === 'longitudinal') { proposed.throttle = car.controls.throttle; proposed.brake = car.controls.brake; }
         const t = performance.now(), safe = supervise(toAction(proposed), race, car); supervisorMs.push(performance.now() - t);
@@ -136,7 +153,7 @@ export async function runScenario(options = {}) {
         if (current) current.trainingDisturbance ??= { steerDelta: delta, longitudinalDelta, cycle, active };
       }
     };
-    wrapped.reset = snapshot => { teacher.reset?.(snapshot); mailbox.reset(); motorAction = [0, 0]; motorPending = null; trafficCorrection = [0, 0]; lastMotorRequestAt = 0; motorAcceptedAt = 0; };
+    wrapped.reset = snapshot => { teacher.reset?.(snapshot); mailbox.reset(); planExecutor?.reset(); motorAction = [0, 0]; motorPending = null; trafficCorrection = [0, 0]; lastMotorRequestAt = 0; motorAcceptedAt = 0; };
     wrapped.dispose = () => teacher.dispose?.();
     return wrapped;
   };
@@ -210,6 +227,7 @@ export async function runScenario(options = {}) {
   let cumulativeDamage = 0, lastDamage = self.damage, tick = 0, interventionRows = 0, clippedRows = 0, missingRows = 0, simultaneous = 0;
   let minSpeed = self.speed, maxRoadOffset = Math.abs(self.lateral), offTrackSeconds = 0, trackLimitSeconds = 0, runoffSeconds = 0;
   let wasOff = false, wasLimit = false, wasStalled = false, lastDecisionAt = -stride * FIXED_DT;
+  let spikeApplied = false;
   let expertRows = 0, expertBlock = -1, blockExpert = false, guardUntil = -1, mixSeed = (settings.seed ^ 0x50314) >>> 0;
   let previousLap = self.race.lap, crossings = 0;
   const fullLaps = [];
@@ -235,8 +253,17 @@ export async function runScenario(options = {}) {
     originalStewards(dt);
   };
   const initializationMs = performance.now() - initializationStart, wallStart = performance.now(); armed = true;
+  if (settings.planFactory) planExecutor = settings.planFactory(track, self);
   for (tick = 0; tick < iterations && race.phase === 'racing'; tick++) {
     const time = race.time - startAt;
+    const stalled = settings.mode !== 'teacher' && time + 1e-9 >= settings.stallAt && time + 1e-9 < settings.stallAt + settings.stallMs / 1000;
+    const frameReply = seatTiming?.advance(tick, time, { blocked: stalled });
+    if (frameReply) {
+      const accepted = mailbox.accept(frameReply, time);
+      if (accepted) { acceptedAt = time; if (settings.fastMotor) trafficCorrection = frameReply.correction; }
+      events.push({ time, type: accepted ? 'reply-accepted' : 'reply-rejected', seq: frameReply.seq,
+        base: frameReply.base, frame: seatTiming.frame, age: time - frameReply.at });
+    }
     if (motorPending && motorPending.due <= time + 1e-9) { motorAction = motorPending.action; motorAcceptedAt = motorPending.at; motorPending = null; }
     if (stopHazard && time >= settings.hazardAt) { stopHazard(); stopHazard = null; }
     for (let i = delayed.length - 1; i >= 0; i--) if (delayed[i].due <= time + 1e-9) {
@@ -244,6 +271,7 @@ export async function runScenario(options = {}) {
       if (accepted) { acceptedAt = time; if (settings.fastMotor) trafficCorrection = packet.reply.correction; }
       events.push({ time, type: accepted ? 'reply-accepted' : 'reply-rejected', seq: packet.reply.seq, age: time - packet.reply.at });
     }
+    if (planExecutor) planExecutor.commit(mailbox.action, mailbox.accepted, mailbox.at);
     if (settings.fastMotor && tick % motorStride === 0) {
       const observation = observeAt(race, self, { dt: motorStride * FIXED_DT, previous,
         actionAge: Math.max(0, time - lastMotorRequestAt) });
@@ -255,8 +283,7 @@ export async function runScenario(options = {}) {
       // expert or geometric fallback. Actual browser scheduling is a later gate.
       motorPending = { due: time + FIXED_DT, at: time, action: [...action] }; lastMotorRequestAt = time;
     }
-    if (tick % stride === 0) {
-      const stalled = settings.mode !== 'teacher' && time + 1e-9 >= settings.stallAt && time + 1e-9 < settings.stallAt + settings.stallMs / 1000;
+    if (seatTiming ? seatTiming.atFrameBoundary : tick % stride === 0) {
       if (stalled !== wasStalled) events.push({ time, type: stalled ? 'inference-stall' : 'inference-resumed', duration: settings.stallMs / 1000 });
       wasStalled = stalled;
       const decisionDt = time - lastDecisionAt;
@@ -264,13 +291,16 @@ export async function runScenario(options = {}) {
       // request. Overlapping delayed requests may have been rejected entirely.
       const recurrentDt = settings.mode === 'teacher' ? stride * FIXED_DT : Math.max(stride * FIXED_DT, time - mailbox.at);
       const t = performance.now();
-      const observation = observeAt(race, self, { dt: recurrentDt, previous, actionAge: settings.mode === 'teacher' ? 0 : time - mailbox.at });
+      const observation = observeAt(race, self, { dt: seatTiming ? seatTiming.workerDt : recurrentDt,
+        previous, actionAge: settings.mode === 'teacher' ? 0 : time - mailbox.at });
       encoderMs.push(performance.now() - t);
-      current = { type: 'step', index: rows.length, time, reset: rows.length === 0, dt: stride * FIXED_DT,
+      current = { type: 'step', index: rows.length, time, reset: rows.length === 0, dt: seatTiming ? seatTiming.rowDuration : stride * FIXED_DT,
         legalTrackLimit: track.halfWidth + (track.curbWidth ?? 0) + (self.spec?.track ?? 1.72) / 2,
         observation, before: pose(self), cars: race.cars.map(pose), requested: null, teacherControls: null,
         executed: null, executedEnd: null, safety: [], substeps: [], actionAge: settings.mode === 'teacher' ? 0 : time - mailbox.at,
         hiddenNorm: Math.hypot(...mailbox.hidden), acceptedSequence: mailbox.accepted, decisionMs: 0, decisionDt, recurrentDt, inferenceStalled: stalled, post: null };
+      if (seatTiming) Object.assign(current, { frame: seatTiming.frame, acceptedBefore: mailbox.accepted,
+        workerDt: seatTiming.workerDt, inFlight: !!seatTiming.packet, request: null });
       if (settings.mode === 'dagger') {
         // Training-only expert bursts broaden the visited states. Policy evaluation
         // never reaches this branch and has no teacher steering fallback.
@@ -294,11 +324,16 @@ export async function runScenario(options = {}) {
         current.expertReason = time < guardUntil ? 'training-recovery' : blockExpert ? 'seeded-mixture' : null;
         if (current.expertChosen) expertRows++;
       }
-      if (settings.policy && !stalled) {
+      if (settings.policy && !stalled && (!seatTiming || seatTiming.canPost(time, stride * FIXED_DT))) {
         lastDecisionAt = time;
-        const request = mailbox.request(time), t = performance.now(), result = await settings.policy(observation.normalized, request.hidden);
+        const request = mailbox.request(time);
+        planExecutor?.request(request.seq, time, self);
+        const t = performance.now(), result = await settings.policy(observation.normalized, request.hidden,
+          { time, dt: seatTiming ? seatTiming.workerDt : recurrentDt, seq: request.seq, base: request.base,
+            progress: self.race.progress, speed: self.speed, x: self.x, z: self.z });
         current.decisionMs = performance.now() - t; inferenceMs.push(current.decisionMs);
-        current.policyProposal = result.action;
+        if (planExecutor) current.planProposal = result.action;
+        else current.policyProposal = result.action;
         const reply = { ...request, action: result.action, hidden: result.hidden };
         if (settings.fastMotor) {
           const base = settings.motor(observation.normalized);
@@ -307,10 +342,16 @@ export async function runScenario(options = {}) {
           // outputs stay clipped; empty traffic contributes exactly zero.
           reply.correction = hasRival ? result.action.map((value, i) => value - base[i]) : [0, 0];
         }
-        const spike = Math.abs(time - settings.spikeAt) < stride * FIXED_DT * .5 ? settings.spikeMs : 0;
+        const spike = seatTiming ? (!spikeApplied && time + 1e-9 >= settings.spikeAt ? settings.spikeMs : 0) :
+          Math.abs(time - settings.spikeAt) < stride * FIXED_DT * .5 ? settings.spikeMs : 0;
+        if (spike) spikeApplied = true;
         // Wall service time is included in this simulated arrival, not called zero latency.
-        const delay = (settings.lagMs + spike + current.decisionMs) / 1000;
-        delayed.push({ due: time + delay, reply });
+        const delay = (settings.lagMs + spike + (seatTiming && settings.replyServiceMs !== null ? settings.replyServiceMs : current.decisionMs)) / 1000;
+        if (seatTiming) {
+          const sent = seatTiming.post(reply, time, delay);
+          current.request = { epoch: request.epoch, seq: request.seq, base: request.base, at: time, ...sent };
+          if (Math.abs(sent.dt - current.workerDt) > 1e-9) throw Error('Encoded and dispatched worker dt differ');
+        } else delayed.push({ due: time + delay, reply });
         if (spike) events.push({ time, type: 'latency-spike', delay });
       }
       if (settings.mode === 'shadow') {
@@ -366,15 +407,18 @@ export async function runScenario(options = {}) {
               kind: e.kind, maneuverEvidence: { offsetChange: e.offsetChange ?? 0, separation: e.sideSeparation ?? 0 } }); }
         } else e.clear = null;
       }
-      if ((tick + 1) % stride === 0 || tick + 1 === iterations) {
+      if ((seatTiming ? seatTiming.closesRow : (tick + 1) % stride === 0) || tick + 1 === iterations) {
+        if (seatTiming) current.dt = current.substeps.length * FIXED_DT;
         const policyDriven = settings.mode === 'policy' || (settings.mode === 'dagger' && !current.expertChosen);
-        current.requested = policyDriven ? (settings.fastMotor ? combinedAction() : [...mailbox.action]) : toAction(current.teacherControls ?? current.executed);
+        current.requested = planExecutor ? toAction(current.executed)
+          : policyDriven ? (settings.fastMotor ? combinedAction() : [...mailbox.action]) : toAction(current.teacherControls ?? current.executed);
+        if (planExecutor) current.heldPlan = [...mailbox.action];
         if (settings.fastMotor) { current.localMotorAction = [...motorAction]; current.trafficCorrection = [...trafficCorrection]; current.localMotorAt = motorAcceptedAt; current.localMotorRequestedAt = lastMotorRequestAt; }
         current.target = toAction(current.executed);
         current.post = pose(self); current.progressDelta = self.race.progress - current.before.progress;
         current.damageAdded = Math.max(0, self.damage - current.before.damage);
         current.actionSource = settings.trainingExpertActuator ? 'training-pedal-curriculum' : settings.diagnosticExpertActuator ? 'diagnostic-assisted-policy' :
-          policyDriven ? settings.fastMotor ? 'pulse-two-rate-policy' : 'pulse-policy' : settings.disturbanceSteer || settings.disturbanceLongitudinal ? 'training-disturbed-expert' : settings.mode === 'dagger' ? 'training-expert' : settings.expertDriver + '-teacher';
+          planExecutor ? 'pulse-plan-policy' : policyDriven ? settings.fastMotor ? 'pulse-two-rate-policy' : 'pulse-policy' : settings.disturbanceSteer || settings.disturbanceLongitudinal ? 'training-disturbed-expert' : settings.mode === 'dagger' ? 'training-expert' : settings.expertDriver + '-teacher';
         current.acceptedSequence = mailbox.accepted; current.acceptedAt = acceptedAt;
         if (current.safety.length) interventionRows++;
         if (current.observation.clipped.length) clippedRows++;
@@ -403,9 +447,17 @@ export async function runScenario(options = {}) {
     hazardsCleared: [...encounters.values()].filter(e => e.retained !== null && e.kind === 'hazard').length, encounters: [...encounters.values()],
     interventionRows, expertRows, expertActuatorRows: settings.diagnosticExpertActuator || settings.trainingExpertActuator ? rows.length : 0,
     clippedRows, missingRows, simultaneousPedalRows: simultaneous, mailbox: mailbox.stats,
+    ...(seatTiming ? { seatTiming: { ...seatTiming.stats, transport: settings.transport,
+      frameSteps: settings.frameSteps, lagFrames: settings.lagFrames, lagJitter: settings.lagJitter, frameJitter: settings.frameJitter,
+      scheduleSeed: settings.scheduleSeed, replyServiceMs: settings.replyServiceMs,
+      inferenceService: settings.replyServiceMs === null ? 'Measured CPU inference time, delivered at a later frame boundary.' : 'Explicit simulated service time; measured CPU cost is reported separately.',
+      requestIntervalsMs: timing(seatTiming.intervals.map(x => x * 1000)), replyAgesMs: timing(seatTiming.replyAges.map(x => x * 1000)),
+      scope: 'Emulated single-in-flight frame transport. Neither a real browser Worker test nor a frame-overrun certification.' } } : {}),
     latencyMs: { observation: timing(encoderMs), teacher: timing(teacherMs), inference: timing(inferenceMs), safety: timing(supervisorMs) },
     localMotor: { enabled: settings.fastMotor, rate: settings.fastMotor ? settings.motorRate : null, latencyMs: timing(motorMs),
-      scope: 'Optional synchronous learned motor; delayed traffic delta and hidden state commit together. Native scheduling, not browser-worker timing.' },
+      scope: 'Optional synchronous learned motor; delayed traffic delta and hidden state commit together. Local physics cadence; browser scheduling remains unverified.' },
+    ...(planExecutor ? { planExecution: { contract: PLAN_CONTRACT.version, compiles: planExecutor.compiles,
+      compileLatencyMs: timing(planExecutor.compileMs), scope: 'NN lane/pace intentions with live geometric feedback at physics cadence; no expert combat planner. Browser execution unverified.' } } : {}),
     paceScope: 'Placed fixtures begin partway through a lap. The initial crossing is excluded from fullLaps and bestFullLap.',
     scope: settings.diagnosticExpertActuator ? `Diagnostic only: expert replaces ${settings.diagnosticExpertActuator}. This is assisted driving, never a PULSE gate.` :
       settings.trainingExpertActuator ? 'Training only: expert pedals with learned steering and bounded expert recovery. Autonomous gates must remove all assistance.' :

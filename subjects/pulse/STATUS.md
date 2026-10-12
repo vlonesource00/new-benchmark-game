@@ -1,5 +1,7 @@
 # PULSE checkpoint — 12 October 2026
 
+> Latest ownership checkpoint: [CLAUDE-HANDOFF-2026-10-12.md](CLAUDE-HANDOFF-2026-10-12.md), through c164. Codex experiments are stopped for transfer to Claude. The sections below retain earlier history; use the new handoff for current results and resume instructions.
+
 The clean-air motor now passes six changed-start solo cases and six native
 delay/blackout cases over 120 seconds with the two-rate motor enabled. Harbor
 GTP full laps remain below 53 seconds. Traffic, multiple tracks/classes,
@@ -10,8 +12,65 @@ imitation. The c75 epoch-100 NN reproduces two retained passes and a legal,
 zero-damage 90-second continuation without search interventions. It passes
 six of seven development encounters and two of five changed-arrival 120-second
 cases. Fast/slow/late variants and sustained reply lag still fail; this is not
-a certified racer. Development is paused at the user's quota checkpoint; see
+a certified racer. The user has resumed development after the quota checkpoint; see
 `HANDOFF-2026-10-12.md` for exact artifacts and the next work.
+
+## Current transport and intention work (12 October)
+
+The preferred NN remains c75 epoch 100. The new frame-transport harness models
+one in-flight request, frame-boundary commits and the game's clipped worker dt.
+Hidden state advances only when its corresponding command is accepted. Fifteen
+scheduling checks include eight comparisons against the unmodified AsyncSeats
+code. This is transport emulation, not real browser-worker certification.
+
+c106 contains six solo and twelve traffic timing cases. The six solo trajectories
+are bit-identical through native, 60/30 Hz frames, one-frame delay, jitter and a
+500 ms service spike: 52.808 s valid full lap, zero damage and legal track use.
+Traffic still fails some sustained-lag and jitter cases. The frozen generated
+suite has 32 training, 12 development and 12 sealed final-test cases. c108 passes
+only 1/12 development cases; the older 6/7 result does not establish robustness.
+
+| Experiment | Development successes | Decision |
+|---|---:|---|
+| c75 baseline, c108 | 1/12 | Retained baseline; not certified |
+| c112 gain-only fit, c113 | 2/12 | No consistent upgrade |
+| c126 full traffic/memory fit, c127 | 1/12 | Rejected; mean damage 9.84% versus baseline 5.76% |
+| c131 three-knot/speed intention fit, c132 | 2/12 | Rejected; no healthy traffic pass |
+| c134 route/envelope fit, c135 | 3/12 | Solo and hazards only; combat remains failed |
+| c134 fixed epoch 80, c136 | 2/12 | Rejected; traffic legality and contact failures |
+
+c126 updates all 67,042 traffic/memory parameters while preserving the 67,331
+motor parameters bitwise. Eighty CUDA epochs take 36.23 s; lower action loss
+does not survive closed-loop traffic. Its c128 timing report passes only the six
+solo cases out of 18. No new model is promoted on label loss.
+
+The experimental intention branch has an explicit four-output contract: three
+course-relative offsets 30/70/120 m ahead and a speed cap. It uses the existing
+low-level Controller and private Course geometry, without Battle or candidate
+search. Its frozen 64-unit memory encoder plus trainable intent head has 161,065
+stored parameters (26,692 trainable). The main c75 actor still directly drives
+its learned motor plus delayed traffic correction; the new branch is opt-in.
+
+Compiler diagnostics found that an asphalt/body-width clamp removes legal kerb
+use and creates false sharp bends. The opt-in kerb-centre bound restores normal
+speed through Harbor's first S, but recorded-route oracles still suffer contacts
+and later track exits. Smoothing the bound or overriding curvature speed caps
+did not solve that and is not a performance fix. Recorded-route oracle replays
+c121-c125/c129/c130 are diagnostics using offline future targets, not NN wins.
+
+Recorded speed is also a poor desired-speed label: the fitted cap can hold the
+car at its present speed. The c134 pilot instead requests the physical route
+envelope and keeps a live front-body guard. Its best-label epoch and fixed final
+epoch both fail combat gates. It does not learn an independent tyre/energy/rain
+strategy. The fixed-epoch exporter verifies archived trainer/data/weight identity;
+future fits preserve snapshots so physical results can select the checkpoint.
+
+The viewer now shows the actual selected route, requested knots/speed, executed
+pedals, controller constraints, route age, edge corrections and profile minima.
+It identifies recorded-route diagnostics explicitly. The current development
+priority is a controller/route contract that preserves pace and legal geometry,
+then diverse generated training successes rather than further two-family fits.
+Final-test cases remain sealed. Game 4176 and replay viewer 4181 are preserved.
 
 ## Full replay review and current corrective work
 
