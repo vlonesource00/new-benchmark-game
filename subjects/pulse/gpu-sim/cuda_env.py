@@ -50,7 +50,7 @@ class SceneBank:
 
 
 class GpuEnv:
-    def __init__(self, bank, envs, dtype=torch.float32, seed=0, record=0, families=None, ids=None, sequential=False, offset_lag=0., early_stop=True):
+    def __init__(self, bank, envs, dtype=torch.float32, seed=0, record=0, families=None, ids=None, sequential=False, offset_lag=0., early_stop=True, rivals=None):
         self.sequential, self.cursor = sequential, 0
         self.early_stop = early_stop  # training: end 3 s after a severe contact; evaluation runs the full scene like JS
         self.offset_lag = offset_lag  # PlanExecutor offsetLag (s): low-pass on committed lane offsets
@@ -120,6 +120,9 @@ class GpuEnv:
         # Marshal rescue (race.js rescue): per car parked time and ghost time; the ego's rescue fails the episode.
         self.stuck = torch.zeros(self.B, dtype=torch.float64, device=dev); self.rescue_ghost = torch.zeros(self.B, dtype=torch.float64, device=dev)
         self.ego_rescued = torch.zeros(envs, dtype=torch.bool, device=dev)
+        # Distilled rivals (training/fit_rivals.py): per car the driver index of the rival policy, -1 = stand-in.
+        self.rivals = rivals
+        self.rival_driver = torch.full((self.B,), -1, dtype=torch.long, device=dev)
         nodes = torch.tensor(m['trackGeometry']['nodes'], dtype=torch.float64, device=dev)
         self.node_x, self.node_z, self.node_s, self.node_tx, self.node_tz = (nodes[:, i] for i in range(5))
         sch = m['observation']['fields']
@@ -198,6 +201,9 @@ class GpuEnv:
             s = c['steward']; r.stw[b], r.stw[self.B + b], r.stw[2 * self.B + b] = int(s['moving']), int(s['off']), int(s['spun'])
             r.clean[b] = s['clean']
         r.intent[lanes] = math.nan; r.force[lanes] = 0
+        if self.rivals is not None:
+            self.rival_driver[lanes] = torch.tensor([self.rivals.names.index(c["driver"]) if j and j < count and c["driver"] in self.rivals.names else -1
+                                                     for j, c in enumerate(cars)], dtype=torch.long)
         ego = sc['cars'][0]
         self.t[e] = 0; self.seconds[e] = sc['seconds']; self.race_time0[e] = sc['raceTime']
         self.track_temp[e] = sc['trackTemperature']; self.compound[e] = COMPOUNDS.index(ego['compound'])
@@ -320,10 +326,12 @@ class GpuEnv:
         # The executor kernel runs on one shared clock (_clock); it only uses differences of it. Rivals post a fresh
         # zero-offset, full-pace plan every other tick (a driver that always has a current intention).
         if self._ticks % 2 == 0:
-            r = self.rival_lanes
+            r = self.rival_lanes if self.rivals is None else self.rival_lanes[self.rival_driver[self.rival_lanes] < 0]
             merge = torch.exp(-self.t.repeat_interleave(self.N)[r] / self.MERGE)
             x.plans[r, :3] = (self.rival_goal[r] * merge / 6).clamp(-1, 1).to(self.dtype)[:, None]
             x.plan_seq[r] += 1; x.plan_at[r] = self._clock
+        if self.rivals is not None and self._ticks % self.RIVAL_STEPS == 0:
+            self.rival_plans()
         out = x.step(float(self._clock), DT)
         lon = (out[:, OUT['throttle']] - out[:, OUT['brake']]).clamp(-1, 1)
         self.controls[:, 0] = lon.clamp(min=0); self.controls[:, 1] = (-lon).clamp(min=0); self.controls[:, 2] = out[:, OUT['steer']].clamp(-1, 1)
@@ -355,6 +363,20 @@ class GpuEnv:
         self.race.stewards(DT)
         self.t += DT; self.tick += 1; self._clock += DT; self._ticks += 1
         return self.score(s0, closing.double())
+
+    RIVAL_STEPS = 4  # distilled rivals decide at 30 Hz, as recorded
+
+    def rival_plans(self):
+        """Distilled rivals: each observes from its own seat (PULSE schema, request context masked) and posts a plan."""
+        r = self.rival_lanes[(self.rival_driver[self.rival_lanes] >= 0) & self.w.alive[self.rival_lanes].bool()]
+        if len(r) == 0:
+            return
+        ctx = torch.zeros(len(r), 9, dtype=self.dtype, device='cuda')
+        raw = self.race.observe(r.int(), ctx, self.track_temp, self.race_time0 + self.t, self.compound)
+        obs = normalize(raw, self.obs_scale, self.obs_lo, self.obs_hi)
+        with torch.no_grad():
+            plan = self.rivals(obs.float(), self.rival_driver[r])
+        self.x.plans[r] = plan.to(self.dtype); self.x.plan_seq[r] += 1; self.x.plan_at[r] = self._clock
 
     def rescue(self):
         """race.js rescue() for every car after the car steps: a car slower than 1.5 m/s for 4 s (race time >= 6 s) is
