@@ -193,11 +193,19 @@ async function load(url) {
   render();
 }
 const episodes = await (await fetch('/api/episodes')).json();
-for (const e of episodes) { const option = document.createElement('option'); option.value = e.url; option.textContent = e.name.replace('.json', ''); $('episode').append(option); }
+// Newest first; the filter narrows thousands of recordings (e.g. "watch-" for the latest policy replays).
+const listEpisodes = () => { const q = $('episode-filter').value.trim().toLowerCase(), keep = $('episode').value; $('episode').replaceChildren();
+  for (const e of episodes.filter(e => !q || e.name.toLowerCase().includes(q)).slice(0, 400)) { const option = document.createElement('option'); option.value = e.url;
+    option.textContent = e.name.replace('.json', '') + '  · ' + new Date(e.at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }); $('episode').append(option); }
+  if ([...$('episode').options].some(o => o.value === keep)) $('episode').value = keep; };
+$('episode-filter').value = new URLSearchParams(location.search).get('find') ?? ''; listEpisodes();
+$('episode-filter').oninput = () => { const before = $('episode').value; listEpisodes(); if ($('episode').value && $('episode').value !== before) load($('episode').value); };
 const requested = new URLSearchParams(location.search).get('episode');
-if (requested && episodes.some(e => e.url === '/results/' + requested + '.json')) $('episode').value = '/results/' + requested + '.json';
-else if (episodes.some(e => e.name === 'train-traffic-8.json')) $('episode').value = '/results/train-traffic-8.json';
-if (episodes.length) await load($('episode').value);
+if (requested && episodes.some(e => e.url === '/results/' + requested + '.json')) {
+  if (![...$('episode').options].some(o => o.value === '/results/' + requested + '.json')) { $('episode-filter').value = requested; listEpisodes(); }
+  $('episode').value = '/results/' + requested + '.json';
+}
+if ($('episode').value) await load($('episode').value);
 $('episode').onchange = () => load($('episode').value); $('camera').onchange = render; $('filter').oninput = render;
 $('chart-mode').onchange = render;
 $('scrub').oninput = () => { index = +$('scrub').value; render(); };

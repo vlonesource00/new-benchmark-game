@@ -1,6 +1,6 @@
 import { defineConfig } from '../../../node_modules/vite/dist/node/index.js';
 import { fileURLToPath } from 'node:url';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { jobs } from './jobs-api.mjs';
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -12,7 +12,9 @@ export default defineConfig({ root, cacheDir: resolve(root, 'artifacts/vite-cach
   plugins: [{ name: 'pulse-laboratory', configureServer(server) {
     server.middlewares.use('/api/episodes', (_req, res) => {
       const directory = resolve(root, 'results');
-      const episodes = existsSync(directory) ? readdirSync(directory).filter(n => n.endsWith('.json')).map(name => ({ name, url: '/results/' + name })) : [];
+      // Newest first, so the latest recordings are on top of thousands of old ones.
+      const episodes = existsSync(directory) ? readdirSync(directory).filter(n => n.endsWith('.json'))
+        .map(name => ({ name, url: '/results/' + name, at: statSync(resolve(directory, name)).mtimeMs })).sort((a, b) => b.at - a.at) : [];
       res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(episodes));
     });
     server.middlewares.use('/api/jobs', (_req, res) => {
