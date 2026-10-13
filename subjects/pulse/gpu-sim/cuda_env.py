@@ -39,6 +39,9 @@ REWARDS = {'race10-v2': REWARD,
 # JS traffic traces (c196): the ego steered back to its line into cars alongside, closing 426 m vs the rivals' 222 m, and
 # 84% of its damage came in those rubs; the fresh-contact penalty misses sustained rubbing, damage alone is too late.
 REWARDS['attack-v2'] = {**REWARDS['attack-v1'], 'squeeze': .5}
+# attack-v3: v2 counted the ego's own lateral motion, so two cars drifting together at constant separation paid it.
+# v3 charges only clearance the ego closes: min(ego motion toward the car, rate |dlat| shrinks); a rival pushing in is free.
+REWARDS['attack-v3'] = {**REWARDS['attack-v2'], 'squeezeClosing': True}
 # race10 contact judgement v3 (src/encounter-outcomes.mjs RACE_CONTACT_OBJECTIVE): a hit above 1% fails only when the
 # ego caused it and the rival paid (> 15 km/h lost within 1.5 s or pushed off), or a single row exceeds 2.5%.
 CONTACT = {'heavyHit': .025, 'rivalLoss': 15 / 3.6, 'after': 1.5, 'lateralTau': .1}
@@ -664,7 +667,10 @@ class GpuEnv:
         if 'squeeze' in self.rw:
             dl = latv[:, 1:] - latv[:, :1]
             overlap = ra & (gap.abs() < body) & (dl.abs() < 3.5)
-            toward = (torch.sign(dl) * self.lat_rate.view(E, N)[:, :1]).clamp(min=0)
+            lr = self.lat_rate.view(E, N)
+            toward = (torch.sign(dl) * lr[:, :1]).clamp(min=0)
+            if self.rw.get('squeezeClosing'):
+                toward = torch.minimum(toward, (torch.sign(dl) * (lr[:, :1] - lr[:, 1:])).clamp(min=0))
             r -= self.rw['squeeze'] * DT * (overlap * toward).sum(1)
         behind = live & (gap < -body - .15)
         self.enc_clear = torch.where(behind, torch.where(torch.isnan(self.enc_clear), self.t[:, None].expand_as(gap), self.enc_clear),
