@@ -54,7 +54,10 @@ def main():
     hidden = h0.expand(a.envs, -1).clone()
     results, ticks, t0 = [], 0, time.time()
     if a.each: a.episodes = len(env.pool)
-    job = JobProgress('GPU evaluation', Path(a.out).name if a.out else f'run-env-{int(t0)}', a.episodes)
+    # Progress in simulated seconds: parallel episodes all finish near the end, so an episode count sits at 0 until then.
+    span = [bank.scenes[i]['seconds'] for i in env.pool]
+    budget = round(sum(span) if a.each else a.episodes * sum(span) / len(span))
+    job, finished = JobProgress('GPU evaluation', Path(a.out).name if a.out else f'run-env-{int(t0)}', budget), 0.
     while len(results) < a.episodes:
         idx, obs = env.decisions()
         if len(idx):
@@ -66,16 +69,17 @@ def main():
             hidden[idx] = nh
         done = env.physics(); ticks += 1
         if ticks % 600 == 0:
-            job.update(len(results), f'{a.model} · {sum(r["success"] for r in results)}/{len(results)} succeeded so far · {ticks * a.envs / 120 / (time.time() - t0):.0f} sim-s/s')
+            job.update(min(budget, round(finished + env.t.sum().item())), f'{a.model} · {len(results)}/{a.episodes} episodes · {sum(r["success"] for r in results)}/{len(results)} succeeded so far · {ticks * a.envs / 120 / (time.time() - t0):.0f} sim-s/s')
         if len(done):
             res = env.end(done)
             hidden[done] = h0
             for i in range(len(done)):
                 if res['counted'][i]:
                     results.append({k: (v[i].item() if torch.is_tensor(v) else v) for k, v in res.items()})
+                    finished += bank.scenes[results[-1]['scene']]['seconds']
     torch.cuda.synchronize()
     wall = time.time() - t0
-    job.update(min(len(results), a.episodes), f'{a.model} · {sum(r["success"] for r in results[:a.episodes])}/{a.episodes} succeeded', status='complete')
+    job.update(budget, f'{a.model} · {sum(r["success"] for r in results[:a.episodes])}/{a.episodes} succeeded', status='complete')
     fam = {}
     for r in results[:a.episodes]:
         f = bank.scenes[r['scene']]['family']; d = fam.setdefault(f, {'n': 0, 'success': 0, 'admissible': 0, 'severe': 0, 'limit': 0, 'passes': 0., 'damage': 0.})
