@@ -33,7 +33,7 @@ const SIDE_GAP = 2.7, SIDE_LENGTH = 5.5, SIDE_HORIZON = 100, SIDE_ACCEL = 6;
  */
 export class PlanExecutor {
   constructor(track, car, { frontalGuard = 'supervisor-v1', roadBounds = 'asphalt-body', edgeBlend = 0, edgeRamp = 0,
-    routeOrigin = 'rolling-v1', feedback = 'escape-v1', joinState = 'body-v1', sideGuard = 'off', offsetLag = 0, ...unsupported } = {}) {
+    routeOrigin = 'rolling-v1', feedback = 'escape-v1', joinState = 'body-v1', sideGuard = 'off', offsetLag = 0, offsetDeadband = 0, ...unsupported } = {}) {
     if (Object.keys(unsupported).length) throw Error('Unsupported plan execution option: ' + Object.keys(unsupported).join(', '));
     if (!['supervisor-v1', 'live-body-speed-v1'].includes(frontalGuard)) throw Error('Unknown experimental frontal guard');
     if (!['asphalt-body', 'kerb-centre', 'line-kerb-v1'].includes(roadBounds)) throw Error('Unknown experimental road bound');
@@ -49,6 +49,12 @@ export class PlanExecutor {
     // reply to reply (median 0.17 m, p90 1 m on straights); at 250 km/h each jump is a lane change in 0.4 s, so the
     // car weaves, the slide guard lifts and the hybrid (throttle > 0.8) never deploys. Speed is not filtered.
     this.offsetLag = offsetLag;
+    // offsetDeadband (m): soft dead-band on the compiled offsets, o -> sign(o) max(0, |o| - band). Sub-metre requests
+    // wobble between replies (+0.7/-0.4 m through a fast kink) and the route's curvature then swings about the racing
+    // line's (-7.9 vs -5.1 /km), so the envelope brakes 250 -> 217 km/h where RAZOR stays flat. Below the band the car
+    // keeps the racing line; deliberate moves still reach the route, shortened by the band.
+    if (!Number.isFinite(offsetDeadband) || offsetDeadband < 0 || offsetDeadband > 2) throw Error('Invalid experimental offset dead-band');
+    this.offsetDeadband = offsetDeadband;
     this.frontalGuard = frontalGuard; this.roadBounds = roadBounds; this.edgeBlend = edgeBlend; this.edgeRamp = edgeRamp; this.routeOrigin = routeOrigin;
     this.feedback = feedback; this.joinState = joinState;
     const config = settingsFor(track.id);
@@ -227,7 +233,8 @@ export class PlanExecutor {
   }
   step(car, cars, dt, { time = 0, state = {} } = {}) {
     this.course.tick(car, dt); this.observer.update(car, cars, state, time);
-    const line = this.course.line, cur = line.closest(car.x, car.z), age = Math.max(0, time - this.at), offsets = this.goal.offsets;
+    const line = this.course.line, cur = line.closest(car.x, car.z), age = Math.max(0, time - this.at),
+      offsets = this.offsetDeadband ? this.goal.offsets.map(x => Math.sign(x) * Math.max(0, Math.abs(x) - this.offsetDeadband)) : this.goal.offsets;
     const changed = offsets.some((x, i) => Math.abs(x - this.compiledOffsets[i]) > .18);
     const elapsed = time - this.compiledAt, renew = this.path !== line && elapsed > .25 && age < .1;
     // A car near and within reach laterally keeps the side bound fresh at 10 Hz.

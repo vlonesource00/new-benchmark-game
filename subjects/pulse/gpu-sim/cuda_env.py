@@ -28,6 +28,16 @@ DT = 1 / 120
 REWARD = {'progress': 1 / 50, 'damage': 300., 'offtrack': 2., 'contact': 3., 'severe': 10., 'jerk': .2,
           'pass': 3., 'hazard': 2., 'success': 5.}
 OBJECTIVE = {'damageBudget': .03, 'singleHit': .01, 'checkpoint': 600.}
+# attack-v1 (user, 2026-10-13: more and quicker overtakes even at some damage; clear hazards early, fast and clean):
+# damage costs half (a 1% rub is half a pass, not a whole one), light contacts 1/3; passes and hazard clears pay
+# 'pass'/'hazard' plus a quickness bonus decaying with the time from encounter start (120 m ahead) to clearance;
+# touching a hazard car costs 'hazardContact'. Severe contacts and the success bonus are unchanged.
+REWARDS = {'race10-v2': REWARD,
+           'attack-v1': {**REWARD, 'damage': 150., 'contact': 1., 'pass': 3., 'passQuick': 4., 'passTau': 8.,
+                         'hazard': 2., 'hazardQuick': 4., 'hazardTau': 5., 'hazardContact': 6.}}
+# race10 contact judgement v3 (src/encounter-outcomes.mjs RACE_CONTACT_OBJECTIVE): a hit above 1% fails only when the
+# ego caused it and the rival paid (> 15 km/h lost within 1.5 s or pushed off), or a single row exceeds 2.5%.
+CONTACT = {'heavyHit': .025, 'rivalLoss': 15 / 3.6, 'after': 1.5, 'lateralTau': .1}
 OUT = {k: i for i, k in enumerate(TRACE)}
 
 
@@ -50,10 +60,14 @@ class SceneBank:
 
 
 class GpuEnv:
-    def __init__(self, bank, envs, dtype=torch.float32, seed=0, record=0, families=None, ids=None, sequential=False, offset_lag=0., early_stop=True, rivals=None, rival_offset_lag=0.):
+    def __init__(self, bank, envs, dtype=torch.float32, seed=0, record=0, families=None, ids=None, sequential=False, offset_lag=0., early_stop=True, rivals=None, rival_offset_lag=0.,
+                 offset_deadband=0., contact='v2', reward='race10-v2'):
         self.sequential, self.cursor = sequential, 0
         self.early_stop = early_stop  # training: end 3 s after a severe contact; evaluation runs the full scene like JS
         self.offset_lag = offset_lag  # PlanExecutor offsetLag (s): low-pass on committed lane offsets
+        self.offset_deadband = offset_deadband / 6.  # PlanExecutor offsetDeadband (m -> plan units, offsetMetres 6)
+        assert contact in ('v2', 'v3') and reward in REWARDS
+        self.contact, self.rw = contact, REWARDS[reward]
         self.bank, self.E, self.N = bank, envs, bank.slots
         self.B, self.dtype, dev = envs * self.N, dtype, 'cuda'
         m = bank.meta
@@ -91,6 +105,7 @@ class GpuEnv:
         self.prev_row = Fz(envs, 2, t=dtype)  # executed controls at the previous decision (toAction)
         self.steer_row = Fz(envs)             # executed steer at the previous decision (jerk)
         self.plan_seq = torch.zeros(envs, dtype=torch.int32, device=dev)
+        self.lagged = Fz(envs, 3, t=dtype)  # filtered (pre-dead-band) offsets: the low-pass state, as plan-executor.mjs goal
         self.laps0 = Fz(envs); self.stint0 = Fz(envs); self.tyres0 = Fz(envs); self.crossed = Fz(envs)
         self.reward = Fz(envs)
         self.progress = Fz(self.B)            # per car, relative to the ego's start
@@ -103,6 +118,12 @@ class GpuEnv:
         self.enc_start = torch.zeros(envs, R, dtype=torch.bool, device=dev); self.enc_done = torch.zeros(envs, R, dtype=torch.bool, device=dev)
         self.enc_hazard = torch.zeros(envs, R, dtype=torch.bool, device=dev); self.enc_clear = torch.full((envs, R), math.nan, dtype=torch.float64, device=dev)
         self.passes = Fz(envs); self.hazards = Fz(envs)
+        self.enc_t0 = torch.zeros(envs, R, dtype=torch.float64, device=dev)
+        # v3 contact judgement per (env, rival): pending until, rival speed at contact / minimum since, caused, ego damage then.
+        self.j_until = torch.full((envs, R), -1., dtype=torch.float64, device=dev); self.j_v0 = torch.zeros(envs, R, dtype=torch.float64, device=dev)
+        self.j_min = torch.zeros(envs, R, dtype=torch.float64, device=dev); self.j_dmg0 = torch.zeros(envs, R, dtype=torch.float64, device=dev)
+        self.j_caused = torch.zeros(envs, R, dtype=torch.bool, device=dev); self.j_off = torch.zeros(envs, R, dtype=torch.bool, device=dev)
+        self.lat_prev = torch.full((self.B,), math.nan, dtype=torch.float64, device=dev); self.lat_rate = torch.zeros(self.B, dtype=torch.float64, device=dev)
         # Hazard rivals: kind 0 none / 1 stopped / 2 spun, start time and flick sign.
         self.hz_kind = torch.zeros(envs, R, dtype=torch.long, device=dev); self.hz_at = torch.full((envs, R), math.inf, dtype=torch.float64, device=dev)
         self.hz_flick = torch.zeros(envs, R, dtype=dtype, device=dev)
@@ -214,7 +235,7 @@ class GpuEnv:
         self.frame_rng[e] = seed ^ 0x5046524d; self.reply_rng[e] = seed ^ 0x5052504c
         self.frame[e] = -1; self.next_tick[e] = 0
         self.tick[e] = 0; self.due[e] = -1; self.pending[e] = 0; self.pending_at[e] = 0; self.accepted_at[e] = 0; self.last_request[e] = 0
-        self.prev_row[e] = 0; self.steer_row[e] = 0; self.plan_seq[e] = 0
+        self.prev_row[e] = 0; self.steer_row[e] = 0; self.plan_seq[e] = 0; self.lagged[e] = 0
         self.laps0[e] = ego['laps'] - ego['lap'] + 1; self.stint0[e] = ego['stintLaps']
         self.tyres0[e] = ego['nextTyreLap'] - ego['lap'] if ego['nextTyreLap'] is not None else ego['laps'] - ego['lap'] + 1
         self.crossed[e] = 0; self.reward[e] = 0
@@ -225,7 +246,9 @@ class GpuEnv:
         self.limit_time[e] = 0; self.severe_at[e] = math.inf; self.contact_seen[e] = -99.
         self.lap_ok[e] = True; self.valid_laps[e] = 0
         self.enc_start[e] = False; self.enc_done[e] = False; self.enc_hazard[e] = False; self.enc_clear[e] = math.nan
-        self.passes[e] = 0; self.hazards[e] = 0
+        self.passes[e] = 0; self.hazards[e] = 0; self.enc_t0[e] = 0
+        self.j_until[e] = -1.; self.j_v0[e] = 0; self.j_min[e] = 0; self.j_dmg0[e] = 0; self.j_caused[e] = False; self.j_off[e] = False
+        self.lat_prev[lanes] = math.nan; self.lat_rate[lanes] = 0
         R = N - 1
         kinds = [0] * R; at = [math.inf] * R; flick = [0.] * R
         for j, c in enumerate(sc['cars'][1:]):
@@ -259,9 +282,12 @@ class GpuEnv:
             lanes = a * self.N
             plan = self.pending[a].clone()
             if self.offset_lag > 0:  # plan-executor.mjs commit(): filtered against the previous commit (decode is linear)
-                prev = self.x.plans[lanes, :3].clamp(-1, 1)
+                prev = self.lagged[a]
                 k = (1 - torch.exp(-(self.pending_at[a] - self.accepted_at[a]).clamp(min=0) / self.offset_lag)).to(self.dtype)[:, None]
                 plan[:, :3] = torch.where((self.plan_seq[a] > 0)[:, None], prev + k * (plan[:, :3] - prev), plan[:, :3])
+            self.lagged[a] = plan[:, :3]
+            if self.offset_deadband > 0:  # plan-executor.mjs step(): soft dead-band on the compiled offsets only
+                plan[:, :3] = plan[:, :3].sign() * (plan[:, :3].abs() - self.offset_deadband).clamp(min=0)
             self.plan_seq[a] += 1
             self.x.plans[lanes] = plan; self.x.plan_seq[lanes] = self.plan_seq[a]; self.x.plan_at[lanes] = self.pending_clock[a]
             self.accepted_at[a] = self.pending_at[a]; self.due[a] = -1
@@ -291,7 +317,7 @@ class GpuEnv:
         self.last_request[idx] = self.t[idx]
         lanes = self.ego[idx].long()
         steer = self.controls[lanes, 2].double()
-        self.reward[idx] -= REWARD['jerk'] * (steer - self.steer_row[idx]).abs()
+        self.reward[idx] -= self.rw['jerk'] * (steer - self.steer_row[idx]).abs()
         self.steer_row[idx] = steer
         self.prev_row[idx] = torch.stack([self.controls[lanes, 2], self.controls[lanes, 0] - self.controls[lanes, 1]], 1)
 
@@ -432,19 +458,20 @@ class GpuEnv:
         self.race.laps_left -= line.int()
         ego = self.ego.long()
         r = self.reward
-        r += REWARD['progress'] * ds[ego]
+        r += self.rw['progress'] * ds[ego]
         dmg = self.S('damage').double()
         added = (dmg - self.prev_damage).clamp(min=0); self.prev_damage = dmg.clone()
         a0 = added[ego]
         self.cum_damage += a0; self.row_damage += a0
-        r -= REWARD['damage'] * a0
-        # A single row's damage above 1% fails the race10 objective; rows are the ego's decision rows.
-        self.big_hit |= self.row_damage > OBJECTIVE['singleHit']
+        r -= self.rw['damage'] * a0
+        # v2: a single row's damage above 1% fails the race10 objective; rows are the ego's decision rows.
+        # v3: only above the heavy-hit limit; lighter hits are judged per contact (_judge).
+        self.big_hit |= self.row_damage > (OBJECTIVE['singleHit'] if self.contact == 'v2' else CONTACT['heavyHit'])
         lat = self.S('lateral').double()[ego]
         tw = self.track_w[self.w.cls[ego].long()].double()
         outside = (lat.abs() - tw / 2) > self.limit
         self.limit_time += outside * DT; self.lap_ok &= ~outside
-        r -= REWARD['offtrack'] * DT * outside
+        r -= self.rw['offtrack'] * DT * outside
         crossed = line[ego]
         if crossed.any():
             full = crossed & (self.crossed > 0)
@@ -456,7 +483,7 @@ class GpuEnv:
         fresh = hit & ((self.t[:, None] - self.contact_seen) > .2)
         self.contact_seen = torch.where(hit, self.t[:, None].expand_as(self.contact_seen), self.contact_seen)
         severe = hit & (cl > 6)
-        r -= (fresh & ~(cl > 6)).sum(1) * REWARD['contact'] + (fresh & (cl > 6)).sum(1) * REWARD['severe']
+        r -= (fresh & ~(cl > 6)).sum(1) * self.rw['contact'] + (fresh & (cl > 6)).sum(1) * self.rw['severe']
         first = severe.any(1) & torch.isinf(self.severe_at)
         self.severe_at = torch.where(first, self.t, self.severe_at)
         # Encounters (scenario.mjs): start within 120 m ahead, cleared a body length behind, retained after 1 s.
@@ -467,8 +494,13 @@ class GpuEnv:
         hazard = (speed[:, 1:] < 7) | (latv[:, 1:].abs() > self.offroad)
         new = ra & ~self.enc_start & (gap > 0) & (gap < 120)
         self.enc_start |= new
+        self.enc_t0 = torch.where(new, self.t[:, None].expand_as(gap), self.enc_t0)
         live = self.enc_start & ~self.enc_done
         self.enc_hazard |= live & hazard
+        if 'hazardContact' in self.rw:  # touching a stopped/spun car is a crash in a race, whatever the damage model says
+            r -= (fresh & self.enc_hazard).sum(1) * self.rw['hazardContact']
+        if self.contact == 'v3':
+            self._judge(fresh, gap, latv, speed, ra)
         tx, tz = self.w.track_cols[3].double(), self.w.track_cols[4].double()
         node = self.w.node.long().view(E, N)
         heading = torch.atan2(tx[node], tz[node])
@@ -483,11 +515,38 @@ class GpuEnv:
             self.enc_done |= done_enc
             hz = done_enc & self.enc_hazard; ps = done_enc & ~self.enc_hazard
             self.passes += ps.sum(1); self.hazards += hz.sum(1)
-            r += ps.sum(1) * REWARD['pass'] + hz.sum(1) * REWARD['hazard']
+            took = (self.t[:, None] - self.enc_t0).clamp(min=0)
+            r += (ps * (self.rw['pass'] + self.rw.get('passQuick', 0) * torch.exp(-took / self.rw.get('passTau', 1)))).sum(1) \
+                + (hz * (self.rw['hazard'] + self.rw.get('hazardQuick', 0) * torch.exp(-took / self.rw.get('hazardTau', 1)))).sum(1)
         if self.record:
             self._record(fresh, done_enc)
         end = (self.t >= self.seconds - 1e-9) | (self.early_stop & (self.t > self.severe_at + 3))
         return end.nonzero().squeeze(1)
+
+    def _judge(self, fresh, gap, latv, speed, alive):
+        """v3 contact judgement (encounter-outcomes.mjs judgeContact): who moved across, what the rival lost."""
+        E, N = self.E, self.N
+        lat = self.S('lateral').double()
+        rate = torch.where(torch.isnan(self.lat_prev), torch.zeros_like(lat), (lat - self.lat_prev) / DT)
+        self.lat_rate += (rate - self.lat_rate) * (DT / CONTACT['lateralTau']); self.lat_prev = lat
+        lr = self.lat_rate.view(E, N)
+        side = torch.sign(latv[:, 1:] - latv[:, :1]); side = torch.where(side == 0, torch.ones_like(side), side)
+        me, them = lr[:, :1] * side, -lr[:, 1:] * side
+        rear = (gap > 2.5) & ((latv[:, 1:] - latv[:, :1]).abs() < 1.5)
+        start = fresh & (self.j_until < 0)
+        self.j_until = torch.where(start, self.t[:, None] + CONTACT['after'], self.j_until)
+        self.j_v0 = torch.where(start, speed[:, 1:], self.j_v0); self.j_min = torch.where(start, speed[:, 1:], self.j_min)
+        self.j_dmg0 = torch.where(start, self.cum_damage[:, None].expand_as(gap), self.j_dmg0)
+        self.j_caused = torch.where(start, rear | (me > them), self.j_caused); self.j_off = torch.where(start, torch.zeros_like(start), self.j_off)
+        pending = self.j_until >= 0
+        self.j_min = torch.where(pending, torch.minimum(self.j_min, speed[:, 1:]), self.j_min)
+        self.j_off |= pending & (latv[:, 1:].abs() > self.offroad) & alive
+        due = pending & (self.t[:, None] >= self.j_until)
+        if due.any():
+            hit = self.cum_damage[:, None] - self.j_dmg0
+            fail = due & (hit > OBJECTIVE['singleHit']) & self.j_caused & ((self.j_v0 - self.j_min > CONTACT['rivalLoss']) | self.j_off)
+            self.big_hit |= fail.any(1)
+            self.j_until = torch.where(due, torch.full_like(self.j_until, -1.), self.j_until)
 
     def outcome(self, idx):
         """Episode result at its end (rl-rollout success = admissible race10 outcome and requirements met)."""
@@ -538,7 +597,7 @@ class GpuEnv:
         """Close finished episodes: returns their outcome and resets them."""
         res = self.outcome(idx)
         # Final reward segment of each episode, with the race10 success bonus.
-        res['reward'] = self.reward[idx] + REWARD['success'] * res['success'].double()
+        res['reward'] = self.reward[idx] + self.rw['success'] * res['success'].double()
         res['counted'] = ~self.spare[idx]
         for i, e in enumerate(idx.tolist()):
             if e < self.record and self.recordings[e] is not None:

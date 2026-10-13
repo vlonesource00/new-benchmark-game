@@ -18,7 +18,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE); sys.path.insert(0, os.path.join(HERE, '..', 'gpu-sim'))
 from plan_model import PlanPolicy
 from checkpoint_state import atomic_json, atomic_checkpoint
-from cuda_env import SceneBank, GpuEnv, REWARD
+from cuda_env import SceneBank, GpuEnv, REWARDS
 from fit_rivals import load_rivals
 from job_progress import JobProgress
 
@@ -118,6 +118,8 @@ def main():
     p.add_argument('--seed', type=int, default=1); p.add_argument('--cap', type=int, default=0)
     p.add_argument('--rivals', default=None, help='distilled rivals (fit_rivals.py); default executor stand-ins')
     p.add_argument('--rival-offset-lag', type=float, default=.4)
+    p.add_argument('--offset-deadband', type=float, default=0.); p.add_argument('--contact', default='v2', choices=['v2', 'v3'])
+    p.add_argument('--reward', default='race10-v2', help='cuda_env REWARDS profile')
     p.add_argument('--holdout', type=int, default=4, help='every k-th pool scene is held out for validation (0: none)')
     p.add_argument('--stagger', type=float, default=60., help='s: desynchronise episode phases before the first iteration')
     a = p.parse_args()
@@ -140,7 +142,8 @@ def main():
     held = pool[::a.holdout] if a.holdout else []
     train_ids = [i for i in pool if i not in set(held)]
     env = GpuEnv(bank, a.envs, dtype=getattr(torch, a.dtype), seed=a.seed, ids=train_ids, offset_lag=a.offset_lag,
-                 rivals=load_rivals(a.rivals) if a.rivals else None, rival_offset_lag=a.rival_offset_lag)
+                 rivals=load_rivals(a.rivals) if a.rivals else None, rival_offset_lag=a.rival_offset_lag,
+                 offset_deadband=a.offset_deadband, contact=a.contact, reward=a.reward)
     E, log_sigma = a.envs, math.log(a.sigma)
     h0 = warm_hidden(model, schema); hidden = h0.expand(E, -1).clone()
     noise = torch.zeros(E, 4, device='cuda'); noise_at = torch.full((E,), -1e9, dtype=torch.float64, device='cuda')
@@ -234,8 +237,8 @@ def main():
             dest = out.parent / f'{out.name}-it{it:03d}'
             meta = dict(parent_meta)
             meta.update({'checkpointDirectory': dest.as_posix(), 'parentModelSha256': parent_meta.get('modelSha256'), 'stage': 'GPU PPO fine-tune',
-                         'ppoGpu': {'arguments': vars(a), 'reward': REWARD, 'iteration': it, 'heldOut': held, 'history': history}})
-            export(model, value, dest, schema, config, {'ppoGpu': vars(a), 'reward': REWARD, 'iteration': it}, meta)
+                         'ppoGpu': {'arguments': vars(a), 'reward': REWARDS[a.reward], 'iteration': it, 'heldOut': held, 'history': history}})
+            export(model, value, dest, schema, config, {'ppoGpu': vars(a), 'reward': REWARDS[a.reward], 'iteration': it}, meta)
             print('saved', dest, flush=True)
 
 

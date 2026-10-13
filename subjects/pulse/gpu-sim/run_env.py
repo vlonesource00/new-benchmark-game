@@ -39,6 +39,8 @@ def main():
     p.add_argument('--offset-lag', type=float, default=0.); p.add_argument('--dtype', default='float64'); p.add_argument('--full', action='store_true', help='no early stop after a severe contact (matched JS evaluation)')
     p.add_argument('--rivals', default=None, help='distilled rival policy (training/fit_rivals.py); default executor stand-ins')
     p.add_argument('--rival-offset-lag', type=float, default=.4, help='low-pass (s) on distilled rival offsets')
+    p.add_argument('--offset-deadband', type=float, default=0.); p.add_argument('--contact', default='v2', choices=['v2', 'v3'])
+    p.add_argument('--reward', default='race10-v2', help='cuda_env REWARDS profile')
     p.add_argument('--heldout-of', default=None, help='scene ids held out by a ppo_gpu.py checkpoint (its metadata)')
     p.add_argument('--each', action='store_true', help='every pool scene exactly once (episodes = pool size)')
     a = p.parse_args()
@@ -49,7 +51,8 @@ def main():
     model, schema = load_policy(a.model)
     env = GpuEnv(bank, a.envs, dtype=getattr(torch, a.dtype), seed=a.seed, record=a.record, families=a.families.split(',') if a.families else None,
                  ids=a.ids.split(',') if a.ids else None, sequential=a.each, offset_lag=a.offset_lag, early_stop=not a.full,
-                 rivals=load_rivals(a.rivals) if a.rivals else None, rival_offset_lag=a.rival_offset_lag)
+                 rivals=load_rivals(a.rivals) if a.rivals else None, rival_offset_lag=a.rival_offset_lag,
+                 offset_deadband=a.offset_deadband, contact=a.contact, reward=a.reward)
     h0 = warm_hidden(model, schema)
     hidden = h0.expand(a.envs, -1).clone()
     results, ticks, t0 = [], 0, time.time()
