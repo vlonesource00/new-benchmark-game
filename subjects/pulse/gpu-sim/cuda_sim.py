@@ -58,6 +58,7 @@ class CudaWorld:
         self.closing = torch.zeros(envs, max(1, self.pairs), device=dev, dtype=dtype)
         self.lay_rubber = True
         self.ordered = True  # per-slot launches: exact JS rubber order (~10% slower than one launch with ordered=False)
+        self.slot_envs = None  # per slot: int32 envs where it holds a car (refresh_active); None steps every slot of every env
         # Per-car compound [gripScale, wearScale, optimum, heat, coldPressure]; default = the Vehicle's own medium tyre.
         self.tyres = (torch.tensor(tyres, dtype=dtype) if tyres is not None else torch.tensor([[1., 1., 85., 1., 1.65]], dtype=dtype).expand(self.B, 5)).to(dev).contiguous()
         self._views()
@@ -84,6 +85,12 @@ class CudaWorld:
     def state(self):
         return self.S.T
 
+    def refresh_active(self):
+        """Per-slot lists of the environments where the slot holds a live car (after alive changes, e.g. resets)."""
+        a = self.alive.view(self.E, self.N).bool()
+        self.slot_envs = [a[:, j].nonzero().squeeze(1).to(torch.int32) for j in range(self.N)]
+        self.active_lanes = self.alive.nonzero().squeeze(1).to(torch.int32)
+
     def step(self, dt, throttle, brake, steer, hybrid_force, wake=None, before_collisions=None):
         """One race tick. wake=None computes slipstream from the cars (multi-car); returns closing [env, pair].
         before_collisions(): race-level work between the car steps and the collision pass (race.js: marshal rescue, ghosting)."""
@@ -97,9 +104,13 @@ class CudaWorld:
         step = self.mod.get_function('step_cars')
         if self.ordered and self.N > 1:
             for slot in range(self.N):
-                step(*self.grid(self.E), (*args, cp.int32(slot)))
+                envs = None if self.slot_envs is None else self.slot_envs[slot]
+                if envs is not None and len(envs) == 0:
+                    continue
+                n = self.E if envs is None else len(envs)
+                step(*self.grid(n), (*args, cp.int32(slot), cupy(envs) if envs is not None else 0, cp.int32(n)))
         else:
-            step(*self.grid(B), (*args, cp.int32(-1)))
+            step(*self.grid(B), (*args, cp.int32(-1), 0, cp.int32(0)))
         if before_collisions is not None:
             before_collisions()
         if self.N > 1:

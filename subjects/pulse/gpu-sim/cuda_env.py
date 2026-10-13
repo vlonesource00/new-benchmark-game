@@ -94,6 +94,7 @@ class GpuEnv:
         self.w = CudaWorld([names[k % 2] for k in range(self.B)], envs, self.N, self.geom, dtype)
         self.race = RaceLayer(self.w, names, m['classes'])
         self.x = CudaExecutor(self.w, m['classes'], list(range(self.B)), names)
+        self.skip_empty = os.environ.get('PULSE_GPU_ALL_SLOTS') != '1'  # executor lane e == world lane e
         self.x.reset()
         f = {k: i for i, k in enumerate(bank.fields)}
         self.f = f
@@ -201,6 +202,11 @@ class GpuEnv:
             lo, hi = self.rival_room_range
             self.room_lane[lanes] = (lo + (hi - lo) * torch.rand(len(lanes), generator=self.gen, dtype=torch.float64)).clamp(min=0).to('cuda')
         self.w.mod.get_function('locate')(*self.w.grid(self.w.B), (self.w.v['S'], cp.int32(self.w.B), *self.w.track_args(), self.w.v['node']))
+        # A reset lane starts as fresh as the first episode in it (JS builds a new car and executor): executor_init does
+        # not write every executor field, and controls/flags/prev_brake held the previous occupant's last tick.
+        li = lanes.long()
+        self.x.ex[li] = 0; self.x.xr[li] = 0; self.x.xi[li] = 0; self.x.prev_brake[li] = 0; self.x.out[li] = 0
+        self.controls[li] = 0; self.w.flags[li] = 0
         self._exec_init(lanes)
         for b in lanes.tolist():
             if b % N == 0:
@@ -212,6 +218,9 @@ class GpuEnv:
             self.x.plan_seq[b] = -2
         self.prev_damage[lanes] = self.S('damage')[lanes].double()
         self.stuck[lanes] = 0; self.rescue_ghost[lanes] = 0; self.w.ghost[lanes] = 0; self.ego_rescued[envs] = False
+        self.w.wake[lanes] = 0  # vehicle.js: a new car's aero.wake is 0 until its first step (was the slot's previous value)
+        if self.skip_empty:
+            self.w.refresh_active()  # empty slots are skipped by the executor and car kernels (exact: no live car reads them)
 
     def _reset_one(self, e, k):
         sc, N, f = self.bank.scenes[k], self.N, self.f
@@ -374,7 +383,7 @@ class GpuEnv:
             x.plan_seq[r] += 1; x.plan_at[r] = self._clock
         if self.rivals is not None and self._ticks % self.RIVAL_STEPS == 0:
             self.rival_plans()
-        out = x.step(float(self._clock), DT)
+        out = x.step(float(self._clock), DT, self.w.active_lanes if self.skip_empty else None)
         lon = (out[:, OUT['throttle']] - out[:, OUT['brake']]).clamp(-1, 1)
         self.controls[:, 0] = lon.clamp(min=0); self.controls[:, 1] = (-lon).clamp(min=0); self.controls[:, 2] = out[:, OUT['steer']].clamp(-1, 1)
         self.supervise()

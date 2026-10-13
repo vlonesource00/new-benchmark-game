@@ -7,12 +7,12 @@
   t.length = length; t.half = half; t.curb = curb; t.runoff = runoff; t.barrier = barrier; t.laneWidth = laneWidth;
 
 // controls: [B, 3] throttle, brake, steer of this tick. intent: [B, 2] deploy, harvest (NaN: none). hyMap per class: [offset, n] into maps (offset < 0: no hybrid).
-extern "C" __global__ void hybrid(const real* Sv, int B, int slots, const int* cls, const int* hyMap, const float* maps, double length,
+extern "C" __global__ void hybrid(const real* Sv, int B, int slots, const int* cls, const unsigned char* alive, const int* hyMap, const float* maps, double length,
     const real* controls, double* energy, int* mode, const int* lapsLeft, const double* intent, double dt, real* force) {
   const int c = blockIdx.x * blockDim.x + threadIdx.x; if (c >= B) return;
   const int off = hyMap[2 * cls[c]];
   if (off < 0) { force[c] = 0; return; }
-  force[c] = hybrid_one(Sv, B, slots, c, cls, maps + off, hyMap[2 * cls[c] + 1], length, (double)controls[3 * c], (double)controls[3 * c + 1],
+  force[c] = hybrid_one(Sv, B, slots, c, cls, alive, maps + off, hyMap[2 * cls[c] + 1], length, (double)controls[3 * c], (double)controls[3 * c + 1],
     energy + c, mode + c, lapsLeft[c], dt, intent[2 * c], intent[2 * c + 1]);
 }
 

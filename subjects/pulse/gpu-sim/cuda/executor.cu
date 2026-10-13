@@ -19,9 +19,11 @@ extern "C" __global__ void executor_init(EX_PARAMS, TRACK_ARGS) {
 }
 
 // plans: [E, 4] the accepted action, planSeq: [E] its sequence, planAt: [E] its time. out: [E, OUT_W].
+// act (may be null): step only these nAct executor cars (cars present in their scene); the rest keep their state.
 extern "C" __global__ void executor_step(EX_PARAMS, TRACK_ARGS, double time, double dt, const real* plans, const int* planSeq,
-    const double* planAt, real* out) {
-  const int e = blockIdx.x * blockDim.x + threadIdx.x; if (e >= E) return;
+    const double* planAt, real* out, const int* act, int nAct) {
+  const int k = blockIdx.x * blockDim.x + threadIdx.x; if (k >= (act ? nAct : E)) return;
+  const int e = act ? act[k] : k;
   MAKE_TRACK MAKE_ARGS
   executor_step_one(A, t, e, time, dt, plans + e * 4, planSeq[e], planAt[e], out + e * OUT_W);
 }

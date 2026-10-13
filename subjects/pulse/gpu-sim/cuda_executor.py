@@ -101,8 +101,13 @@ class CudaExecutor:
         """Course.prepare + PlanExecutor constructor for every executor car, from the world's current state."""
         self.mod.get_function('executor_init')(*self.grid(), self.args())
 
-    def step(self, time, dt):
-        """PlanExecutor.step (after commit of plans/plan_seq/plan_at); returns out [E, OUT_W] (OUTPUTS order)."""
-        self.mod.get_function('executor_step')(*self.grid(), (*self.args(), cp.float64(time), cp.float64(dt), cupy(self.plans),
-                                                              cupy(self.plan_seq), cupy(self.plan_at), cupy(self.out)))
+    def step(self, time, dt, active=None):
+        """PlanExecutor.step (after commit of plans/plan_seq/plan_at); returns out [E, OUT_W] (OUTPUTS order).
+        active: int32 executor indices to step (cars present in their scene); None steps every executor car."""
+        n = self.E if active is None else len(active)
+        if n == 0:
+            return self.out
+        self.mod.get_function('executor_step')(((n + 63) // 64,), (64,), (*self.args(), cp.float64(time), cp.float64(dt), cupy(self.plans),
+                                               cupy(self.plan_seq), cupy(self.plan_at), cupy(self.out),
+                                               cupy(active) if active is not None else 0, cp.int32(n)))
         return self.out

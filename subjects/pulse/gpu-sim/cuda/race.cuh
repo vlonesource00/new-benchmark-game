@@ -25,13 +25,13 @@ __device__ __forceinline__ real wrapr(real x, real n) { return fmod(fmod(x, n) +
 __device__ __forceinline__ real angler(real a) { return atan2(sin(a), cos(a)); }
 
 // aiDeployMode (race session, no caution) then hybridStep for one car. Gaps are to same-class rivals, pre-step.
-// Returns the motor force; energy and mode are updated in place.
-__device__ real hybrid_one(const real* Sv, int B, int slots, int c, const int* cls, const float* map, int mapN, double length,
+// Returns the motor force; energy and mode are updated in place. Empty slots (alive 0) are not rivals: a JS scene has no car there.
+__device__ real hybrid_one(const real* Sv, int B, int slots, int c, const int* cls, const unsigned char* alive, const float* map, int mapN, double length,
     double throttle, double brake, double* energy, int* mode, int lapsLeft, double dt, double intentDeploy, double intentHarvest) {
   const int base = c / slots * slots;
   double ahead = 1e300, behind = 1e300;  // no same-class rival: Infinity in JS
   for (int k = 0; k < slots; k++) {
-    const int o = base + k; if (o == c || cls[o] != cls[c]) continue;
+    const int o = base + k; if (o == c || !alive[o] || cls[o] != cls[c]) continue;
     const double d = fmod(fmod((double)Sv[S * B + o] - (double)Sv[S * B + c], length) + length, length);
     if (d > 0) { ahead = fmin(ahead, d); behind = fmin(behind, length - d); }
   }

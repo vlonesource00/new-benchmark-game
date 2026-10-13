@@ -48,7 +48,7 @@ class RaceLayer:
     def hybrid(self, controls, dt):
         """controls [B, 3] throttle, brake, steer (contiguous). Returns the motor force per car; energy/mode advance."""
         w = self.w
-        self.mod.get_function('hybrid')(*self.grid(w.B), (w.v['S'], cp.int32(w.B), cp.int32(w.N), w.v['cls'], cupy(self.hy_map), cupy(self.maps),
+        self.mod.get_function('hybrid')(*self.grid(w.B), (w.v['S'], cp.int32(w.B), cp.int32(w.N), w.v['cls'], w.v['alive'], cupy(self.hy_map), cupy(self.maps),
             cp.float64(w.track_scalars[1]), cupy(controls), cupy(self.energy), cupy(self.mode), cupy(self.laps_left), cupy(self.intent), cp.float64(dt), cupy(self.force)))
         return self.force
 
