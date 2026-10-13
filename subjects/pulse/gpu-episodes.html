@@ -1,7 +1,7 @@
 <!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PULSE · GPU episodes</title><link rel="stylesheet" href="/lab/style.css">
 <style>
 .views{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:0}.views canvas{display:block;width:100%;height:520px}.views canvas+canvas{border-left:1px solid #263849}
-#charts{display:block;width:100%;height:230px;border-top:1px solid #263849}.badge{display:inline-block;padding:2px 9px;border-radius:9px;font-size:13px;margin-right:6px}
+#charts{display:block;width:100%;height:230px;border-top:1px solid #263849}#net{display:block;width:100%;height:480px;border-top:1px solid #263849}#netinfo{color:#c9d6e3;font-size:13px;padding:6px 10px;min-height:20px}.badge{display:inline-block;padding:2px 9px;border-radius:9px;font-size:13px;margin-right:6px}
 .ok{background:#1d4d3c;color:#7ef0c4}.bad{background:#552433;color:#ff9aa9}.chip{color:#91a7bc;font-size:13px}
 @media(max-width:900px){.views{grid-template-columns:1fr}.views canvas{height:380px}.views canvas+canvas{border-left:0;border-top:1px solid #263849}}
 </style></head>
@@ -13,6 +13,6 @@
 <input id="scrub" aria-label="Episode position" type="range" min="0" max="1" step="1" value="0"></section>
 <section id="summary"></section>
 <div class="columns"><section class="scene"><div class="views"><canvas id="chase"></canvas><canvas id="map"></canvas></div>
-<div class="legend">● PULSE <span>● Rivals</span> <em>● hazard (red) · dashed: executor speed target · grey outlines: JS replay at the same time</em></div><canvas id="charts"></canvas></section>
+<div class="legend">● PULSE <span>● Rivals</span> <em>● hazard (red) · dashed: executor speed target · grey outlines: JS replay at the same time</em></div><canvas id="charts"></canvas><canvas id="net" aria-label="PULSE network activity"></canvas><div id="netinfo">Hover a neuron for its name and value.</div></section>
 <aside><div id="metrics" class="metrics"></div><section><h2>Controls &amp; plan</h2><div id="pedals"></div></section><section><h2>Events</h2><div id="events"></div></section></aside></div>
 </main><script type="module" src="/lab/gpu-episodes.mjs"></script></body></html>

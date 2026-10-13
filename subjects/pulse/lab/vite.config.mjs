@@ -21,7 +21,9 @@ export default defineConfig({ root, cacheDir: resolve(root, 'artifacts/vite-cach
     server.middlewares.use('/api/gpu-episodes', (_req, res) => {
       const directory = resolve(root, 'results/gpu-episodes');
       const runs = existsSync(directory) ? readdirSync(directory).map(name => ({ name, at: statSync(resolve(directory, name)).mtimeMs,
-        episodes: readdirSync(resolve(directory, name)).filter(n => n.endsWith('.json')).map(n => ({ name: n, url: `/results/gpu-episodes/${name}/${n}` })) }))
+        episodes: readdirSync(resolve(directory, name)).filter(n => /^\d+-.*\.json$/.test(n)).map(n => ({ name: n, url: `/results/gpu-episodes/${name}/${n}` })),
+        // run_env.py --neurons: layer layout and intent-head weights for the network view.
+        network: existsSync(resolve(directory, name, 'network.json')) ? `/results/gpu-episodes/${name}/network.json` : null }))
         .sort((a, b) => b.at - a.at) : [];
       res.setHeader('Content-Type', 'application/json'); res.setHeader('Cache-Control', 'no-store'); res.end(JSON.stringify(runs));
     });

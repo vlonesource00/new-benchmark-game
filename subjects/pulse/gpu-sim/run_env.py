@@ -29,6 +29,27 @@ def warm_hidden(model, schema):
     return h[0]
 
 
+def activations(model, obs, hidden):
+    """Every PlanPolicy layer for the lab's network view; out equals model(obs, hidden)[0]."""
+    own_input, own, mean, maximum, present = model.encoder.features(obs)
+    encoded = torch.cat([own, mean, maximum], 1)
+    ir, iz, inn = model.encoder.traffic_input_gates(encoded).chunk(3, 1)
+    hr, hz, hn = model.encoder.traffic_hidden_gates(hidden[:, :64]).chunk(3, 1)
+    reset, update = torch.sigmoid(ir + hr), torch.sigmoid(iz + hz)
+    memory = ((1 - update) * torch.tanh(inn + reset * hn) + update * hidden[:, :64]) * present
+    hid = model.intent[1](model.intent[0](torch.cat([encoded, own_input, memory], 1)))
+    out = model.intent[3](model.intent[2](hid)) * present
+    return {'obs': obs, 'own': own, 'mean': mean, 'max': maximum, 'mem': memory, 'upd': update, 'hid': hid, 'out': out}
+
+
+def network(model, schema):
+    """Layer layout and the intent head's weights (the only dense layers drawn as connections)."""
+    q = lambda t: [[round(v, 4) for v in row] for row in t.detach().cpu().tolist()]
+    return {'groups': schema['groups'], 'fields': [f['name'] for f in schema['fields']],
+            'intentInputs': ['own', 'mean', 'max', 'obs:ego+tyres+road', 'mem'], 'w1': q(model.intent[0].weight), 'w2': q(model.intent[2].weight),
+            'outputs': ['offset 30 m', 'offset 70 m', 'offset 120 m', 'speed cap']}
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--bank', required=True); p.add_argument('--model', required=True)
@@ -44,6 +65,7 @@ def main():
     p.add_argument('--reward', default='race10-v2', help='cuda_env REWARDS profile')
     p.add_argument('--heldout-of', default=None, help='scene ids held out by a ppo_gpu.py checkpoint (its metadata)')
     p.add_argument('--each', action='store_true', help='every pool scene exactly once (episodes = pool size)')
+    p.add_argument('--neurons', action='store_true', help='record every layer per decision of recorded episodes (lab network view)')
     a = p.parse_args()
     torch.manual_seed(a.seed)
     if a.heldout_of:
@@ -67,6 +89,16 @@ def main():
         if len(idx):
             with torch.no_grad():
                 act, nh = model(obs.float(), hidden[idx])
+            if a.neurons and env.record:
+                rec = idx < env.record
+                if rec.any():
+                    with torch.no_grad():
+                        acts = activations(model, obs[rec].float(), hidden[idx][rec])
+                    rows = {k: (v * 100).round().int().cpu().tolist() for k, v in acts.items()}
+                    for i, e in enumerate(idx[rec].tolist()):
+                        r = env.recordings[e]
+                        if r is not None:
+                            r.setdefault('neurons', []).append({'t': round(env.t[e].item(), 3), **{k: v[i] for k, v in rows.items()}})
             if a.sigma:
                 act = act + torch.randn_like(act) * a.sigma
             env.post(idx, act)
@@ -104,6 +136,8 @@ def main():
             rec.update({'model': a.model, 'sigma': a.sigma, 'track': {'length': geom['length'], 'halfWidth': geom['halfWidth'], 'curbWidth': geom['curbWidth'],
                         'nodes': [[n[0], n[1]] for n in geom['nodes']]}})
             (out / f'{k:03d}-{rec["scene"]}.json').write_text(json.dumps(rec))
+        if a.neurons:
+            (out / 'network.json').write_text(json.dumps(network(model, schema)))
         (out / 'outcomes.json').write_text(json.dumps([{**r, 'id': bank.scenes[r['scene']]['id']} for r in results[:a.episodes]]))
         print('recordings', len(env.finished), '->', out)
 

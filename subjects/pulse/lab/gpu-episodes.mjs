@@ -1,9 +1,10 @@
 // GPU training-episode viewer: recordings written by gpu-sim/run_env.py (results/gpu-episodes/<run>/*.json),
 // with an optional JS replay (results/*.json) drawn as grey outlines at the same scene time for parity debugging.
+import * as netview from './network-view.mjs';
 const $ = id => document.getElementById(id);
 const fmt = (x, n = 1) => Number.isFinite(x) ? x.toFixed(n) : '—';
 const params = new URLSearchParams(location.search);
-let ep = null, js = null, index = 0, playing = false, last = 0, clock = 0;
+let ep = null, js = null, index = 0, playing = false, last = 0, clock = 0, net = null, netLayout = null, hover = null;
 
 function setup(canvas) {
   const box = canvas.getBoundingClientRect(), dpr = devicePixelRatio;
@@ -97,7 +98,14 @@ function side() {
     + `<p>Plan knots (lateral goals): ${p.slice(0, 3).map(v => fmt(v * 6, 1) + ' m').join(' / ')}<br>Speed cap ${fmt((95 + Math.min(0, Math.max(-1, p[3])) * 70) * 3.6, 0)} km/h · executor target ${fmt(f.target * 3.6, 0)} km/h</p>`;
   $('clock').textContent = `${fmt(f.t, 2)} / ${fmt(ep.seconds, 0)} s`; $('scrub').value = index;
 }
-function render() { if (!ep) return; chase(); map(); charts(); side(); }
+// Network view: the decision in force at this frame's time (run_env.py --neurons).
+function network() {
+  const { c, w, h } = setup($('net'));
+  if (!net) { c.fillStyle = '#0b131d'; c.fillRect(0, 0, w, h); c.fillStyle = '#5d7489'; c.font = '13px system-ui'; c.fillText('This run has no neuron recording (gpu-sim/run_env.py --neurons).', 14, 24); return; }
+  netLayout = netview.layout(net, w, h);
+  netview.draw(c, net, netLayout, netview.at(ep.neurons, ep.frames[index].t), w, h, hover);
+}
+function render() { if (!ep) return; chase(); map(); charts(); side(); network(); }
 async function loadEpisode(url) {
   ep = await (await fetch(url)).json(); index = 0; $('scrub').max = ep.frames.length - 1;
   const o = ep.outcome ?? {}, ok = o.success;
@@ -112,7 +120,8 @@ async function loadEpisode(url) {
   render();
 }
 async function loadRun(run) {
-  const list = runs.find(r => r.name === run)?.episodes ?? [];
+  const entry = runs.find(r => r.name === run), list = entry?.episodes ?? [];
+  net = entry?.network ? await (await fetch(entry.network)).json() : null; hover = null;
   $('episode').replaceChildren(...list.map(e => Object.assign(document.createElement('option'), { value: e.url, textContent: e.name.replace('.json', '') })));
   const want = params.get('episode'); if (want && list.some(e => e.name === want)) $('episode').value = list.find(e => e.name === want).url;
   if (list.length) await loadEpisode($('episode').value);
@@ -142,5 +151,11 @@ function tick(now) {
   if (index >= ep.frames.length - 1) { playing = false; $('play').textContent = 'Play'; }
   render(); if (playing) requestAnimationFrame(tick);
 }
+$('net').onmousemove = e => {
+  if (!net || !ep || !netLayout) return;
+  const box = $('net').getBoundingClientRect();
+  hover = netview.pick(net, netLayout, netview.at(ep.neurons, ep.frames[index].t), e.clientX - box.left, e.clientY - box.top);
+  $('netinfo').textContent = hover ? hover.text : 'Hover a neuron for its name and value.'; network();
+};
 addEventListener('resize', render);
 if (runs.length) await loadRun($('run').value); else $('summary').textContent = 'No GPU episodes yet: run gpu-sim/run_env.py with --record N --out results/gpu-episodes/<name>.';
