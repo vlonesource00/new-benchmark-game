@@ -35,6 +35,10 @@ OBJECTIVE = {'damageBudget': .03, 'singleHit': .01, 'checkpoint': 600.}
 REWARDS = {'race10-v2': REWARD,
            'attack-v1': {**REWARD, 'damage': 150., 'contact': 1., 'pass': 3., 'passQuick': 4., 'passTau': 8.,
                          'hazard': 2., 'hazardQuick': 4., 'hazardTau': 5., 'hazardContact': 6.}}
+# attack-v2: attack-v1 + 'squeeze' per metre the ego moves laterally toward a car it overlaps (|gap| < body, |dlat| < 3.5 m).
+# JS traffic traces (c196): the ego steered back to its line into cars alongside, closing 426 m vs the rivals' 222 m, and
+# 84% of its damage came in those rubs; the fresh-contact penalty misses sustained rubbing, damage alone is too late.
+REWARDS['attack-v2'] = {**REWARDS['attack-v1'], 'squeeze': .5}
 # race10 contact judgement v3 (src/encounter-outcomes.mjs RACE_CONTACT_OBJECTIVE): a hit above 1% fails only when the
 # ego caused it and the rival paid (> 15 km/h lost within 1.5 s or pushed off), or a single row exceeds 2.5%.
 CONTACT = {'heavyHit': .025, 'rivalLoss': 15 / 3.6, 'after': 1.5, 'lateralTau': .1}
@@ -62,12 +66,15 @@ class SceneBank:
 class GpuEnv:
     def __init__(self, bank, envs, dtype=torch.float32, seed=0, record=0, families=None, ids=None, sequential=False, offset_lag=0., early_stop=True, rivals=None, rival_offset_lag=0.,
                  offset_deadband=0., contact='v2', reward='race10-v2', rival_room=0., rival_room_range=None, family_weights=None):
+        # The GPU also drives the display: cap PyTorch's share (PULSE_GPU_MEM, default 0.8) so a full run cannot starve it (TDR).
+        torch.cuda.set_per_process_memory_fraction(float(os.environ.get('PULSE_GPU_MEM', '0.8')))
         self.sequential, self.cursor = sequential, 0
         self.early_stop = early_stop  # training: end 3 s after a severe contact; evaluation runs the full scene like JS
         self.offset_lag = offset_lag  # PlanExecutor offsetLag (s): low-pass on committed lane offsets
         self.offset_deadband = offset_deadband / 6.  # PlanExecutor offsetDeadband (m -> plan units, offsetMetres 6)
         assert contact in ('v2', 'v3') and reward in REWARDS
         self.contact, self.rw = contact, REWARDS[reward]
+        assert 'squeeze' not in self.rw or contact == 'v3', 'squeeze uses the v3 lateral rate'
         # Distilled rivals were fitted on clean laps and hold their line into a car alongside: on the c186 dev suite 70%
         # of the ego's GPU traffic damage came from >= 0.5 s side-by-side scrapes, 2% in JS, where the real drivers give
         # room. rival_room (m): a distilled rival overlapping a car within 6 m along the track shifts its offsets away
@@ -165,6 +172,7 @@ class GpuEnv:
         self.obs_lo = torch.tensor([q['min'] for q in sch], dtype=dtype, device=dev)
         self.obs_hi = torch.tensor([q['max'] for q in sch], dtype=dtype, device=dev)
         self.record = min(record, envs); self.recordings = [None] * self.record; self.finished = []
+        self.table = None; self.fast_reset = os.environ.get('PULSE_GPU_SLOW_RESET') != '1'  # vectorised reset (exact; PULSE_GPU_SLOW_RESET=1: per-env loop)
         self.reset(torch.arange(envs, device=dev))
 
     MERGE = 3.  # s: a stand-in rival's lane offset decays onto the racing line with this time constant
@@ -195,8 +203,11 @@ class GpuEnv:
             self.spare[envs] = torch.arange(self.cursor, self.cursor + len(envs), device='cuda') >= n; self.cursor += len(envs)
         else:
             picks = torch.tensor(self.pool)[torch.multinomial(self.pool_w, len(envs), replacement=True, generator=self.gen)]
-        for e, k in zip(envs.tolist(), picks.tolist()):
-            self._reset_one(e, k)
+        if self.fast_reset:
+            self._reset_rows(envs, picks)
+        else:
+            for e, k in zip(envs.tolist(), picks.tolist()):
+                self._reset_one(e, k)
         lanes = (envs[:, None] * N + torch.arange(N, device=dev)).reshape(-1)
         if self.rival_room_range is not None:
             lo, hi = self.rival_room_range
@@ -208,19 +219,126 @@ class GpuEnv:
         self.x.ex[li] = 0; self.x.xr[li] = 0; self.x.xi[li] = 0; self.x.prev_brake[li] = 0; self.x.out[li] = 0
         self.controls[li] = 0; self.w.flags[li] = 0
         self._exec_init(lanes)
-        for b in lanes.tolist():
-            if b % N == 0:
-                continue
-            k = int(self.w.cls[b]); s_, lat = float(self.S('s')[b]), float(self.S('lateral')[b])
-            d = torch.remainder(self.line_s[k] - s_ + self.length / 2, self.length) - self.length / 2
-            self.rival_goal[b] = lat - self.line_lat[k][d.abs().argmin()]
-            # Sequence -2: the tick-0 rival post (+1 = -1) differs from the executor's initial 0, so it commits before the first step.
-            self.x.plan_seq[b] = -2
+        if self.fast_reset:
+            rl = lanes.view(-1, N)[:, 1:].reshape(-1)
+            self.rival_goal[rl] = self.table['rival_goal'][picks.to(dev)][:, 1:].reshape(-1)
+            self.x.plan_seq[rl] = -2
+        else:
+            for b in lanes.tolist():
+                if b % N == 0:
+                    continue
+                k = int(self.w.cls[b]); s_, lat = float(self.S('s')[b]), float(self.S('lateral')[b])
+                d = torch.remainder(self.line_s[k] - s_ + self.length / 2, self.length) - self.length / 2
+                self.rival_goal[b] = lat - self.line_lat[k][d.abs().argmin()]
+                # Sequence -2: the tick-0 rival post (+1 = -1) differs from the executor's initial 0, so it commits before the first step.
+                self.x.plan_seq[b] = -2
         self.prev_damage[lanes] = self.S('damage')[lanes].double()
         self.stuck[lanes] = 0; self.rescue_ghost[lanes] = 0; self.w.ghost[lanes] = 0; self.ego_rescued[envs] = False
         self.w.wake[lanes] = 0  # vehicle.js: a new car's aero.wake is 0 until its first step (was the slot's previous value)
         if self.skip_empty:
             self.w.refresh_active()  # empty slots are skipped by the executor and car kernels (exact: no live car reads them)
+
+    # Per-scene start values (the same expressions as _reset_one), built once: a reset is then a few indexed copies on
+    # the GPU instead of a Python loop per env and car (~50 ms per reset call before, with resets on most ticks).
+    ENV_ROWS = ['seconds', 'race_time0', 'track_temp', 'compound', 'frame_steps', 'lag', 'lag_jitter', 'frame_jitter', 'frame_rng',
+                'reply_rng', 'laps0', 'stint0', 'tyres0', 'hz_kind', 'hz_at', 'hz_flick', 'require', 'has_req']
+    ENV_CONST = {'t': 0, 'frame': -1, 'next_tick': 0, 'tick': 0, 'due': -1, 'pending': 0, 'pending_at': 0, 'accepted_at': 0,
+                 'last_request': 0, 'prev_row': 0, 'steer_row': 0, 'plan_seq': 0, 'lagged': 0, 'crossed': 0, 'reward': 0,
+                 'cum_damage': 0, 'row_damage': 0, 'big_hit': False, 'limit_time': 0, 'severe_at': math.inf, 'contact_seen': -99.,
+                 'lap_ok': True, 'valid_laps': 0, 'enc_start': False, 'enc_done': False, 'enc_hazard': False, 'enc_clear': math.nan,
+                 'passes': 0, 'hazards': 0, 'enc_t0': 0, 'j_until': -1., 'j_v0': 0, 'j_min': 0, 'j_hit': 0, 'j_caused': False, 'j_off': False}
+
+    def _build_table(self):
+        bank, N, f, dev, K = self.bank, self.N, self.f, 'cuda', len(self.bank.scenes)
+        T = {}
+        st = bank.states.clone()
+        for k, sc in enumerate(bank.scenes):
+            st[k, sc['count']:] = st[k, 0]  # inactive slots: parked copies, never alive
+        T['S'] = st.to(dev, self.dtype)  # [K, N, F]
+        T['rubber'] = bank.rubber.to(dev)
+        T['temp_grip'] = torch.tensor([sc['tempGrip'] for sc in bank.scenes], dtype=self.w.temp_grip.dtype, device=dev)
+        T['ambient'] = torch.tensor([sc['ambient'] for sc in bank.scenes], dtype=self.w.ambient.dtype, device=dev)
+        T['alive'] = torch.tensor([[j < sc['count'] for j in range(N)] for sc in bank.scenes], dtype=torch.uint8, device=dev)
+        cars = [sc['cars'] + [sc['cars'][0]] * (N - sc['count']) for sc in bank.scenes]
+        MEDIUM = [1., 1., 90., .42, 1.65]
+        T['cls'] = torch.tensor([[self.names.index(c['classId']) for c in cs] for cs in cars], dtype=torch.int32, device=dev)
+        T['tyres'] = torch.tensor([[c['tyre'] if j < sc['count'] else MEDIUM for j, c in enumerate(cs)] for sc, cs in zip(bank.scenes, cars)],
+                                  dtype=self.dtype, device=dev)
+        T['energy'] = torch.tensor([[c['hybrid']['energy'] if c['hybrid'] else 0 for c in cs] for cs in cars], dtype=self.race.energy.dtype, device=dev)
+        T['mode'] = torch.tensor([[MODES.index(c['hybrid']['mode']) if c['hybrid'] else MODES.index('balanced') for c in cs] for cs in cars],
+                                 dtype=self.race.mode.dtype, device=dev)
+        T['laps_left'] = torch.tensor([[c['laps'] - c['lap'] + 1 for c in cs] for cs in cars], dtype=self.race.laps_left.dtype, device=dev)
+        T['stw'] = torch.tensor([[[int(c['steward'][q]) for c in cs] for q in ('moving', 'off', 'spun')] for cs in cars], dtype=self.race.stw.dtype, device=dev)
+        T['clean'] = torch.tensor([[c['steward']['clean'] for c in cs] for cs in cars], dtype=self.race.clean.dtype, device=dev)
+        if self.rivals is not None:
+            T['rival_driver'] = torch.tensor([[self.rivals.names.index(c['driver']) if j and j < sc['count'] and c['driver'] in self.rivals.names else -1
+                                               for j, c in enumerate(cs)] for sc, cs in zip(bank.scenes, cars)], dtype=torch.long, device=dev)
+        s = bank.states[:, :, f['s']].double()
+        T['progress'] = (torch.remainder(s - s[:, :1] + self.length / 2, self.length) - self.length / 2).to(dev)
+        # Rival lane goal from the start state as stored in the env's dtype (reset reads it back from S).
+        sd, latd = T['S'][:, :, f['s']].double().cpu(), T['S'][:, :, f['lateral']].double().cpu()
+        goal = torch.zeros(K, N, dtype=torch.float64, device=dev)
+        cls = T['cls'].cpu()
+        for k in range(K):
+            for j in range(1, N):
+                c = int(cls[k, j]); s_, lat = float(sd[k, j]), float(latd[k, j])
+                d = torch.remainder(self.line_s[c] - s_ + self.length / 2, self.length) - self.length / 2
+                goal[k, j] = lat - self.line_lat[c][d.abs().argmin()]
+        T['rival_goal'] = goal
+        rows = {n: [] for n in self.ENV_ROWS}
+        keys = ['encountersCleared', 'hazardsCleared', 'validFullLaps', 'unpassedTraffic', 'retainedPasses']
+        for sc in bank.scenes:
+            ego, tm = sc['cars'][0], sc['timing']; seed = int(tm['scheduleSeed'])
+            v = {'seconds': sc['seconds'], 'race_time0': sc['raceTime'], 'track_temp': sc['trackTemperature'], 'compound': COMPOUNDS.index(ego['compound']),
+                 'frame_steps': tm['frameSteps'], 'lag': tm['lagFrames'], 'lag_jitter': tm['lagJitter'], 'frame_jitter': tm['frameJitter'],
+                 'frame_rng': seed ^ 0x5046524d, 'reply_rng': seed ^ 0x5052504c, 'laps0': ego['laps'] - ego['lap'] + 1, 'stint0': ego['stintLaps'],
+                 'tyres0': ego['nextTyreLap'] - ego['lap'] if ego['nextTyreLap'] is not None else ego['laps'] - ego['lap'] + 1}
+            R = N - 1; kinds = [0] * R; at = [math.inf] * R; flick = [0.] * R
+            for j, c in enumerate(sc['cars'][1:]):
+                if c['hazard']:
+                    kinds[j] = 1 if c['hazard'] == 'stopped' else 2; at[j] = c['stopAt']; flick[j] = -1. if (c['lateral'] or 0) >= 0 else 1.
+            v.update(hz_kind=kinds, hz_at=at, hz_flick=flick)
+            req = sc['requirements'] or {}
+            v.update(require=[float(req.get(q, 0)) for q in keys], has_req=[q in req for q in keys])
+            for n in self.ENV_ROWS:
+                rows[n].append(v[n])
+        for n in self.ENV_ROWS:
+            T[n] = torch.tensor(rows[n], dtype=getattr(self, n).dtype, device=dev)
+        self.table = T
+
+    def _reset_rows(self, envs, picks):
+        """Vectorised _reset_one for every env in envs (scene picks[i]): the same buffers, no per-env Python."""
+        if self.table is None:
+            self._build_table()
+        T, N, dev = self.table, self.N, 'cuda'
+        e = envs.to(dev).long(); k = picks.to(dev).long(); n = len(e)
+        self.scene[envs.cpu()] = picks.cpu()
+        lanes = (e[:, None] * N + torch.arange(N, device=dev)).reshape(-1)
+        w, r = self.w, self.race
+        w.S[:, lanes] = T['S'][k].reshape(n * N, -1).T
+        w.rubber[e] = T['rubber'][k]; w.temp_grip[e] = T['temp_grip'][k]; w.ambient[e] = T['ambient'][k]
+        w.alive[lanes] = T['alive'][k].reshape(-1); w.cls[lanes] = T['cls'][k].reshape(-1); w.tyres[lanes] = T['tyres'][k].reshape(n * N, -1)
+        r.energy[lanes] = T['energy'][k].reshape(-1); r.mode[lanes] = T['mode'][k].reshape(-1); r.laps_left[lanes] = T['laps_left'][k].reshape(-1)
+        stw = T['stw'][k]  # [n, 3, N]
+        for q in range(3):
+            r.stw[q * self.B + lanes] = stw[:, q].reshape(-1)
+        r.clean[lanes] = T['clean'][k].reshape(-1)
+        r.intent[lanes] = math.nan; r.force[lanes] = 0
+        if self.rivals is not None:
+            self.rival_driver[lanes] = T['rival_driver'][k].reshape(-1)
+        for name in self.ENV_ROWS:
+            getattr(self, name)[e] = T[name][k]
+        for name, v in self.ENV_CONST.items():
+            getattr(self, name)[e] = v
+        self.progress[lanes] = T['progress'][k].reshape(-1)
+        self.lat_prev[lanes] = math.nan; self.lat_rate[lanes] = 0
+        if self.record:
+            for ei, ki in zip(envs.tolist(), picks.tolist()):
+                if ei < self.record and not self.spare[ei]:
+                    sc = self.bank.scenes[ki]
+                    self.recordings[ei] = {'scene': sc['id'], 'family': sc['family'], 'seconds': sc['seconds'], 'count': sc['count'],
+                                           'classes': [c['classId'] for c in sc['cars']], 'drivers': [c['driver'] for c in sc['cars']],
+                                           'hazards': [c['hazard'] for c in sc['cars']], 'frames': [], 'events': []}
 
     def _reset_one(self, e, k):
         sc, N, f = self.bank.scenes[k], self.N, self.f
@@ -543,6 +661,11 @@ class GpuEnv:
         psi = yaw - heading
         extent = psi.cos().abs() * 2.28 + psi.sin().abs() * .98
         body = extent[:, :1] + extent[:, 1:]
+        if 'squeeze' in self.rw:
+            dl = latv[:, 1:] - latv[:, :1]
+            overlap = ra & (gap.abs() < body) & (dl.abs() < 3.5)
+            toward = (torch.sign(dl) * self.lat_rate.view(E, N)[:, :1]).clamp(min=0)
+            r -= self.rw['squeeze'] * DT * (overlap * toward).sum(1)
         behind = live & (gap < -body - .15)
         self.enc_clear = torch.where(behind, torch.where(torch.isnan(self.enc_clear), self.t[:, None].expand_as(gap), self.enc_clear),
                                      torch.full_like(self.enc_clear, math.nan))
@@ -564,7 +687,8 @@ class GpuEnv:
         E, N = self.E, self.N
         lat = self.S('lateral').double()
         rate = torch.where(torch.isnan(self.lat_prev), torch.zeros_like(lat), (lat - self.lat_prev) / DT)
-        self.lat_rate += (rate - self.lat_rate) * (DT / CONTACT['lateralTau']); self.lat_prev = lat
+        # clone: in float64 .double() is S's own row, and reset's lat_prev[lanes] = nan would then wipe the cars' lateral.
+        self.lat_rate += (rate - self.lat_rate) * (DT / CONTACT['lateralTau']); self.lat_prev = lat.clone()
         lr = self.lat_rate.view(E, N)
         side = torch.sign(latv[:, 1:] - latv[:, :1]); side = torch.where(side == 0, torch.ones_like(side), side)
         me, them = lr[:, :1] * side, -lr[:, 1:] * side

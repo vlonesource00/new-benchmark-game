@@ -53,6 +53,12 @@ class Rollout:
         # Value of the env's next decision state for records at the rollout edge (bootstrap), when observed.
         self.next_value, self.has_next = z(cap), z(cap, t=torch.bool)
 
+    def clear(self):
+        # Reuse the buffers across iterations: a fresh ~5 GiB allocation while the old one is alive does not fit beside the env.
+        for v in vars(self).values():
+            if torch.is_tensor(v): v.zero_()
+        self.n = 0; self.last.fill_(-1)
+
     def add(self, idx, feat, present, action, logp, value, fresh):
         k = torch.arange(self.n, self.n + len(idx), device='cuda')
         if self.n + len(idx) > len(self.env):
@@ -179,7 +185,9 @@ def main():
         cum = env.reward.clone()
     history = []
     for it in range(1, a.iterations + 1):
-        t0 = time.time(); ro = Rollout(cap, width, E); finished = []
+        t0 = time.time(); finished = []
+        if it == 1: ro = Rollout(cap, width, E)
+        else: ro.clear()
         model.eval()
         for _ in range(ticks):
             idx, obs = env.decisions()
