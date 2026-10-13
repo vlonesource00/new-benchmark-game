@@ -8,8 +8,10 @@ let ep = null, js = null, index = 0, playing = false, last = 0, clock = 0, net =
 
 function setup(canvas) {
   const box = canvas.getBoundingClientRect(), dpr = devicePixelRatio;
-  canvas.width = box.width * dpr; canvas.height = box.height * dpr;
-  const c = canvas.getContext('2d'); c.scale(dpr, dpr); return { c, w: box.width, h: box.height };
+  // Reallocating the backing store every display frame stalls playback: resize only when the box changes.
+  const W = Math.round(box.width * dpr), H = Math.round(box.height * dpr);
+  if (canvas.width !== W || canvas.height !== H) { canvas.width = W; canvas.height = H; }
+  const c = canvas.getContext('2d'); c.setTransform(dpr, 0, 0, dpr, 0, 0); return { c, w: box.width, h: box.height };
 }
 const carColor = (k, f) => k === 0 ? '#ffd166' : ep.hazards[k] ? '#ff7080' : '#51d5df';
 // JS replay poses at time t: [{x, z, yaw}] for ego then rivals (rows are every third decision).
@@ -99,11 +101,18 @@ function side() {
   $('clock').textContent = `${fmt(f.t, 2)} / ${fmt(ep.seconds, 0)} s`; $('scrub').value = index;
 }
 // Network view: the decision in force at this frame's time (run_env.py --neurons).
+let netKey = null;
 function network() {
+  // Redraw only when the decision in force, the canvas size or the hovered neuron changes: decisions are sparser than
+  // display frames, and the full view (26k contributions, 600 lines) is too heavy to repeat 60 times a second.
+  const box = $('net').getBoundingClientRect(), n = net && ep ? netview.at(ep.neurons, ep.frames[index].t) : null;
+  const key = [n, box.width, box.height, hover?.pt, net];
+  if (netKey && key.every((x, i) => x === netKey[i])) return;
+  netKey = key;
   const { c, w, h } = setup($('net'));
   if (!net) { c.fillStyle = '#0b131d'; c.fillRect(0, 0, w, h); c.fillStyle = '#5d7489'; c.font = '13px system-ui'; c.fillText('This run has no neuron recording (gpu-sim/run_env.py --neurons).', 14, 24); return; }
   netLayout = netview.layout(net, w, h);
-  netview.draw(c, net, netLayout, netview.at(ep.neurons, ep.frames[index].t), w, h, hover);
+  netview.draw(c, net, netLayout, n, w, h, hover);
 }
 function render() { if (!ep) return; chase(); map(); charts(); side(); network(); }
 async function loadEpisode(url) {

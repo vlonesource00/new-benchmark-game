@@ -31,12 +31,25 @@ export function layout(net, w, h) {
   return L;
 }
 
+// Decoded per decision once: playback revisits the same decision for several display frames.
+const decoded = new WeakMap();
 const frameValues = n => {
+  if (decoded.has(n)) return decoded.get(n);
   const f = k => n[k].map(v => v / 100);
   const v = { obs: f('obs'), own: f('own'), mean: f('mean'), max: f('max'), mem: f('mem'), hid: f('hid'), out: f('out'), upd: f('upd') };
   v.intent = [...v.own, ...v.mean, ...v.max, ...v.obs.slice(0, 220), ...v.mem];
+  decoded.set(n, v);
   return v;
 };
+// Flattened intent weights and reusable buffers: no per-frame allocation of 26k contribution records.
+let flat = null;
+function weights(net) {
+  if (flat?.net === net) return flat;
+  const H = net.w1.length, I = net.w1[0].length, w1 = new Float32Array(H * I);
+  net.w1.forEach((row, j) => row.forEach((x, i) => { w1[j * I + i] = x; }));
+  flat = { net, H, I, w1, q: new Float32Array(H * I), mag: new Float32Array(H * I) };
+  return flat;
+}
 
 function bundle(c, from, to, activity) {
   const a = Math.min(.35, .04 + activity * .5);
@@ -58,11 +71,13 @@ export function draw(c, net, L, n, w, h, hover) {
   bundle(c, L.inputs[3], L.mean, meanAbs(span('rivals'))); bundle(c, L.inputs[3], L.max, meanAbs(span('rivals')));
   for (const b of [L.own, L.mean, L.max]) bundle(c, b, L.mem, meanAbs(v.mem));
   // Intent head: the 320 strongest live contributions into its hidden layer, then all 256 into the outputs.
+  const W = weights(net), { H, I, w1, q: contrib, mag } = W;
+  for (let j = 0; j < H; j++) for (let i = 0; i < I; i++) { const q = w1[j * I + i] * v.intent[i]; contrib[j * I + i] = q; mag[j * I + i] = Math.abs(q); }
+  const sorted = mag.slice().sort(), cut = Math.max(.02, sorted[sorted.length - 320] ?? 0), peak = sorted[sorted.length - 1] || 1;
   const lines = [];
-  net.w1.forEach((row, j) => row.forEach((wt, i) => { const q = wt * v.intent[i]; if (Math.abs(q) > .02) lines.push([Math.abs(q), q, i, j]); }));
-  lines.sort((a, b) => b[0] - a[0]);
-  const peak = lines[0]?.[0] || 1;
-  for (const [m, q, i, j] of lines.slice(0, 320).reverse()) {
+  for (let k = 0; k < H * I; k++) if (mag[k] >= cut) lines.push([mag[k], contrib[k], k % I, Math.floor(k / I)]);
+  lines.sort((a, b) => a[0] - b[0]);
+  for (const [m, q, i, j] of lines) {
     const [x0, y0] = L.intent[i], [x1, y1] = L.hid.pts[j], cl = q >= 0 ? warm : cool;
     c.strokeStyle = `rgba(${cl[0]},${cl[1]},${cl[2]},${(.05 + .55 * m / peak).toFixed(3)})`; c.lineWidth = .6 + 1.4 * m / peak;
     c.beginPath(); c.moveTo(x0, y0); c.bezierCurveTo((x0 + x1) / 2, y0, (x0 + x1) / 2, y1, x1, y1); c.stroke();
