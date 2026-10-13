@@ -48,8 +48,10 @@ class Rollout:
     def __init__(self, cap, width, E, device='cuda', obs=0, hidden=0):
         self.dev = device
         z = lambda *s, t=torch.float32: torch.zeros(*s, dtype=t, device=device)
-        self.feat, self.present, self.action = z(cap, width), z(cap, 1), z(cap, 4)
-        # --train-encoder: the model input and the hidden state it met, to recompute the head input with gradients.
+        # --train-encoder keeps the model input and the hidden state it met instead of the head input (recomputed with
+        # gradients in the update): at 4096 envs both would not fit beside the env under the 0.8 memory cap.
+        self.feat = None if obs else z(cap, width)
+        self.present, self.action = z(cap, 1), z(cap, 4)
         self.obs, self.hid = (z(cap, obs), z(cap, hidden)) if obs else (None, None)
         self.logp, self.value, self.reward = z(cap), z(cap), z(cap)
         self.fresh, self.done, self.cut = z(cap, t=torch.bool), z(cap, t=torch.bool), z(cap, t=torch.bool)
@@ -68,8 +70,10 @@ class Rollout:
         k = torch.arange(self.n, self.n + len(idx), device=self.dev)
         if self.n + len(idx) > len(self.env):
             raise ValueError('Rollout buffer full; raise --cap')
-        self.feat[k], self.present[k], self.action[k], self.logp[k], self.value[k], self.fresh[k] = feat, present, action, logp, value, fresh
-        if self.obs is not None:
+        self.present[k], self.action[k], self.logp[k], self.value[k], self.fresh[k] = present, action, logp, value, fresh
+        if self.obs is None:
+            self.feat[k] = feat
+        else:
             self.obs[k], self.hid[k] = obs, hid
         self.env[k] = idx; self.last[idx] = k; self.n += len(idx); self.time[k] = t
 
@@ -282,7 +286,7 @@ def main():
         ro.last[:] = -1
         roll_s = time.time() - t0
         adv, ret = ro.gae(a.gamma, a.lam, a.discount_rate)
-        n = ro.n; feat, present, action, old = ro.feat[:n], ro.present[:n], ro.action[:n], ro.logp[:n]
+        n = ro.n; present, action, old = ro.present[:n], ro.action[:n], ro.logp[:n]
         pa = ro.fresh[:n].nonzero().squeeze(1)
         adv = (adv - adv[pa].mean()) / (adv[pa].std() + 1e-8)
         # Same math as collection (no dropout/normalisation layers, so eval mode only makes that explicit).
@@ -292,7 +296,13 @@ def main():
             if enc:  # recompute the head input from the stored observation and hidden: gradients reach the encoder
                 f, pr, _ = model.head_input(ro.obs[i], ro.hid[i])
                 return model.head(f) * pr
-            return model.head(feat[i]) * present[i]
+            return model.head(ro.feat[i]) * present[i]
+
+        def critic_input(j):
+            if enc:  # current encoder, detached: the critic does not move the encoder
+                with torch.no_grad():
+                    return model.head_input(ro.obs[j], ro.hid[j])[0]
+            return ro.feat[j]
 
         if a.check_recompute:
             worst = 0.
@@ -323,7 +333,7 @@ def main():
                 if it > a.value_warmup:
                     popt.zero_grad(); pg.backward(); torch.nn.utils.clip_grad_norm_(head + enc, .5); popt.step()
                 j = torch.randint(n, (4096,), device='cuda')
-                vl = (value(feat[j]).squeeze(1) - ret[j]).square().mean()
+                vl = (value(critic_input(j)).squeeze(1) - ret[j]).square().mean()
                 vopt.zero_grad(); vl.backward(); vopt.step()
                 kls.append((old[i] - logp.detach()).mean().item())
             stats.append(float(np.mean(kls)))
