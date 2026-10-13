@@ -42,6 +42,11 @@ REWARDS['attack-v2'] = {**REWARDS['attack-v1'], 'squeeze': .5}
 # attack-v3: v2 counted the ego's own lateral motion, so two cars drifting together at constant separation paid it.
 # v3 charges only clearance the ego closes: min(ego motion toward the car, rate |dlat| shrinks); a rival pushing in is free.
 REWARDS['attack-v3'] = {**REWARDS['attack-v2'], 'squeezeClosing': True}
+# attack-v5 (c207): v3 + 'heldUp' per second the executor's nose guard caps the ego behind a car that is not a hazard
+# (OUT source 2, the live-body-speed guard JS also runs). JS traces: every model sat behind a car no slower than itself
+# ~15% of traffic time and aborted ~60% of pull-outs; following only cost slightly less progress. 0.5/s is 25 m of
+# progress per second held; a retained pass still pays 3 + up to 4.
+REWARDS['attack-v5'] = {**REWARDS['attack-v3'], 'heldUp': .5}
 # attack-v4: v3 at 4x (2/m). Dose test: c204's v3 term was ~1% of reward and GPU ego closing alongside rose (208 -> 332 m);
 # if 4x still does not cut it, the policy cannot see or steer it (frozen encoder / executor), not a weak signal.
 REWARDS['attack-v4'] = {**REWARDS['attack-v3'], 'squeeze': 2.}
@@ -138,6 +143,7 @@ class GpuEnv:
         self.reward = Fz(envs)
         self.progress = Fz(self.B)            # per car, relative to the ego's start
         self.cum_damage = Fz(envs); self.prev_damage = Fz(self.B); self.row_damage = Fz(envs); self.big_hit = torch.zeros(envs, dtype=torch.bool, device=dev)
+        self.held_time = Fz(envs); self.ego_src = Fz(envs)  # s nose-capped behind a non-hazard car; executor source
         self.limit_time = Fz(envs); self.severe_at = torch.full((envs,), math.inf, dtype=torch.float64, device=dev)
         self.contact_seen = torch.full((envs, self.N - 1), -99., dtype=torch.float64, device=dev)
         self.lap_ok = torch.ones(envs, dtype=torch.bool, device=dev); self.valid_laps = Fz(envs)
@@ -252,7 +258,7 @@ class GpuEnv:
                 'reply_rng', 'laps0', 'stint0', 'tyres0', 'hz_kind', 'hz_at', 'hz_flick', 'require', 'has_req']
     ENV_CONST = {'t': 0, 'frame': -1, 'next_tick': 0, 'tick': 0, 'due': -1, 'pending': 0, 'pending_at': 0, 'accepted_at': 0,
                  'last_request': 0, 'prev_row': 0, 'steer_row': 0, 'plan_seq': 0, 'lagged': 0, 'crossed': 0, 'reward': 0,
-                 'cum_damage': 0, 'row_damage': 0, 'big_hit': False, 'limit_time': 0, 'severe_at': math.inf, 'contact_seen': -99.,
+                 'cum_damage': 0, 'row_damage': 0, 'big_hit': False, 'limit_time': 0, 'held_time': 0, 'severe_at': math.inf, 'contact_seen': -99.,
                  'lap_ok': True, 'valid_laps': 0, 'enc_start': False, 'enc_done': False, 'enc_hazard': False, 'enc_clear': math.nan,
                  'passes': 0, 'hazards': 0, 'enc_t0': 0, 'j_until': -1., 'j_v0': 0, 'j_min': 0, 'j_hit': 0, 'j_caused': False, 'j_off': False}
 
@@ -393,7 +399,7 @@ class GpuEnv:
         ds = torch.remainder(s - s[0] + self.length / 2, self.length) - self.length / 2
         self.progress[lanes] = ds.cuda()
         self.cum_damage[e] = 0; self.row_damage[e] = 0; self.big_hit[e] = False
-        self.limit_time[e] = 0; self.severe_at[e] = math.inf; self.contact_seen[e] = -99.
+        self.limit_time[e] = 0; self.held_time[e] = 0; self.severe_at[e] = math.inf; self.contact_seen[e] = -99.
         self.lap_ok[e] = True; self.valid_laps[e] = 0
         self.enc_start[e] = False; self.enc_done[e] = False; self.enc_hazard[e] = False; self.enc_clear[e] = math.nan
         self.passes[e] = 0; self.hazards[e] = 0; self.enc_t0[e] = 0
@@ -527,6 +533,7 @@ class GpuEnv:
         soc = (self.race.energy[self.ego.long()] / 3e6)
         v = self.S('speed')[self.ego.long()].double()
         ego_out = out[self.ego.long()].double()
+        self.ego_src = ego_out[:, OUT['source']]
         exit_ = (ego_out[:, OUT['feed']] > 0) | (ego_out[:, OUT['target']] > v + 1)
         mx = (.7 + (soc - .55) * 2.5).clamp(.1, 1); taper = ((78 - v) / 38).clamp(0, 1)
         deploy = mx * taper * torch.where(exit_, 1., .5) * (soc / .09).clamp(0, 1)
@@ -659,6 +666,10 @@ class GpuEnv:
         self.enc_t0 = torch.where(new, self.t[:, None].expand_as(gap), self.enc_t0)
         live = self.enc_start & ~self.enc_done
         self.enc_hazard |= live & hazard
+        held = (self.ego_src == 2) & ~(ra & hazard & (gap > 0) & (gap < 40)).any(1)
+        self.held_time += held * DT
+        if 'heldUp' in self.rw:
+            r -= self.rw['heldUp'] * DT * held
         if 'hazardContact' in self.rw:  # touching a stopped/spun car is a crash in a race, whatever the damage model says
             r -= (fresh & self.enc_hazard).sum(1) * self.rw['hazardContact']
         if self.contact == 'v3':
@@ -743,7 +754,7 @@ class GpuEnv:
         ok = torch.where(torch.arange(5, device='cuda') == 3, got <= req, got >= req) | ~has
         success = admissible & ok.all(1)
         return {'success': success, 'admissible': admissible, 'damage': self.cum_damage[idx].clone(), 'passes': self.passes[idx].clone(),
-                'hazards': self.hazards[idx].clone(), 'limit': self.limit_time[idx].clone(), 'severe': ~torch.isinf(self.severe_at[idx]),
+                'hazards': self.hazards[idx].clone(), 'limit': self.limit_time[idx].clone(), 'held': self.held_time[idx].clone(), 'severe': ~torch.isinf(self.severe_at[idx]),
                 'progress': self.progress[ego].clone(), 'unpassed': unpassed, 'complete': complete, 'scene': self.scene[idx.cpu()].clone()}
 
     # ---- recording for the lab viewer
@@ -769,7 +780,8 @@ class GpuEnv:
             rec['frames'].append({'t': round(self.t[e].item(), 3), 'cars': [[round(float(v), 3) for v in row] for row in pose[:rec['count']]],
                                   'controls': [round(v, 3) for v in c], 'plan': [round(v, 3) for v in p],
                                   'target': round(float(o[OUT['target']]), 2), 'reward': round(self.reward[e].item(), 4),
-                                  'progress': round(self.progress[e * N].item(), 2), 'limit': round(self.limit_time[e].item(), 3)})
+                                  'progress': round(self.progress[e * N].item(), 2), 'limit': round(self.limit_time[e].item(), 3),
+                                  'source': int(o[OUT['source']]), 'held': round(self.held_time[e].item(), 2)})
 
     def end(self, idx):
         """Close finished episodes: returns their outcome and resets them."""

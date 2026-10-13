@@ -23,14 +23,15 @@ from fit_rivals import load_rivals
 from job_progress import JobProgress
 
 
-def features(model, obs, hidden):
-    """PlanPolicy.forward split at the head: (head input, presence, next hidden)."""
-    own, encoded, present = model.encoded(obs)
-    ir, iz, inn = model.encoder.traffic_input_gates(encoded).chunk(3, 1)
-    hr, hz, hn = model.encoder.traffic_hidden_gates(hidden[:, :64]).chunk(3, 1)
-    reset, update = torch.sigmoid(ir + hr), torch.sigmoid(iz + hz)
-    memory = ((1 - update) * torch.tanh(inn + reset * hn) + update * hidden[:, :64]) * present
-    return torch.cat([encoded, own, memory], 1), present, torch.cat([memory, torch.zeros_like(hidden[:, 64:])], 1)
+def decide(model, obs, hidden):
+    """(head input, presence, masked pre-noise intent, next hidden): PlanPolicy.forward split at the head."""
+    feat, present, memory = model.head_input(obs, hidden)
+    mean = model.head(feat) * present
+    return feat, present, mean, model.next_hidden(memory, mean, hidden)
+
+
+# Encoder parts on the head's path (deep-set context/opponent nets and the traffic GRU): --train-encoder trains these.
+ENCODER_PATH = ('context', 'opponent', 'traffic_input_gates', 'traffic_hidden_gates')
 
 
 def warm_hidden(model, schema):
@@ -44,10 +45,12 @@ def warm_hidden(model, schema):
 
 class Rollout:
     """Decision records in collection order; rewards land on an env's latest record."""
-    def __init__(self, cap, width, E, device='cuda'):
+    def __init__(self, cap, width, E, device='cuda', obs=0, hidden=0):
         self.dev = device
         z = lambda *s, t=torch.float32: torch.zeros(*s, dtype=t, device=device)
         self.feat, self.present, self.action = z(cap, width), z(cap, 1), z(cap, 4)
+        # --train-encoder: the model input and the hidden state it met, to recompute the head input with gradients.
+        self.obs, self.hid = (z(cap, obs), z(cap, hidden)) if obs else (None, None)
         self.logp, self.value, self.reward = z(cap), z(cap), z(cap)
         self.fresh, self.done, self.cut = z(cap, t=torch.bool), z(cap, t=torch.bool), z(cap, t=torch.bool)
         self.env, self.n, self.last = z(cap, t=torch.long), 0, torch.full((E,), -1, dtype=torch.long, device=self.dev)
@@ -61,11 +64,13 @@ class Rollout:
             if torch.is_tensor(v): v.zero_()
         self.n = 0; self.last.fill_(-1)
 
-    def add(self, idx, feat, present, action, logp, value, fresh, t):
+    def add(self, idx, feat, present, action, logp, value, fresh, t, obs=None, hid=None):
         k = torch.arange(self.n, self.n + len(idx), device=self.dev)
         if self.n + len(idx) > len(self.env):
             raise ValueError('Rollout buffer full; raise --cap')
         self.feat[k], self.present[k], self.action[k], self.logp[k], self.value[k], self.fresh[k] = feat, present, action, logp, value, fresh
+        if self.obs is not None:
+            self.obs[k], self.hid[k] = obs, hid
         self.env[k] = idx; self.last[idx] = k; self.n += len(idx); self.time[k] = t
 
     def credit(self, idx, r):
@@ -118,7 +123,7 @@ def export(model, value, out, schema, config, contract, metadata):
     model = model.eval().cpu()
     out.mkdir(parents=True)
     atomic_checkpoint(out / 'model.pt', {'format': 'pulse-plan-policy-v1', 'weights': model.state_dict(), 'schema': schema,
-                                         'encoderConfig': config, 'contract': contract})
+                                         'encoderConfig': config, 'contract': contract, 'commit': model.commit})
     torch.save(value.state_dict(), out / 'value.pt')
     for b in [1, 16]:
         torch.onnx.export(model, (torch.zeros(b, schema['size']), torch.zeros(b, schema['hidden'])), out / f'policy-{b}.onnx',
@@ -153,6 +158,14 @@ def main():
     p.add_argument('--reward', default='race10-v2', help='cuda_env REWARDS profile')
     p.add_argument('--holdout', type=int, default=4, help='every k-th pool scene is held out for validation (0: none)')
     p.add_argument('--stagger', type=float, default=60., help='s: desynchronise episode phases before the first iteration')
+    p.add_argument('--commit', action='store_true', help='add the previous-intent adapter (PlanPolicy.add_commit) to a parent without one')
+    p.add_argument('--fresh-critic', action='store_true', help="new value MLP instead of the parent's value.pt")
+    p.add_argument('--value-warmup', type=int, default=0, help='first k iterations train only the critic (no policy step)')
+    p.add_argument('--train-encoder', action='store_true', help='also train the encoder parts on the head path (recomputed features)')
+    p.add_argument('--encoder-lr', type=float, default=1e-5)
+    p.add_argument('--anchor', type=float, default=1., help='L2 pull of trained encoder weights toward the parent (sum of squares)')
+    p.add_argument('--check-recompute', action='store_true', help='gate G3: one rollout, then recomputed vs stored log-probs '
+                   'and gradient norms; no update, no output')
     a = p.parse_args()
     root, out = Path(a.parent), Path(a.out)
     if out.exists() or any(out.parent.glob(out.name + '-it*')):
@@ -160,14 +173,23 @@ def main():
     torch.manual_seed(a.seed)
     ck = torch.load(root / 'model.pt', map_location='cpu', weights_only=True)
     schema, config = ck['schema'], ck['encoderConfig']
-    model = PlanPolicy(schema, config).cuda()
+    model = PlanPolicy(schema, config, commit=ck.get('commit', False)).cuda()
     model.load_state_dict(ck['weights'], strict=True)
-    frozen = {k: v.detach().clone() for k, v in model.encoder.state_dict().items()}
-    width = schema['hidden'] + model.encoder.own_size + 64
+    if a.commit and not model.commit:
+        model.add_commit()
+    trained = [k for k, _ in model.encoder.named_parameters() if k.split('.')[0] in ENCODER_PATH] if a.train_encoder else []
+    enc = [q for k, q in model.encoder.named_parameters() if k in trained]
+    for q in enc:
+        q.requires_grad_(True)
+    anchor = [q.detach().clone() for q in enc]
+    frozen = {k: v.detach().clone() for k, v in model.encoder.state_dict().items() if k not in trained}
+    width = model.width + (4 if model.commit else 0)
     value = nn.Sequential(nn.Linear(width, 128), nn.Tanh(), nn.Linear(128, 128), nn.Tanh(), nn.Linear(128, 1)).cuda()
-    if (root / 'value.pt').exists():
+    if (root / 'value.pt').exists() and not a.fresh_critic:
         value.load_state_dict(torch.load(root / 'value.pt', map_location='cuda', weights_only=True))
-    popt = torch.optim.Adam(model.intent.parameters(), lr=a.lr); vopt = torch.optim.Adam(value.parameters(), lr=1e-3)
+    head = list(model.intent.parameters()) + (list(model.adapter.parameters()) if model.commit else [])
+    popt = torch.optim.Adam([{'params': head, 'lr': a.lr}] + ([{'params': enc, 'lr': a.encoder_lr}] if enc else []))
+    vopt = torch.optim.Adam(value.parameters(), lr=1e-3)
     bank = SceneBank(a.bank)
     pool = [s['id'] for s in bank.scenes if s['family'] in a.families.split(',')]
     fams = {}
@@ -204,15 +226,14 @@ def main():
     history = []
     for it in range(1, a.iterations + 1):
         t0 = time.time(); finished = []
-        if it == 1: ro = Rollout(cap, width, E)
+        if it == 1: ro = Rollout(cap, width, E, obs=schema['size'] if enc else 0, hidden=schema['hidden'] if enc else 0)
         else: ro.clear()
         model.eval()
         for _ in range(ticks):
             idx, obs = env.decisions()
             if len(idx):
                 with torch.no_grad():
-                    feat, present, nh = features(model, obs.float(), hidden[idx])
-                    mean = model.intent(feat) * present
+                    feat, present, mean, nh = decide(model, obs.float(), hidden[idx])
                     fresh = (env.t[idx] - noise_at[idx]) >= a.hold - 1e-9
                     f = fresh.nonzero().squeeze(1)
                     noise[idx[f]] = torch.randn(len(f), 4, device='cuda') * a.sigma; noise_at[idx[f]] = env.t[idx[f]]
@@ -220,7 +241,7 @@ def main():
                     logp = (-.5 * ((act - mean) / a.sigma).square() - log_sigma).sum(1)
                     v = value(feat).squeeze(1)
                 r = env.reward[idx] - cum[idx]; ro.credit(idx, r); cum[idx] = env.reward[idx]
-                ro.add(idx, feat, present, act, logp, v, fresh, env.t[idx].float())
+                ro.add(idx, feat, present, act, logp, v, fresh, env.t[idx].float(), *((obs.float(), hidden[idx]) if enc else ()))
                 env.post(idx, act)
                 hidden[idx] = nh
             done = env.physics()
@@ -239,8 +260,7 @@ def main():
             idx, obs = env.decisions()
             if len(idx):
                 with torch.no_grad():
-                    feat, present, nh = features(model, obs.float(), hidden[idx])
-                    mean = model.intent(feat) * present
+                    feat, present, mean, nh = decide(model, obs.float(), hidden[idx])
                     fresh = (env.t[idx] - noise_at[idx]) >= a.hold - 1e-9
                     f = fresh.nonzero().squeeze(1)
                     noise[idx[f]] = torch.randn(len(f), 4, device='cuda') * a.sigma; noise_at[idx[f]] = env.t[idx[f]]
@@ -265,16 +285,43 @@ def main():
         n = ro.n; feat, present, action, old = ro.feat[:n], ro.present[:n], ro.action[:n], ro.logp[:n]
         pa = ro.fresh[:n].nonzero().squeeze(1)
         adv = (adv - adv[pa].mean()) / (adv[pa].std() + 1e-8)
-        model.train(); stats = []
+        # Same math as collection (no dropout/normalisation layers, so eval mode only makes that explicit).
+        model.eval(); stats = []
+
+        def policy_mean(i):
+            if enc:  # recompute the head input from the stored observation and hidden: gradients reach the encoder
+                f, pr, _ = model.head_input(ro.obs[i], ro.hid[i])
+                return model.head(f) * pr
+            return model.head(feat[i]) * present[i]
+
+        if a.check_recompute:
+            worst = 0.
+            with torch.no_grad():
+                for s0 in range(0, len(pa), 8192):
+                    i = pa[s0:s0 + 8192]
+                    lp = (-.5 * ((action[i] - policy_mean(i)) / a.sigma).square() - log_sigma).sum(1)
+                    worst = max(worst, float((lp - old[i]).abs().max()))
+            i = pa[:a.minibatch]
+            lp = (-.5 * ((action[i] - policy_mean(i)) / a.sigma).square() - log_sigma).sum(1)
+            popt.zero_grad(); (-(lp * adv[i]).mean()).backward()
+            named = [(k, q) for k, q in model.encoder.named_parameters() if k in trained] \
+                + [('adapter.' + k, q) for k, q in (model.adapter.named_parameters() if model.commit else [])] \
+                + [('intent.' + k, q) for k, q in model.intent.named_parameters()]
+            grads = {k: (float(q.grad.norm()) if q.grad is not None else None) for k, q in named}
+            print(json.dumps({'checkRecompute': {'decisions': n, 'policySamples': len(pa), 'maxAbsLogpDiff': worst, 'gradNorms': grads}}), flush=True)
+            return
         for epoch in range(a.epochs):
             order = pa[torch.randperm(len(pa), device='cuda')]; kls = []
             for s in range(0, len(order), a.minibatch):
                 i = order[s:s + a.minibatch]
-                mean = model.intent(feat[i]) * present[i]
+                mean = policy_mean(i)
                 logp = (-.5 * ((action[i] - mean) / a.sigma).square() - log_sigma).sum(1)
                 ratio = (logp - old[i]).exp()
                 pg = -torch.min(ratio * adv[i], ratio.clamp(1 - a.clip, 1 + a.clip) * adv[i]).mean()
-                popt.zero_grad(); pg.backward(); torch.nn.utils.clip_grad_norm_(model.intent.parameters(), .5); popt.step()
+                if enc:
+                    pg = pg + a.anchor * sum((q - q0).square().sum() for q, q0 in zip(enc, anchor))
+                if it > a.value_warmup:
+                    popt.zero_grad(); pg.backward(); torch.nn.utils.clip_grad_norm_(head + enc, .5); popt.step()
                 j = torch.randint(n, (4096,), device='cuda')
                 vl = (value(feat[j]).squeeze(1) - ret[j]).square().mean()
                 vopt.zero_grad(); vl.backward(); vopt.step()
@@ -282,15 +329,21 @@ def main():
             stats.append(float(np.mean(kls)))
             if stats[-1] > a.target_kl:
                 break
-        if any(not torch.equal(v, frozen[k]) for k, v in model.encoder.state_dict().items()):
+        if any(not torch.equal(v, frozen[k]) for k, v in model.encoder.state_dict().items() if k in frozen):
             raise ValueError('PPO changed the frozen encoder')
         row = {'iteration': it, 'decisions': n, 'policySamples': len(pa), 'rolloutSeconds': round(roll_s, 1), 'wallSeconds': round(time.time() - t0, 1),
-               'meanReward': round(ro.reward[:n].sum().item() / E / a.horizon, 4), 'epochs': len(stats), 'kl': round(stats[-1], 5), 'valueLoss': round(vl.item(), 4)}
+               'meanReward': round(ro.reward[:n].sum().item() / E / a.horizon, 4), 'epochs': len(stats), 'kl': round(stats[-1], 5), 'valueLoss': round(vl.item(), 4),
+               'policyStep': it > a.value_warmup}
+        if model.commit:
+            row['adapterOut'] = round(float(model.adapter[2].weight.norm()), 4)
+        if enc:
+            row['encoderDrift'] = round(math.sqrt(sum(float((q - q0).square().sum()) for q, q0 in zip(enc, anchor)) /
+                                                  sum(float(q0.square().sum()) for q0 in anchor)), 6)
         if finished:
-            cat = {k: torch.cat([f[k] for f in finished]) for k in ('success', 'damage', 'limit', 'severe', 'scene', 'hazards', 'progress')}
+            cat = {k: torch.cat([f[k] for f in finished]) for k in ('success', 'damage', 'limit', 'severe', 'scene', 'hazards', 'progress', 'held')}
             fam = [bank.scenes[s]['family'] for s in cat['scene'].tolist()]
             row.update({'episodes': len(fam), 'success': round(cat['success'].double().mean().item(), 3), 'damage': round(cat['damage'].mean().item(), 4),
-                        'limitSeconds': round(cat['limit'].mean().item(), 2), 'severe': round(cat['severe'].double().mean().item(), 3),
+                        'limitSeconds': round(cat['limit'].mean().item(), 2), 'heldSeconds': round(cat['held'].mean().item(), 2), 'severe': round(cat['severe'].double().mean().item(), 3),
                         'byFamily': {f: round(float(np.mean([s for s, g in zip(cat['success'].tolist(), fam) if g == f])), 3) for f in sorted(set(fam))}})
         history.append(row); print(json.dumps(row), flush=True)
         fam = ' · '.join(f'{k} {v * 100:.0f}%' for k, v in row.get('byFamily', {}).items())

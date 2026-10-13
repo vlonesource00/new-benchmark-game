@@ -15,7 +15,7 @@ from job_progress import JobProgress
 
 def load_policy(path):
     ck = torch.load(Path(path) / 'model.pt', map_location='cpu', weights_only=True)
-    model = PlanPolicy(ck['schema'], ck['encoderConfig']).cuda().eval()
+    model = PlanPolicy(ck['schema'], ck['encoderConfig'], commit=ck.get('commit', False)).cuda().eval()
     model.load_state_dict(ck['weights'], strict=True)
     return model, ck['schema']
 
@@ -121,11 +121,12 @@ def main():
     job.update(budget, f'{a.model} · {sum(r["success"] for r in results[:a.episodes])}/{a.episodes} succeeded', status='complete')
     fam = {}
     for r in results[:a.episodes]:
-        f = bank.scenes[r['scene']]['family']; d = fam.setdefault(f, {'n': 0, 'success': 0, 'admissible': 0, 'severe': 0, 'limit': 0, 'passes': 0., 'damage': 0.})
+        f = bank.scenes[r['scene']]['family']; d = fam.setdefault(f, {'n': 0, 'success': 0, 'admissible': 0, 'severe': 0, 'limit': 0, 'passes': 0., 'damage': 0., 'held': 0.})
         d['n'] += 1; d['success'] += r['success']; d['admissible'] += r['admissible']; d['severe'] += r['severe']; d['limit'] += r['limit'] > 0
-        d['passes'] += r['passes']; d['damage'] += r['damage']
+        d['passes'] += r['passes']; d['damage'] += r['damage']; d['held'] += r['held']  # total s nose-capped behind non-hazard cars
     for f, d in fam.items():
         d['passes'] = round(d['passes'] / d['n'], 2); d['damage'] = round(d['damage'] / d['n'], 4)
+        d['held'] = round(d['held'], 1)
     sim = ticks * a.envs / 120
     print(json.dumps({'episodes': len(results), 'success': round(sum(r['success'] for r in results) / len(results), 3), 'families': fam,
                       'wallSeconds': round(wall, 1), 'simSecondsPerWall': round(sim / wall, 1), 'ticks': ticks}))
