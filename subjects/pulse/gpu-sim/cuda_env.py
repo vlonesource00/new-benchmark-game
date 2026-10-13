@@ -61,7 +61,7 @@ class SceneBank:
 
 class GpuEnv:
     def __init__(self, bank, envs, dtype=torch.float32, seed=0, record=0, families=None, ids=None, sequential=False, offset_lag=0., early_stop=True, rivals=None, rival_offset_lag=0.,
-                 offset_deadband=0., contact='v2', reward='race10-v2', rival_room=0.):
+                 offset_deadband=0., contact='v2', reward='race10-v2', rival_room=0., rival_room_range=None, family_weights=None):
         self.sequential, self.cursor = sequential, 0
         self.early_stop = early_stop  # training: end 3 s after a severe contact; evaluation runs the full scene like JS
         self.offset_lag = offset_lag  # PlanExecutor offsetLag (s): low-pass on committed lane offsets
@@ -73,6 +73,11 @@ class GpuEnv:
         # room. rival_room (m): a distilled rival overlapping a car within 6 m along the track shifts its offsets away
         # until the centre-to-centre lateral gap reaches rival_room (0: off, the fitted policy as is).
         self.rival_room = rival_room
+        # rival_room_range (lo, hi): each rival draws its room per episode, uniform on [lo, hi] clamped at 0, so a share of
+        # rivals hold their line or close the door (room 0) and the rest give from a little to a lot of room.
+        self.rival_room_range = rival_room_range
+        self.room_lane = torch.full((envs * bank.slots,), float(rival_room), dtype=torch.float64, device='cuda')
+        self.family_weights = family_weights
         self.bank, self.E, self.N = bank, envs, bank.slots
         self.B, self.dtype, dev = envs * self.N, dtype, 'cuda'
         m = bank.meta
@@ -82,6 +87,8 @@ class GpuEnv:
         self.offroad = self.limit + .5
         self.gen = torch.Generator(device='cpu').manual_seed(seed)
         self.pool = [i for i, s in enumerate(bank.scenes) if (families is None or s['family'] in families) and (ids is None or s['id'] in ids)]
+        # family_weights {family: w}: sampling weight per scene of that family (default 1), e.g. more hazard encounters.
+        self.pool_w = torch.tensor([float((family_weights or {}).get(bank.scenes[i]['family'], 1.)) for i in self.pool])
         names = ['gt', 'lmdh']
         self.names = names
         self.w = CudaWorld([names[k % 2] for k in range(self.B)], envs, self.N, self.geom, dtype)
@@ -186,10 +193,13 @@ class GpuEnv:
             picks = torch.tensor([self.pool[(self.cursor + i) % n] for i in range(len(envs))])
             self.spare[envs] = torch.arange(self.cursor, self.cursor + len(envs), device='cuda') >= n; self.cursor += len(envs)
         else:
-            picks = torch.tensor(self.pool)[torch.randint(len(self.pool), (len(envs),), generator=self.gen)]
+            picks = torch.tensor(self.pool)[torch.multinomial(self.pool_w, len(envs), replacement=True, generator=self.gen)]
         for e, k in zip(envs.tolist(), picks.tolist()):
             self._reset_one(e, k)
         lanes = (envs[:, None] * N + torch.arange(N, device=dev)).reshape(-1)
+        if self.rival_room_range is not None:
+            lo, hi = self.rival_room_range
+            self.room_lane[lanes] = (lo + (hi - lo) * torch.rand(len(lanes), generator=self.gen, dtype=torch.float64)).clamp(min=0).to('cuda')
         self.w.mod.get_function('locate')(*self.w.grid(self.w.B), (self.w.v['S'], cp.int32(self.w.B), *self.w.track_args(), self.w.v['node']))
         self._exec_init(lanes)
         for b in lanes.tolist():
@@ -413,16 +423,18 @@ class GpuEnv:
             k = 1 - math.exp(-self.RIVAL_STEPS * DT / self.rival_offset_lag)
             prev = self.x.plans[r, :3]
             plan[:, :3] = torch.where((self.x.plan_seq[r] > 0)[:, None], prev + k * (plan[:, :3] - prev), plan[:, :3])
-        if self.rival_room > 0:
+        if self.rival_room > 0 or self.rival_room_range is not None:
             N = self.N
             s = self.S('s').double().view(self.E, N); lat = self.S('lateral').double().view(self.E, N)
             e, j = r // N, r % N
             ds = torch.remainder(s[e] - s[e, j][:, None] + self.length / 2, self.length) - self.length / 2
             dl = lat[e] - lat[e, j][:, None]
-            near = (ds.abs() < 6) & (dl.abs() < self.rival_room) & self.w.alive.view(self.E, N)[e].bool()
+            room = self.room_lane[r][:, None]
+            near = (ds.abs() < 6) & (dl.abs() < room) & self.w.alive.view(self.E, N)[e].bool()
             near[torch.arange(len(r), device=r.device), j] = False
-            push = torch.where(near, -torch.where(dl >= 0, 1., -1.).to(dl) * (self.rival_room - dl.abs()), torch.zeros_like(dl)).sum(1)
-            plan[:, :3] = (plan[:, :3] + (push.clamp(-self.rival_room, self.rival_room) / 6).to(self.dtype)[:, None]).clamp(-1, 1)
+            push = torch.where(near, -torch.where(dl >= 0, 1., -1.).to(dl) * (room - dl.abs()), torch.zeros_like(dl)).sum(1)
+            push = torch.maximum(torch.minimum(push, room[:, 0]), -room[:, 0])
+            plan[:, :3] = (plan[:, :3] + (push / 6).to(self.dtype)[:, None]).clamp(-1, 1)
         self.x.plans[r] = plan; self.x.plan_seq[r] += 1; self.x.plan_at[r] = self._clock
 
     def rescue(self):

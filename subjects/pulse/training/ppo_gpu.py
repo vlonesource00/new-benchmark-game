@@ -119,6 +119,8 @@ def main():
     p.add_argument('--rivals', default=None, help='distilled rivals (fit_rivals.py); default executor stand-ins')
     p.add_argument('--rival-offset-lag', type=float, default=.4)
     p.add_argument('--rival-room', type=float, default=0., help='m: distilled rivals give room alongside (0 off)')
+    p.add_argument('--rival-room-range', default=None, help='lo,hi m: per-rival room drawn per episode, clamped at 0')
+    p.add_argument('--family-weights', default=None, help='family:w,... scene sampling weights (default 1)')
     p.add_argument('--offset-deadband', type=float, default=0.); p.add_argument('--contact', default='v2', choices=['v2', 'v3'])
     p.add_argument('--reward', default='race10-v2', help='cuda_env REWARDS profile')
     p.add_argument('--holdout', type=int, default=4, help='every k-th pool scene is held out for validation (0: none)')
@@ -140,10 +142,14 @@ def main():
     popt = torch.optim.Adam(model.intent.parameters(), lr=a.lr); vopt = torch.optim.Adam(value.parameters(), lr=1e-3)
     bank = SceneBank(a.bank)
     pool = [s['id'] for s in bank.scenes if s['family'] in a.families.split(',')]
-    held = pool[::a.holdout] if a.holdout else []
+    fams = {}
+    for s in bank.scenes:
+        if s['id'] in pool: fams.setdefault(s['family'], []).append(s['id'])
+    held = [i for ids in fams.values() for i in ids[::a.holdout]] if a.holdout else []
     train_ids = [i for i in pool if i not in set(held)]
     env = GpuEnv(bank, a.envs, dtype=getattr(torch, a.dtype), seed=a.seed, ids=train_ids, offset_lag=a.offset_lag,
-                 rivals=load_rivals(a.rivals) if a.rivals else None, rival_offset_lag=a.rival_offset_lag, rival_room=a.rival_room,
+                 rivals=load_rivals(a.rivals) if a.rivals else None, rival_offset_lag=a.rival_offset_lag, rival_room=a.rival_room, rival_room_range=tuple(map(float, a.rival_room_range.split(','))) if a.rival_room_range else None,
+                 family_weights={k: float(v) for k, v in (x.split(':') for x in a.family_weights.split(','))} if a.family_weights else None,
                  offset_deadband=a.offset_deadband, contact=a.contact, reward=a.reward)
     E, log_sigma = a.envs, math.log(a.sigma)
     h0 = warm_hidden(model, schema); hidden = h0.expand(E, -1).clone()
