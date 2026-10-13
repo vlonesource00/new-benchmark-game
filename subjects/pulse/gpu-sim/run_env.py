@@ -20,6 +20,25 @@ def load_policy(path):
     return model, ck['schema']
 
 
+def load_replay(dirs):
+    """{case id: (times [T], [T, cars, 6])} x, z, yaw, speed, s, lateral per trace step (60 or 30 Hz by frameSteps, uneven
+    in races) from plan-evaluate traces (car index = id = slot)."""
+    out = {}
+    for d in dirs.split(','):
+        for f in Path(d).glob('*.jsonl'):
+            rows, times = [], []
+            with open(f, encoding='utf-8') as fh:
+                for line in fh:
+                    r = json.loads(line)
+                    if r.get('type') != 'step':
+                        continue
+                    cars = sorted(r['cars'], key=lambda c: c['id'])
+                    times.append(r['time'])
+                    rows.append([[c['x'], c['z'], c['yaw'], c['speed'], c['s'], c['lateral']] for c in cars])
+            out[f.stem] = (times, rows)
+    return out
+
+
 def warm_hidden(model, schema):
     """driveCases warms the recurrent state with 30 all-zero observations before each run."""
     h = torch.zeros(1, schema['hidden'], device='cuda')
@@ -68,6 +87,11 @@ def main():
     p.add_argument('--heldout-of', default=None, help='scene ids held out by a ppo_gpu.py checkpoint (its metadata)')
     p.add_argument('--each', action='store_true', help='every pool scene exactly once (episodes = pool size)')
     p.add_argument('--neurons', action='store_true', help='record every layer per decision of recorded episodes (lab network view)')
+    p.add_argument('--rec-every', type=int, default=6, help='recorded frame stride in 120 Hz ticks (diagnostic)')
+    p.add_argument('--prev-first', action='store_true', help='JS-parity previous action: first-tick controls of every frame row')
+    p.add_argument('--rival-exec', default=None, help='JSON {driver: {brakeExp|margin|jerk: v}} executor options per distilled rival')
+    p.add_argument('--replay', default=None, help='diagnostic: comma-separated plan-evaluate suite dirs with traces; rivals of '
+                   'those scenes follow the recorded JS states (cuda_env replay)')
     a = p.parse_args()
     torch.manual_seed(a.seed)
     if a.heldout_of:
@@ -78,7 +102,9 @@ def main():
                  ids=a.ids.split(',') if a.ids else None, sequential=a.each, offset_lag=a.offset_lag, early_stop=not a.full,
                  rivals=load_rivals(a.rivals) if a.rivals else None, rival_offset_lag=a.rival_offset_lag, rival_room=a.rival_room, rival_room_range=tuple(map(float, a.rival_room_range.split(','))) if a.rival_room_range else None,
                  family_weights={k: float(v) for k, v in (x.split(':') for x in a.family_weights.split(','))} if a.family_weights else None,
-                 offset_deadband=a.offset_deadband, contact=a.contact, reward=a.reward)
+                 offset_deadband=a.offset_deadband, contact=a.contact, reward=a.reward, replay=load_replay(a.replay) if a.replay else None,
+                 prev_first=a.prev_first, rival_exec=json.loads(Path(a.rival_exec).read_text() if Path(a.rival_exec).exists() else a.rival_exec) if a.rival_exec else None)
+    env.rec_every = a.rec_every
     h0 = warm_hidden(model, schema)
     hidden = h0.expand(a.envs, -1).clone()
     results, ticks, t0 = [], 0, time.time()

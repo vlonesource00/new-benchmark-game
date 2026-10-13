@@ -87,10 +87,41 @@ class CudaExecutor:
         self.plan_seq = torch.zeros(self.E, dtype=torch.int32, device=dev)
         self.plan_at = torch.zeros(self.E, dtype=torch.float64, device=dev)
         self.real = cp.float64 if dt == torch.float64 else cp.float32
+        # Per-driver option rows (add_variants): the kernel picks line/GGV/options by the class index it is given, so a
+        # rival lane whose driver has overrides gets its own row (same line and GGV, its own options). None = world classes.
+        self.variant, self.driver = None, None
+
+    OPT_INDEX = {'margin': 0, 'jerk': 1, 'brakeExp': 8}
+
+    def add_variants(self, overrides, drivers):
+        """overrides {driver index: {'margin'|'jerk'|'brakeExp': value}}; drivers: number of driver indices.
+        Set .driver to a per-lane driver index tensor (-1 none) before stepping."""
+        base = self.opt.shape[0]
+        table = torch.arange(base)[:, None].repeat(1, drivers)
+        line, ggv, opt = [self.line], [self.ggv], [self.opt]
+        n = base
+        for k in range(base):
+            if math.isnan(float(self.opt[k, 0])):
+                continue
+            for d, o in overrides.items():
+                row = self.opt[k].clone()
+                for key, val in o.items():
+                    row[self.OPT_INDEX[key]] = float(val)
+                table[k, d] = n; n += 1
+                line.append(self.line[k:k + 1]); ggv.append(self.ggv[k:k + 1]); opt.append(row[None])
+        self.line, self.ggv, self.opt = torch.cat(line).contiguous(), torch.cat(ggv).contiguous(), torch.cat(opt).contiguous()
+        self.variant = table.to(self.opt.device)
+
+    def cls_arg(self):
+        if self.variant is None or self.driver is None:
+            return self.w.v['cls']
+        c, d = self.w.cls.long(), self.driver
+        self._xcls = torch.where(d >= 0, self.variant[c, d.clamp(min=0)], c).to(torch.int32).contiguous()
+        return cupy(self._xcls)
 
     def args(self):
         w, v = self.w, self.w.v
-        return (v['S'], cp.int32(w.B), cp.int32(w.N), v['cls'], cupy(self.line), cupy(self.ggv), cp.int32(self.ggvW), cupy(self.opt),
+        return (v['S'], cp.int32(w.B), cp.int32(w.N), self.cls_arg(), cupy(self.line), cupy(self.ggv), cp.int32(self.ggvW), cupy(self.opt),
                 v['tyres'], v['temp_grip'], v['alive'], v['ghost'], v['node'], cupy(self.prev_brake), cupy(self.wake),
                 cupy(self.lanes), cp.int32(self.E), cupy(self.ex), cupy(self.xr), cupy(self.xi), *w.track_args())
 

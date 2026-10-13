@@ -156,6 +156,8 @@ def main():
     p.add_argument('--rivals', default=None, help='distilled rivals (fit_rivals.py); default executor stand-ins')
     p.add_argument('--rival-offset-lag', type=float, default=.4)
     p.add_argument('--rival-room', type=float, default=0., help='m: distilled rivals give room alongside (0 off)')
+    p.add_argument('--rival-exec', default=None, help='JSON file/string {driver: {margin|jerk|brakeExp: v}} executor options per distilled rival')
+    p.add_argument('--prev-first', action='store_true', help='JS-parity previous action (first-tick controls of every frame row)')
     p.add_argument('--rival-room-range', default=None, help='lo,hi m: per-rival room drawn per episode, clamped at 0')
     p.add_argument('--family-weights', default=None, help='family:w,... scene sampling weights (default 1)')
     p.add_argument('--offset-deadband', type=float, default=0.); p.add_argument('--contact', default='v2', choices=['v2', 'v3'])
@@ -204,7 +206,8 @@ def main():
     env = GpuEnv(bank, a.envs, dtype=getattr(torch, a.dtype), seed=a.seed, ids=train_ids, offset_lag=a.offset_lag,
                  rivals=load_rivals(a.rivals) if a.rivals else None, rival_offset_lag=a.rival_offset_lag, rival_room=a.rival_room, rival_room_range=tuple(map(float, a.rival_room_range.split(','))) if a.rival_room_range else None,
                  family_weights={k: float(v) for k, v in (x.split(':') for x in a.family_weights.split(','))} if a.family_weights else None,
-                 offset_deadband=a.offset_deadband, contact=a.contact, reward=a.reward)
+                 offset_deadband=a.offset_deadband, contact=a.contact, reward=a.reward, prev_first=a.prev_first,
+                 rival_exec=json.loads(Path(a.rival_exec).read_text() if Path(a.rival_exec).exists() else a.rival_exec) if a.rival_exec else None)
     E, log_sigma = a.envs, math.log(a.sigma)
     h0 = warm_hidden(model, schema); hidden = h0.expand(E, -1).clone()
     noise = torch.zeros(E, 4, device='cuda'); noise_at = torch.full((E,), -1e9, dtype=torch.float64, device='cuda')

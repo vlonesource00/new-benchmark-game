@@ -76,7 +76,8 @@ class SceneBank:
 
 class GpuEnv:
     def __init__(self, bank, envs, dtype=torch.float32, seed=0, record=0, families=None, ids=None, sequential=False, offset_lag=0., early_stop=True, rivals=None, rival_offset_lag=0.,
-                 offset_deadband=0., contact='v2', reward='race10-v2', rival_room=0., rival_room_range=None, family_weights=None):
+                 offset_deadband=0., contact='v2', reward='race10-v2', rival_room=0., rival_room_range=None, family_weights=None,
+                 replay=None, rival_exec=None, prev_first=False):
         # The GPU also drives the display: cap PyTorch's share (PULSE_GPU_MEM, default 0.8) so a full run cannot starve it (TDR).
         torch.cuda.set_per_process_memory_fraction(float(os.environ.get('PULSE_GPU_MEM', '0.8')))
         self.sequential, self.cursor = sequential, 0
@@ -91,6 +92,13 @@ class GpuEnv:
         # room. rival_room (m): a distilled rival overlapping a car within 6 m along the track shifts its offsets away
         # until the centre-to-centre lateral gap reaches rival_room (0: off, the fitted policy as is).
         self.rival_room = rival_room
+        # replay (diagnostic, off by default): {scene id: (times [T], [T, slots, 6] x, z, yaw, speed, s, lateral)} recorded by
+        # the JS evaluator. Rivals are put on the recorded states after every car step (before collisions), so the ego
+        # meets the real AI drivers' motion; they do not react to a different ego. Separates rival-model error from the
+        # rest of the pipeline (load_replay builds it from plan-evaluate traces).
+        self.replay_src = replay
+        self.rec_every = 6
+        self.prev_first = prev_first  # off: legacy prev_row = controls at post time (what c196..c207 trained on)
         # rival_room_range (lo, hi): each rival draws its room per episode, uniform on [lo, hi] clamped at 0, so a share of
         # rivals hold their line or close the door (room 0) and the rest give from a little to a lot of room.
         self.rival_room_range = rival_room_range
@@ -135,7 +143,10 @@ class GpuEnv:
         self.spare = torch.zeros(envs, dtype=torch.bool, device=dev)  # sequential mode: pool exhausted, outcome not counted
         self.pending = Fz(envs, 4, t=dtype); self.pending_at = Fz(envs); self.pending_clock = Fz(envs)
         self.accepted_at = Fz(envs); self.last_request = Fz(envs)
-        self.prev_row = Fz(envs, 2, t=dtype)  # executed controls at the previous decision (toAction)
+        # scenario.mjs `previous`: toAction(row.executed) = controls of the FIRST physics tick of the last closed
+        # frame row (every frame, not only posts); row_first marks a row whose first tick has not run yet.
+        self.prev_row = Fz(envs, 2, t=dtype)
+        self.row_first = torch.zeros(envs, dtype=torch.bool, device=dev)
         self.steer_row = Fz(envs)             # executed steer at the previous decision (jerk)
         self.plan_seq = torch.zeros(envs, dtype=torch.int32, device=dev)
         self.lagged = Fz(envs, 3, t=dtype)  # filtered (pre-dead-band) offsets: the low-pass state, as plan-executor.mjs goal
@@ -179,6 +190,13 @@ class GpuEnv:
         self.rivals = rivals
         self.rival_offset_lag = rival_offset_lag  # s: the ego's offsetLag low-pass on distilled rival offsets
         self.rival_driver = torch.full((self.B,), -1, dtype=torch.long, device=dev)
+        # rival_exec {driver: {'brakeExp'|'margin'|'jerk': v}}: executor options of distilled rivals per driver (the stand-ins
+        # brake like INTERCEPT's options; the real drivers brake later). Calibrated on speed at the same place vs JS traces.
+        self.rival_exec = rival_exec
+        if rival_exec:
+            assert rivals is not None, 'rival_exec needs distilled rivals'
+            self.x.add_variants({rivals.names.index(k): v for k, v in rival_exec.items()}, len(rivals.names))
+            self.x.driver = self.rival_driver
         nodes = torch.tensor(m['trackGeometry']['nodes'], dtype=torch.float64, device=dev)
         self.node_x, self.node_z, self.node_s, self.node_tx, self.node_tz = (nodes[:, i] for i in range(5))
         sch = m['observation']['fields']
@@ -391,7 +409,7 @@ class GpuEnv:
         self.frame_rng[e] = seed ^ 0x5046524d; self.reply_rng[e] = seed ^ 0x5052504c
         self.frame[e] = -1; self.next_tick[e] = 0
         self.tick[e] = 0; self.due[e] = -1; self.pending[e] = 0; self.pending_at[e] = 0; self.accepted_at[e] = 0; self.last_request[e] = 0
-        self.prev_row[e] = 0; self.steer_row[e] = 0; self.plan_seq[e] = 0; self.lagged[e] = 0
+        self.prev_row[e] = 0; self.row_first[e] = False; self.steer_row[e] = 0; self.plan_seq[e] = 0; self.lagged[e] = 0
         self.laps0[e] = ego['laps'] - ego['lap'] + 1; self.stint0[e] = ego['stintLaps']
         self.tyres0[e] = ego['nextTyreLap'] - ego['lap'] if ego['nextTyreLap'] is not None else ego['laps'] - ego['lap'] + 1
         self.crossed[e] = 0; self.reward[e] = 0
@@ -432,6 +450,7 @@ class GpuEnv:
             self.frame_rng[a], j = lcg(self.frame_rng[a], self.frame_jitter[a])
             self.next_tick[a] = self.tick[a] + self.frame_steps[a] + j
             self.row_damage[a] = 0  # a new decision row begins
+            self.row_first[a] = True
         accept = at_frame & (self.due >= 0) & (self.frame >= self.due)
         if accept.any():
             a = accept.nonzero().squeeze(1)
@@ -475,7 +494,8 @@ class GpuEnv:
         steer = self.controls[lanes, 2].double()
         self.reward[idx] -= self.rw['jerk'] * (steer - self.steer_row[idx]).abs()
         self.steer_row[idx] = steer
-        self.prev_row[idx] = torch.stack([self.controls[lanes, 2], self.controls[lanes, 0] - self.controls[lanes, 1]], 1)
+        if not self.prev_first:
+            self.prev_row[idx] = torch.stack([self.controls[lanes, 2], self.controls[lanes, 0] - self.controls[lanes, 1]], 1)
 
     # ---- physics tick
     def supervise(self):
@@ -519,6 +539,10 @@ class GpuEnv:
         lon = (out[:, OUT['throttle']] - out[:, OUT['brake']]).clamp(-1, 1)
         self.controls[:, 0] = lon.clamp(min=0); self.controls[:, 1] = (-lon).clamp(min=0); self.controls[:, 2] = out[:, OUT['steer']].clamp(-1, 1)
         self.supervise()
+        if self.prev_first and self.row_first.any():
+            rf = self.row_first.nonzero().squeeze(1); el = self.ego[rf].long()
+            self.prev_row[rf] = torch.stack([self.controls[el, 2], self.controls[el, 0] - self.controls[el, 1]], 1).to(self.prev_row.dtype)
+            self.row_first[rf] = False
         # Hazard rivals: brakes locked from stopAt; a spun car snaps the steering for 0.6 s.
         c = self.controls.view(E, N, 3)
         since = self.t[:, None] - self.hz_at
@@ -543,7 +567,8 @@ class GpuEnv:
         self.race.intent[self.ego.long(), 1] = torch.where(gtp, harvest, math.nan)
         force = self.race.hybrid(self.controls, DT)
         s0 = self.S('s').double().clone()
-        closing = w.step(DT, self.controls[:, 0], self.controls[:, 1], self.controls[:, 2], force, before_collisions=self.rescue)
+        closing = w.step(DT, self.controls[:, 0], self.controls[:, 1], self.controls[:, 2], force,
+                         before_collisions=self.rescue if self.replay_src is None else self._rescue_replay)
         self.race.stewards(DT)
         self.t += DT; self.tick += 1; self._clock += DT; self._ticks += 1
         return self.score(s0, closing.double())
@@ -578,6 +603,53 @@ class GpuEnv:
             push = torch.maximum(torch.minimum(push, room[:, 0]), -room[:, 0])
             plan[:, :3] = (plan[:, :3] + (push / 6).to(self.dtype)[:, None]).clamp(-1, 1)
         self.x.plans[r] = plan; self.x.plan_seq[r] += 1; self.x.plan_at[r] = self._clock
+
+    def _rescue_replay(self):
+        self.rescue()
+        self.replay_rivals()
+
+    def replay_rivals(self):
+        """Rival lanes of replayed scenes onto the recorded JS states at this tick's end time (linear in time, yaw by sin/cos)."""
+        if not hasattr(self, '_rp'):
+            ids = [sc['id'] for sc in self.bank.scenes]
+            T = max(len(v[1]) for v in self.replay_src.values()) + 1
+            R = torch.full((len(ids), T, self.N, 6), math.nan, dtype=torch.float64)
+            n = torch.zeros(len(ids), dtype=torch.long); Tm = torch.full((len(ids), T), 1e9, dtype=torch.float64)
+            for k, i in enumerate(ids):
+                if i in self.replay_src:
+                    a = torch.as_tensor(self.replay_src[i][1], dtype=torch.float64)
+                    R[k, :len(a), :a.shape[1]] = a; n[k] = len(a); Tm[k, :len(a)] = torch.as_tensor(self.replay_src[i][0], dtype=torch.float64)
+            self._rp, self._rp_n, self._rp_t = R.cuda(), n.cuda(), Tm.cuda()
+        E, N = self.E, self.N
+        sc = self.scene.to('cuda')
+        n = self._rp_n[sc]
+        tt = (self.t + DT).double()
+        times = self._rp_t[sc]
+        i = (torch.searchsorted(times, tt[:, None], right=True).squeeze(1) - 1).clamp(min=0)
+        ok = n > i + 1
+        i = torch.minimum(i, (n - 2).clamp(min=0))
+        t0, t1 = times.gather(1, i[:, None]).squeeze(1), times.gather(1, (i + 1)[:, None]).squeeze(1)
+        hz = 1 / (t1 - t0).clamp(min=1e-3)
+        f = ((tt - t0) * hz).clamp(0, 1)[:, None]
+        a, b = self._rp[sc, i, 1:], self._rp[sc, i + 1, 1:]  # [E, N-1, 6]
+        lerp = a + (b - a) * f[..., None]
+        yaw = torch.atan2(a[..., 2].sin() * (1 - f) + b[..., 2].sin() * f, a[..., 2].cos() * (1 - f) + b[..., 2].cos() * f)
+        dyaw = torch.atan2((b[..., 2] - a[..., 2]).sin(), (b[..., 2] - a[..., 2]).cos()) * hz[:, None]
+        live = ok[:, None] & ~lerp[..., 0].isnan() & self.w.alive.view(E, N)[:, 1:].bool()
+        if not live.any():
+            return
+        e, j = live.nonzero(as_tuple=True)
+        lanes = e * N + j + 1
+        v = lerp[e, j]; y = yaw[e, j]; spd = v[:, 3]
+        # Velocity from the recorded motion over the step (keeps the drivers' slip), body frame as physics.cuh.
+        hz_e = hz[e]
+        vx = (b[e, j, 0] - a[e, j, 0]) * hz_e; vz = (b[e, j, 1] - a[e, j, 1]) * hz_e
+        vx = torch.where(vx.isnan(), spd * y.sin(), vx); vz = torch.where(vz.isnan(), spd * y.cos(), vz)
+        put = lambda k, val: self.S(k).index_copy_(0, lanes, val.to(self.dtype))
+        put('x', v[:, 0]); put('z', v[:, 1]); put('yaw', y); put('speed', spd)
+        put('vx', vx); put('vz', vz); put('u', vx * y.sin() + vz * y.cos()); put('v', vx * y.cos() - vz * y.sin()); put('yawRate', dyaw[e, j])
+        put('s', v[:, 4]); put('lateral', v[:, 5])
+        self.w.mod.get_function('locate')(*self.w.grid(self.w.B), (self.w.v['S'], cp.int32(self.w.B), *self.w.track_args(), self.w.v['node']))
 
     def rescue(self):
         """race.js rescue() for every car after the car steps: a car slower than 1.5 m/s for 4 s (race time >= 6 s) is
@@ -759,7 +831,7 @@ class GpuEnv:
 
     # ---- recording for the lab viewer
     def _record(self, contact, passed):
-        every = 6  # 20 Hz frames
+        every = self.rec_every  # 6: 20 Hz frames
         for e in range(self.record):
             rec = self.recordings[e]
             if rec is None:
@@ -779,7 +851,7 @@ class GpuEnv:
             o = self.x.out[e * N]
             rec['frames'].append({'t': round(self.t[e].item(), 3), 'cars': [[round(float(v), 3) for v in row] for row in pose[:rec['count']]],
                                   'controls': [round(v, 3) for v in c], 'plan': [round(v, 3) for v in p],
-                                  'target': round(float(o[OUT['target']]), 2), 'reward': round(self.reward[e].item(), 4),
+                                  'target': round(float(o[OUT['target']]), 2), 'acc': round(float(o[OUT['acceleration']]), 3), 'reward': round(self.reward[e].item(), 4),
                                   'progress': round(self.progress[e * N].item(), 2), 'limit': round(self.limit_time[e].item(), 3),
                                   'source': int(o[OUT['source']]), 'held': round(self.held_time[e].item(), 2)})
 
