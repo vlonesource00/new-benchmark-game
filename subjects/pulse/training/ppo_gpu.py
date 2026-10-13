@@ -44,12 +44,13 @@ def warm_hidden(model, schema):
 
 class Rollout:
     """Decision records in collection order; rewards land on an env's latest record."""
-    def __init__(self, cap, width, E):
-        z = lambda *s, t=torch.float32: torch.zeros(*s, dtype=t, device='cuda')
+    def __init__(self, cap, width, E, device='cuda'):
+        self.dev = device
+        z = lambda *s, t=torch.float32: torch.zeros(*s, dtype=t, device=device)
         self.feat, self.present, self.action = z(cap, width), z(cap, 1), z(cap, 4)
         self.logp, self.value, self.reward = z(cap), z(cap), z(cap)
         self.fresh, self.done, self.cut = z(cap, t=torch.bool), z(cap, t=torch.bool), z(cap, t=torch.bool)
-        self.env, self.n, self.last = z(cap, t=torch.long), 0, torch.full((E,), -1, dtype=torch.long, device='cuda')
+        self.env, self.n, self.last = z(cap, t=torch.long), 0, torch.full((E,), -1, dtype=torch.long, device=self.dev)
         # Value of the env's next decision state for records at the rollout edge (bootstrap), when observed.
         self.next_value, self.has_next = z(cap), z(cap, t=torch.bool)
         self.time, self.next_t = z(cap), z(cap)  # decision times (s): elapsed-time discounting
@@ -61,7 +62,7 @@ class Rollout:
         self.n = 0; self.last.fill_(-1)
 
     def add(self, idx, feat, present, action, logp, value, fresh, t):
-        k = torch.arange(self.n, self.n + len(idx), device='cuda')
+        k = torch.arange(self.n, self.n + len(idx), device=self.dev)
         if self.n + len(idx) > len(self.env):
             raise ValueError('Rollout buffer full; raise --cap')
         self.feat[k], self.present[k], self.action[k], self.logp[k], self.value[k], self.fresh[k] = feat, present, action, logp, value, fresh
@@ -74,35 +75,42 @@ class Rollout:
 
     def gae(self, gamma, lam, rate=0.):
         n, env = self.n, self.env[:self.n]
-        order = torch.argsort(env * (n + 1) + torch.arange(n, device='cuda'))
+        order = torch.argsort(env * (n + 1) + torch.arange(n, device=self.dev))
         e = env[order]
         counts = torch.bincount(e, minlength=int(self.last.numel()))
         start = torch.cumsum(counts, 0) - counts
-        col = torch.arange(n, device='cuda') - start[e]
+        col = torch.arange(n, device=self.dev) - start[e]
         L, E = int(counts.max()), len(counts)
-        pad = lambda x, fill=0.: torch.full((E, L), fill, dtype=x.dtype, device='cuda').index_put_((e, col), x[order])
+        pad = lambda x, fill=0.: torch.full((E, L), fill, dtype=x.dtype, device=self.dev).index_put_((e, col), x[order])
         r, v, d, c = pad(self.reward[:n]), pad(self.value[:n]), pad(self.done[:n], False), pad(self.cut[:n], False)
         nv, hn = pad(self.next_value[:n]), pad(self.has_next[:n], False)
         tm, nt = pad(self.time[:n]), pad(self.next_t[:n])
-        valid = pad(torch.ones(n, dtype=torch.bool, device='cuda'), False)
-        adv = torch.zeros(E, L, device='cuda'); run = torch.zeros(E, device='cuda')
+        valid = pad(torch.ones(n, dtype=torch.bool, device=self.dev), False)
+        adv = torch.zeros(E, L, device=self.dev); run = torch.zeros(E, device=self.dev)
         for j in range(L - 1, -1, -1):
-            nxt = v[:, j + 1] if j + 1 < L else torch.zeros(E, device='cuda')
-            more = valid[:, j + 1] if j + 1 < L else torch.zeros(E, dtype=torch.bool, device='cuda')
+            nxt = v[:, j + 1] if j + 1 < L else torch.zeros(E, device=self.dev)
+            more = valid[:, j + 1] if j + 1 < L else torch.zeros(E, dtype=torch.bool, device=self.dev)
             # (An early stop after a severe contact is a terminal failure, not a cut: it must not bootstrap.)
             # Next state value: the env's next decision; at an episode end 0 unless truncated (cut, the record's own
             # value); at the rollout's edge the value of the env's next decision state, observed after the rollout.
             edge = torch.where(hn[:, j], nv[:, j], v[:, j])
             boot = torch.where(d[:, j], torch.where(c[:, j], v[:, j], 0.), torch.where(more, nxt, edge))
             if rate:  # per elapsed second, referenced to `rate` requests/s: 15/30/60 Hz scenes see the same horizon
-                dt = torch.where(more, (tm[:, j + 1] if j + 1 < L else tm[:, j]) - tm[:, j], torch.where(hn[:, j], nt[:, j] - tm[:, j], 1 / rate))
+                # Elapsed time only within the episode: after a terminal row the env's next record belongs to a new episode
+                # (its clock restarts at 0), so a terminal or unobserved continuation uses one reference step.
+                live = ~d[:, j]
+                step = torch.full_like(tm[:, j], 1 / rate)
+                dt = torch.where(live & more, (tm[:, j + 1] if j + 1 < L else tm[:, j]) - tm[:, j],
+                                 torch.where(live & hn[:, j], nt[:, j] - tm[:, j], step))
                 g, gl = gamma ** (dt * rate), (gamma * lam) ** (dt * rate)
             else:
                 g, gl = gamma, gamma * lam
             delta = r[:, j] + g * boot - v[:, j]
             run = delta + gl * run * (~d[:, j] & more)
             adv[:, j] = torch.where(valid[:, j], run, 0.)
-        a = torch.empty(n, device='cuda'); a[order] = adv[e, col]
+        a = torch.empty(n, device=self.dev); a[order] = adv[e, col]
+        if not torch.isfinite(a).all():
+            raise FloatingPointError(f'non-finite advantages: {int((~torch.isfinite(a)).sum())} of {n}')
         return a, a + self.value[:n]
 
 
