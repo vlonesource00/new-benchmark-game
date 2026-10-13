@@ -2,11 +2,12 @@ import { createHash } from 'node:crypto';
 import { timingProfile } from '../tools/timing-profiles.mjs';
 import { RIVAL_POOL } from './generated-field.mjs';
 
-// Generated duels v1 (2026-10-13). Same-class, same-pace racing: PULSE starts 8-35 m behind one or two GTP rivals
+// Generated duels v2 (2026-10-13). Same-class, same-pace racing: PULSE starts 8-35 m behind one or two GTP rivals
 // running at its own reference speed, sometimes with a GTP pressing from behind, and must complete a pass within
 // 90 s. In the five-lap race card PULSE ran within 30 m behind a rival for ~60% of the race and asked for a side
 // in under 10% of those rows; the field suite's race family has no pass requirement and its traffic runs ~6 m/s
-// slower, so same-pace overtakes never had to be learned.
+// slower, so same-pace overtakes never had to be learned. The requirement is a retained racing pass: a rival that
+// crashes or stops becomes a hazard, and clearing it is not combat (review 2026-10-13).
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const rng = seed => { let s = seed >>> 0; return () => { s = (Math.imul(1664525, s) + 1013904223) >>> 0; return s / 2 ** 32; }; };
 const round = (value, scale = 10) => Math.round(value * scale) / scale;
@@ -37,10 +38,10 @@ export function generateDuels({ seed, train, development, finalTest, lmdh }) {
       const profile = pick(['frame-120', 'frame-60', 'frame-30', 'lag-1', 'lag-2', 'jitter']);
       Object.assign(settings, timingProfile(profile), { scheduleSeed: Math.floor(draw() * 0xffffffff) });
       cases.push({ id: `duel-${split}-${String(i + 1).padStart(3, '0')}`, split, family: 'duel', profile, physicalFamily, settings,
-        checkpointDistance: 2600, requirements: { encountersCleared: 1 } });
+        checkpointDistance: 2600, requirements: { retainedPasses: 1 } });
     }
   }
-  return { format: 'pulse-generated-duels-v1', seed, counts: { train, development, finalTest }, rivalPool: RIVAL_POOL, cases,
+  return { format: 'pulse-generated-duels-v2', seed, counts: { train, development, finalTest }, rivalPool: RIVAL_POOL, cases,
     finalTestRule: 'Freeze the selected model and evaluation rules before running final-test. Do not tune or train from final-test outcomes.',
     scope: 'Harbor Ring, clear weather, GTP. Same-class same-pace duels from reference-lap states: pass one of one or two GTP rivals within 90 s.' };
 }

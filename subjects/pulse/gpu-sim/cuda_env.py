@@ -133,14 +133,14 @@ class GpuEnv:
         self.enc_t0 = torch.zeros(envs, R, dtype=torch.float64, device=dev)
         # v3 contact judgement per (env, rival): pending until, rival speed at contact / minimum since, caused, ego damage then.
         self.j_until = torch.full((envs, R), -1., dtype=torch.float64, device=dev); self.j_v0 = torch.zeros(envs, R, dtype=torch.float64, device=dev)
-        self.j_min = torch.zeros(envs, R, dtype=torch.float64, device=dev); self.j_dmg0 = torch.zeros(envs, R, dtype=torch.float64, device=dev)
+        self.j_min = torch.zeros(envs, R, dtype=torch.float64, device=dev); self.j_hit = torch.zeros(envs, R, dtype=torch.float64, device=dev)
         self.j_caused = torch.zeros(envs, R, dtype=torch.bool, device=dev); self.j_off = torch.zeros(envs, R, dtype=torch.bool, device=dev)
         self.lat_prev = torch.full((self.B,), math.nan, dtype=torch.float64, device=dev); self.lat_rate = torch.zeros(self.B, dtype=torch.float64, device=dev)
         # Hazard rivals: kind 0 none / 1 stopped / 2 spun, start time and flick sign.
         self.hz_kind = torch.zeros(envs, R, dtype=torch.long, device=dev); self.hz_at = torch.full((envs, R), math.inf, dtype=torch.float64, device=dev)
         self.hz_flick = torch.zeros(envs, R, dtype=dtype, device=dev)
-        self.require = torch.zeros(envs, 4, dtype=torch.float64, device=dev)  # encountersCleared, hazardsCleared, validFullLaps, unpassedTraffic(max)
-        self.has_req = torch.zeros(envs, 4, dtype=torch.bool, device=dev)
+        self.require = torch.zeros(envs, 5, dtype=torch.float64, device=dev)  # encountersCleared, hazardsCleared, validFullLaps, unpassedTraffic(max), retainedPasses
+        self.has_req = torch.zeros(envs, 5, dtype=torch.bool, device=dev)
         self.track_w = torch.tensor([m['classes'][n]['track'] for n in names], dtype=dtype, device=dev)
         self.controls = torch.zeros(self.B, 3, dtype=dtype, device=dev)
         self.ego = torch.arange(envs, device=dev, dtype=torch.int32) * self.N
@@ -262,7 +262,7 @@ class GpuEnv:
         self.lap_ok[e] = True; self.valid_laps[e] = 0
         self.enc_start[e] = False; self.enc_done[e] = False; self.enc_hazard[e] = False; self.enc_clear[e] = math.nan
         self.passes[e] = 0; self.hazards[e] = 0; self.enc_t0[e] = 0
-        self.j_until[e] = -1.; self.j_v0[e] = 0; self.j_min[e] = 0; self.j_dmg0[e] = 0; self.j_caused[e] = False; self.j_off[e] = False
+        self.j_until[e] = -1.; self.j_v0[e] = 0; self.j_min[e] = 0; self.j_hit[e] = 0; self.j_caused[e] = False; self.j_off[e] = False
         self.lat_prev[lanes] = math.nan; self.lat_rate[lanes] = 0
         R = N - 1
         kinds = [0] * R; at = [math.inf] * R; flick = [0.] * R
@@ -271,7 +271,7 @@ class GpuEnv:
                 kinds[j] = 1 if c['hazard'] == 'stopped' else 2; at[j] = c['stopAt']; flick[j] = -1. if (c['lateral'] or 0) >= 0 else 1.
         self.hz_kind[e] = torch.tensor(kinds); self.hz_at[e] = torch.tensor(at, dtype=torch.float64); self.hz_flick[e] = torch.tensor(flick)
         req = sc['requirements'] or {}
-        keys = ['encountersCleared', 'hazardsCleared', 'validFullLaps', 'unpassedTraffic']
+        keys = ['encountersCleared', 'hazardsCleared', 'validFullLaps', 'unpassedTraffic', 'retainedPasses']
         self.require[e] = torch.tensor([float(req.get(q, 0)) for q in keys], dtype=torch.float64)
         self.has_req[e] = torch.tensor([q in req for q in keys])
         if e < self.record and not self.spare[e]:
@@ -563,15 +563,17 @@ class GpuEnv:
         start = fresh & (self.j_until < 0)
         self.j_until = torch.where(start, self.t[:, None] + CONTACT['after'], self.j_until)
         self.j_v0 = torch.where(start, speed[:, 1:], self.j_v0); self.j_min = torch.where(start, speed[:, 1:], self.j_min)
-        self.j_dmg0 = torch.where(start, self.cum_damage[:, None].expand_as(gap), self.j_dmg0)
+        # The judged hit is the heaviest single decision row's damage from the impact on (JS: the impact row's added
+        # damage); row_damage already includes this tick's impact, which a cumulative baseline taken now would drop.
+        self.j_hit = torch.where(start, self.row_damage[:, None].expand_as(gap), self.j_hit)
         self.j_caused = torch.where(start, rear | (me > them), self.j_caused); self.j_off = torch.where(start, torch.zeros_like(start), self.j_off)
         pending = self.j_until >= 0
+        self.j_hit = torch.where(pending, torch.maximum(self.j_hit, self.row_damage[:, None].expand_as(gap)), self.j_hit)
         self.j_min = torch.where(pending, torch.minimum(self.j_min, speed[:, 1:]), self.j_min)
         self.j_off |= pending & (latv[:, 1:].abs() > self.offroad) & alive
         due = pending & (self.t[:, None] >= self.j_until)
         if due.any():
-            hit = self.cum_damage[:, None] - self.j_dmg0
-            fail = due & (hit > OBJECTIVE['singleHit']) & self.j_caused & ((self.j_v0 - self.j_min > CONTACT['rivalLoss']) | self.j_off)
+            fail = due & (self.j_hit > OBJECTIVE['singleHit']) & self.j_caused & ((self.j_v0 - self.j_min > CONTACT['rivalLoss']) | self.j_off)
             self.big_hit |= fail.any(1)
             self.j_until = torch.where(due, torch.full_like(self.j_until, -1.), self.j_until)
 
@@ -587,9 +589,9 @@ class GpuEnv:
         unpassed = ((cls[:, 1:] != cls[:, :1]) & (g('speed')[:, 1:] >= 7) & (g('lateral')[:, 1:].abs() <= self.offroad)
                     & (self.progress.view(E, N)[idx, 1:] > self.progress.view(E, N)[idx, :1] - 5.5) & self.w.alive.view(E, N)[idx, 1:].bool()).sum(1).double()
         cleared = (self.enc_done[idx]).sum(1).double()
-        got = torch.stack([cleared, self.hazards[idx], self.valid_laps[idx], unpassed], 1)
+        got = torch.stack([cleared, self.hazards[idx], self.valid_laps[idx], unpassed, self.passes[idx].double()], 1)
         req, has = self.require[idx], self.has_req[idx]
-        ok = torch.where(torch.arange(4, device='cuda') == 3, got <= req, got >= req) | ~has
+        ok = torch.where(torch.arange(5, device='cuda') == 3, got <= req, got >= req) | ~has
         success = admissible & ok.all(1)
         return {'success': success, 'admissible': admissible, 'damage': self.cum_damage[idx].clone(), 'passes': self.passes[idx].clone(),
                 'hazards': self.hazards[idx].clone(), 'limit': self.limit_time[idx].clone(), 'severe': ~torch.isinf(self.severe_at[idx]),
