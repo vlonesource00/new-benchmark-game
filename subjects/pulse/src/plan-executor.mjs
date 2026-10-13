@@ -35,7 +35,7 @@ export class PlanExecutor {
   constructor(track, car, { frontalGuard = 'supervisor-v1', roadBounds = 'asphalt-body', edgeBlend = 0, edgeRamp = 0,
     routeOrigin = 'rolling-v1', feedback = 'escape-v1', joinState = 'body-v1', sideGuard = 'off', offsetLag = 0, offsetDeadband = 0, ...unsupported } = {}) {
     if (Object.keys(unsupported).length) throw Error('Unsupported plan execution option: ' + Object.keys(unsupported).join(', '));
-    if (!['supervisor-v1', 'live-body-speed-v1'].includes(frontalGuard)) throw Error('Unknown experimental frontal guard');
+    if (!['supervisor-v1', 'live-body-speed-v1', 'live-route-speed-v1'].includes(frontalGuard)) throw Error('Unknown experimental frontal guard');
     if (!['asphalt-body', 'kerb-centre', 'line-kerb-v1'].includes(roadBounds)) throw Error('Unknown experimental road bound');
     if (!Number.isFinite(edgeBlend) || edgeBlend < 0 || edgeBlend > 2) throw Error('Invalid experimental edge blend');
     if (!Number.isFinite(edgeRamp) || edgeRamp < 0 || edgeRamp > 80) throw Error('Invalid experimental edge ramp');
@@ -258,8 +258,16 @@ export class PlanExecutor {
       }
       path = this.profile;
     }
-    const nose = this.frontalGuard === 'live-body-speed-v1'
-      ? noseConstraint(car, this.observer, this.course.model, { lateralEscape: true }) : { cap: Infinity, brake: 0, blocker: null };
+    // live-route-speed-v1 also hands the guard the route being executed and our cursor on it, so a braking or stopped
+    // car around a bend (outside the straight body ray) caps speed early, as INTERCEPT's controller does.
+    let routeCursor = null;
+    if (this.frontalGuard === 'live-route-speed-v1') {
+      routeCursor = path.closest(car.x, car.z, path === this.controller.path ? this.controller.cursor : -1);
+      if (routeCursor.d2 > 225) routeCursor = path.closest(car.x, car.z, -1);
+    }
+    const nose = this.frontalGuard === 'live-body-speed-v1' || this.frontalGuard === 'live-route-speed-v1'
+      ? noseConstraint(car, this.observer, this.course.model, { lateralEscape: true, path: routeCursor ? path : null, cursor: routeCursor })
+      : { cap: Infinity, brake: 0, blocker: null };
     const lateralDemand = Math.abs(offsets[0] - cur.e);
     const courseFeedback = this.feedback === 'course-v1';
     this.controller.options = courseFeedback && this.path !== line ? this.feedbackOptions : this.options;
