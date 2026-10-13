@@ -18,6 +18,35 @@ export const ENCOUNTER_OBJECTIVE = Object.freeze({
 export const RACE_DAMAGE_OBJECTIVE = Object.freeze({ ...ENCOUNTER_OBJECTIVE,
   version: 'pulse-encounter-outcome-race10-v2', damageBudget: .03, rubVerification: false, severeScope: 'self' });
 
+// User review (2026-10-13): judge a contact by who caused it and what it cost,
+// not by its damage alone. A single hit above 1% no longer fails by itself; it
+// fails when PULSE caused it AND the rival paid for it (lost more than
+// CONTACT_RIVAL_LOSS of speed within 1.5 s, or was pushed off the track), or
+// when one hit alone exceeds 2.5%. Budget, severe (> 6 m/s) contacts, rescues
+// and ghosts are unchanged.
+export const RACE_CONTACT_OBJECTIVE = Object.freeze({ ...RACE_DAMAGE_OBJECTIVE,
+  version: 'pulse-encounter-outcome-race10-contact-v3', contactJudgement: 'consequence', heavyHit: .025 });
+const CONTACT_RIVAL_LOSS = 15 / 3.6, CONTACT_AFTER = 1.5, CONTACT_BEFORE = .25;
+
+/** Who caused the contact in row i and what it cost the rival (rows need the cars' snapshots). */
+export function judgeContact(rows, i, evidence) {
+  const row = rows[i], self = row.before.id, car = (r, id) => r.cars?.find(c => c.id === id);
+  let k = i; while (k > 0 && row.time - rows[k].time < CONTACT_BEFORE) k--;
+  const me0 = car(rows[k], self), me1 = car(row, self), rv0 = car(rows[k], evidence.rival), rv1 = car(row, evidence.rival);
+  if (!me0 || !me1 || !rv0 || !rv1 || row.time <= rows[k].time) return { caused: true, costly: true, reason: 'unobserved' };
+  const dt = row.time - rows[k].time, side = Math.sign(rv1.lateral - me1.lateral) || 1;
+  const meToward = (me1.lateral - me0.lateral) / dt * side, rivalToward = -(rv1.lateral - rv0.lateral) / dt * side;
+  // Running into a car ahead is ours; side contact belongs to whoever moved across more.
+  const rearEnd = evidence.forward > 2.5 && Math.abs(evidence.lateral) < 1.5;
+  const caused = rearEnd || meToward > rivalToward;
+  let lost = 0, offtrack = false;
+  for (let j = i; j < rows.length && rows[j].time - row.time <= CONTACT_AFTER; j++) {
+    const r = car(rows[j], evidence.rival); if (!r) continue;
+    lost = Math.max(lost, rv1.speed - r.speed); offtrack ||= !!r.gameOfftrack && !rv1.gameOfftrack;
+  }
+  return { caused, costly: lost > CONTACT_RIVAL_LOSS || offtrack, rearEnd, meToward, rivalToward, rivalSpeedLost: lost, offtrack };
+}
+
 export function timeAtDistance(rows, distance) {
   if (!Number.isFinite(distance) || distance <= 0 || !rows.length) throw Error('Invalid encounter checkpoint');
   const origin = rows[0].before.progress;
@@ -31,7 +60,7 @@ export function timeAtDistance(rows, distance) {
   return null;
 }
 
-export function damageIsVerifiedRub(rows, budget = .03, verifyContacts = true) {
+export function damageIsVerifiedRub(rows, budget = .03, verifyContacts = true, judgement = null) {
   let expected = rows[0]?.before.damage;
   if (!Number.isFinite(expected) || expected > 1e-8) return false;
   for (const row of rows) {
@@ -40,7 +69,11 @@ export function damageIsVerifiedRub(rows, budget = .03, verifyContacts = true) {
       || after < before - 1e-8 || after > budget || row.before.ghost || row.post.ghost) return false;
     const added = Math.max(0, after - before);
     if (added > 1e-8) {
-      if (added > .01) return false;
+      if (added > .01) {
+        if (!judgement || added > judgement.heavyHit) return false;
+        const hits = (row.contactEvidence ?? []).filter(c => c.selfDamageAdded > 1e-8);
+        if (!hits.length || hits.some(c => { const j = judgeContact(rows, rows.indexOf(row), c); return j.caused && j.costly; })) return false;
+      }
       if (!verifyContacts) { expected = after; continue; }
       if (!row.contactEvidence?.length) return false;
       let accounted = 0;
@@ -69,7 +102,8 @@ export function encounterOutcome(result, { seconds, checkpointDistance = 600, ob
   if ((objective.severeScope === 'self' ? s.selfSevere ?? s.severe : s.severe) > 0) failures.push('severe-contact-in-field');
   if (s.minFuel < 1) failures.push('fuel-starvation');
   if (s.missingRows || s.expertRows || s.expertActuatorRows) failures.push('missing-sensors/expert-assistance');
-  if (s.cumulativeDamage > objective.damageBudget || !damageIsVerifiedRub(rows, objective.damageBudget, objective.rubVerification !== false)) failures.push('unverified/excess-damage-or-rescue');
+  if (s.cumulativeDamage > objective.damageBudget || !damageIsVerifiedRub(rows, objective.damageBudget, objective.rubVerification !== false,
+    objective.contactJudgement === 'consequence' ? objective : null)) failures.push('unverified/excess-damage-or-rescue');
   const checkpointSeconds = timeAtDistance(rows, checkpointDistance);
   if (checkpointSeconds === null) failures.push('checkpoint-not-reached');
   const tyreStart = rows[0].before.tyres, tyreEnd = rows.at(-1).post.tyres;

@@ -38,4 +38,4 @@ const cases = report.cases.map(c => ({ id: c.id, settings: c.settings, group: c.
 const result = await driveCases({ name, model, actor: 'plan', planExecution, cases, traces: arg('traces') !== 'off', provenance: { role: 'Matched plan-vs-actuator development',
   source: source ?? arg('plan'), sourceDigest: digest(bytes.toString()), sourceVersions: report.versions,
   selectionMetric: 'Admissibility and retained passes first; pace, delay sensitivity and execution cost second.' } });
-console.log(JSON.stringify({ name, accepted: result.accepted, succeeded: result.succeeded, race10: result.race10, total: result.cases.length }));
+console.log(JSON.stringify({ name, accepted: result.accepted, succeeded: result.succeeded, race10: result.race10, contact: result.contact, total: result.cases.length }));

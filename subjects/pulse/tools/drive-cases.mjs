@@ -6,7 +6,7 @@ import { HOME, versions, digest } from './versions.mjs';
 import { createPolicy } from './policy.mjs';
 import { loadFastMotor } from './fast-motor.mjs';
 import { runScenario } from './scenario.mjs';
-import { encounterOutcome, RACE_DAMAGE_OBJECTIVE } from '../src/encounter-outcomes.mjs';
+import { encounterOutcome, RACE_DAMAGE_OBJECTIVE, RACE_CONTACT_OBJECTIVE } from '../src/encounter-outcomes.mjs';
 import { PlanExecutor } from '../src/plan-executor.mjs';
 import { PLAN_CONTRACT } from '../src/plan-contract.mjs';
 import { archiveExecution } from './archive-execution.mjs';
@@ -50,6 +50,7 @@ export async function driveCases({ name, model, cases, provenance = {}, actor = 
     report.status = 'complete'; report.accepted = report.cases.filter(c => c.outcome.admissible).length;
     report.succeeded = report.cases.filter(c => c.succeeded).length;
     report.race10 = { accepted: report.cases.filter(c => c.race10.admissible).length, succeeded: report.cases.filter(c => c.race10.succeeded).length };
+    report.contact = { accepted: report.cases.filter(c => c.contact.admissible).length, succeeded: report.cases.filter(c => c.contact.succeeded).length };
     atomicJSON(resolve(output, 'report.json'), report);
     return report;
   } finally { await policy.dispose(); }
@@ -63,6 +64,7 @@ export async function driveOne({ c, name, actor, planExecution, traces, output, 
     ...(actor === 'plan' ? { planFactory: (track, car) => new PlanExecutor(track, car, planExecution) } : {}) });
   const outcome = encounterOutcome(result, { seconds: settings.seconds, checkpointDistance: c.checkpointDistance });
   const race10 = encounterOutcome(result, { seconds: settings.seconds, checkpointDistance: c.checkpointDistance, objective: RACE_DAMAGE_OBJECTIVE });
+  const contact = encounterOutcome(result, { seconds: settings.seconds, checkpointDistance: c.checkpointDistance, objective: RACE_CONTACT_OBJECTIVE });
   const requirementFailures = [];
   for (const [key, minimum] of Object.entries(c.requirements ?? {})) {
     const actual = key === 'validFullLaps' ? result.summary.fullLaps.filter(l => l.valid).length : result.summary[key];
@@ -79,6 +81,7 @@ export async function driveOne({ c, name, actor, planExecution, traces, output, 
     group: c.group ?? null, profile: c.profile ?? null, settings, outcome,
     requirements: c.requirements ?? {}, requirementFailures, succeeded: outcome.admissible && !requirementFailures.length,
     race10: { admissible: race10.admissible, failures: race10.failures, succeeded: race10.admissible && !requirementFailures.length },
+    contact: { admissible: contact.admissible, failures: contact.failures, succeeded: contact.admissible && !requirementFailures.length },
     fullLaps: result.summary.fullLaps, bestFullLap: result.summary.bestFullLap, summary: result.summary,
     firstTrackViolation: result.events.find(e => e.type === 'track-limit-violation')?.time ?? null,
     firstContact: result.events.find(e => e.type === 'contact' && (e.a === result.rows[0].before.id || e.b === result.rows[0].before.id)) ?? null,
