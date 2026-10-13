@@ -52,6 +52,7 @@ class Rollout:
         self.env, self.n, self.last = z(cap, t=torch.long), 0, torch.full((E,), -1, dtype=torch.long, device='cuda')
         # Value of the env's next decision state for records at the rollout edge (bootstrap), when observed.
         self.next_value, self.has_next = z(cap), z(cap, t=torch.bool)
+        self.time, self.next_t = z(cap), z(cap)  # decision times (s): elapsed-time discounting
 
     def clear(self):
         # Reuse the buffers across iterations: a fresh ~5 GiB allocation while the old one is alive does not fit beside the env.
@@ -59,19 +60,19 @@ class Rollout:
             if torch.is_tensor(v): v.zero_()
         self.n = 0; self.last.fill_(-1)
 
-    def add(self, idx, feat, present, action, logp, value, fresh):
+    def add(self, idx, feat, present, action, logp, value, fresh, t):
         k = torch.arange(self.n, self.n + len(idx), device='cuda')
         if self.n + len(idx) > len(self.env):
             raise ValueError('Rollout buffer full; raise --cap')
         self.feat[k], self.present[k], self.action[k], self.logp[k], self.value[k], self.fresh[k] = feat, present, action, logp, value, fresh
-        self.env[k] = idx; self.last[idx] = k; self.n += len(idx)
+        self.env[k] = idx; self.last[idx] = k; self.n += len(idx); self.time[k] = t
 
     def credit(self, idx, r):
         k = self.last[idx]; ok = k >= 0
         self.reward.index_put_((k[ok],), r[ok].float(), accumulate=True)
         return k
 
-    def gae(self, gamma, lam):
+    def gae(self, gamma, lam, rate=0.):
         n, env = self.n, self.env[:self.n]
         order = torch.argsort(env * (n + 1) + torch.arange(n, device='cuda'))
         e = env[order]
@@ -82,17 +83,24 @@ class Rollout:
         pad = lambda x, fill=0.: torch.full((E, L), fill, dtype=x.dtype, device='cuda').index_put_((e, col), x[order])
         r, v, d, c = pad(self.reward[:n]), pad(self.value[:n]), pad(self.done[:n], False), pad(self.cut[:n], False)
         nv, hn = pad(self.next_value[:n]), pad(self.has_next[:n], False)
+        tm, nt = pad(self.time[:n]), pad(self.next_t[:n])
         valid = pad(torch.ones(n, dtype=torch.bool, device='cuda'), False)
         adv = torch.zeros(E, L, device='cuda'); run = torch.zeros(E, device='cuda')
         for j in range(L - 1, -1, -1):
             nxt = v[:, j + 1] if j + 1 < L else torch.zeros(E, device='cuda')
             more = valid[:, j + 1] if j + 1 < L else torch.zeros(E, dtype=torch.bool, device='cuda')
+            # (An early stop after a severe contact is a terminal failure, not a cut: it must not bootstrap.)
             # Next state value: the env's next decision; at an episode end 0 unless truncated (cut, the record's own
             # value); at the rollout's edge the value of the env's next decision state, observed after the rollout.
             edge = torch.where(hn[:, j], nv[:, j], v[:, j])
             boot = torch.where(d[:, j], torch.where(c[:, j], v[:, j], 0.), torch.where(more, nxt, edge))
-            delta = r[:, j] + gamma * boot - v[:, j]
-            run = delta + gamma * lam * run * (~d[:, j] & more)
+            if rate:  # per elapsed second, referenced to `rate` requests/s: 15/30/60 Hz scenes see the same horizon
+                dt = torch.where(more, (tm[:, j + 1] if j + 1 < L else tm[:, j]) - tm[:, j], torch.where(hn[:, j], nt[:, j] - tm[:, j], 1 / rate))
+                g, gl = gamma ** (dt * rate), (gamma * lam) ** (dt * rate)
+            else:
+                g, gl = gamma, gamma * lam
+            delta = r[:, j] + g * boot - v[:, j]
+            run = delta + gl * run * (~d[:, j] & more)
             adv[:, j] = torch.where(valid[:, j], run, 0.)
         a = torch.empty(n, device='cuda'); a[order] = adv[e, col]
         return a, a + self.value[:n]
@@ -124,6 +132,8 @@ def main():
     p.add_argument('--minibatch', type=int, default=1024)
     p.add_argument('--clip', type=float, default=.2); p.add_argument('--target-kl', type=float, default=.02)
     p.add_argument('--gamma', type=float, default=.995); p.add_argument('--lam', type=float, default=.95)
+    p.add_argument('--discount-rate', type=float, default=0., help='requests/s that gamma and lam refer to: discount per elapsed '
+                   'time instead of per request (0: per request, the original)')
     p.add_argument('--offset-lag', type=float, default=.15); p.add_argument('--dtype', default='float64')
     p.add_argument('--seed', type=int, default=1); p.add_argument('--cap', type=int, default=0)
     p.add_argument('--rivals', default=None, help='distilled rivals (fit_rivals.py); default executor stand-ins')
@@ -202,14 +212,14 @@ def main():
                     logp = (-.5 * ((act - mean) / a.sigma).square() - log_sigma).sum(1)
                     v = value(feat).squeeze(1)
                 r = env.reward[idx] - cum[idx]; ro.credit(idx, r); cum[idx] = env.reward[idx]
-                ro.add(idx, feat, present, act, logp, v, fresh)
+                ro.add(idx, feat, present, act, logp, v, fresh, env.t[idx].float())
                 env.post(idx, act)
                 hidden[idx] = nh
             done = env.physics()
             if len(done):
                 res = env.end(done)
                 k = ro.credit(done, res['reward'] - cum[done]); ok = k >= 0
-                ro.done[k[ok]] = True; ro.cut[k[ok]] = ~res['complete'][ok]
+                ro.done[k[ok]] = True; ro.cut[k[ok]] = (~res['complete'] & ~res['severe'])[ok]
                 cum[done] = 0; hidden[done] = h0; noise_at[done] = -1e9; ro.last[done] = -1
                 finished.append({kk: (vv.cpu() if torch.is_tensor(vv) else vv) for kk, vv in res.items()})
         # Rollout edge: keep driving (not recorded) until each env holding an edge record makes its next decision,
@@ -228,7 +238,7 @@ def main():
                     noise[idx[f]] = torch.randn(len(f), 4, device='cuda') * a.sigma; noise_at[idx[f]] = env.t[idx[f]]
                     act = mean + noise[idx] * present
                     p = pending[idx]; k = ro.last[idx[p]]
-                    ro.next_value[k] = value(feat[p]).squeeze(1); ro.has_next[k] = True
+                    ro.next_value[k] = value(feat[p]).squeeze(1); ro.has_next[k] = True; ro.next_t[k] = env.t[idx[p]].float()
                 r = env.reward[idx] - cum[idx]; ro.credit(idx[pending[idx]], r[pending[idx]]); cum[idx] = env.reward[idx]
                 pending[idx] = False; ro.last[idx] = -1
                 env.post(idx, act); hidden[idx] = nh
@@ -236,14 +246,14 @@ def main():
             if len(done):
                 res = env.end(done)
                 k = ro.credit(done, res['reward'] - cum[done]); ok = k >= 0
-                ro.done[k[ok]] = True; ro.cut[k[ok]] = ~res['complete'][ok]
+                ro.done[k[ok]] = True; ro.cut[k[ok]] = (~res['complete'] & ~res['severe'])[ok]
                 cum[done] = 0; hidden[done] = h0; noise_at[done] = -1e9; ro.last[done] = -1; pending[done] = False
                 finished.append({kk: (vv.cpu() if torch.is_tensor(vv) else vv) for kk, vv in res.items()})
         # Credit what accrued since each env's latest decision (the rollout edge) and keep counting from here.
         live = torch.arange(E, device='cuda'); ro.credit(live, env.reward - cum); cum = env.reward.clone()
         ro.last[:] = -1
         roll_s = time.time() - t0
-        adv, ret = ro.gae(a.gamma, a.lam)
+        adv, ret = ro.gae(a.gamma, a.lam, a.discount_rate)
         n = ro.n; feat, present, action, old = ro.feat[:n], ro.present[:n], ro.action[:n], ro.logp[:n]
         pa = ro.fresh[:n].nonzero().squeeze(1)
         adv = (adv - adv[pa].mean()) / (adv[pa].std() + 1e-8)

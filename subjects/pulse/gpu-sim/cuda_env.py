@@ -94,6 +94,8 @@ class GpuEnv:
         self.bank, self.E, self.N = bank, envs, bank.slots
         self.B, self.dtype, dev = envs * self.N, dtype, 'cuda'
         m = bank.meta
+        if any('checkpointDistance' not in sc for sc in bank.scenes):
+            print('cuda_env: scene bank without checkpointDistance - judging the 600 m default, not the JS case checkpoint', flush=True)
         self.geom = m['trackGeometry']
         self.length = float(self.geom['length'])
         self.limit = self.geom['halfWidth'] + (self.geom['curbWidth'] or 0)
@@ -114,7 +116,7 @@ class GpuEnv:
         Fz = lambda *s, t=torch.float64: torch.zeros(*s, dtype=t, device=dev)
         # Per env.
         self.scene = torch.zeros(envs, dtype=torch.long)
-        self.t = Fz(envs); self.seconds = Fz(envs); self.race_time0 = Fz(envs)
+        self.t = Fz(envs); self.seconds = Fz(envs); self.race_time0 = Fz(envs); self.checkpoint = Fz(envs)
         self.track_temp = torch.zeros(envs, dtype=dtype, device=dev); self.compound = torch.zeros(envs, dtype=torch.int32, device=dev)
         self.frame_steps = torch.ones(envs, dtype=torch.long, device=dev); self.lag = torch.zeros(envs, dtype=torch.long, device=dev)
         self.lag_jitter = torch.zeros(envs, dtype=torch.long, device=dev)
@@ -246,7 +248,7 @@ class GpuEnv:
 
     # Per-scene start values (the same expressions as _reset_one), built once: a reset is then a few indexed copies on
     # the GPU instead of a Python loop per env and car (~50 ms per reset call before, with resets on most ticks).
-    ENV_ROWS = ['seconds', 'race_time0', 'track_temp', 'compound', 'frame_steps', 'lag', 'lag_jitter', 'frame_jitter', 'frame_rng',
+    ENV_ROWS = ['seconds', 'checkpoint', 'race_time0', 'track_temp', 'compound', 'frame_steps', 'lag', 'lag_jitter', 'frame_jitter', 'frame_rng',
                 'reply_rng', 'laps0', 'stint0', 'tyres0', 'hz_kind', 'hz_at', 'hz_flick', 'require', 'has_req']
     ENV_CONST = {'t': 0, 'frame': -1, 'next_tick': 0, 'tick': 0, 'due': -1, 'pending': 0, 'pending_at': 0, 'accepted_at': 0,
                  'last_request': 0, 'prev_row': 0, 'steer_row': 0, 'plan_seq': 0, 'lagged': 0, 'crossed': 0, 'reward': 0,
@@ -295,7 +297,7 @@ class GpuEnv:
         keys = ['encountersCleared', 'hazardsCleared', 'validFullLaps', 'unpassedTraffic', 'retainedPasses']
         for sc in bank.scenes:
             ego, tm = sc['cars'][0], sc['timing']; seed = int(tm['scheduleSeed'])
-            v = {'seconds': sc['seconds'], 'race_time0': sc['raceTime'], 'track_temp': sc['trackTemperature'], 'compound': COMPOUNDS.index(ego['compound']),
+            v = {'seconds': sc['seconds'], 'checkpoint': self._checkpoint(sc), 'race_time0': sc['raceTime'], 'track_temp': sc['trackTemperature'], 'compound': COMPOUNDS.index(ego['compound']),
                  'frame_steps': tm['frameSteps'], 'lag': tm['lagFrames'], 'lag_jitter': tm['lagJitter'], 'frame_jitter': tm['frameJitter'],
                  'frame_rng': seed ^ 0x5046524d, 'reply_rng': seed ^ 0x5052504c, 'laps0': ego['laps'] - ego['lap'] + 1, 'stint0': ego['stintLaps'],
                  'tyres0': ego['nextTyreLap'] - ego['lap'] if ego['nextTyreLap'] is not None else ego['laps'] - ego['lap'] + 1}
@@ -375,7 +377,7 @@ class GpuEnv:
             self.rival_driver[lanes] = torch.tensor([self.rivals.names.index(c["driver"]) if j and j < count and c["driver"] in self.rivals.names else -1
                                                      for j, c in enumerate(cars)], dtype=torch.long)
         ego = sc['cars'][0]
-        self.t[e] = 0; self.seconds[e] = sc['seconds']; self.race_time0[e] = sc['raceTime']
+        self.t[e] = 0; self.seconds[e] = sc['seconds']; self.checkpoint[e] = self._checkpoint(sc); self.race_time0[e] = sc['raceTime']
         self.track_temp[e] = sc['trackTemperature']; self.compound[e] = COMPOUNDS.index(ego['compound'])
         tm = sc['timing']
         self.frame_steps[e] = tm['frameSteps']; self.lag[e] = tm['lagFrames']; self.lag_jitter[e] = tm['lagJitter']
@@ -719,13 +721,18 @@ class GpuEnv:
             self.big_hit |= fail.any(1)
             self.j_until = torch.where(due, torch.full_like(self.j_until, -1.), self.j_until)
 
+    @staticmethod
+    def _checkpoint(sc):
+        # The case's JS checkpointDistance (field/duel 2600 m, solo 4500 m); banks exported before it was carried judge 600 m.
+        return sc.get('checkpointDistance', OBJECTIVE['checkpoint'])
+
     def outcome(self, idx):
         """Episode result at its end (rl-rollout success = admissible race10 outcome and requirements met)."""
         E, N = self.E, self.N
         ego = self.ego.long()[idx]
         complete = self.t[idx] >= self.seconds[idx] - 1e-9
         admissible = complete & (self.limit_time[idx] <= 0) & torch.isinf(self.severe_at[idx]) & (self.cum_damage[idx] <= OBJECTIVE['damageBudget']) \
-            & ~self.big_hit[idx] & ~self.ego_rescued[idx] & (self.progress[ego] >= OBJECTIVE['checkpoint'])
+            & ~self.big_hit[idx] & ~self.ego_rescued[idx] & (self.progress[ego] >= self.checkpoint[idx])
         g = lambda k: self.S(k).double().view(E, N)[idx]
         cls = self.w.cls.view(E, N)[idx]
         unpassed = ((cls[:, 1:] != cls[:, :1]) & (g('speed')[:, 1:] >= 7) & (g('lateral')[:, 1:].abs() <= self.offroad)

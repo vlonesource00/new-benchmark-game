@@ -53,7 +53,7 @@ for (const [k, spec] of cases.entries()) {
         for (const id of new Set(race.cars.map(car => car.classId))) classes[id].deployMap ??= Array.from(race.deployMapFor(race.cars.find(car => car.classId === id)));
         race.cars.forEach((car, j) => states.set(read(car), (k * slots + j) * F));
         rubber.set(track.rubber, k * track0.nodes.length * 13);
-        scene = { id: spec.id, family: spec.family, profile: spec.profile, requirements: spec.requirements, seconds: spec.settings.seconds,
+        scene = { id: spec.id, family: spec.family, profile: spec.profile, requirements: spec.requirements, checkpointDistance: spec.checkpointDistance, seconds: spec.settings.seconds,
           timing: { frameSteps: spec.settings.frameSteps ?? 2, lagFrames: spec.settings.lagFrames ?? 0, lagJitter: spec.settings.lagJitter ?? 0,
             frameJitter: spec.settings.frameJitter ?? 0, scheduleSeed: spec.settings.scheduleSeed ?? 7 },
           count: race.cars.length, raceTime: race.time, tempGrip: track.tempGrip, ambient: track.ambient, trackTemperature: track.temperature,
