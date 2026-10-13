@@ -42,6 +42,9 @@ REWARDS['attack-v2'] = {**REWARDS['attack-v1'], 'squeeze': .5}
 # attack-v3: v2 counted the ego's own lateral motion, so two cars drifting together at constant separation paid it.
 # v3 charges only clearance the ego closes: min(ego motion toward the car, rate |dlat| shrinks); a rival pushing in is free.
 REWARDS['attack-v3'] = {**REWARDS['attack-v2'], 'squeezeClosing': True}
+# attack-v4: v3 at 4x (2/m). Dose test: c204's v3 term was ~1% of reward and GPU ego closing alongside rose (208 -> 332 m);
+# if 4x still does not cut it, the policy cannot see or steer it (frozen encoder / executor), not a weak signal.
+REWARDS['attack-v4'] = {**REWARDS['attack-v3'], 'squeeze': 2.}
 # race10 contact judgement v3 (src/encounter-outcomes.mjs RACE_CONTACT_OBJECTIVE): a hit above 1% fails only when the
 # ego caused it and the rival paid (> 15 km/h lost within 1.5 s or pushed off), or a single row exceeds 2.5%.
 CONTACT = {'heavyHit': .025, 'rivalLoss': 15 / 3.6, 'after': 1.5, 'lateralTau': .1}
