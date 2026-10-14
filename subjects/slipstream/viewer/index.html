@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SLIPSTREAM viewer</title>
+<style>
+  :root { --bg:#111418; --panel:#1a1e24; --line:#2c323b; --text:#d8dde4; --dim:#8a94a2; --accent:#ff5a4e; --good:#4cc38a; --warn:#f2b84b; --bad:#ff5a4e; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:13px/1.35 system-ui, sans-serif; display:grid; grid-template-columns:1fr 340px; grid-template-rows:auto 1fr auto; height:100vh; }
+  header { grid-column:1/3; display:flex; gap:10px; align-items:center; padding:8px 12px; border-bottom:1px solid var(--line); background:var(--panel); }
+  header b { color:var(--accent); letter-spacing:.06em; }
+  select, button, input[type=range] { background:#242a32; color:var(--text); border:1px solid var(--line); border-radius:4px; padding:4px 8px; font:inherit; }
+  button { cursor:pointer; } button:hover { border-color:var(--dim); } button.on { border-color:var(--accent); color:var(--accent); }
+  #wrap { position:relative; overflow:hidden; }
+  canvas#map { width:100%; height:100%; display:block; cursor:grab; }
+  #hud { position:absolute; left:10px; top:10px; background:#0009; padding:6px 9px; border-radius:4px; font-variant-numeric:tabular-nums; pointer-events:none; }
+  aside { border-left:1px solid var(--line); background:var(--panel); overflow-y:auto; padding:10px; }
+  aside h3 { margin:12px 0 6px; font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:var(--dim); }
+  .kv { display:grid; grid-template-columns:auto 1fr; gap:2px 10px; font-variant-numeric:tabular-nums; }
+  .kv span:nth-child(odd) { color:var(--dim); }
+  .cars div { display:flex; gap:6px; align-items:center; padding:2px 4px; border-radius:3px; cursor:pointer; font-variant-numeric:tabular-nums; }
+  .cars div.sel { background:#2a3038; } .sw { width:10px; height:10px; border-radius:2px; flex:none; }
+  canvas.strip { width:100%; height:62px; display:block; background:#14171c; border:1px solid var(--line); border-radius:3px; margin-bottom:4px; }
+  .lbl { display:flex; justify-content:space-between; color:var(--dim); font-size:11px; }
+  footer { grid-column:1/3; padding:6px 12px 8px; border-top:1px solid var(--line); background:var(--panel); }
+  #tl { position:relative; height:30px; }
+  #tl canvas { position:absolute; inset:0; width:100%; height:100%; cursor:pointer; }
+  .row { display:flex; gap:8px; align-items:center; margin-top:6px; flex-wrap:wrap; }
+  .ev { color:var(--dim); font-size:11px; }
+  #events { max-height:160px; overflow-y:auto; font-size:12px; }
+  #events div { cursor:pointer; padding:1px 3px; } #events div:hover { background:#2a3038; }
+  @media (max-width: 760px) {
+    body { grid-template-columns:1fr; grid-template-rows:auto 55vh auto auto; height:auto; }
+    header, footer { grid-column:1; flex-wrap:wrap; }
+    aside { border-left:0; border-top:1px solid var(--line); grid-row:4; }
+    footer { grid-row:3; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <b>SLIPSTREAM</b>
+  <select id="pick"></select>
+  <span id="meta" class="ev"></span>
+</header>
+<div id="wrap"><canvas id="map"></canvas><div id="hud"></div></div>
+<aside>
+  <h3>Cars</h3><div class="cars" id="cars"></div>
+  <h3>Selected</h3><div class="kv" id="kv"></div>
+  <h3>Window ±8 s</h3><div id="strips"></div>
+  <h3>Events</h3><div id="events"></div>
+</aside>
+<footer>
+  <div id="tl"><canvas id="tlc"></canvas></div>
+  <div class="row">
+    <button id="play">▶ Play</button>
+    <button id="back">−5 s</button><button id="fwd">+5 s</button>
+    <button id="prevEv">◀ event</button><button id="nextEv">event ▶</button>
+    speed <select id="spd"><option>0.25</option><option>0.5</option><option selected>1</option><option>2</option><option>4</option><option>8</option></select>
+    <button id="follow" class="on">Follow</button>
+    <button id="trail" class="on">Trail</button>
+    <button id="labels" class="on">Labels</button>
+    <span class="ev">space play · ←/→ frame · shift+←/→ 1 s · wheel zoom · drag pan · click car to select</span>
+  </div>
+</footer>
+<script>
+const $ = (id) => document.getElementById(id);
+const C = { x:0, z:1, yaw:2, v:3, steer:4, thr:5, brk:6, s:7, lat:8, dmg:9, off:10, inc:11, ghost:12 };
+const P = { muS:0, muP:1, acS:2, acP:3, val:4, rew:5, done:6, trunc:7, first:8 };
+let last = performance.now(), acc = 0;
+let R = null, f = 0, playing = false, speed = 1, sel = 0, follow = true, trail = true, labels = true;
+let cam = { x:0, z:0, scale:2 }, events = [], edges = null, learnerOf = [];
+
+async function loadList() {
+  const ls = await (await fetch('/api/replays')).json();
+  $('pick').innerHTML = ls.map((r) => `<option value="${r.run}|${r.name}">${r.run} / ${r.name}</option>`).join('');
+  const q = new URLSearchParams(location.search).get('r');
+  if (q) $('pick').value = q;
+  if (ls.length) load($('pick').value);
+}
+$('pick').onchange = () => load($('pick').value);
+
+async function load(key) {
+  const [run, name] = key.split('|');
+  history.replaceState(null, '', '?r=' + encodeURIComponent(key));
+  R = await (await fetch(`/api/replay?run=${run}&name=${name}`)).json();
+  f = 0; setPlaying(false);
+  learnerOf = R.cars.map(() => -1);
+  R.frames[0].agents.forEach((a, i) => { learnerOf[a[0]] = i; });
+  sel = R.cars.findIndex((c) => c.learner); if (sel < 0) sel = 0;
+  buildEdges(); findEvents(); buildCars();
+  const m = R.meta || {};
+  $('meta').textContent = `${R.geometry.id} · ${(R.geometry.length / 1000).toFixed(2)} km · ${R.frames.length} frames (${(R.frames.length / 30).toFixed(0)} s) · ckpt ${m.ckpt ?? '?'}${m.stochastic ? ' · stochastic' : ' · deterministic'}`;
+  const c = R.frames[0].cars[sel]; cam.x = c[C.x]; cam.z = c[C.z];
+  drawTimeline(); render();
+}
+
+function buildEdges() {
+  const g = R.geometry, pts = g.centre;
+  const ring = (off) => pts.map(([x, z, h]) => [x + Math.cos(h) * off, z - Math.sin(h) * off]);
+  edges = { L: ring(g.halfWidth), Rr: ring(-g.halfWidth), Lk: ring(g.halfWidth + g.curbWidth), Rk: ring(-g.halfWidth - g.curbWidth),
+            Lo: ring(g.halfWidth + g.runoffWidth), Ro: ring(-g.halfWidth - g.runoffWidth) };
+  const n = pts.length, fi = Math.round(g.finishS / g.length * n) % n;
+  edges.finish = [ring(g.halfWidth)[fi], ring(-g.halfWidth)[fi]];
+}
+
+function findEvents() {
+  events = [];
+  const fr = R.frames;
+  for (let k = 1; k < fr.length; k++) {
+    const a = fr[k - 1].cars, b = fr[k].cars, t = fr[k].t;
+    b.forEach((c, i) => {
+      const nm = R.cars[i].name;
+      if (c[C.off] > a[i][C.off] + 1e-6 && !(a[i][C.off] < c[C.off] && fr[Math.max(0, k - 2)].cars[i][C.off] < a[i][C.off])) events.push({ k, i, t, kind:'off', txt:`${nm} off track @ s ${c[C.s].toFixed(0)}` });
+      if (c[C.inc] > a[i][C.inc]) events.push({ k, i, t, kind:'inc', txt:`${nm} incident +${c[C.inc] - a[i][C.inc]} (${c[C.inc]})` });
+      if (c[C.dmg] > a[i][C.dmg] + 0.005) events.push({ k, i, t, kind:'dmg', txt:`${nm} damage ${(100 * a[i][C.dmg]).toFixed(1)}→${(100 * c[C.dmg]).toFixed(1)}%` });
+    });
+    if (R.policy?.[k]) R.policy[k].forEach((p, j) => {
+      const ci = fr[k].agents[j][0], nm = R.cars[ci].name;
+      if (p[P.done]) events.push({ k, i:ci, t, kind:'end', txt:`${nm} episode END (terminal)` });
+      else if (p[P.trunc]) events.push({ k, i:ci, t, kind:'end', txt:`${nm} episode truncated` });
+    });
+  }
+  $('events').innerHTML = events.map((e, n) => `<div data-n="${n}" style="color:${evColor(e.kind)}">${e.t.toFixed(1)} s · ${e.txt}</div>`).join('') || '<span class="ev">none</span>';
+  $('events').querySelectorAll('div').forEach((d) => d.onclick = () => { const e = events[+d.dataset.n]; sel = e.i; seek(e.k - 45); });
+}
+const evColor = (k) => ({ off:'#f2b84b', inc:'#ff8a4e', dmg:'#ff5a4e', end:'#c78bff' })[k];
+
+function buildCars() {
+  $('cars').innerHTML = R.cars.map((c, i) => `<div data-i="${i}"><span class="sw" style="background:${c.color}"></span>${c.name}${c.learner ? ' ★' : ''} <span class="ev">${c.ai ?? 'learner'}</span><span style="margin-left:auto" id="cv${i}"></span></div>`).join('');
+  $('cars').querySelectorAll('div').forEach((d) => d.onclick = () => { sel = +d.dataset.i; render(); });
+}
+
+// ---------- map ----------
+const map = $('map'), ctx = map.getContext('2d');
+function resize() { const r = map.getBoundingClientRect(), d = devicePixelRatio; map.width = r.width * d; map.height = r.height * d; const t = $('tlc'), tr = t.getBoundingClientRect(); t.width = tr.width * d; t.height = tr.height * d; if (R) { drawTimeline(); render(); } }
+addEventListener('resize', resize);
+const W = (x, z) => [(x - cam.x) * cam.scale * devicePixelRatio + map.width / 2, (z - cam.z) * cam.scale * devicePixelRatio + map.height / 2];
+
+function poly(pts, close) { ctx.beginPath(); pts.forEach(([x, z], i) => { const [a, b] = W(x, z); i ? ctx.lineTo(a, b) : ctx.moveTo(a, b); }); if (close) ctx.closePath(); }
+function band(outer, inner, fill) { ctx.beginPath(); outer.forEach(([x, z], i) => { const [a, b] = W(x, z); i ? ctx.lineTo(a, b) : ctx.moveTo(a, b); }); ctx.closePath();
+  inner.forEach(([x, z], i) => { const [a, b] = W(x, z); i ? ctx.lineTo(a, b) : ctx.moveTo(a, b); }); ctx.closePath(); ctx.fillStyle = fill; ctx.fill('evenodd'); }
+
+function render() {
+  if (!R) return;
+  const fr = R.frames[f], d = devicePixelRatio;
+  if (follow) { const c = fr.cars[sel]; cam.x = c[C.x]; cam.z = c[C.z]; }
+  ctx.fillStyle = '#0d1013'; ctx.fillRect(0, 0, map.width, map.height);
+  band(edges.Lo, edges.Ro, '#1b2a1e');
+  band(edges.Lk, edges.Rk, '#3a2a2a');
+  band(edges.L, edges.Rr, '#2e3238');
+  ctx.lineWidth = 1 * d; ctx.strokeStyle = '#d8dde4aa'; poly(edges.L, true); ctx.stroke(); poly(edges.Rr, true); ctx.stroke();
+  ctx.setLineDash([4 * d, 4 * d]); ctx.strokeStyle = '#c94a4a'; poly(edges.Lk, true); ctx.stroke(); poly(edges.Rk, true); ctx.stroke(); ctx.setLineDash([]);
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 3 * d; poly(edges.finish); ctx.stroke();
+  if (cam.scale > 1.2) { ctx.fillStyle = '#5c6570'; ctx.font = `${10 * d}px system-ui`; const pts = R.geometry.centre; for (let i = 0; i < pts.length; i += 50) { const [a, b] = W(pts[i][0], pts[i][1]); ctx.fillText(String(i * 2), a, b); } }
+  if (trail) {
+    const k0 = Math.max(0, f - 120), seg = (i, k) => R.frames[k].cars[i];
+    for (let i = 0; i < R.cars.length; i++) {
+      if (i !== sel && !R.cars[i].learner) continue;
+      for (let k = k0 + 1; k <= f; k++) {
+        const a = seg(i, k - 1), b = seg(i, k);
+        if (Math.hypot(a[0] - b[0], a[1] - b[1]) > 20) continue;
+        const v = Math.min(1, b[C.v] / 80), br = b[C.brk];
+        ctx.strokeStyle = br > 0.05 ? `rgba(255,${90 - 60 * br},70,0.9)` : `hsla(${200 - 160 * v},80%,60%,0.85)`;
+        ctx.lineWidth = (b[C.off] > a[C.off] ? 4 : 2) * d;
+        ctx.beginPath(); ctx.moveTo(...W(a[0], a[1])); ctx.lineTo(...W(b[0], b[1])); ctx.stroke();
+      }
+    }
+  }
+  fr.cars.forEach((c, i) => drawCar(c, i));
+  drawHud(); drawPanel(); drawStrips(); drawTimelineCursor();
+}
+
+function drawCar(c, i) {
+  const [px, py] = W(c[C.x], c[C.z]), d = devicePixelRatio, s = Math.max(cam.scale, 0.6) * d;
+  ctx.save(); ctx.translate(px, py); ctx.rotate(-c[C.yaw]);
+  // Heading is +z at yaw 0 (forward = (sin yaw, cos yaw)); screen y = world z.
+  ctx.globalAlpha = c[C.ghost] ? 0.35 : 1;
+  ctx.fillStyle = R.cars[i].color; ctx.fillRect(-1.0 * s, -2.3 * s, 2.0 * s, 4.6 * s);
+  ctx.fillStyle = '#000a'; ctx.fillRect(-0.8 * s, 0.9 * s, 1.6 * s, 0.9 * s);
+  if (i === sel) { ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5 * d; ctx.strokeRect(-1.4 * s, -2.7 * s, 2.8 * s, 5.4 * s); }
+  ctx.strokeStyle = '#fff8'; ctx.lineWidth = 1 * d; ctx.beginPath(); ctx.moveTo(0, 2.3 * s); ctx.lineTo(Math.sin(-c[C.steer] * 0.5) * 3 * s, 2.3 * s + Math.cos(c[C.steer] * 0.5) * 3 * s); ctx.stroke();
+  ctx.restore();
+  if (labels) { ctx.fillStyle = '#fff'; ctx.font = `${11 * d}px system-ui`; ctx.fillText(`${R.cars[i].name} ${(c[C.v] * 3.6).toFixed(0)}`, px + 8 * d, py - 8 * d); }
+}
+
+function drawHud() {
+  const fr = R.frames[f], c = fr.cars[sel];
+  $('hud').innerHTML = `t ${fr.t.toFixed(2)} s · frame ${f}/${R.frames.length - 1} · <b style="color:${R.cars[sel].color}">${R.cars[sel].name}</b> ${(c[C.v] * 3.6).toFixed(0)} km/h · zoom ${cam.scale.toFixed(2)}`;
+}
+
+const fmt = (x, n = 3) => (x === undefined || x === null) ? '–' : (+x).toFixed(n);
+function drawPanel() {
+  const fr = R.frames[f], c = fr.cars[sel], li = learnerOf[sel];
+  const order = fr.cars.map((c, i) => [i, c[C.s]]);
+  fr.cars.forEach((c, i) => { const el = $('cv' + i); if (el) el.textContent = `${(c[C.v] * 3.6).toFixed(0)} km/h  s ${c[C.s].toFixed(0)}`; });
+  $('cars').querySelectorAll('div').forEach((d) => d.classList.toggle('sel', +d.dataset.i === sel));
+  const g = R.geometry, edge = Math.abs(c[C.lat]) - g.halfWidth;
+  let rows = [['speed', `${(c[C.v] * 3.6).toFixed(1)} km/h`], ['s / lateral', `${c[C.s].toFixed(1)} m / ${c[C.lat].toFixed(2)} m`],
+    ['edge margin', `<span style="color:${edge > -1 ? 'var(--bad)' : edge > -2 ? 'var(--warn)' : 'var(--good)'}">${(-edge).toFixed(2)} m</span>`],
+    ['applied steer', fmt(c[C.steer])], ['applied thr / brk', `${fmt(c[C.thr], 2)} / ${fmt(c[C.brk], 2)}`],
+    ['damage', `${(100 * c[C.dmg]).toFixed(1)} %`], ['offtrack (lap)', `${c[C.off].toFixed(2)} s`], ['incident pts', c[C.inc]]];
+  if (li >= 0) {
+    const a = fr.agents[li], p = R.policy?.[f]?.[li];
+    rows.push(['sent steer / pedal', `${fmt(a[1])} / ${fmt(a[2])}`], ['reply pending', a[3] ? 'yes' : 'no'], ['applied age', `${(a[4] * 1000).toFixed(0)} ms`]);
+    if (p) rows.push(['policy μ steer/pedal', `${fmt(p[P.muS])} / ${fmt(p[P.muP])}`], ['value', fmt(p[P.val])], ['reward (prev step)', fmt(p[P.rew], 4)],
+      ['flags', `${p[P.done] ? 'DONE ' : ''}${p[P.trunc] ? 'TRUNC ' : ''}${p[P.first] ? 'FIRST' : ''}` || '–']);
+  }
+  $('kv').innerHTML = rows.map(([k, v]) => `<span>${k}</span><span>${v}</span>`).join('');
+}
+
+// ---------- strips ----------
+const STRIPS = [
+  { id:'v', label:'speed km/h', lo:0, hi:330, series:[{ c:'#7cc4ff', get:(k, i) => R.frames[k].cars[i][C.v] * 3.6 }] },
+  { id:'st', label:'steer: applied (white) · sent (orange) · μ (blue)', lo:-1, hi:1, series:[
+    { c:'#ffffff', get:(k, i) => R.frames[k].cars[i][C.steer] },
+    { c:'#ff9a3c', get:(k, i, li) => li >= 0 ? R.frames[k].agents[li][1] : null },
+    { c:'#5aa0ff', get:(k, i, li) => li >= 0 && R.policy?.[k] ? R.policy[k][li][P.muS] : null }] },
+  { id:'pd', label:'pedal: applied thr−brk (white) · sent (orange)', lo:-1, hi:1, series:[
+    { c:'#ffffff', get:(k, i) => R.frames[k].cars[i][C.thr] - R.frames[k].cars[i][C.brk] },
+    { c:'#ff9a3c', get:(k, i, li) => li >= 0 ? R.frames[k].agents[li][2] : null }] },
+  { id:'lat', label:'lateral m (track edge dashed)', lo:null, hi:null, edge:true, series:[{ c:'#c9e36b', get:(k, i) => R.frames[k].cars[i][C.lat] }] },
+  { id:'val', label:'value (green) · reward×20 (pink)', lo:null, hi:null, learner:true, series:[
+    { c:'#4cc38a', get:(k, i, li) => li >= 0 && R.policy?.[k] ? R.policy[k][li][P.val] : null },
+    { c:'#ff6fb5', get:(k, i, li) => li >= 0 && R.policy?.[k] ? R.policy[k][li][P.rew] * 20 : null }] },
+];
+$('strips').innerHTML = STRIPS.map((s) => `<div class="lbl"><span>${s.label}</span><span id="sv_${s.id}"></span></div><canvas class="strip" id="s_${s.id}"></canvas>`).join('');
+
+function drawStrips() {
+  const k0 = Math.max(0, f - 240), k1 = Math.min(R.frames.length - 1, f + 240), li = learnerOf[sel], d = devicePixelRatio;
+  for (const s of STRIPS) {
+    const cv = $('s_' + s.id), r = cv.getBoundingClientRect();
+    if (cv.width !== Math.round(r.width * d)) { cv.width = r.width * d; cv.height = r.height * d; }
+    const g = cv.getContext('2d'), w = cv.width, h = cv.height;
+    g.clearRect(0, 0, w, h);
+    if (s.learner && li < 0) continue;
+    let lo = s.lo, hi = s.hi;
+    if (lo === null) { lo = Infinity; hi = -Infinity; for (const se of s.series) for (let k = k0; k <= k1; k++) { const v = se.get(k, sel, li); if (v !== null) { lo = Math.min(lo, v); hi = Math.max(hi, v); } }
+      if (s.edge) { lo = Math.min(lo, -R.geometry.halfWidth - 1); hi = Math.max(hi, R.geometry.halfWidth + 1); }
+      if (!(hi > lo)) { lo -= 1; hi += 1; } const pad = (hi - lo) * 0.08; lo -= pad; hi += pad; }
+    const X = (k) => (k - (f - 240)) / 480 * w, Y = (v) => h - (v - lo) / (hi - lo) * h;
+    g.strokeStyle = '#2c323b'; g.lineWidth = 1; g.beginPath(); g.moveTo(0, Y(0)); g.lineTo(w, Y(0)); g.stroke();
+    if (s.edge) { g.setLineDash([3, 3]); g.strokeStyle = '#c94a4a'; for (const e of [R.geometry.halfWidth, -R.geometry.halfWidth]) { g.beginPath(); g.moveTo(0, Y(e)); g.lineTo(w, Y(e)); g.stroke(); } g.setLineDash([]); }
+    for (const se of s.series) {
+      g.strokeStyle = se.c; g.lineWidth = 1.3 * d; g.beginPath(); let on = false;
+      for (let k = k0; k <= k1; k++) { const v = se.get(k, sel, li); if (v === null) { on = false; continue; } on ? g.lineTo(X(k), Y(v)) : g.moveTo(X(k), Y(v)); on = true; }
+      g.stroke();
+    }
+    for (const e of events) if (e.i === sel && e.k >= k0 && e.k <= k1) { g.fillStyle = evColor(e.kind); g.fillRect(X(e.k) - 1, 0, 2, h); }
+    g.strokeStyle = '#fff6'; g.beginPath(); g.moveTo(X(f), 0); g.lineTo(X(f), h); g.stroke();
+    const cur = s.series.map((se) => se.get(f, sel, li)).filter((v) => v !== null).map((v) => v.toFixed(2)).join(' / ');
+    $('sv_' + s.id).textContent = cur;
+  }
+}
+
+// ---------- timeline ----------
+const tlc = $('tlc'), tg = tlc.getContext('2d');
+let tlBase = null;
+function drawTimeline() {
+  const w = tlc.width, h = tlc.height, n = R.frames.length;
+  tg.fillStyle = '#14171c'; tg.fillRect(0, 0, w, h);
+  // selected-car speed profile as a background band
+  tg.fillStyle = '#2a4258';
+  for (let x = 0; x < w; x++) { const k = Math.floor(x / w * n), v = R.frames[k].cars[sel][C.v]; const hh = Math.min(1, v / 85) * h * 0.6; tg.fillRect(x, h - hh, 1, hh); }
+  for (const e of events) { const x = e.k / n * w; tg.fillStyle = evColor(e.kind); tg.fillRect(x, e.kind === 'end' ? 0 : h * 0.15, Math.max(1, devicePixelRatio), e.kind === 'end' ? h : h * 0.35); }
+  tlBase = tg.getImageData(0, 0, w, h);
+}
+function drawTimelineCursor() {
+  if (!tlBase) return;
+  tg.putImageData(tlBase, 0, 0);
+  const x = f / (R.frames.length - 1) * tlc.width;
+  tg.fillStyle = '#fff'; tg.fillRect(x - 1, 0, 2 * devicePixelRatio, tlc.height);
+}
+let scrub = false;
+const tlSeek = (e) => { const r = tlc.getBoundingClientRect(); seek(Math.round((e.clientX - r.left) / r.width * (R.frames.length - 1))); };
+tlc.onmousedown = (e) => { scrub = true; tlSeek(e); };
+addEventListener('mousemove', (e) => { if (scrub) tlSeek(e); });
+addEventListener('mouseup', () => { scrub = false; });
+
+function seek(k) { f = Math.max(0, Math.min(R.frames.length - 1, k)); render(); }
+
+// ---------- controls ----------
+function setPlaying(on) {
+  if (on && R && f >= R.frames.length - 1) f = 0;
+  playing = on; $('play').textContent = on ? '❚❚ Pause' : '▶ Play'; $('play').classList.toggle('on', on);
+  last = performance.now(); acc = 0;
+}
+$('play').onclick = () => setPlaying(!playing);
+// Buttons must not keep keyboard focus: Space would then fire the button and the shortcut (double toggle).
+document.querySelectorAll('button, select').forEach((b) => b.addEventListener(b.tagName === 'SELECT' ? 'change' : 'click', () => b.blur()));
+$('back').onclick = () => seek(f - 150); $('fwd').onclick = () => seek(f + 150);
+$('spd').onchange = () => { speed = +$('spd').value; };
+const tog = (id, set) => { $(id).onclick = () => { $(id).classList.toggle('on'); set($(id).classList.contains('on')); render(); }; };
+tog('follow', (v) => follow = v); tog('trail', (v) => trail = v); tog('labels', (v) => labels = v);
+const jumpEv = (dir) => { const pool = events.filter((e) => e.i === sel); const e = dir > 0 ? pool.find((e) => e.k - 45 > f + 1) : [...pool].reverse().find((e) => e.k - 45 < f - 1); if (e) seek(e.k - 45); };
+$('nextEv').onclick = () => jumpEv(1); $('prevEv').onclick = () => jumpEv(-1);
+addEventListener('keydown', (e) => {
+  if (!R || e.target.tagName === 'SELECT') return;
+  if (e.code === 'Space') { e.preventDefault(); setPlaying(!playing); }
+  if (e.code === 'ArrowRight') seek(f + (e.shiftKey ? 30 : 1));
+  if (e.code === 'ArrowLeft') seek(f - (e.shiftKey ? 30 : 1));
+});
+map.addEventListener('wheel', (e) => { e.preventDefault(); cam.scale = Math.max(0.05, Math.min(20, cam.scale * Math.exp(-e.deltaY * 0.0015))); render(); }, { passive:false });
+let drag = null;
+map.onmousedown = (e) => {
+  const r = map.getBoundingClientRect(), d = devicePixelRatio, mx = (e.clientX - r.left) * d, my = (e.clientY - r.top) * d;
+  let best = -1, bd = 14 * d; R.frames[f].cars.forEach((c, i) => { const [a, b] = W(c[0], c[1]); const dd = Math.hypot(a - mx, b - my); if (dd < bd) { bd = dd; best = i; } });
+  if (best >= 0) { sel = best; drawTimeline(); render(); return; }
+  drag = { x:e.clientX, y:e.clientY, cx:cam.x, cz:cam.z }; if (follow) $('follow').click();
+};
+addEventListener('mousemove', (e) => { if (!drag) return; cam.x = drag.cx - (e.clientX - drag.x) / cam.scale; cam.z = drag.cz - (e.clientY - drag.y) / cam.scale; render(); });
+addEventListener('mouseup', () => { drag = null; });
+
+function loop(now) {
+  if (playing && R) {
+    acc += Math.min(0.25, (now - last) / 1000) * 30 * speed;
+    const steps = Math.floor(acc); acc -= steps;
+    if (steps) { f = Math.min(R.frames.length - 1, f + steps); if (f === R.frames.length - 1) setPlaying(false); render(); }
+  }
+  last = now; requestAnimationFrame(loop);
+}
+resize(); loadList(); requestAnimationFrame(loop);
+</script>
+</body>
+</html>

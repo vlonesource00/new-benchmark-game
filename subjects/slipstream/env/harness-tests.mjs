@@ -67,5 +67,20 @@ const drive = (w, n, steer, pedal, st = stats()) => {
   check('laps-from-game', c.race.lap - laps0 >= 3 && st.laps.length === gameClean, `scored=${st.laps.length} gameClean=${gameClean} lapsRun=${c.race.lap - laps0}`);
 }
 
+// 5. The decide flag on a row says exactly whether the action taken on it is delivered (seat free) or dropped (busy).
+{
+  const w = new World({ ...base, learners: 3 }, mk(5)), st = stats(), n = w.agents.length;
+  const act = new Float32Array(n * 2), out = new Float32Array(n * ROW);
+  let wrong = 0, decided = 0, rows = 0;
+  w.tick(act, out, 4, st);
+  for (let k = 0; k < 600; k++) {
+    const dec = w.agents.map((a, i) => out[i * ROW + OBS + 4]), ended = w.agents.map((a) => a.end), busy0 = w.agents.map((a) => a.busy ?? 0);
+    for (let i = 0; i < n; i++) { act[2 * i] = Math.sin(k * 0.1 + i) * 0.3; act[2 * i + 1] = 0.6; }
+    w.tick(act, out, 4, st);
+    w.agents.forEach((a, i) => { if (ended[i]) return; rows++; decided += dec[i]; if ((dec[i] === 1) === ((a.busy ?? 0) > busy0[i])) wrong++; });
+  }
+  check('decide-flag', wrong === 0 && decided > 0 && decided < rows, `wrong=${wrong} decideRate=${(decided / rows).toFixed(3)} (${(30 * decided / rows).toFixed(1)} Hz)`);
+}
+
 for (const r of results) console.log(`${r.ok ? 'PASS' : 'FAIL'} ${r.name} ${r.detail}`);
 process.exit(results.every((r) => r.ok) ? 0 : 1);

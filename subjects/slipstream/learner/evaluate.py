@@ -47,7 +47,7 @@ def main():
         for t in range(ticks):
             wrecks += (row[:, D + 1] > 0.5)
             x = torch.from_numpy(norm(row[:, :D])).to(dev)
-            mu, _, h = net.step(x, h, torch.from_numpy(row[:, D + 3].copy()).to(dev))
+            mu, _, h = net.step(x, h, torch.from_numpy(row[:, D + 3].copy()).to(dev), torch.from_numpy(row[:, D + 4].copy()).to(dev))
             row = env.step(mu.cpu().numpy())
             if t % 300 == 299:
                 for s in env.take_stats():

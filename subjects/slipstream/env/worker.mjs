@@ -2,9 +2,9 @@
 //   node --import ./scripts/json-loader.mjs subjects/slipstream/env/worker.mjs <config.json> <worker-index>
 // Handshake: one JSON line on stdout {agents, obs, row, ...}. Then per tick:
 //   stdin  <- Float32 [agents x 2]       (steer, pedal) per learner
-//   stdout -> Float32 [agents x ROW]     obs | reward, done, truncated, first
+//   stdout -> Float32 [agents x ROW]     obs | reward, done, truncated, first, decide
 // Stats: one JSON line on stderr every `statsEvery` ticks.
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { World, OBS, ROW, EGO_F, ROAD_K, ROAD_F, RIVAL_N, RIVAL_F } from './world.mjs';
 
 const cfg = JSON.parse(readFileSync(process.argv[2], 'utf8'));
@@ -27,12 +27,15 @@ const substeps = cfg.substeps ?? 4;
 process.stdout.write(JSON.stringify({ agents, obs: OBS, row: ROW, ego: EGO_F, roadK: ROAD_K, roadF: ROAD_F, rivalN: RIVAL_N, rivalF: RIVAL_F, worlds: worlds.map((w) => ({ track: w.track.id, agents: w.agents.length, ai: w.cfg.ai ?? [] })) }) + '\n');
 
 const stats = () => ({ ticks: 0, dist: 0, legal: 0, speed: 0, episodes: 0, terminal: 0, why: {}, laps: {}, wrecks: [], lap(track, t) { (this.laps[track] ??= []).push(+t.toFixed(3)); } });
+// Replay recording (viewer): world 0 only, written when the learner closes the pipe.
+const rec = cfg.record ? { geometry: worlds[0].geometry(), cars: worlds[0].env.race.cars.map((c, i) => ({ id: i, name: c.team?.short, color: c.color, learner: worlds[0].env.learners.includes(i), ai: worlds[0].cfg.ai?.[i - worlds[0].cfg.learners] ?? null })), frames: [] } : null;
 let st = stats(), tick = 0, busy = 0; const t0 = performance.now(); let tStats = t0;
 
 function step() {
   const ts = performance.now();
   worlds.forEach((w, i) => w.tick(actions.subarray(offsets[i] * 2), out.subarray(offsets[i] * ROW), substeps, st));
   busy += performance.now() - ts;
+  if (rec) rec.frames.push(worlds[0].frame());
   process.stdout.write(outBuf);
   if (++tick % (cfg.statsEvery ?? 600) === 0) {
     const now = performance.now(), wall = (now - tStats) / 1000;
@@ -53,4 +56,4 @@ process.stdin.on('data', (chunk) => {
     step();
   }
 });
-process.stdin.on('end', () => process.exit(0));
+process.stdin.on('end', () => { if (rec) writeFileSync(cfg.record, JSON.stringify(rec)); process.exit(0); });

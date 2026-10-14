@@ -39,7 +39,7 @@ def main():
         for t in range(a.ticks):
             x = torch.from_numpy(norm(row[:, :D])).to(dev)
             first = torch.from_numpy(row[:, D + 3].copy()).to(dev)
-            mu, v, h = net.step(x, h, first)
+            mu, v, h = net.step(x, h, first, torch.from_numpy(row[:, D + 4].copy()).to(dev))
             act = mu if a.det else mu + net.log_std.exp() * torch.randn_like(mu)
             act = act.cpu().numpy()
             for i in range(N):

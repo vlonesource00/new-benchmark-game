@@ -2,8 +2,10 @@
 
   python learner/ppo.py --config configs/tt.json --name tt-a1 --workers 6 [--iters N] [--resume runs/x/model.pt]
 
-Row layout from the env: obs | reward, done, truncated, first. Flags on row t describe the transition into t;
+Row layout from the env: obs | reward, done, truncated, first, decide. Flags on row t describe the transition into t;
 an ended row (done/truncated) is a final observation whose action is discarded by the env.
+Decisions are a semi-MDP: only decide rows (seat free, as in the browser) step the GRU and are trained on; the reward of
+the busy ticks in between accumulates (per-tick discount) into the preceding decision.
 """
 import argparse
 import json
@@ -60,6 +62,26 @@ class RunningNorm:
     def load(self, s):
         self.mean, self.var, self.n = s['mean'], s['var'], s['n']
         self._pin()
+
+
+def semi_gae(rs, val_b, done, ended_next, dec, gamma, lam):
+    """rs/done/ended_next [T,N] per tick, val_b/dec [T+1,N]. Advantages on decide rows, 0 elsewhere."""
+    T, N = rs.shape
+    # Semi-MDP GAE. Carried backwards to each decision: R (discounted reward to the next decision), g (discount to it),
+    # nv / na (value and advantage at it). Row T counts as a decision; an episode end is a boundary with no advantage.
+    adv = np.zeros((T, N), np.float32)
+    R, g = np.zeros(N), np.ones(N)
+    nv, na = val_b[T].astype(np.float64), np.zeros(N)
+    for t in reversed(range(T)):
+        e = ended_next[t] > 0.5
+        d1 = np.ones(N, bool) if t + 1 == T else dec[t + 1] > 0.5
+        nv = np.where(e, val_b[t + 1] * (1 - done[t]), np.where(d1, val_b[t + 1], nv))
+        na = np.where(e, 0.0, np.where(d1, 0.0 if t + 1 == T else adv[t + 1], na))
+        b = e | d1
+        R = np.where(b, rs[t], rs[t] + gamma * R)
+        g = np.where(b, gamma, gamma * g)
+        adv[t] = np.where(dec[t] > 0.5, R + g * nv - val_b[t] + g * lam * na, 0.0)
+    return adv
 
 
 def main():
@@ -120,7 +142,7 @@ def main():
         tr0 = time.time()
         obs_b = np.zeros((T + 1, N, D), np.float32)
         raw_b = np.zeros((T + 1, N, D), np.float32)
-        flg_b = np.zeros((T + 1, N, 4), np.float32)
+        flg_b = np.zeros((T + 1, N, 5), np.float32)
         act_b = np.zeros((T, N, 2), np.float32)
         logp_b = np.zeros((T, N), np.float32)
         val_b = np.zeros((T + 1, N), np.float32)
@@ -129,11 +151,12 @@ def main():
         with torch.no_grad():
             for t in range(T + 1):
                 raw_b[t] = row[:, :D]
-                flg_b[t] = row[:, D:D + 4]
+                flg_b[t] = row[:, D:D + 5]
                 obs_b[t] = norm(row[:, :D])
                 x = torch.from_numpy(obs_b[t]).to(dev)
                 first = torch.from_numpy(flg_b[t, :, 3]).to(dev)
-                mu, v, h_next = net.step(x, h, first)
+                # The bootstrap row (t == T) is evaluated as a decision and not committed.
+                mu, v, h_next = net.step(x, h, first, None if t == T else torch.from_numpy(flg_b[t, :, 4]).to(dev))
                 val_b[t] = v.cpu().numpy()
                 if t == T:
                     break  # bootstrap value only: the next rollout processes this row from h
@@ -149,18 +172,14 @@ def main():
         rew = flg_b[1:, :, 0]
         done = flg_b[1:, :, 1]
         ended_next = np.clip(flg_b[1:, :, 1] + flg_b[1:, :, 2], 0, 1)
-        valid = 1 - np.clip(flg_b[:T, :, 1] + flg_b[:T, :, 2], 0, 1)
+        dec = flg_b[:, :, 4]
+        valid = (1 - np.clip(flg_b[:T, :, 1] + flg_b[:T, :, 2], 0, 1)) * dec[:T]
         # Return-based reward scaling.
         for t in range(T):
             ret_acc = ret_acc * a.gamma * (1 - ended_next[t]) + rew[t]
             ret_rms.update(ret_acc.reshape(-1, 1).squeeze(1)) if t % 8 == 0 else None
         rs = rew / math.sqrt(ret_rms.var + 1e-8)
-        adv = np.zeros((T, N), np.float32)
-        last = np.zeros(N, np.float32)
-        for t in reversed(range(T)):
-            delta = rs[t] + a.gamma * val_b[t + 1] * (1 - done[t]) - val_b[t]
-            last = delta + a.gamma * a.lam * (1 - ended_next[t]) * last
-            adv[t] = last
+        adv = semi_gae(rs, val_b, done, ended_next, dec, a.gamma, a.lam)
         tgt = adv + val_b[:T]
         t_roll = time.time() - tr0
 
@@ -168,6 +187,7 @@ def main():
         tu0 = time.time()
         X = torch.from_numpy(obs_b[:T]).to(dev)
         F = torch.from_numpy(flg_b[:T, :, 3]).to(dev)
+        DEC = torch.from_numpy(np.ascontiguousarray(dec[:T])).to(dev)
         A = torch.from_numpy(act_b).to(dev)
         LP = torch.from_numpy(logp_b).to(dev)
         ADV = torch.from_numpy(adv).to(dev)
@@ -183,7 +203,7 @@ def main():
         for ep in range(a.epochs):
             perm = torch.randperm(N, device=dev)
             for mb in perm.chunk(a.minibatches):
-                mu, v = net.sequence(X[:, mb], H0[mb], F[:, mb])
+                mu, v = net.sequence(X[:, mb], H0[mb], F[:, mb], DEC[:, mb])
                 ls = net.log_std
                 lp = (-((A[:, mb] - mu) ** 2) / (2 * ls.exp() ** 2) - ls - 0.5 * math.log(2 * math.pi)).sum(2)
                 ratio = (lp - LP[:, mb]).exp()
@@ -223,7 +243,7 @@ def main():
         rec = {'it': it, 'steps': steps, 'min': round((time.time() - t_start) / 60, 2), 'sps': round(T * N / (t_roll + t_upd)),
                't_roll': round(t_roll, 2), 't_env': round(t_env, 2), 't_upd': round(t_upd, 2), 'rew': round(float(rew[valid.astype(bool)].mean()), 4),
                'kl': round(float(np.mean(kls)), 4), 'clip': round(float(np.mean(clips)), 3), 'vl': round(float(np.mean(vls)), 3),
-               'std': [round(x, 3) for x in net.log_std.exp().tolist()], 'stopped': stop}
+               'std': [round(x, 3) for x in net.log_std.exp().tolist()], 'stopped': stop, 'decide': round(float(dec[:T].mean()), 3)}
         if it % 10 == 9:
             for k, v in list(agg.items()):
                 if k.startswith('lap:'):

@@ -11,7 +11,9 @@ const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
 // Observation layout (shared with the learner through the worker handshake).
 export const ROAD_K = 24, ROAD_F = 6, RIVAL_N = 8, RIVAL_F = 13, EGO_F = 48;
 export const OBS = EGO_F + ROAD_K * ROAD_F + RIVAL_N * RIVAL_F;
-export const TAIL = 4; // reward, done, truncated, first
+// decide: 1 when the seat is free, i.e. the browser would query the NN on this state and the next action is delivered.
+// While a reply is in flight the browser never sees the state, so the learner must not step its memory or train on it.
+export const TAIL = 5; // reward, done, truncated, first, decide
 export const ROW = OBS + TAIL;
 const RIVAL_RANGE = 160;
 
@@ -154,11 +156,12 @@ export class World {
     const recycle = race.time > (this.cfg.lifetime ?? 900) || race.phase !== 'racing';
     for (const a of this.agents) {
       const row = out.subarray(a.k * ROW, (a.k + 1) * ROW);
-      if (a.first) { this.observe(a, row); row[OBS] = 0; row[OBS + 1] = 0; row[OBS + 2] = recycle ? 1 : 0; row[OBS + 3] = 1; a.first = 0; a.illegalSubs = a.offEnters = 0; continue; }
+      if (a.first) { this.observe(a, row); row[OBS] = 0; row[OBS + 1] = 0; row[OBS + 2] = recycle ? 1 : 0; row[OBS + 3] = 1; row[OBS + 4] = a.inflight ? 0 : 1; a.first = 0; a.illegalSubs = a.offEnters = 0; continue; }
       const r = this.reward(a, dt, substeps, stats);
       if (recycle && !r.done && !r.trunc) { r.trunc = true; r.why = 'recycle'; }
       this.observe(a, row);
       row[OBS] = r.reward; row[OBS + 1] = r.done ? 1 : 0; row[OBS + 2] = r.trunc ? 1 : 0; row[OBS + 3] = 0;
+      row[OBS + 4] = (r.done || r.trunc || !a.inflight) ? 1 : 0; // a final observation is always consumed (bootstrap value)
       if (r.done || r.trunc) { a.end = 1; stats.episodes++; stats.terminal += r.done ? 1 : 0; stats.why[r.why] = (stats.why[r.why] ?? 0) + 1; }
     }
     if (recycle) this.recycle();
@@ -213,6 +216,30 @@ export class World {
     if (done && stats.wrecks && stats.wrecks.length < 64) stats.wrecks.push([this.track.id, Math.round(c.s), why, +c.speed.toFixed(1), +c.lateral.toFixed(1)]);
     const trunc = !done && a.t >= a.horizon;
     return { reward, done, trunc, why: why ?? (trunc ? 'horizon' : null) };
+  }
+
+  // ---- replay recording (viewer) -------------------------------------------------------------------
+  /** Static track geometry for the viewer: centreline every 2 m plus widths. */
+  geometry() {
+    const r = this.road, pts = [];
+    for (let i = 0; i < r.n; i += 2) pts.push([+r.x[i].toFixed(2), +r.z[i].toFixed(2), +r.h[i].toFixed(4), +r.k[i].toFixed(5)]);
+    return { id: this.track.id, length: this.track.length, halfWidth: this.track.halfWidth, curbWidth: this.track.curbWidth ?? 0,
+      runoffWidth: this.track.runoffWidth ?? 0, finishS: this.track.finishS ?? 0, centre: pts };
+  }
+
+  /** One frame of every car: [x, z, yaw, speed, steer, throttle, brake, s, lateral, damage, offtrack, inc, ghost]. */
+  frame() {
+    const race = this.env.race;
+    return {
+      t: +race.time.toFixed(3),
+      cars: race.cars.map((c) => {
+        const e = race.entries[c.id];
+        return [+c.x.toFixed(2), +c.z.toFixed(2), +c.yaw.toFixed(4), +c.speed.toFixed(2), +(c.controls.steer ?? 0).toFixed(3), +(c.controls.throttle ?? 0).toFixed(3),
+          +(c.controls.brake ?? 0).toFixed(3), +c.s.toFixed(1), +c.lateral.toFixed(2), +c.damage.toFixed(4), +(c.race.offtrack ?? 0).toFixed(3),
+          race.stewards?.of(e)?.inc ?? 0, c.ghost ? 1 : 0];
+      }),
+      agents: this.agents.map((a) => [a.ci, +a.sent[0].toFixed(3), +a.sent[1].toFixed(3), a.pending, +a.appliedAge.toFixed(3), a.end ? 1 : 0]),
+    };
   }
 
   // ---- observation ----------------------------------------------------------------------------------

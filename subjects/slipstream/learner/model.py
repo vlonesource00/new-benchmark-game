@@ -49,21 +49,24 @@ class Slipstream(nn.Module):
         a, _ = self.attn(q, t, t, key_padding_mask=mask, need_weights=False)
         return torch.cat([e, r, a.squeeze(1)], 1)
 
-    def step(self, x, h, first):
-        """One tick: x [B,obs] (normalised), h [B,H], first [B] (1 = episode start -> fresh memory)."""
+    def step(self, x, h, first, decide=None):
+        """One tick: x [B,obs] (normalised), h [B,H], first [B] (1 = episode start -> fresh memory).
+        decide [B]: 1 where the NN is actually queried; elsewhere the memory is held (the browser never saw that state)."""
         f = self.features(x)
-        h = self.gru(self.pre(f), h * (1 - first).unsqueeze(1))
+        hn = self.gru(self.pre(f), h * (1 - first).unsqueeze(1))
+        h = hn if decide is None else torch.where(decide.unsqueeze(1) > 0.5, hn, h)
         z = torch.cat([h, f], 1)
         return self.pi(z), self.v(z).squeeze(1), h
 
-    def sequence(self, x, h0, first):
-        """x [T,B,obs], first [T,B]: recomputes the memory through a rollout segment."""
+    def sequence(self, x, h0, first, decide=None):
+        """x [T,B,obs], first/decide [T,B]: recomputes the memory through a rollout segment (held on non-decide ticks)."""
         T, B = x.shape[:2]
         f = self.features(x.reshape(T * B, -1)).reshape(T, B, -1)
         p = self.pre(f)
         h, hs = h0, []
         for t in range(T):
-            h = self.gru(p[t], h * (1 - first[t]).unsqueeze(1))
+            hn = self.gru(p[t], h * (1 - first[t]).unsqueeze(1))
+            h = hn if decide is None else torch.where(decide[t].unsqueeze(1) > 0.5, hn, h)
             hs.append(h)
         z = torch.cat([torch.stack(hs), f], 2)
         return self.pi(z), self.v(z).squeeze(2)
