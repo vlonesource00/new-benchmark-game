@@ -41,15 +41,34 @@ function network() {
   return v;
 }
 
+// Two processes appending to one log (a duplicate launch) interleave their records. Every writer logs each iteration,
+// so split the records into chains of consecutive iterations with a steady sample stride and keep the chain that ends
+// at the newest record (the writer still alive).
+function oneWriter(recs) {
+  const chains = [];
+  for (const r of recs) {
+    let best = null, bestErr = Infinity;
+    for (const c of chains) {
+      const last = c.at(-1);
+      if (last.it !== r.it - 1) continue;
+      const stride = c.length > 1 ? last.steps - c.at(-2).steps : r.steps - last.steps, err = Math.abs(r.steps - last.steps - stride);
+      if (err < bestErr) { best = c; bestErr = err; }
+    }
+    best ? best.push(r) : chains.push([r]);
+  }
+  return chains.find((c) => c.at(-1) === recs.at(-1)) ?? recs;
+}
+
 function trainStatus(job) {
   const dir = join(RUNS, job.run), log = join(dir, 'log.jsonl');
   if (!existsSync(log)) return { state: 'queued', progress: 0 };
-  const ls = lines(log), head = JSON.parse(ls[0]), recs = ls.slice(1).map((l) => JSON.parse(l)).filter((r) => r.it != null);
+  const ls = lines(log), head = JSON.parse(ls[0]), recs = oneWriter(ls.slice(1).map((l) => JSON.parse(l)).filter((r) => r.it != null));
   const budget = head.args?.minutes || 0, last = recs.at(-1) ?? { min: 0 };
   const done = existsSync(join(dir, 'final.pt'));
   const stride = Math.max(1, Math.ceil(recs.length / 300));
-  const curve = recs.filter((_, i) => i % stride === 0 || i === recs.length - 1).map((r) => [r.it, r.min, r.rew, r.std?.[0], r.std?.[1], r.kl, r.sps]);
+  const curve = recs.filter((_, i) => i % stride === 0 || i === recs.length - 1).map((r) => [r.it, r.min, r.rew, r.std?.[0], r.std?.[1], r.kl, r.sps, r.steps]);
   return {
+    stdMin: head.args?.std_min || null, stopped: recs.filter((r) => r.stopped).length, updates: recs.length,
     state: done ? 'done' : 'running', progress: done ? 1 : Math.min(1, last.min / (budget || 1)), etaMin: done ? 0 : Math.max(0, budget - last.min),
     minutes: budget, elapsed: last.min, resume: head.args?.resume, config: head.args?.config,
     latest: { it: last.it, steps: last.steps, rew: last.rew, std: last.std, kl: last.kl, sps: last.sps, decide: last.decide },
@@ -78,13 +97,16 @@ function status() {
   const q = existsSync(join(RUNS, 'queue.json')) ? readJson(join(RUNS, 'queue.json')) : { jobs: [] };
   const jobs = q.jobs.map((j) => ({ ...j, ...(j.kind === 'train' ? trainStatus(j) : evalStatus(j)) }));
   const cur = jobs.find((j) => j.state === 'running') ?? jobs.find((j) => j.state === 'queued') ?? null;
-  const training = [...jobs].reverse().find((j) => j.kind === 'train' && j.state !== 'queued') ?? null;
+  // Every training run in progress (parallel arms are shown side by side); otherwise the latest finished one.
+  const running = jobs.filter((j) => j.kind === 'train' && j.state === 'running');
+  const last = [...jobs].reverse().find((j) => j.kind === 'train' && j.state !== 'queued');
+  const trainings = running.length ? running : last ? [last] : [];
   return {
     now: Date.now(), label: q.label, network: network(),
     jobs: jobs.map(({ curve, result, ...j }) => ({ ...j, total: result?.complete_total })),
     current: cur && { title: cur.title, kind: cur.kind, state: cur.state, progress: cur.progress, etaMin: cur.etaMin, detail: cur.detail },
     overall: jobs.length ? jobs.reduce((a, j) => a + j.progress, 0) / jobs.length : 0,
-    training, results: results()
+    trainings, results: results()
   };
 }
 

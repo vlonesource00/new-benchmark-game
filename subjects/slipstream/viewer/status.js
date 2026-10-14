@@ -39,20 +39,24 @@
     return svg;
   }
 
+  // Series share both axes: x is samples collected (s.x), so parallel arms line up by practice, not wall time.
+  // Latest values are listed top right, one line per series; dashed series use s.dash.
   function curve(c, title, series, fmt = (v) => v.toFixed(3)) {
     const d = devicePixelRatio, w = c.clientWidth * d, h = c.clientHeight * d; c.width = w; c.height = h;
-    const g = c.getContext('2d'), pad = 6 * d, top = 20 * d;
-    const all = series.flatMap((s) => s.v).filter(Number.isFinite); if (!all.length) return;
-    let lo = Math.min(...all), hi = Math.max(...all); if (hi - lo < 1e-9) { hi += 1e-3; lo -= 1e-3; }
+    const g = c.getContext('2d'), pad = 6 * d, lh = 12 * d, top = (8 + 12 * Math.max(1, series.length)) * d;
+    const ys = series.flatMap((s) => s.v).filter(Number.isFinite), xs = series.flatMap((s) => s.x).filter(Number.isFinite); if (!ys.length) return;
+    let lo = Math.min(...ys), hi = Math.max(...ys); if (hi - lo < 1e-9) { hi += 1e-3; lo -= 1e-3; }
+    const x0 = Math.min(...xs), x1 = Math.max(...xs) || 1;
     g.font = `${11 * d}px system-ui`; g.fillStyle = '#8a94a2'; g.fillText(title, pad, 13 * d);
     series.forEach((s, k) => {
-      g.strokeStyle = s.c; g.lineWidth = 1.5 * d; g.beginPath(); let started = false;
-      s.v.forEach((v, i) => { if (!Number.isFinite(v)) return; const X = pad + (w - 2 * pad) * i / Math.max(1, s.v.length - 1), Y = top + (h - top - pad) * (1 - (v - lo) / (hi - lo)); started ? g.lineTo(X, Y) : g.moveTo(X, Y); started = true; });
-      g.stroke();
+      g.strokeStyle = s.c; g.lineWidth = 1.5 * d; g.setLineDash(s.dash ? [4 * d, 3 * d] : []); g.beginPath(); let started = false;
+      s.v.forEach((v, i) => { if (!Number.isFinite(v)) return; const X = pad + (w - 2 * pad) * (s.x[i] - x0) / Math.max(1, x1 - x0), Y = top + (h - top - pad) * (1 - (v - lo) / (hi - lo)); started ? g.lineTo(X, Y) : g.moveTo(X, Y); started = true; });
+      g.stroke(); g.setLineDash([]);
       const last = s.v.filter(Number.isFinite).at(-1); g.fillStyle = s.c; g.textAlign = 'right';
-      g.fillText(`${s.n ? s.n + ' ' : ''}${fmt(last)}`, w - pad - k * 92 * d, 13 * d); g.textAlign = 'left';
+      g.fillText(`${s.n ? s.n + ' ' : ''}${fmt(last)}`, w - pad, 13 * d + k * lh); g.textAlign = 'left';
     });
   }
+  const RUNCOL = ['#8ab4ff', '#f2b84b', '#4cc38a', '#ff5a4e'];
 
   function draw() {
     const s = ST, n = s.network;
@@ -67,19 +71,23 @@
         : j.state === 'done' ? `${j.total} complete` : j.detail ? `${j.detail.done}/${j.detail.total} attempts · ${j.detail.complete} ok` : '';
       return `<span class="st ${j.state}">${j.state}</span><span>${j.title}</span><div class="bar ${j.state === 'done' ? 'done' : j.state === 'queued' ? 'q' : ''}"><i style="width:${pct(j.progress)}"></i></div><span class="x">${extra}</span>`;
     }).join('');
-    const t = s.training;
-    if (t) {
-      $('trainLabel').textContent = `· ${t.run} · ${t.config} · from ${t.resume ?? 'scratch'}`;
-      const L = t.latest, lat = t.latency?.frames ? 'frame model ' + t.latency.frames.map((f) => f[0]).join('/') + ' substeps' : `uniform ${t.latency?.min}–${t.latency?.max} substeps`;
-      const tr = [...new Set(t.tracks ?? [])].map((x) => `${x}${t.tracks.filter((y) => y === x).length > 1 ? ' ×' + t.tracks.filter((y) => y === x).length : ''}`).join(', ');
-      $('trainInfo').innerHTML = `<span>iteration <b>${L.it}</b></span><span>samples <b>${kfmt(L.steps)}</b></span><span>throughput <b>${kfmt(L.sps)}/s</b></span><span>decide rate <b>${(30 * (L.decide ?? 0)).toFixed(1)} Hz</b></span><span>latency <b>${lat}</b></span><span>tracks <b>${tr}</b></span>`;
-      const cv = t.curve, col = (i) => cv.map((r) => r[i]);
+    const T = s.trainings ?? [];
+    if (T.length) {
+      const t0 = T[0], many = T.length > 1, nm = (t) => t.run;
+      $('trainLabel').textContent = `· ${T.map(nm).join(' vs ')} · ${t0.config} · from ${t0.resume ?? 'scratch'}${many ? ' · curves by samples collected' : ''}`;
+      const lat = t0.latency?.frames ? 'frame model ' + t0.latency.frames.map((f) => f[0]).join('/') + ' substeps' : `uniform ${t0.latency?.min}–${t0.latency?.max} substeps`;
+      const tr = [...new Set(t0.tracks ?? [])].map((x) => `${x}${t0.tracks.filter((y) => y === x).length > 1 ? ' ×' + t0.tracks.filter((y) => y === x).length : ''}`).join(', ');
+      $('trainInfo').innerHTML = T.map((t, k) => {
+        const L = t.latest, recent = t.curve.slice(-20), stopRate = t.updates ? Math.round(100 * t.stopped / t.updates) : 0;
+        return `<div class="trow"><span style="color:${RUNCOL[k]}"><b>${t.run}</b></span><span>exploration floor <b>${t.stdMin ? t.stdMin.replace(',', ' / ') : 'none'}</b></span><span>iteration <b>${L.it}</b></span><span>samples <b>${kfmt(L.steps)}</b></span><span>throughput <b>${kfmt(Math.round(recent.reduce((a, r) => a + r[6], 0) / Math.max(1, recent.length)))}/s</b></span><span>updates cut short <b>${stopRate}%</b></span><span>decide rate <b>${(30 * (L.decide ?? 0)).toFixed(1)} Hz</b></span></div>`;
+      }).join('') + `<div class="trow"><span>latency <b>${lat}</b></span><span>tracks <b>${tr}</b></span></div>`;
       if (!$('curves').children.length) $('curves').innerHTML = '<canvas></canvas><canvas></canvas><canvas></canvas><canvas></canvas>';
       const [c1, c2, c3, c4] = $('curves').children;
-      curve(c1, 'Reward per decision', [{ v: col(2), c: '#4cc38a' }], (v) => v.toFixed(4));
-      curve(c2, 'Policy std (exploration)', [{ v: col(3), c: '#ff5a4e', n: 'steer' }, { v: col(4), c: '#f2b84b', n: 'pedal' }]);
-      curve(c3, 'KL per update', [{ v: col(5), c: '#8ab4ff' }], (v) => v.toFixed(4));
-      curve(c4, 'Samples / s', [{ v: col(6), c: '#b48aff' }], (v) => kfmt(Math.round(v)));
+      const ser = (i, extra = {}) => T.map((t, k) => ({ x: t.curve.map((r) => r[7]), v: t.curve.map((r) => r[i]), c: RUNCOL[k], n: many ? t.run : '', ...extra }));
+      curve(c1, 'Reward per decision', ser(2), (v) => v.toFixed(4));
+      curve(c2, 'Policy std', [...ser(3).map((x) => ({ ...x, n: `${x.n} steer`.trim() })), ...ser(4, { dash: true }).map((x) => ({ ...x, n: `${x.n} pedal`.trim() }))]);
+      curve(c3, 'KL per update', ser(5), (v) => v.toFixed(4));
+      curve(c4, 'Samples / s', ser(6), (v) => kfmt(Math.round(v)));
     }
     const tracks = [...new Set(s.results.flatMap((r) => Object.keys(r.tracks)))];
     const cls = (c, of) => c >= 0.9 * of ? 'ok' : c >= 0.5 * of ? 'mid' : 'low';
