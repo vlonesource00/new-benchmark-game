@@ -4,6 +4,7 @@ import { createPhantomV2Bridge } from '../bridges/phantom-v2-bridge.js';
 import { createGeminiV4Bridge } from '../bridges/gemini-v4-bridge.js';
 import { createBenchmarkSolinatorBridge } from '../bridges/solinator-bridge.js';
 import { createSolsticeBridge } from '../bridges/solstice-bridge.js';
+import { createSlipstreamBridge } from '../bridges/slipstream-bridge.js';
 import { createRevolutionBridge } from '../bridges/revolution-bridge.js';
 import { createNextRacerBridge } from '../bridges/next-racer-bridge.js';
 import { createApexBridge, apexState } from '../bridges/apex-bridge.js';
@@ -84,6 +85,7 @@ export function createSeatBridge(driver, index, race) {
     case 'next-racer':
       installNativeStrategy(race,race.cars[index]);
       return createNextRacerBridge({hostTrack,index,state:car=>nextRacerState(race,car)});
+    case 'slipstream': return createSlipstreamBridge({ hostTrack, index });
     default: throw new Error(`Unknown driver architecture: ${driver.id}`);
   }
 }
