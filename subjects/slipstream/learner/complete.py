@@ -40,6 +40,8 @@ def main():
                     help='uniform: the original 1-6 substep reply delay (continuity with earlier results); '
                          'frames: the measured browser model (one frame of 1/2/3/4/8 substeps per attempt)')
     ap.add_argument('--ai', default='', help='traffic test: AI seats racing in every attempt, e.g. intercept,apex')
+    ap.add_argument('--pole', action='store_true', help='with --grid: the learner starts from pole, the AI seats behind it '
+                    '(as the game seats SLIPSTREAM first), instead of shuffled slots')
     ap.add_argument('--grid', action='store_true', help='traffic test: start from the race grid (shuffled slots) with the AI '
                     'seats, standing, as a real race start; the attempt counts the same laps and failures')
     a = ap.parse_args()
@@ -53,7 +55,7 @@ def main():
     if a.ai:
         cfg['world']['ai'] = a.ai.split(',')
     if a.grid:
-        cfg['world']['gridOrder'] = 'shuffle'
+        cfg['world']['gridOrder'] = 'fixed' if a.pole else 'shuffle'
         cfg['world']['starts']['grid'] = 1
     assert cfg['worlds'] * a.workers == len(tracks) * a.attempts, 'attempts x tracks must split evenly over workers'
     fd, cfg_path = tempfile.mkstemp(suffix='.json')
@@ -118,7 +120,7 @@ def main():
                     break
     env.close()
     os.remove(cfg_path)
-    out = {'ckpt': a.ckpt, 'seed': a.seed, 'latency': a.latency, 'ai': a.ai, 'grid': a.grid, 'attempts': a.attempts, 'laps': a.laps, 'sim_s': round(tick / 30), 'tracks': {}}
+    out = {'ckpt': a.ckpt, 'seed': a.seed, 'latency': a.latency, 'ai': a.ai, 'grid': a.grid, 'pole': a.pole, 'attempts': a.attempts, 'laps': a.laps, 'sim_s': round(tick / 30), 'tracks': {}}
     for t in tracks:
         rs = [r for r in att if r['track'] == t]
         clean = [x for r in rs for x in r['laps'] if x]
