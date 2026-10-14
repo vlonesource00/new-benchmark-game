@@ -55,9 +55,14 @@ export class World {
     // Failure-weighted starts: a share of resets begin 40-200 m before places where episodes recently ended,
     // so rare hard sections (fast flicks, the harbor centreline kink) are practised as often as they are failed.
     const pick = rng(), fromFail = !initial && this.failures.length > 4 && pick >= (starts.snapshot ?? 0) && pick < (starts.snapshot ?? 0) + (starts.failure ?? 0);
+    // Site starts: a further starts.siteP share begins 40-200 m before the places where completion tests fail on this
+    // track (starts.sites[track], fed from the tests), so the corners that decide the 3-lap goal are practised even
+    // when training's own episodes rarely end there.
+    const sites = starts.sites?.[cfg.track], p0 = (starts.snapshot ?? 0) + (starts.failure ?? 0);
+    const fromSite = !initial && !fromFail && sites?.length && pick >= p0 && pick < p0 + (starts.siteP ?? 0);
     let s = 0, tries = 0;
     // starts.at (evaluation / failure tracing): a fixed place, optionally spread +-starts.spread metres.
-    do { s = starts.at != null ? starts.at + (rng() * 2 - 1) * (starts.spread ?? 0) : fromFail ? this.failures[Math.floor(rng() * this.failures.length)] - 40 - rng() * 160 : rng() * L; s = ((s % L) + L) % L; } while (!clear(s) && ++tries < 50);
+    do { s = starts.at != null ? starts.at + (rng() * 2 - 1) * (starts.spread ?? 0) : fromFail ? this.failures[Math.floor(rng() * this.failures.length)] - 40 - rng() * 160 : fromSite ? sites[Math.floor(rng() * sites.length)] - 40 - rng() * 160 : rng() * L; s = ((s % L) + L) % L; } while (!clear(s) && ++tries < 50);
     const snap = !initial && this.snapshots.length > 8 && pick < starts.snapshot ? this.snapshots[Math.floor(rng() * this.snapshots.length)] : null;
     if (snap && clear(snap.s)) {
       // A state the policy actually reached earlier (speed, slip, tyre temps, wear), replayed elsewhere in time.
@@ -87,7 +92,7 @@ export class World {
     a.inc = 0;
     // The lap in progress spans a teleport: the game must not count it (its validity flag is what scores laps).
     car.race.valid = false; car.race.secValid = false;
-    a.lapSeen = car.race.lap; a.offPrev = car.race.offtrack ?? 0;
+    a.lapSeen = car.race.lap; a.offPrev = car.race.offtrack ?? 0; a.cutS = null;
     a.prevS = car.s; a.dmg0 = car.damage; a.prevDmg = car.damage; a.t = 0;
     a.horizon = (cfg.episode?.min ?? 60) + rng() * ((cfg.episode?.max ?? 120) - (cfg.episode?.min ?? 60));
     a.offFor = 0; a.wasLegal = true; a.slowFor = 0; a.backFor = 0; a.dist = 0; a.legalDist = 0;
@@ -140,7 +145,7 @@ export class World {
         if (e.pit || e.pitPlan) { e.pit = null; e.pitPlan = null; a.car.race.pitLap = false; }
         // Track limits exactly as the game judges them: its timing adds 1/120 s to `offtrack` on every illegal physics tick.
         const off = a.car.race.offtrack ?? 0, illegal = off > a.offPrev; a.offPrev = off;
-        if (illegal) { a.illegalSubs++; if (a.wasLegal) { a.offEnters++; if (this.cfg.starts?.offSites) this.noteFailure(a.car.s); } }
+        if (illegal) { a.illegalSubs++; if (a.wasLegal) { a.offEnters++; a.cutS ??= Math.round(a.car.s); if (this.cfg.starts?.offSites) this.noteFailure(a.car.s); } }
         a.wasLegal = !illegal;
       }
     }
@@ -202,8 +207,9 @@ export class World {
       a.lapSeen = c.race.lap;
       const clean = ['purple', 'green', 'yellow'].includes(c.race.lastState);
       if (clean) stats.lap(this.track.id, c.race.lastLap);
-      // Per-agent lap verdicts (evaluations): [agent, tick, clean, lap time, game state].
-      stats.lapEv?.push([(stats.base ?? 0) + a.k, stats.tick ?? 0, clean ? 1 : 0, +(c.race.lastLap ?? 0).toFixed(3), c.race.lastState ?? null]);
+      // Per-agent lap verdicts (evaluations): [agent, tick, clean, lap time, game state, first track-limit breach s this lap].
+      stats.lapEv?.push([(stats.base ?? 0) + a.k, stats.tick ?? 0, clean ? 1 : 0, +(c.race.lastLap ?? 0).toFixed(3), c.race.lastState ?? null, a.cutS ?? null]);
+      a.cutS = null;
     }
     // Reached states worth restarting from: legal, moving, intact.
     if (legal && c.speed > 8 && c.damage - a.dmg0 < 0.05 && this.rng() < 0.01) {

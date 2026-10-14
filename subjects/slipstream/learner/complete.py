@@ -84,6 +84,7 @@ def main():
             r['laps'].append(e[3] if e[2] else None)
             if not e[2]:
                 r['status'], r['why'] = 'fail', f'invalid lap ({e[4]})'
+                r['cut_s'] = e[5] if len(e) > 5 else None
             elif len(r['laps']) >= a.laps:
                 r['status'] = 'success'
 
@@ -118,7 +119,8 @@ def main():
         out['tracks'][t] = {'complete': sum(r['status'] == 'success' for r in rs), 'of': len(rs),
                             'median_valid': round(float(np.median(clean)), 3) if clean else None, 'best': min(clean) if clean else None,
                             'gap_median_pct': round(100 * (np.median(clean) / REF[t] - 1), 2) if clean else None,
-                            'fails': dict(why), 'fail_sites': sorted(r['at_s'] for r in rs if r['at_s'] is not None)}
+                            'fails': dict(why), 'fail_sites': sorted(r['at_s'] for r in rs if r['at_s'] is not None),
+                            'cut_sites': sorted(r['cut_s'] for r in rs if r.get('cut_s') is not None)}
     out['complete_total'] = sum(v['complete'] for v in out['tracks'].values())
     print(json.dumps(out))
     if a.name:
