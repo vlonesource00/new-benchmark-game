@@ -24,6 +24,8 @@ def main():
     ap.add_argument('--ckpt', required=True)
     ap.add_argument('--name', required=True)
     ap.add_argument('--steps', type=int, default=200)
+    ap.add_argument('--blind-rivals', action='store_true',
+                    help='the deployed actor sees every rival slot empty (as in solo tests) until it has trained in traffic')
     a = ap.parse_args()
     ck = torch.load(os.path.join(SUBJECT, a.ckpt), map_location='cpu', weights_only=False)
     layout = ck['layout']
@@ -36,6 +38,8 @@ def main():
               for k, v in net.state_dict().items() if k.startswith(ACTOR)}
     out = {'ckpt': a.ckpt, 'iter': ck.get('iter'), 'layout': layout, 'hidden': net.hidden, 'skip': skip.tolist(),
            'mean': norm.mean.astype(np.float32).tolist(), 'std': np.sqrt(norm.var + 1e-8).astype(np.float32).tolist(), 'params': params}
+    if a.blind_rivals:
+        out['blindRivals'] = True
     d = os.path.join(SUBJECT, 'runs', 'export')
     os.makedirs(d, exist_ok=True)
     with open(os.path.join(d, f'{a.name}.json'), 'w') as f:
@@ -45,6 +49,8 @@ def main():
     D = len(out['mean'])
     raw = (norm.mean + np.sqrt(norm.var) * rng.normal(size=(a.steps, D))).astype(np.float32)
     raw[:, skip] = (rng.random((a.steps, len(skip))) < 0.4).astype(np.float32)
+    if a.blind_rivals:
+        raw[:, net.ego_f + net.k * net.rf_f:] = 0
     first = (rng.random(a.steps) < 0.02).astype(np.float32); first[0] = 1
     dec = (rng.random(a.steps) < 0.7).astype(np.float32); dec[first > 0] = 1
     h = torch.zeros(1, net.hidden)

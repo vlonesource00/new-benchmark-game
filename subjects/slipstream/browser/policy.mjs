@@ -26,6 +26,8 @@ export class Policy {
     this.mean = Float32Array.from(exp.mean); this.std = Float32Array.from(exp.std); this.skip = new Set(exp.skip);
     this.p = {}; for (const [k, v] of Object.entries(exp.params)) this.p[k] = decode(v);
     const L = this.L; this.D = L.ego + L.roadK * L.roadF + L.rivalN * L.rivalF;
+    // blindRivals: every rival slot reads empty (raw zeros, as in a solo race), for actors not yet trained in traffic.
+    this.seen = exp.blindRivals ? L.ego + L.roadK * L.roadF : this.D;
     this.h = new Float32Array(this.H);
     this.buf = { x: new Float32Array(this.D), e1: new Float32Array(128), e: new Float32Array(128), r1: new Float32Array(256), r: new Float32Array(128),
       t1: new Float32Array(64), tok: Array.from({ length: L.rivalN + 1 }, () => new Float32Array(64)), q: new Float32Array(64), qp: new Float32Array(64),
@@ -40,7 +42,7 @@ export class Policy {
   act(raw, first = false, decide = true) {
     const { p, L, b: _ } = this, B = this.buf, x = B.x;
     if (first) this.h.fill(0);
-    for (let i = 0; i < this.D; i++) x[i] = this.skip.has(i) ? raw[i] : Math.max(-10, Math.min(10, (raw[i] - this.mean[i]) / this.std[i]));
+    for (let i = 0; i < this.D; i++) { const v = i < this.seen ? raw[i] : 0; x[i] = this.skip.has(i) ? v : Math.max(-10, Math.min(10, (v - this.mean[i]) / this.std[i])); }
     linear(p['ego.0.weight'], p['ego.0.bias'], x.subarray(0, L.ego), B.e1, true);
     linear(p['ego.2.weight'], p['ego.2.bias'], B.e1, B.e);
     const r0 = L.ego + L.roadK * L.roadF;
