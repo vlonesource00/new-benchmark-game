@@ -86,6 +86,12 @@ export class World {
     car.controls = { throttle: 0, brake: 0, steer: 0 };
     car.race.previousS = car.s;
     entry.stuckTime = 0; entry.pit = null; entry.pitPlan = null; entry.rescueGhost = 0;
+    // Each episode starts with a clean steward record (incident points, unserved drive-throughs, black flag);
+    // the incidents the stewards award during the episode are priced into the reward instead.
+    entry.retired = null; car.race.dq = false; car.race.finishTime = null;
+    const st = race.stewards?.of(entry);
+    if (st) Object.assign(st, { inc: 0, window: { until: -1, max: 0 }, off: false, spun: false, clean: 0, damage: car.damage, penalties: [], issued: 0, dq: false });
+    a.inc = 0;
     a.prevS = car.s; a.dmg0 = car.damage; a.prevDmg = car.damage; a.t = 0;
     a.horizon = (cfg.episode?.min ?? 60) + rng() * ((cfg.episode?.max ?? 120) - (cfg.episode?.min ?? 60));
     a.offFor = 0; a.wasLegal = true; a.slowFor = 0; a.backFor = 0; a.dist = 0; a.legalDist = 0;
@@ -158,6 +164,10 @@ export class World {
     let reward = 0;
     if (legal) reward += ds * (R.progress ?? 0.05); else { reward -= R.offTick ?? 0.1; if (a.wasLegal) reward -= R.offEnter ?? 1; }
     reward -= dDmg * (R.damage ?? 40);
+    // Incident points as the game's stewards award them (off track 1x, loss of control / wall 2x, heavy contact 4x).
+    const inc = this.env.race.stewards?.of(a.entry)?.inc ?? 0, dInc = Math.max(0, inc - a.inc); a.inc = inc;
+    reward -= dInc * (R.incident ?? 0.5);
+    if (dInc) stats.incidents = (stats.incidents ?? 0) + dInc;
     a.dist += ds; if (legal) a.legalDist += ds;
     a.wasLegal = legal; a.offFor = legal ? 0 : a.offFor + dt;
     a.slowFor = c.speed < 2 ? a.slowFor + dt : 0;
@@ -177,7 +187,8 @@ export class World {
     }
     stats.ticks++; stats.dist += ds; stats.legal += legal ? 1 : 0; stats.speed += c.speed;
     let done = false, why = null;
-    if (c.damage - a.dmg0 > (R.maxDamage ?? 0.25)) { done = true; why = 'damage'; }
+    if (a.entry.retired) { done = true; why = 'dq'; }
+    else if (c.damage - a.dmg0 > (R.maxDamage ?? 0.25)) { done = true; why = 'damage'; }
     else if (a.offFor > 2) { done = true; why = 'offtrack'; }
     else if (a.backFor > 1.5) { done = true; why = 'backwards'; }
     else if (a.slowFor > 4 && a.t > 6) { done = true; why = 'stuck'; }

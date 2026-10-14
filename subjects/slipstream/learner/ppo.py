@@ -197,6 +197,7 @@ def main():
             for k in ('speed', 'legal'):
                 agg[k].append(s[k])
             agg['eps'].append(s['eps'])
+            agg['inc'].append(s.get('inc', 0))
             for w, c in s['why'].items():
                 agg['why:' + w].append(c)
             for trk, laps in s['laps'].items():
@@ -210,7 +211,7 @@ def main():
             for k, v in list(agg.items()):
                 if k.startswith('lap:'):
                     rec[k] = {'n': len(v), 'best': round(min(v), 3), 'med': round(float(np.median(v)), 3)} if v else None
-                elif k.startswith('why:') or k == 'eps':
+                elif k.startswith('why:') or k in ('eps', 'inc'):
                     rec[k] = int(sum(v))
                 else:
                     rec[k] = round(float(np.mean(v)), 4)

@@ -37,7 +37,7 @@ function step() {
   if (++tick % (cfg.statsEvery ?? 600) === 0) {
     const now = performance.now(), wall = (now - tStats) / 1000;
     process.stderr.write(JSON.stringify({ w: index, tick, sps: Math.round(st.ticks / wall), busy: +(busy / (now - tStats)).toFixed(3),
-      speed: +(st.speed / Math.max(1, st.ticks)).toFixed(2), legal: +(st.legal / Math.max(1, st.ticks)).toFixed(4), eps: st.episodes, term: st.terminal, why: st.why, laps: st.laps }) + '\n');
+      speed: +(st.speed / Math.max(1, st.ticks)).toFixed(2), legal: +(st.legal / Math.max(1, st.ticks)).toFixed(4), eps: st.episodes, term: st.terminal, inc: st.incidents ?? 0, why: st.why, laps: st.laps }) + '\n');
     st = stats(); busy = 0; tStats = now;
   }
 }
