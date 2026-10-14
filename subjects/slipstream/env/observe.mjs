@@ -4,8 +4,11 @@ const TAU = Math.PI * 2;
 const wrapPi = (a) => Math.atan2(Math.sin(a), Math.cos(a));
 const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
 
-// Observation layout (shared with the learner through the worker handshake).
-export const ROAD_K = 24, ROAD_F = 6, RIVAL_N = 8, RIVAL_F = 13, EGO_F = 48;
+// Observation layout (shared with the learner through the worker handshake). Contract v2: the ego block writes 49
+// values. v1 declared 48, which shifted every later value one place past its block and masked real rivals out of the
+// attention (each token's presence flag read the previous slot's last value). The values and their order are unchanged,
+// so the first 296 columns are exactly v1's: v1 checkpoints keep running on them (learner/contract.py).
+export const ROAD_K = 24, ROAD_F = 6, RIVAL_N = 8, RIVAL_F = 13, EGO_F = 49;
 export const OBS = EGO_F + ROAD_K * ROAD_F + RIVAL_N * RIVAL_F;
 const RIVAL_RANGE = 160;
 

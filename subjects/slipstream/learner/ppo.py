@@ -20,6 +20,7 @@ from collections import defaultdict
 import numpy as np
 import torch
 
+from contract import layout_of, migrate_v1_v2, obs_len
 from model import Slipstream
 from vecenv import VecEnv
 
@@ -112,6 +113,8 @@ def main():
     ap.add_argument('--vcoef', type=float, default=0.5)
     ap.add_argument('--kl', type=float, default=0.03)
     ap.add_argument('--resume', default='')
+    ap.add_argument('--migrate', action='store_true', help='convert a resumed v1-contract checkpoint to the env contract (v2); '
+                    'without it a resumed run keeps its checkpoint contract (reads only its own columns)')
     ap.add_argument('--save-every', type=int, default=50)
     ap.add_argument('--ema-half', type=float, default=200, help='half-life in iterations of the weight average saved as *-ema.pt; 0 = off')
     ap.add_argument('--critic-warmup', type=int, default=0,
@@ -134,8 +137,16 @@ def main():
         log({'run': a.name, 'args': vars(a), 'config': json.load(f)})
     dev = torch.device('cuda')
     env = VecEnv(ROOT, cfg_path, a.workers, log)
-    N, D, T = env.n, env.obs_dim, a.horizon
-    net = Slipstream(env.layout).to(dev)
+    N, E, T = env.n, env.obs_dim, a.horizon
+    lay, ck = env.layout, None
+    if a.resume:
+        ck = torch.load(a.resume, map_location=dev, weights_only=False)
+        lay = layout_of(ck)
+        if a.migrate and lay != env.layout:
+            ck = migrate_v1_v2(ck, [n for n, _ in Slipstream(lay).named_parameters()])
+            lay = layout_of(ck)
+    D = obs_len(lay)  # this network's input columns; the env row carries E >= D, then the 5 flags
+    net = Slipstream(lay).to(dev)
     # Exploration floor: the sampling std never drops below std_min. A collapsed std both stops new states being
     # visited and makes every small mean shift a large KL, so updates stop early (the tt-b2 plateau).
     # std = floor + exp(log_std): the learned part keeps its gradient, so the policy can still raise its exploration
@@ -143,10 +154,9 @@ def main():
     floor = torch.tensor([float(x) for x in a.std_min.split(',')], device=dev) if a.std_min else None
     log_std = (lambda: torch.log(floor + net.log_std.exp())) if floor is not None else (lambda: net.log_std)
     opt = torch.optim.Adam(net.parameters(), lr=a.lr, eps=1e-5)
-    norm, ret_rms = RunningNorm(D, binary_columns(env.layout)), RunningNorm(())
+    norm, ret_rms = RunningNorm(D, binary_columns(lay)), RunningNorm(())
     it0 = 0
     if a.resume:
-        ck = torch.load(a.resume, map_location=dev, weights_only=False)
         net.load_state_dict(ck['model'])
         opt.load_state_dict(ck['opt'])
         for g in opt.param_groups:  # the saved optimizer state carries the parent's lr; --lr wins
@@ -164,7 +174,7 @@ def main():
     next_snap = a.snap_min
 
     def save(path, it_done):
-        state = {'opt': opt.state_dict(), 'norm': norm.state(), 'ret': ret_rms.state(), 'iter': it_done, 'layout': env.layout}
+        state = {'opt': opt.state_dict(), 'norm': norm.state(), 'ret': ret_rms.state(), 'iter': it_done, 'layout': lay}
         torch.save({**state, 'model': net.state_dict(), 'ema': ema}, path + '.pt')
         if a.ema_half > 0:  # the average as a plain checkpoint, so every tool (complete, export, record) loads it as is
             torch.save({**state, 'model': ema}, path + '-ema.pt')
@@ -189,7 +199,7 @@ def main():
         with torch.no_grad():
             for t in range(T + 1):
                 raw_b[t] = row[:, :D]
-                flg_b[t] = row[:, D:D + 5]
+                flg_b[t] = row[:, E:E + 5]
                 obs_b[t] = norm(row[:, :D])
                 x = torch.from_numpy(obs_b[t]).to(dev)
                 first = torch.from_numpy(flg_b[t, :, 3]).to(dev)

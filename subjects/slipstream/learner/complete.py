@@ -19,6 +19,7 @@ import numpy as np
 import torch
 
 from evaluate import REF
+from contract import layout_of, obs_len
 from model import Slipstream
 from ppo import ROOT, SUBJECT, RunningNorm, binary_columns
 from vecenv import VecEnv
@@ -53,9 +54,10 @@ def main():
     dev = torch.device('cuda')
     env = VecEnv(ROOT, cfg_path, a.workers)
     ck = torch.load(os.path.join(SUBJECT, a.ckpt), map_location=dev, weights_only=False)
-    net = Slipstream(env.layout).to(dev).eval()
+    lay = layout_of(ck)  # the checkpoint's own input contract: it reads only its own columns
+    net = Slipstream(lay).to(dev).eval()
     net.load_state_dict(ck['model'])
-    norm = RunningNorm(env.obs_dim, binary_columns(env.layout))
+    norm = RunningNorm(obs_len(lay), binary_columns(lay))
     norm.load(ck['norm'])
     D, N = env.obs_dim, env.n
     track_of = [w['track'] for hs in env.hs for w in hs['worlds'] for _ in range(w['agents'])]
@@ -90,7 +92,7 @@ def main():
 
     with torch.no_grad():
         while True:
-            x = torch.from_numpy(norm(row[:, :D])).to(dev)
+            x = torch.from_numpy(norm(row[:, :obs_len(lay)])).to(dev)
             mu, _, h = net.step(x, h, torch.from_numpy(row[:, D + 3].copy()).to(dev), torch.from_numpy(row[:, D + 4].copy()).to(dev))
             row = env.step(mu.cpu().numpy())
             tick += 1

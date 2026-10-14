@@ -14,6 +14,7 @@ import tempfile
 import numpy as np
 import torch
 
+from contract import layout_of, obs_len
 from model import Slipstream
 from ppo import ROOT, SUBJECT, RunningNorm, binary_columns
 from vecenv import VecEnv
@@ -51,9 +52,10 @@ def main():
     dev = torch.device('cuda')
     env = VecEnv(ROOT, cfg_path, 1)
     ck = torch.load(ck_path, map_location=dev, weights_only=False)
-    net = Slipstream(env.layout).to(dev).eval()
+    lay = layout_of(ck)  # the checkpoint's own input contract: it reads only its own columns
+    net = Slipstream(lay).to(dev).eval()
     net.load_state_dict(ck['model'])
-    norm = RunningNorm(env.obs_dim, binary_columns(env.layout))
+    norm = RunningNorm(obs_len(lay), binary_columns(lay))
     norm.load(ck['norm'])
     D, N = env.obs_dim, env.n
     row = env.reset()
@@ -61,7 +63,7 @@ def main():
     pol = []  # per tick: per agent [mu_steer, mu_pedal, act_steer, act_pedal, value, reward, done, trunc, first]
     with torch.no_grad():
         for t in range(int(a.seconds * 30)):
-            x = torch.from_numpy(norm(row[:, :D])).to(dev)
+            x = torch.from_numpy(norm(row[:, :obs_len(lay)])).to(dev)
             mu, v, h = net.step(x, h, torch.from_numpy(row[:, D + 3].copy()).to(dev), torch.from_numpy(row[:, D + 4].copy()).to(dev))
             act = mu + net.log_std.exp() * torch.randn_like(mu) if a.stochastic else mu
             m, ac, vv = mu.cpu().numpy(), act.cpu().numpy(), v.cpu().numpy()

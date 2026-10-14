@@ -10,6 +10,7 @@ from collections import Counter, defaultdict
 import numpy as np
 import torch
 
+from contract import layout_of, obs_len
 from model import Slipstream
 from ppo import ROOT, SUBJECT, RunningNorm, binary_columns
 from vecenv import VecEnv
@@ -26,9 +27,10 @@ def main():
     dev = torch.device('cuda')
     env = VecEnv(ROOT, os.path.abspath(os.path.join(SUBJECT, a.config)), a.workers)
     ck = torch.load(os.path.join(SUBJECT, a.ckpt), map_location=dev, weights_only=False)
-    net = Slipstream(env.layout).to(dev)
+    lay = layout_of(ck)  # the checkpoint's own input contract: it reads only its own columns
+    net = Slipstream(lay).to(dev)
     net.load_state_dict(ck['model'])
-    norm = RunningNorm(env.obs_dim, binary_columns(env.layout))
+    norm = RunningNorm(obs_len(lay), binary_columns(lay))
     norm.load(ck['norm'])
     D, N = env.obs_dim, env.n
     row = env.reset()
@@ -37,7 +39,7 @@ def main():
     out = []
     with torch.no_grad():
         for t in range(a.ticks):
-            x = torch.from_numpy(norm(row[:, :D])).to(dev)
+            x = torch.from_numpy(norm(row[:, :obs_len(lay)])).to(dev)
             first = torch.from_numpy(row[:, D + 3].copy()).to(dev)
             mu, v, h = net.step(x, h, first, torch.from_numpy(row[:, D + 4].copy()).to(dev))
             act = mu if a.det else mu + net.log_std.exp() * torch.randn_like(mu)
