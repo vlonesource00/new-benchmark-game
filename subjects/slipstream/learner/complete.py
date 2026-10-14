@@ -93,6 +93,11 @@ def main():
                 for r in att:
                     if r['status'] == 'running' and tick > cap[r['track']] + 180:
                         r['status'], r['why'] = 'fail', 'timeout'
+                if a.name:  # progress for the viewer's job bar
+                    d = os.path.join(SUBJECT, 'runs', 'completion')
+                    os.makedirs(d, exist_ok=True)
+                    with open(os.path.join(d, f'{a.name}.progress.json'), 'w') as f:
+                        json.dump({'done': sum(r['status'] != 'running' for r in att), 'total': len(att), 'complete': sum(r['status'] == 'success' for r in att), 'sim_s': round(tick / 30)}, f)
                 if all(r['status'] != 'running' for r in att):
                     break
     env.close()
