@@ -15,9 +15,12 @@ const rng = () => { seed = (seed + 0x6D2B79F5) >>> 0; let t = seed; t = Math.imu
 // World list: explicit, or drawn round-robin from the track / weather pools.
 const worlds = [];
 const tracks = cfg.tracks ?? ['harbor-ring'], weathers = cfg.weathers ?? ['clear'];
+// alt: world overrides for every other pass over the track pool (so each track gets both kinds), e.g. solo worlds
+// beside traffic worlds.
 for (let w = 0; w < cfg.worlds; w++) {
   const g = index * cfg.worlds + w;
-  worlds.push(new World({ ...cfg.world, track: tracks[g % tracks.length], weather: weathers[Math.floor(g / tracks.length) % weathers.length], seed: 1000 + g * 31 + (cfg.seed ?? 1) }, rng));
+  const alt = cfg.alt && Math.floor(g / tracks.length) % 2 === 1 ? cfg.alt : {};
+  worlds.push(new World({ ...cfg.world, ...alt, track: tracks[g % tracks.length], weather: weathers[Math.floor(g / tracks.length) % weathers.length], seed: 1000 + g * 31 + (cfg.seed ?? 1) }, rng));
 }
 const offsets = []; let agents = 0;
 for (const w of worlds) { offsets.push(agents); agents += w.agents.length; }
