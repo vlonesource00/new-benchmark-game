@@ -1,0 +1,5 @@
+{ "worlds": 4, "seed": 1, "substeps": 4, "statsEvery": 300,
+  "tracks": ["harbor-ring", "solenne", "alpine", "desert", "nurburgring"], "weathers": ["clear"],
+  "world": { "learners": 4, "ai": [], "classId": "gt", "lifetime": 900,
+    "latency": { "min": 1, "max": 6, "longP": 0.03, "longMin": 8, "longMax": 30, "dropP": 0.01 },
+    "episode": { "min": 60, "max": 120 }, "starts": { "snapshot": 0.4, "standing": 0.15 } } }
