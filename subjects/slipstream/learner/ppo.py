@@ -119,6 +119,8 @@ def main():
     ap.add_argument('--save-every', type=int, default=50)
     ap.add_argument('--teacher', default='', help='comma-separated runs/teacher/<name> sequences (INTERCEPT driving, env/teacher.mjs)')
     ap.add_argument('--bc', type=float, default=0.0, help='weight of the imitation term (squared error to the teacher action)')
+    ap.add_argument('--bc-end', type=float, default=1.0, help='imitation weight at the end of --minutes, as a fraction of --bc (linear)')
+    ap.add_argument('--bc-sections', default='', help='JSON {sections: {track: [[s0, s1]...]}}: imitate only there')
     ap.add_argument('--bc-batch', type=int, default=32)
     ap.add_argument('--bc-chunk', type=int, default=128)
     ap.add_argument('--bc-burn', type=int, default=32)
@@ -177,7 +179,8 @@ def main():
     if a.resume and 'ema' in ck:
         ema = {k: v.to(dev) for k, v in ck['ema'].items()}
     ema_decay = 0.5 ** (1 / a.ema_half) if a.ema_half > 0 else 0.0
-    teacher = TeacherData(a.teacher.split(','), D, dev) if a.teacher and a.bc > 0 else None
+    secs = json.load(open(os.path.join(SUBJECT, a.bc_sections)))['sections'] if a.bc_sections else None
+    teacher = TeacherData(a.teacher.split(','), D, dev, secs) if a.teacher and a.bc > 0 else None
     bc_rng = np.random.default_rng(0)
     next_snap = a.snap_min
 
@@ -258,6 +261,7 @@ def main():
         ADV = (ADV - am) / (asd + 1e-8)
         kls, clips, vls, pls, bcs, gns = [], [], [], [], [], []
         nf = torch_norm(norm, dev) if teacher else None
+        bc_w = a.bc * (1 - (1 - a.bc_end) * min(1.0, (time.time() - t_start) / 60 / a.minutes)) if a.minutes else a.bc
         stop = False
         warm = it - it0 < a.critic_warmup
         for ep in range(a.epochs):
@@ -279,9 +283,9 @@ def main():
                     if not gns:  # once per iteration: how hard each term pulls the policy head (sets the --bc scale)
                         head = list(net.pi.parameters())
                         gp = torch.autograd.grad(pg, head, retain_graph=True)
-                        gb = torch.autograd.grad(a.bc * bcl, head, retain_graph=True)
+                        gb = torch.autograd.grad(bc_w * bcl, head, retain_graph=True)
                         gns.append([sum(g.pow(2).sum() for g in gp).sqrt().item(), sum(g.pow(2).sum() for g in gb).sqrt().item()])
-                    loss = loss + a.bc * bcl
+                    loss = loss + bc_w * bcl
                     bcs.append(bcl.item())
                 opt.zero_grad(set_to_none=True)
                 if warm:  # value head only: gradients reach nothing the policy reads
@@ -319,7 +323,7 @@ def main():
         steps = (it + 1 - it0) * T * N
         rec = {'it': it, 'steps': steps, 'min': round((time.time() - t_start) / 60, 2), 'sps': round(T * N / (t_roll + t_upd)),
                't_roll': round(t_roll, 2), 't_env': round(t_env, 2), 't_upd': round(t_upd, 2), 'rew': round(float(rew[live.astype(bool)].mean()), 4),
-               **({'bc': round(float(np.mean(bcs)), 4), 'gn': [round(x, 4) for x in gns[0]]} if bcs else {}),
+               **({'bc': round(float(np.mean(bcs)), 4), 'bc_w': round(bc_w, 3), 'gn': [round(x, 4) for x in gns[0]]} if bcs else {}),
                'kl': round(float(np.mean(kls)), 4), 'clip': round(float(np.mean(clips)), 3), 'vl': round(float(np.mean(vls)), 3),
                'std': [round(x, 3) for x in log_std().exp().tolist()], 'stopped': stop, 'warm': warm, 'decide': round(float(dec[:T].mean()), 3)}
         if it % 10 == 9:

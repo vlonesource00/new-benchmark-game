@@ -17,21 +17,42 @@ TEACHER_DIR = os.path.join(SUBJECT, 'runs', 'teacher')
 
 
 class TeacherData:
-    def __init__(self, names, obs_dim, dev):
+    def __init__(self, names, obs_dim, dev, sections=None, lap_slack=0.02):
+        """sections {track: [[s0, s1], ...]}: imitate only there (where SLIPSTREAM loses time; tracks absent = everywhere).
+        lap_slack: imitate only laps within this fraction of the recording's best lap (drops slow and partial laps)."""
         self.seqs = []
         for n in names:
             meta = json.load(open(os.path.join(TEACHER_DIR, n + '.json')))
             assert meta['obs'] == obs_dim, f'{n}: teacher obs {meta["obs"]} != network {obs_dim} (contract v2 needed: --migrate)'
             raw = np.fromfile(os.path.join(TEACHER_DIR, n + '.bin'), np.float32).reshape(-1, meta['width'])
+            mask = raw[:, obs_dim + 3].copy()
+            s = raw[:, obs_dim + 2]
+            lap = np.concatenate([[0], np.cumsum(np.diff(s) < -1000)])  # a lap boundary: s wraps back to ~0
+            times = meta.get('lapTimes') or []
+            if times:
+                ok = np.array([i < len(times) and times[i] <= min(times) * (1 + lap_slack) for i in range(lap.max() + 1)])
+                mask *= ok[lap]
+            if sections and meta['track'] in sections:
+                inside = np.zeros(len(s), bool)
+                for s0, s1 in sections[meta['track']]:
+                    inside |= (s >= s0) & (s < s1)
+                mask *= inside
+            raw[:, obs_dim + 3] = mask
             t = torch.from_numpy(raw).to(dev)
             self.seqs.append({'name': n, 'track': meta['track'], 'x': t[:, :obs_dim], 'y': t[:, obs_dim:obs_dim + 2],
                               's': t[:, obs_dim + 2], 'clean': t[:, obs_dim + 3]})
-        self.w = np.array([len(q['x']) for q in self.seqs], np.float64)
+            print(f'teacher {n}: {int(mask.sum())} of {len(mask)} decisions imitated', flush=True)
+        # Every track gets the same share of chunks (the Nurburgring would otherwise be most of the data); within a
+        # track, recordings by how many decisions they contribute.
+        n = np.array([float(q['clean'].sum()) for q in self.seqs])
+        per = {q['track']: 0.0 for q in self.seqs}
+        for q, k in zip(self.seqs, n): per[q['track']] += k
+        self.w = np.array([k / per[q['track']] / len(per) if per[q['track']] else 0 for q, k in zip(self.seqs, n)])
         self.w /= self.w.sum()
         self.dev = dev
 
     def batch(self, B, C, rng):
-        """B chunks of C consecutive decisions, files drawn by size: x [C,B,D], y [C,B,2], clean [C,B]."""
+        """B chunks of C consecutive decisions (files drawn by self.w): x [C,B,D], y [C,B,2], clean [C,B]."""
         xs, ys, cs = [], [], []
         for k in rng.choice(len(self.seqs), size=B, p=self.w):
             q = self.seqs[k]
