@@ -181,6 +181,13 @@ export class World {
     const dDmg = Math.max(0, c.damage - a.prevDmg); a.prevDmg = c.damage;
     let reward = ds * (R.progress ?? 0.05) * (1 - illegalFrac) - illegalFrac * (R.offTick ?? 0.1) - enters * (R.offEnter ?? 1);
     reward -= dDmg * (R.damage ?? 40);
+    // Near-miss margin (reward.margin per second, default off): a dense cost that grows as the outermost wheel's legal
+    // margin (the game's half-car-inside test, as observed) shrinks below marginM metres, so the policy learns where
+    // the limit is before it crosses it. A rare crossing penalty alone is a sparse signal: cheap cuts kept winning.
+    if (R.margin) {
+      const M = R.marginM ?? 0.5, m = this.limit - (Math.abs(c.lateral) - (c.spec?.track ?? 1.72) / 2);
+      if (m < M) reward -= R.margin * dt * Math.min(1, 1 - m / M);
+    }
     // Incident points as the game's stewards award them (off track 1x, loss of control / wall 2x, heavy contact 4x).
     const inc = this.env.race.stewards?.of(a.entry)?.inc ?? 0, dInc = Math.max(0, inc - a.inc); a.inc = inc;
     reward -= dInc * (R.incident ?? 0.5);

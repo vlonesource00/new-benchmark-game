@@ -114,6 +114,9 @@ def main():
     ap.add_argument('--resume', default='')
     ap.add_argument('--save-every', type=int, default=50)
     ap.add_argument('--ema-half', type=float, default=200, help='half-life in iterations of the weight average saved as *-ema.pt; 0 = off')
+    ap.add_argument('--critic-warmup', type=int, default=0,
+                    help='first N iterations of a resumed run train only the value head (trunk and policy frozen), '
+                         'so a changed reward is learned by the critic before it steers policy updates')
     ap.add_argument('--snap-min', type=float, default=10, help='write snap-<min>.pt (and snap-<min>-ema.pt) every this many minutes; 0 = off')
     a = ap.parse_args()
     assert re.fullmatch(r'[a-z0-9-]+', a.name, re.I), 'run name'
@@ -235,6 +238,7 @@ def main():
         ADV = (ADV - am) / (asd + 1e-8)
         kls, clips, vls, pls = [], [], [], []
         stop = False
+        warm = it - it0 < a.critic_warmup
         for ep in range(a.epochs):
             perm = torch.randperm(N, device=dev)
             for mb in perm.chunk(a.minibatches):
@@ -250,7 +254,10 @@ def main():
                 ent = (ls + 0.5 * math.log(2 * math.pi * math.e)).sum()
                 loss = pg + a.vcoef * vl - a.ent * ent
                 opt.zero_grad(set_to_none=True)
-                loss.backward()
+                if warm:  # value head only: gradients reach nothing the policy reads
+                    torch.autograd.backward(a.vcoef * vl, inputs=list(net.v.parameters()))
+                else:
+                    loss.backward()
                 torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
                 opt.step()
                 with torch.no_grad():
@@ -283,7 +290,7 @@ def main():
         rec = {'it': it, 'steps': steps, 'min': round((time.time() - t_start) / 60, 2), 'sps': round(T * N / (t_roll + t_upd)),
                't_roll': round(t_roll, 2), 't_env': round(t_env, 2), 't_upd': round(t_upd, 2), 'rew': round(float(rew[live.astype(bool)].mean()), 4),
                'kl': round(float(np.mean(kls)), 4), 'clip': round(float(np.mean(clips)), 3), 'vl': round(float(np.mean(vls)), 3),
-               'std': [round(x, 3) for x in log_std().exp().tolist()], 'stopped': stop, 'decide': round(float(dec[:T].mean()), 3)}
+               'std': [round(x, 3) for x in log_std().exp().tolist()], 'stopped': stop, 'warm': warm, 'decide': round(float(dec[:T].mean()), 3)}
         if it % 10 == 9:
             for k, v in list(agg.items()):
                 if k.startswith('lap:'):

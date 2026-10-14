@@ -64,7 +64,7 @@ function trainStatus(job) {
   if (!existsSync(log)) return { state: 'queued', progress: 0 };
   const ls = lines(log), head = JSON.parse(ls[0]), recs = oneWriter(ls.slice(1).map((l) => JSON.parse(l)).filter((r) => r.it != null));
   const budget = head.args?.minutes || 0, last = recs.at(-1) ?? { min: 0 };
-  const done = existsSync(join(dir, 'final.pt'));
+  const done = !!job.stopped || existsSync(join(dir, 'final.pt'));  // stopped: ended early on purpose
   const stride = Math.max(1, Math.ceil(recs.length / 300));
   const curve = recs.filter((_, i) => i % stride === 0 || i === recs.length - 1).map((r) => [r.it, r.min, r.rew, r.std?.[0], r.std?.[1], r.kl, r.sps, r.steps]);
   return {
