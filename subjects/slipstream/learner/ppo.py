@@ -149,6 +149,8 @@ def main():
         ck = torch.load(a.resume, map_location=dev, weights_only=False)
         net.load_state_dict(ck['model'])
         opt.load_state_dict(ck['opt'])
+        for g in opt.param_groups:  # the saved optimizer state carries the parent's lr; --lr wins
+            g['lr'] = a.lr
         norm.load(ck['norm'])
         ret_rms.load(ck['ret'])
         it0 = ck.get('iter', 0)

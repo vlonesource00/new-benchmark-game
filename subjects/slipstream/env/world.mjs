@@ -60,9 +60,12 @@ export class World {
     // when training's own episodes rarely end there.
     const sites = starts.sites?.[cfg.track], p0 = (starts.snapshot ?? 0) + (starts.failure ?? 0);
     const fromSite = !initial && !fromFail && sites?.length && pick >= p0 && pick < p0 + (starts.siteP ?? 0);
+    // starts.siteLead [min, max] metres before the site (default 40-200); a longer lead lets the car reach its own
+    // approach speed and line before the corner instead of arriving at the reset speed and lateral draw.
+    const lead = starts.siteLead ?? [40, 200];
     let s = 0, tries = 0;
     // starts.at (evaluation / failure tracing): a fixed place, optionally spread +-starts.spread metres.
-    do { s = starts.at != null ? starts.at + (rng() * 2 - 1) * (starts.spread ?? 0) : fromFail ? this.failures[Math.floor(rng() * this.failures.length)] - 40 - rng() * 160 : fromSite ? sites[Math.floor(rng() * sites.length)] - 40 - rng() * 160 : rng() * L; s = ((s % L) + L) % L; } while (!clear(s) && ++tries < 50);
+    do { s = starts.at != null ? starts.at + (rng() * 2 - 1) * (starts.spread ?? 0) : fromFail ? this.failures[Math.floor(rng() * this.failures.length)] - 40 - rng() * 160 : fromSite ? sites[Math.floor(rng() * sites.length)] - lead[0] - rng() * (lead[1] - lead[0]) : rng() * L; s = ((s % L) + L) % L; } while (!clear(s) && ++tries < 50);
     const snap = !initial && this.snapshots.length > 8 && pick < starts.snapshot ? this.snapshots[Math.floor(rng() * this.snapshots.length)] : null;
     if (snap && clear(snap.s)) {
       // A state the policy actually reached earlier (speed, slip, tyre temps, wear), replayed elsewhere in time.
