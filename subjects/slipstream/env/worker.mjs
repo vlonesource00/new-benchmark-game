@@ -26,7 +26,7 @@ const substeps = cfg.substeps ?? 4;
 
 process.stdout.write(JSON.stringify({ agents, obs: OBS, row: ROW, ego: EGO_F, roadK: ROAD_K, roadF: ROAD_F, rivalN: RIVAL_N, rivalF: RIVAL_F, worlds: worlds.map((w) => ({ track: w.track.id, agents: w.agents.length, ai: w.cfg.ai ?? [] })) }) + '\n');
 
-const stats = () => ({ ticks: 0, dist: 0, legal: 0, speed: 0, episodes: 0, terminal: 0, why: {}, laps: {}, lap(track, t) { (this.laps[track] ??= []).push(+t.toFixed(3)); } });
+const stats = () => ({ ticks: 0, dist: 0, legal: 0, speed: 0, episodes: 0, terminal: 0, why: {}, laps: {}, wrecks: [], lap(track, t) { (this.laps[track] ??= []).push(+t.toFixed(3)); } });
 let st = stats(), tick = 0, busy = 0; const t0 = performance.now(); let tStats = t0;
 
 function step() {
@@ -37,7 +37,7 @@ function step() {
   if (++tick % (cfg.statsEvery ?? 600) === 0) {
     const now = performance.now(), wall = (now - tStats) / 1000;
     process.stderr.write(JSON.stringify({ w: index, tick, sps: Math.round(st.ticks / wall), busy: +(busy / (now - tStats)).toFixed(3),
-      speed: +(st.speed / Math.max(1, st.ticks)).toFixed(2), legal: +(st.legal / Math.max(1, st.ticks)).toFixed(4), eps: st.episodes, term: st.terminal, inc: st.incidents ?? 0, why: st.why, laps: st.laps }) + '\n');
+      speed: +(st.speed / Math.max(1, st.ticks)).toFixed(2), legal: +(st.legal / Math.max(1, st.ticks)).toFixed(4), eps: st.episodes, term: st.terminal, inc: st.incidents ?? 0, why: st.why, laps: st.laps, wrecks: st.wrecks }) + '\n');
     st = stats(); busy = 0; tStats = now;
   }
 }

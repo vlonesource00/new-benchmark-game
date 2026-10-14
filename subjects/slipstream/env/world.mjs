@@ -53,6 +53,7 @@ export class World {
     this.limit = this.track.halfWidth + (this.track.curbWidth ?? 0);
     this.agents = this.env.learners.map((ci, k) => ({ ci, k, car: race.cars[ci], entry: race.entries[ci] }));
     this.snapshots ??= [];
+    this.failures ??= [];
     for (const a of this.agents) this.resetAgent(a, true);
   }
 
@@ -61,9 +62,11 @@ export class World {
     const { car, entry } = a, race = this.env.race, rng = this.rng, cfg = this.cfg, L = this.track.length;
     const starts = cfg.starts ?? { snapshot: 0.4, standing: 0.15 };
     const clear = (s) => race.cars.every((o) => o === car || Math.abs(wrapPi(((o.s - s) / L) * TAU)) * L / TAU > 70);
+    // Failure-weighted starts: a share of resets begin 40-200 m before places where episodes recently ended,
+    // so rare hard sections (fast flicks, the harbor centreline kink) are practised as often as they are failed.
+    const pick = rng(), fromFail = !initial && this.failures.length > 4 && pick >= (starts.snapshot ?? 0) && pick < (starts.snapshot ?? 0) + (starts.failure ?? 0);
     let s = 0, tries = 0;
-    do { s = rng() * L; } while (!clear(s) && ++tries < 50);
-    const pick = rng();
+    do { s = fromFail ? this.failures[Math.floor(rng() * this.failures.length)] - 40 - rng() * 160 : rng() * L; s = ((s % L) + L) % L; } while (!clear(s) && ++tries < 50);
     const snap = !initial && this.snapshots.length > 8 && pick < starts.snapshot ? this.snapshots[Math.floor(rng() * this.snapshots.length)] : null;
     if (snap && clear(snap.s)) {
       // A state the policy actually reached earlier (speed, slip, tyre temps, wear), replayed elsewhere in time.
@@ -206,6 +209,8 @@ export class World {
     else if (a.backFor > 1.5) { done = true; why = 'backwards'; }
     else if (a.slowFor > 4 && a.t > 6) { done = true; why = 'stuck'; }
     if (done) reward -= R.terminal ?? 3;
+    if (done && why !== 'dq') { this.failures.push(c.s); if (this.failures.length > 128) this.failures.shift(); }
+    if (done && stats.wrecks && stats.wrecks.length < 64) stats.wrecks.push([this.track.id, Math.round(c.s), why, +c.speed.toFixed(1), +c.lateral.toFixed(1)]);
     const trunc = !done && a.t >= a.horizon;
     return { reward, done, trunc, why: why ?? (trunc ? 'horizon' : null) };
   }

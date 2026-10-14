@@ -38,7 +38,7 @@ def main():
     norm.load(ck['norm'])
     D, N = env.obs_dim, env.n
     tracks = [w['track'] for w in env.hs[0]['worlds'] for _ in range(w['agents'])]
-    laps, inc, why = defaultdict(list), 0, defaultdict(int)
+    laps, inc, why, wl = defaultdict(list), 0, defaultdict(int), []
     row = env.reset()
     h = torch.zeros(N, net.hidden, device=dev)
     wrecks = np.zeros(N, int)
@@ -54,12 +54,13 @@ def main():
                     inc += s.get('inc', 0)
                     for k, c in s.get('why', {}).items():
                         why[k] += c
+                    wl += s.get('wrecks', [])
                     for trk, ls in s.get('laps', {}).items():
                         laps[trk] += ls
                 if all(len(laps[trk]) >= a.laps for trk in tracks):
                     break
     env.close()
-    out = {'ckpt': a.ckpt, 'sim_s': round((t + 1) / 30, 1), 'incidents': inc, 'ends': dict(why), 'tracks': {}}
+    out = {'ckpt': a.ckpt, 'sim_s': round((t + 1) / 30, 1), 'incidents': inc, 'ends': dict(why), 'wreck_sites': sorted(wl), 'tracks': {}}
     for trk in dict.fromkeys(tracks):
         ls = laps.get(trk, [])
         best = min(ls) if ls else None
