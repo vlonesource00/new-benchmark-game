@@ -117,7 +117,8 @@ export class World {
   beginEpisode(a, fresh) {
     const { car, entry } = a, race = this.env.race, rng = this.rng, cfg = this.cfg;
     if (fresh) { // fresh medium tyres and drawn fuel, as a plain start
-      race.fitTyres(car, 'medium', true);
+      // starts.gridCold: grid starts on cold tyres (72 C vs 88), as the game's race start fits its start compound.
+      race.fitTyres(car, 'medium', !(this.gridStart && cfg.starts?.gridCold));
       car.fuel = cfg.fuel ?? (25 + rng() * 45);
     }
     car.controls = { throttle: 0, brake: 0, steer: 0 };

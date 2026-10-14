@@ -318,7 +318,8 @@
    },
    "siteP": 0.15,
    "grid": 0.4,
-   "pack": 0.3
+   "pack": 0.3,
+   "gridCold": true
   },
   "reward": {
    "terminal": 15,
