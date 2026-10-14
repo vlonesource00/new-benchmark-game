@@ -33,9 +33,9 @@ a = semi_gae(rs, v, z, z, dec, G, 1.0)
 ref = np.zeros((T, N))
 for t in range(T):
     ref[t] = sum(G ** (k - t) * rs[k] for k in range(t, T)) + G ** (T - t) * v[T] - v[t]
-e2 = np.abs((a - ref)[dec[:T] > 0.5]).max()
-ok &= e2 < 1e-4 and np.all(a[dec[:T] < 0.5] == 0)
-print('lambda=1 busy rows == reward-to-go', e2)
+e2 = np.abs(a - ref).max()  # decision rows and busy rows (the waiting-state critic's targets) alike
+ok &= e2 < 1e-4
+print('lambda=1, decide and busy rows == reward-to-go', e2)
 
 # 3. lambda = 0: one-decision TD — rewards summed with per-tick discount up to the next decision, then its value.
 a = semi_gae(rs, v, z, z, dec, G, 0.0)

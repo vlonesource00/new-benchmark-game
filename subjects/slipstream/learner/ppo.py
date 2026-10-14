@@ -4,8 +4,10 @@
 
 Row layout from the env: obs | reward, done, truncated, first, decide. Flags on row t describe the transition into t;
 an ended row (done/truncated) is a final observation whose action is discarded by the env.
-Decisions are a semi-MDP: only decide rows (seat free, as in the browser) step the GRU and are trained on; the reward of
-the busy ticks in between accumulates (per-tick discount) into the preceding decision.
+Decisions are a semi-MDP: only decide rows (seat free, as in the browser) step the GRU and train the policy; the reward of
+the busy ticks in between accumulates (per-tick discount) into the preceding decision. The critic is also trained on busy
+rows (memory held, target = return to the next actual decision), so a rollout cut on a busy row bootstraps from a trained
+value computed exactly as the next rollout will process that row.
 """
 import argparse
 import json
@@ -64,8 +66,15 @@ class RunningNorm:
         self._pin()
 
 
+def collect_step(net, x, h, first, dec):
+    """The one way a row is processed, in collection, at the bootstrap row and (in sequence form) in the update:
+    memory steps only where dec = 1 (the seat would be queried)."""
+    return net.step(x, h, first, dec)
+
+
 def semi_gae(rs, val_b, done, ended_next, dec, gamma, lam):
-    """rs/done/ended_next [T,N] per tick, val_b/dec [T+1,N]. Advantages on decide rows, 0 elsewhere."""
+    """rs/done/ended_next [T,N] per tick, val_b/dec [T+1,N]. Advantage of every row: a decide row's is its decision's
+    semi-MDP GAE; a busy row's is the same estimate from that row (its value target; the policy ignores it)."""
     T, N = rs.shape
     # Semi-MDP GAE. Carried backwards to each decision: R (discounted reward to the next decision), g (discount to it),
     # nv / na (value and advantage at it). Row T counts as a decision; an episode end is a boundary with no advantage.
@@ -80,7 +89,7 @@ def semi_gae(rs, val_b, done, ended_next, dec, gamma, lam):
         b = e | d1
         R = np.where(b, rs[t], rs[t] + gamma * R)
         g = np.where(b, gamma, gamma * g)
-        adv[t] = np.where(dec[t] > 0.5, R + g * nv - val_b[t] + g * lam * na, 0.0)
+        adv[t] = R + g * nv - val_b[t] + g * lam * na
     return adv
 
 
@@ -155,8 +164,8 @@ def main():
                 obs_b[t] = norm(row[:, :D])
                 x = torch.from_numpy(obs_b[t]).to(dev)
                 first = torch.from_numpy(flg_b[t, :, 3]).to(dev)
-                # The bootstrap row (t == T) is evaluated as a decision and not committed.
-                mu, v, h_next = net.step(x, h, first, None if t == T else torch.from_numpy(flg_b[t, :, 4]).to(dev))
+                # Row T is the bootstrap: same processing as row 0 of the next rollout, which starts from h (not committed here).
+                mu, v, h_next = collect_step(net, x, h, first, torch.from_numpy(flg_b[t, :, 4]).to(dev))
                 val_b[t] = v.cpu().numpy()
                 if t == T:
                     break  # bootstrap value only: the next rollout processes this row from h
@@ -173,7 +182,8 @@ def main():
         done = flg_b[1:, :, 1]
         ended_next = np.clip(flg_b[1:, :, 1] + flg_b[1:, :, 2], 0, 1)
         dec = flg_b[:, :, 4]
-        valid = (1 - np.clip(flg_b[:T, :, 1] + flg_b[:T, :, 2], 0, 1)) * dec[:T]
+        live = 1 - np.clip(flg_b[:T, :, 1] + flg_b[:T, :, 2], 0, 1)  # critic rows (an ended row's action is discarded)
+        valid = live * dec[:T]                                          # policy rows
         # Return-based reward scaling.
         for t in range(T):
             ret_acc = ret_acc * a.gamma * (1 - ended_next[t]) + rew[t]
@@ -193,6 +203,7 @@ def main():
         ADV = torch.from_numpy(adv).to(dev)
         TGT = torch.from_numpy(tgt).to(dev)
         M = torch.from_numpy(valid).to(dev)
+        MV = torch.from_numpy(live).to(dev)
         H0 = h0
         mv = M.sum().clamp(min=1)
         am = (ADV * M).sum() / mv
@@ -210,7 +221,8 @@ def main():
                 m = M[:, mb]
                 n = m.sum().clamp(min=1)
                 pg = -(torch.min(ratio * ADV[:, mb], ratio.clamp(1 - a.clip, 1 + a.clip) * ADV[:, mb]) * m).sum() / n
-                vl = (((v - TGT[:, mb]) ** 2) * m).sum() / n
+                mv_ = MV[:, mb]
+                vl = (((v - TGT[:, mb]) ** 2) * mv_).sum() / mv_.sum().clamp(min=1)
                 ent = (ls + 0.5 * math.log(2 * math.pi * math.e)).sum()
                 loss = pg + a.vcoef * vl - a.ent * ent
                 opt.zero_grad(set_to_none=True)
@@ -241,7 +253,7 @@ def main():
                 agg['lap:' + trk] += laps
         steps = (it + 1 - it0) * T * N
         rec = {'it': it, 'steps': steps, 'min': round((time.time() - t_start) / 60, 2), 'sps': round(T * N / (t_roll + t_upd)),
-               't_roll': round(t_roll, 2), 't_env': round(t_env, 2), 't_upd': round(t_upd, 2), 'rew': round(float(rew[valid.astype(bool)].mean()), 4),
+               't_roll': round(t_roll, 2), 't_env': round(t_env, 2), 't_upd': round(t_upd, 2), 'rew': round(float(rew[live.astype(bool)].mean()), 4),
                'kl': round(float(np.mean(kls)), 4), 'clip': round(float(np.mean(clips)), 3), 'vl': round(float(np.mean(vls)), 3),
                'std': [round(x, 3) for x in net.log_std.exp().tolist()], 'stopped': stop, 'decide': round(float(dec[:T].mean()), 3)}
         if it % 10 == 9:
