@@ -30,6 +30,8 @@ def main():
     ap.add_argument('--seed', type=int, default=11)
     ap.add_argument('--standing', type=float, default=1.0)
     ap.add_argument('--stochastic', action='store_true')
+    ap.add_argument('--at', type=float, default=None, help='start at this lap distance (m)')
+    ap.add_argument('--spread', type=float, default=0)
     ap.add_argument('--name', default='')
     a = ap.parse_args()
     ck_path = os.path.join(SUBJECT, a.ckpt)
@@ -42,7 +44,7 @@ def main():
     cfg = {'worlds': 1, 'seed': a.seed, 'substeps': 4, 'statsEvery': 100000, 'tracks': [a.track], 'weathers': [a.weather], 'record': raw_path,
            'world': {'learners': a.learners, 'ai': [x for x in a.ai.split(',') if x], 'classId': 'gt', 'lifetime': 100000,
                      'latency': {'min': 1, 'max': 6, 'longP': 0.03, 'longMin': 8, 'longMax': 30},
-                     'episode': {'min': 100000, 'max': 100000}, 'starts': {'snapshot': 0, 'standing': a.standing}}}
+                     'episode': {'min': 100000, 'max': 100000}, 'starts': {'snapshot': 0, 'standing': a.standing, **({'at': a.at, 'spread': a.spread} if a.at is not None else {})}}}
     fd, cfg_path = tempfile.mkstemp(suffix='.json', dir=out_dir)
     with os.fdopen(fd, 'w') as f:
         json.dump(cfg, f)
