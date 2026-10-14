@@ -35,6 +35,11 @@ export class World {
     const cfg = this.cfg, seats = [];
     for (let i = 0; i < cfg.learners; i++) seats.push({ learner: true });
     for (const id of cfg.ai ?? []) seats.push({ ai: id });
+    // gridOrder 'shuffle': grid slots (seat order) drawn per build, so learners start anywhere in the pack.
+    if (cfg.gridOrder === 'shuffle') for (let i = seats.length - 1; i > 0; i--) { const j = Math.floor(this.rng() * (i + 1)); [seats[i], seats[j]] = [seats[j], seats[i]]; }
+    // starts.grid: share of builds in which every learner keeps its grid slot and starts standing with the whole field
+    // (the race's first lap in a pack). Held until the learners' first episodes begin (see tick).
+    this.gridStart = (cfg.starts?.grid ?? 0) > 0 && this.rng() < cfg.starts.grid; // no draw unless configured (seeded tests)
     this.env = createRaceEnv({ track: cfg.track, seats, seed: cfg.seed, weather: cfg.weather ?? 'clear', classId: cfg.classId ?? 'gt' });
     const race = this.env.race;
     // Skip the lights: the field starts racing from its grid slots and learners are placed by their episodes.
@@ -63,6 +68,11 @@ export class World {
     // starts.siteLead [min, max] metres before the site (default 40-200); a longer lead lets the car reach its own
     // approach speed and line before the corner instead of arriving at the reset speed and lateral draw.
     const lead = starts.siteLead ?? [40, 200];
+    // Pack starts: a further starts.pack share begins 8-45 m behind or beside another moving car at its speed (+-8%),
+    // so close running (draft, braking in a queue, side by side) is practised; plain starts keep 70 m from everyone.
+    const p1 = p0 + (starts.siteP ?? 0);
+    const fromPack = !initial && !fromFail && !fromSite && pick >= p1 && pick < p1 + (starts.pack ?? 0) && this.packStart(a);
+    if (this.gridStart || fromPack) return this.beginEpisode(a, true);
     let s = 0, tries = 0;
     // starts.at (evaluation / failure tracing): a fixed place, optionally spread +-starts.spread metres.
     do { s = starts.at != null ? starts.at + (rng() * 2 - 1) * (starts.spread ?? 0) : fromFail ? this.failures[Math.floor(rng() * this.failures.length)] - 40 - rng() * 160 : fromSite ? sites[Math.floor(rng() * sites.length)] - lead[0] - rng() * (lead[1] - lead[0]) : rng() * L; s = ((s % L) + L) % L; } while (!clear(s) && ++tries < 50);
@@ -83,6 +93,32 @@ export class World {
       const sp = car.speed, hv = car.yaw + beta;
       car.vx = Math.sin(hv) * sp; car.vz = Math.cos(hv) * sp;
       car.u = sp * Math.cos(beta); car.v = sp * Math.sin(beta) * -1;
+    }
+    this.beginEpisode(a, false);
+  }
+
+  /** Places a 8-45 m behind or beside a moving, legal car with 6 m clearance to every car; false if none fits. */
+  packStart(a) {
+    const { car } = a, race = this.env.race, rng = this.rng, L = this.track.length, hw = this.track.halfWidth;
+    const others = race.cars.filter((o) => o !== car && o.speed > 12 && Math.abs(o.lateral) < hw && !race.entries[race.cars.indexOf(o)].retired);
+    if (!others.length) return false;
+    const gap = (p, q) => { const ds = Math.abs(wrapPi(((p.s - q.s) / L) * TAU)) * L / TAU; return Math.hypot(ds, p.lat - q.lateral); };
+    for (let tries = 0; tries < 12; tries++) {
+      const o = others[Math.floor(rng() * others.length)];
+      const p = { s: (((o.s - 8 - rng() * 37) % L) + L) % L, lat: clamp(o.lateral + (rng() * 2 - 1) * 4, -hw * 0.8, hw * 0.8) };
+      if (!race.cars.every((q) => q === car || gap(p, q) > 6)) continue;
+      car.place(this.track, p.s, p.lat, o.speed * (0.92 + 0.16 * rng()));
+      return true;
+    }
+    return false;
+  }
+
+  /** Episode bookkeeping after placement. fresh: grid and pack starts, which skipped the plain start's tyres and fuel. */
+  beginEpisode(a, fresh) {
+    const { car, entry } = a, race = this.env.race, rng = this.rng, cfg = this.cfg;
+    if (fresh) { // fresh medium tyres and drawn fuel, as a plain start
+      race.fitTyres(car, 'medium', true);
+      car.fuel = cfg.fuel ?? (25 + rng() * 45);
     }
     car.controls = { throttle: 0, brake: 0, steer: 0 };
     car.race.previousS = car.s;
@@ -139,6 +175,7 @@ export class World {
       if (a.end) { this.resetAgent(a); continue; }
       this.send(a, actions[a.k * 2], actions[a.k * 2 + 1], this.sub ?? 0);
     }
+    this.gridStart = false; // grid starts hold only for the episodes that begin with the build
     for (let i = 0; i < substeps; i++) {
       this.sub = (this.sub ?? 0) + 1;
       for (const a of this.agents) this.applyArrivals(a, this.sub);

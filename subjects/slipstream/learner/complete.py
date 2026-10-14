@@ -39,6 +39,9 @@ def main():
     ap.add_argument('--latency', default='uniform', choices=['uniform', 'frames'],
                     help='uniform: the original 1-6 substep reply delay (continuity with earlier results); '
                          'frames: the measured browser model (one frame of 1/2/3/4/8 substeps per attempt)')
+    ap.add_argument('--ai', default='', help='traffic test: AI seats racing in every attempt, e.g. intercept,apex')
+    ap.add_argument('--grid', action='store_true', help='traffic test: start from the race grid (shuffled slots) with the AI '
+                    'seats, standing, as a real race start; the attempt counts the same laps and failures')
     a = ap.parse_args()
     tracks = a.tracks.split(',')
     latency = {'min': 1, 'max': 6, 'longP': 0.03, 'longMin': 8, 'longMax': 30} if a.latency == 'uniform' else \
@@ -47,6 +50,11 @@ def main():
            'world': {'learners': 1, 'ai': [], 'classId': 'gt', 'lifetime': 1e9, 'fuel': 60,
                      'latency': latency,
                      'episode': {'min': 1e9, 'max': 1e9}, 'starts': {'snapshot': 0, 'failure': 0, 'standing': 1}}}
+    if a.ai:
+        cfg['world']['ai'] = a.ai.split(',')
+    if a.grid:
+        cfg['world']['gridOrder'] = 'shuffle'
+        cfg['world']['starts']['grid'] = 1
     assert cfg['worlds'] * a.workers == len(tracks) * a.attempts, 'attempts x tracks must split evenly over workers'
     fd, cfg_path = tempfile.mkstemp(suffix='.json')
     with os.fdopen(fd, 'w') as f:
@@ -110,7 +118,7 @@ def main():
                     break
     env.close()
     os.remove(cfg_path)
-    out = {'ckpt': a.ckpt, 'seed': a.seed, 'latency': a.latency, 'attempts': a.attempts, 'laps': a.laps, 'sim_s': round(tick / 30), 'tracks': {}}
+    out = {'ckpt': a.ckpt, 'seed': a.seed, 'latency': a.latency, 'ai': a.ai, 'grid': a.grid, 'attempts': a.attempts, 'laps': a.laps, 'sim_s': round(tick / 30), 'tracks': {}}
     for t in tracks:
         rs = [r for r in att if r['track'] == t]
         clean = [x for r in rs for x in r['laps'] if x]
