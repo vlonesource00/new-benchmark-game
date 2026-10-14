@@ -3,7 +3,6 @@
 // observations, rewards on the game's own rules, and episode resets.
 // Nothing here drives the car: learner controls come only from the policy.
 import { createRaceEnv, FIXED_DT } from './race-env.mjs';
-import { halfCarInside } from '../../../game/engine/sim/racecraft-policy.js';
 
 const TAU = Math.PI * 2;
 const wrapPi = (a) => Math.atan2(Math.sin(a), Math.cos(a));
@@ -34,7 +33,7 @@ function resetSpeed(road, s, grip = 13) {
 
 export class World {
   /**
-   * cfg: { track, weather, seed, learners, ai: [ids], latency: { min, max, longP, longMin, longMax, dropP },
+   * cfg: { track, weather, seed, learners, ai: [ids], latency: { min, max, longP, longMin, longMax },
    *        episode: { min, max }, starts: { snapshot, standing }, lifetime }
    */
   constructor(cfg, rng) {
@@ -92,29 +91,35 @@ export class World {
     const st = race.stewards?.of(entry);
     if (st) Object.assign(st, { inc: 0, window: { until: -1, max: 0 }, off: false, spun: false, clean: 0, damage: car.damage, penalties: [], issued: 0, dq: false });
     a.inc = 0;
+    // The lap in progress spans a teleport: the game must not count it (its validity flag is what scores laps).
+    car.race.valid = false; car.race.secValid = false;
+    a.lapSeen = car.race.lap; a.offPrev = car.race.offtrack ?? 0;
     a.prevS = car.s; a.dmg0 = car.damage; a.prevDmg = car.damage; a.t = 0;
     a.horizon = (cfg.episode?.min ?? 60) + rng() * ((cfg.episode?.max ?? 120) - (cfg.episode?.min ?? 60));
     a.offFor = 0; a.wasLegal = true; a.slowFor = 0; a.backFor = 0; a.dist = 0; a.legalDist = 0;
-    a.applied = [0, 0]; a.appliedAge = 0; a.queue = []; a.sent = [0, 0]; a.pending = 0;
-    a.lap = { from: null, clean: true }; a.first = 1; a.end = 0;
+    a.illegalSubs = 0; a.offEnters = 0;
+    a.applied = [0, 0]; a.appliedAge = 0; a.inflight = null; a.sent = [0, 0]; a.pending = 0;
+    a.first = 1; a.end = 0;
   }
 
   // ---- command delivery -------------------------------------------------------------------------
-  /** Queue the policy's reply: it lands after a game-like delay, sometimes late, occasionally never. */
+  /**
+   * The browser seat protocol (core/async-seats.js): one request in flight per seat; the car holds the last
+   * controls it received. A decision made while a reply is still in flight is never delivered (the seat
+   * was busy and not given that state), so at most one reply is outstanding and replies never reorder.
+   */
   send(a, steer, pedal, now) {
     if (!Number.isFinite(steer) || !Number.isFinite(pedal)) { a.bad = (a.bad ?? 0) + 1; return; } // hold last controls
+    if (a.inflight) { a.busy = (a.busy ?? 0) + 1; return; }
     steer = clamp(steer, -1, 1); pedal = clamp(pedal, -1, 1); a.sent = [steer, pedal];
     const L = this.cfg.latency ?? {}, rng = this.rng;
-    if (rng() < (L.dropP ?? 0.01)) { a.pending = 0; return; }
     const sub = rng() < (L.longP ?? 0.03) ? (L.longMin ?? 8) + Math.floor(rng() * ((L.longMax ?? 30) - (L.longMin ?? 8) + 1))
       : (L.min ?? 1) + Math.floor(rng() * ((L.max ?? 6) - (L.min ?? 1) + 1));
-    a.queue.push({ at: now + sub, steer, pedal }); a.pending = 1;
+    a.inflight = { at: now + sub, steer, pedal }; a.pending = 1;
   }
 
   applyArrivals(a, sub) {
-    let landed = null;
-    while (a.queue.length && a.queue[0].at <= sub) landed = a.queue.shift();
-    if (landed) { a.applied = [landed.steer, landed.pedal]; a.appliedAge = 0; if (!a.queue.length) a.pending = 0; }
+    if (a.inflight && a.inflight.at <= sub) { a.applied = [a.inflight.steer, a.inflight.pedal]; a.appliedAge = 0; a.inflight = null; a.pending = 0; }
     const [st, pd] = a.applied;
     this.env.actions[a.k * 2] = st; this.env.actions[a.k * 2 + 1] = pd;
   }
@@ -132,53 +137,61 @@ export class World {
       this.sub = (this.sub ?? 0) + 1;
       for (const a of this.agents) this.applyArrivals(a, this.sub);
       race.step(FIXED_DT);
-      for (const a of this.agents) { a.appliedAge += FIXED_DT; const e = a.entry; if (e.pit || e.pitPlan) { e.pit = null; e.pitPlan = null; a.car.race.pitLap = false; } }
+      for (const a of this.agents) {
+        a.appliedAge += FIXED_DT; const e = a.entry;
+        if (e.pit || e.pitPlan) { e.pit = null; e.pitPlan = null; a.car.race.pitLap = false; }
+        // Track limits exactly as the game judges them: its timing adds 1/120 s to `offtrack` on every illegal physics tick.
+        const off = a.car.race.offtrack ?? 0, illegal = off > a.offPrev; a.offPrev = off;
+        if (illegal) { a.illegalSubs++; if (a.wasLegal) a.offEnters++; }
+        a.wasLegal = !illegal;
+      }
     }
     const dt = FIXED_DT * substeps;
+    // Recycle the race well before anyone's fuel, tyres or the race distance run out: every episode in it is truncated here.
+    const recycle = race.time > (this.cfg.lifetime ?? 900) || race.phase !== 'racing';
     for (const a of this.agents) {
       const row = out.subarray(a.k * ROW, (a.k + 1) * ROW);
-      if (a.first) { this.observe(a, row); row[OBS] = 0; row[OBS + 1] = 0; row[OBS + 2] = 0; row[OBS + 3] = 1; a.first = 0; continue; }
-      const r = this.reward(a, dt, stats);
+      if (a.first) { this.observe(a, row); row[OBS] = 0; row[OBS + 1] = 0; row[OBS + 2] = recycle ? 1 : 0; row[OBS + 3] = 1; a.first = 0; a.illegalSubs = a.offEnters = 0; continue; }
+      const r = this.reward(a, dt, substeps, stats);
+      if (recycle && !r.done && !r.trunc) { r.trunc = true; r.why = 'recycle'; }
       this.observe(a, row);
       row[OBS] = r.reward; row[OBS + 1] = r.done ? 1 : 0; row[OBS + 2] = r.trunc ? 1 : 0; row[OBS + 3] = 0;
       if (r.done || r.trunc) { a.end = 1; stats.episodes++; stats.terminal += r.done ? 1 : 0; stats.why[r.why] = (stats.why[r.why] ?? 0) + 1; }
     }
-    // Recycle the race well before anyone's fuel, tyres or the race distance run out.
-    if (race.time > (this.cfg.lifetime ?? 900) || race.phase !== 'racing') this.recycle();
+    if (recycle) this.recycle();
   }
 
   recycle() {
     this.cfg = { ...this.cfg, seed: (this.cfg.seed * 1103515245 + 12345) >>> 0 };
     const snaps = this.snapshots; this.build(); this.snapshots = snaps;
-    for (const a of this.agents) a.end = 0;
+    // Every episode was truncated on the row just written; the next tick starts new ones and discards its actions.
+    for (const a of this.agents) a.end = 1;
   }
 
   // ---- reward (game rules) ------------------------------------------------------------------------
-  reward(a, dt, stats) {
+  reward(a, dt, substeps, stats) {
     const c = a.car, L = this.track.length, R = this.cfg.reward ?? {};
     a.t += dt;
     const ds = wrapPi(((c.s - a.prevS) / L) * TAU) * L / TAU; a.prevS = c.s;
-    // The game's track-limit rule (core/race.js timing): inner wheels' contact patch beyond the kerb's outer edge.
-    const legal = halfCarInside(Math.abs(c.lateral) - (c.spec?.track ?? 1.72) / 2, this.limit);
+    // Legality from every physics tick of this decision (game rule, see tick()); progress counts only on legal ticks.
+    const illegalFrac = a.illegalSubs / substeps, enters = a.offEnters; a.illegalSubs = 0; a.offEnters = 0;
+    const legal = illegalFrac === 0;
     const dDmg = Math.max(0, c.damage - a.prevDmg); a.prevDmg = c.damage;
-    let reward = 0;
-    if (legal) reward += ds * (R.progress ?? 0.05); else { reward -= R.offTick ?? 0.1; if (a.wasLegal) reward -= R.offEnter ?? 1; }
+    let reward = ds * (R.progress ?? 0.05) * (1 - illegalFrac) - illegalFrac * (R.offTick ?? 0.1) - enters * (R.offEnter ?? 1);
     reward -= dDmg * (R.damage ?? 40);
     // Incident points as the game's stewards award them (off track 1x, loss of control / wall 2x, heavy contact 4x).
     const inc = this.env.race.stewards?.of(a.entry)?.inc ?? 0, dInc = Math.max(0, inc - a.inc); a.inc = inc;
     reward -= dInc * (R.incident ?? 0.5);
     if (dInc) stats.incidents = (stats.incidents ?? 0) + dInc;
     a.dist += ds; if (legal) a.legalDist += ds;
-    a.wasLegal = legal; a.offFor = legal ? 0 : a.offFor + dt;
+    a.offFor = illegalFrac === 1 ? a.offFor + dt : 0;
     a.slowFor = c.speed < 2 ? a.slowFor + dt : 0;
     const head = this.road.h[Math.floor(((c.s % L) + L) % L) % this.road.n];
     a.backFor = Math.cos(wrapPi(c.yaw - head)) < 0 ? a.backFor + dt : 0;
-    // Lap timing on the learner's own line crossing, for the scoreboard only.
-    const fin = this.track.finishS ?? 0, crossed = ds > 0 && wrapPi(((c.s - fin) / L) * TAU) >= 0 && wrapPi(((c.s - ds - fin) / L) * TAU) < 0;
-    if (!legal) a.lap.clean = false;
-    if (crossed) {
-      if (a.lap.from !== null && a.lap.clean) stats.lap(this.track.id, this.env.race.time - a.lap.from);
-      a.lap = { from: this.env.race.time, clean: true };
+    // Laps are scored only as the game scores them: its timing's lap verdict (purple/green/yellow = clean).
+    if (c.race.lap !== a.lapSeen) {
+      a.lapSeen = c.race.lap;
+      if (['purple', 'green', 'yellow'].includes(c.race.lastState)) stats.lap(this.track.id, c.race.lastLap);
     }
     // Reached states worth restarting from: legal, moving, intact.
     if (legal && c.speed > 8 && c.damage - a.dmg0 < 0.05 && this.rng() < 0.01) {

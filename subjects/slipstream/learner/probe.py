@@ -11,7 +11,7 @@ import numpy as np
 import torch
 
 from model import Slipstream
-from ppo import ROOT, SUBJECT, RunningNorm
+from ppo import ROOT, SUBJECT, RunningNorm, binary_columns
 from vecenv import VecEnv
 
 
@@ -28,7 +28,7 @@ def main():
     ck = torch.load(os.path.join(SUBJECT, a.ckpt), map_location=dev, weights_only=False)
     net = Slipstream(env.layout).to(dev)
     net.load_state_dict(ck['model'])
-    norm = RunningNorm(env.obs_dim)
+    norm = RunningNorm(env.obs_dim, binary_columns(env.layout))
     norm.load(ck['norm'])
     D, N = env.obs_dim, env.n
     row = env.reset()

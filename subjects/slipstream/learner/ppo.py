@@ -24,9 +24,21 @@ SUBJECT = os.path.dirname(HERE)
 ROOT = os.path.dirname(os.path.dirname(SUBJECT))
 
 
+def binary_columns(layout):
+    """Rival presence flags: the model masks attention on them, so they must reach it as raw 0/1."""
+    base = layout['ego'] + layout['roadK'] * layout['roadF']
+    return np.array([base + i * layout['rivalF'] for i in range(layout['rivalN'])])
+
+
 class RunningNorm:
-    def __init__(self, shape):
+    def __init__(self, shape, skip=None):
         self.mean, self.var, self.n = np.zeros(shape, np.float64), np.ones(shape, np.float64), 1e-4
+        self.skip = skip
+        self._pin()
+
+    def _pin(self):
+        if self.skip is not None:
+            self.mean[self.skip], self.var[self.skip] = 0.0, 1.0
 
     def update(self, x):
         m, v, k = x.mean(0), x.var(0), x.shape[0]
@@ -34,15 +46,20 @@ class RunningNorm:
         self.mean = self.mean + d * k / tot
         self.var = (self.var * self.n + v * k + d ** 2 * self.n * k / tot) / tot
         self.n = tot
+        self._pin()
 
     def __call__(self, x):
-        return np.clip((x - self.mean) / np.sqrt(self.var + 1e-8), -10, 10).astype(np.float32)
+        out = np.clip((x - self.mean) / np.sqrt(self.var + 1e-8), -10, 10).astype(np.float32)
+        if self.skip is not None:
+            out[..., self.skip] = x[..., self.skip]
+        return out
 
     def state(self):
         return dict(mean=self.mean, var=self.var, n=self.n)
 
     def load(self, s):
         self.mean, self.var, self.n = s['mean'], s['var'], s['n']
+        self._pin()
 
 
 def main():
@@ -83,7 +100,7 @@ def main():
     N, D, T = env.n, env.obs_dim, a.horizon
     net = Slipstream(env.layout).to(dev)
     opt = torch.optim.Adam(net.parameters(), lr=a.lr, eps=1e-5)
-    norm, ret_rms = RunningNorm(D), RunningNorm(())
+    norm, ret_rms = RunningNorm(D, binary_columns(env.layout)), RunningNorm(())
     it0 = 0
     if a.resume:
         ck = torch.load(a.resume, map_location=dev, weights_only=False)
