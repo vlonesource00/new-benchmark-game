@@ -121,6 +121,10 @@ def main():
     ap.add_argument('--bc', type=float, default=0.0, help='weight of the imitation term (squared error to the teacher action)')
     ap.add_argument('--bc-end', type=float, default=1.0, help='imitation weight at the end of --minutes, as a fraction of --bc (linear)')
     ap.add_argument('--bc-sections', default='', help='JSON {sections: {track: [[s0, s1]...]}}: imitate only there')
+    ap.add_argument('--distill', default='', help='online distillation: comma-separated <track>=<checkpoint> (e.g. track '
+                    'specialists). Each teacher network runs on the student rollout states in solo worlds (no AI seats) of '
+                    'its track; the student mean action is pulled to the teacher mean (squared error) on those decision rows')
+    ap.add_argument('--distill-w', type=float, default=1.0, help='weight of the distillation term')
     ap.add_argument('--bc-batch', type=int, default=32)
     ap.add_argument('--bc-chunk', type=int, default=128)
     ap.add_argument('--bc-burn', type=int, default=32)
@@ -185,6 +189,24 @@ def main():
     secs = json.load(open(os.path.join(SUBJECT, a.bc_sections)))['sections'] if a.bc_sections else None
     teacher = TeacherData(a.teacher.split(','), D, dev, secs) if a.teacher and a.bc > 0 else None
     bc_rng = np.random.default_rng(0)
+    # Online distillation teachers: frozen networks with their own normalisers and memories, one per track.
+    seats = [(w['track'], not w['ai']) for hs in env.hs for w in hs['worlds'] for _ in range(w['agents'])]
+    assert len(seats) == N
+    dist = []
+    for spec in filter(None, a.distill.split(',')):
+        trk, path = spec.split('=')
+        tk = torch.load(os.path.join(SUBJECT, path), map_location=dev, weights_only=False)
+        tl = layout_of(tk)
+        assert obs_len(tl) == D, f'{path}: teacher contract != student'
+        tn = Slipstream(tl).to(dev)
+        tn.load_state_dict(tk['model'])
+        tn.requires_grad_(False)
+        tnorm = RunningNorm(D, binary_columns(tl))
+        tnorm.load(tk['norm'])
+        mask = torch.tensor([st == (trk, True) for st in seats], device=dev)
+        assert mask.any(), f'no solo world on {trk}'
+        dist.append({'net': tn, 'norm': tnorm, 'mask': mask, 'h': torch.zeros(N, tn.hidden, device=dev)})
+    DMASK = sum(d['mask'].float() for d in dist) if dist else None
     next_snap = a.snap_min
 
     def save(path, it_done):
@@ -209,6 +231,7 @@ def main():
         logp_b = np.zeros((T, N), np.float32)
         val_b = np.zeros((T + 1, N), np.float32)
         h0 = h.clone()
+        DT = torch.zeros(T, N, 2, device=dev) if dist else None
         t_env = 0.0
         with torch.no_grad():
             for t in range(T + 1):
@@ -218,7 +241,12 @@ def main():
                 x = torch.from_numpy(obs_b[t]).to(dev)
                 first = torch.from_numpy(flg_b[t, :, 3]).to(dev)
                 # Row T is the bootstrap: same processing as row 0 of the next rollout, which starts from h (not committed here).
-                mu, v, h_next = collect_step(net, x, h, first, torch.from_numpy(flg_b[t, :, 4]).to(dev))
+                decf = torch.from_numpy(flg_b[t, :, 4]).to(dev)
+                mu, v, h_next = collect_step(net, x, h, first, decf)
+                if t < T:  # teachers see rows 0..T-1 (row T is row 0 of the next rollout)
+                    for d in dist:
+                        tmu, _, d['h'] = collect_step(d['net'], torch.from_numpy(d['norm'](raw_b[t])).to(dev), d['h'], first, decf)
+                        DT[t, d['mask']] = tmu[d['mask']]
                 val_b[t] = v.cpu().numpy()
                 if t == T:
                     break  # bootstrap value only: the next rollout processes this row from h
@@ -262,7 +290,7 @@ def main():
         am = (ADV * M).sum() / mv
         asd = (((ADV - am) ** 2 * M).sum() / mv).sqrt()
         ADV = (ADV - am) / (asd + 1e-8)
-        kls, clips, vls, pls, bcs, gns = [], [], [], [], [], []
+        kls, clips, vls, pls, bcs, gns, dls = [], [], [], [], [], [], []
         nf = torch_norm(norm, dev) if teacher else None
         bc_w = a.bc * (1 - (1 - a.bc_end) * min(1.0, (time.time() - t_start) / 60 / a.minutes)) if a.minutes else a.bc
         stop = False
@@ -283,6 +311,11 @@ def main():
                 vl = (((v - TGT[:, mb]) ** 2) * mv_).sum() / mv_.sum().clamp(min=1)
                 ent = (ls + 0.5 * math.log(2 * math.pi * math.e)).sum()
                 loss = pg + a.vcoef * vl - a.ent * ent
+                if dist and not warm:
+                    dm = M[:, mb] * DMASK[mb]
+                    dl = (((mu - DT[:, mb]) ** 2).sum(2) * dm).sum() / dm.sum().clamp(min=1)
+                    loss = loss + a.distill_w * dl
+                    dls.append(dl.item())
                 if teacher and not warm:
                     bcl = bc_loss(net, *teacher.batch(a.bc_batch, a.bc_chunk, bc_rng), nf, a.bc_burn, sq)
                     if probe:  # once per iteration: how hard each term pulls the policy head (sets the --bc scale)
@@ -329,6 +362,7 @@ def main():
         rec = {'it': it, 'steps': steps, 'min': round((time.time() - t_start) / 60, 2), 'sps': round(T * N / (t_roll + t_upd)),
                't_roll': round(t_roll, 2), 't_env': round(t_env, 2), 't_upd': round(t_upd, 2), 'rew': round(float(rew[live.astype(bool)].mean()), 4),
                **({'bc': round(float(np.mean(bcs)), 4), 'bc_w': round(bc_w, 3), 'gn': [round(x, 4) for x in gns[0]]} if bcs else {}),
+               **({'dist': round(float(np.mean(dls)), 4)} if dls else {}),
                'kl': round(float(np.mean(kls)), 4), 'clip': round(float(np.mean(clips)), 3), 'vl': round(float(np.mean(vls)), 3),
                'std': [round(x, 3) for x in log_std().exp().tolist()], 'stopped': stop, 'warm': warm, 'decide': round(float(dec[:T].mean()), 3)}
         if it % 10 == 9:
