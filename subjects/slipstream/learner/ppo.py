@@ -108,6 +108,7 @@ def main():
     ap.add_argument('--lam', type=float, default=0.95)
     ap.add_argument('--clip', type=float, default=0.2)
     ap.add_argument('--ent', type=float, default=0.0)
+    ap.add_argument('--std-min', default='', help='exploration floor per action, e.g. 0.06,0.10 (steer,pedal); empty = none')
     ap.add_argument('--vcoef', type=float, default=0.5)
     ap.add_argument('--kl', type=float, default=0.03)
     ap.add_argument('--resume', default='')
@@ -130,6 +131,10 @@ def main():
     env = VecEnv(ROOT, cfg_path, a.workers, log)
     N, D, T = env.n, env.obs_dim, a.horizon
     net = Slipstream(env.layout).to(dev)
+    # Exploration floor: the sampling std never drops below std_min. A collapsed std both stops new states being
+    # visited and makes every small mean shift a large KL, so updates stop early (the tt-b2 plateau).
+    floor = torch.log(torch.tensor([float(x) for x in a.std_min.split(',')], device=dev)) if a.std_min else None
+    log_std = (lambda: torch.maximum(net.log_std, floor)) if floor is not None else (lambda: net.log_std)
     opt = torch.optim.Adam(net.parameters(), lr=a.lr, eps=1e-5)
     norm, ret_rms = RunningNorm(D, binary_columns(env.layout)), RunningNorm(())
     it0 = 0
@@ -170,9 +175,9 @@ def main():
                 if t == T:
                     break  # bootstrap value only: the next rollout processes this row from h
                 h = h_next
-                std = net.log_std.exp()
+                std = log_std().exp()
                 act = mu + std * torch.randn_like(mu)
-                logp_b[t] = (-((act - mu) ** 2) / (2 * std ** 2) - net.log_std - 0.5 * math.log(2 * math.pi)).sum(1).cpu().numpy()
+                logp_b[t] = (-((act - mu) ** 2) / (2 * std ** 2) - log_std() - 0.5 * math.log(2 * math.pi)).sum(1).cpu().numpy()
                 act_b[t] = act.cpu().numpy()
                 te = time.time()
                 row = env.step(act_b[t])
@@ -215,7 +220,7 @@ def main():
             perm = torch.randperm(N, device=dev)
             for mb in perm.chunk(a.minibatches):
                 mu, v = net.sequence(X[:, mb], H0[mb], F[:, mb], DEC[:, mb])
-                ls = net.log_std
+                ls = log_std()
                 lp = (-((A[:, mb] - mu) ** 2) / (2 * ls.exp() ** 2) - ls - 0.5 * math.log(2 * math.pi)).sum(2)
                 ratio = (lp - LP[:, mb]).exp()
                 m = M[:, mb]
@@ -255,7 +260,7 @@ def main():
         rec = {'it': it, 'steps': steps, 'min': round((time.time() - t_start) / 60, 2), 'sps': round(T * N / (t_roll + t_upd)),
                't_roll': round(t_roll, 2), 't_env': round(t_env, 2), 't_upd': round(t_upd, 2), 'rew': round(float(rew[live.astype(bool)].mean()), 4),
                'kl': round(float(np.mean(kls)), 4), 'clip': round(float(np.mean(clips)), 3), 'vl': round(float(np.mean(vls)), 3),
-               'std': [round(x, 3) for x in net.log_std.exp().tolist()], 'stopped': stop, 'decide': round(float(dec[:T].mean()), 3)}
+               'std': [round(x, 3) for x in log_std().exp().tolist()], 'stopped': stop, 'decide': round(float(dec[:T].mean()), 3)}
         if it % 10 == 9:
             for k, v in list(agg.items()):
                 if k.startswith('lap:'):
