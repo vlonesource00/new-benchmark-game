@@ -79,7 +79,7 @@ export class World {
       const v = standing ? 0 : resetSpeed(this.road, s) * (0.35 + 0.6 * rng());
       car.place(this.track, s, lat, v);
       race.fitTyres(car, 'medium', true);
-      car.fuel = 25 + rng() * 45;
+      car.fuel = cfg.fuel ?? (25 + rng() * 45); // evaluations fix it; training draws it (rng untouched when fixed)
       // Mild perturbation of a feasible state: heading and sideslip within what a driven car shows.
       const dy = (rng() * 2 - 1) * 0.08, beta = (rng() * 2 - 1) * 0.04;
       car.yaw += dy;
@@ -197,7 +197,10 @@ export class World {
     // Laps are scored only as the game scores them: its timing's lap verdict (purple/green/yellow = clean).
     if (c.race.lap !== a.lapSeen) {
       a.lapSeen = c.race.lap;
-      if (['purple', 'green', 'yellow'].includes(c.race.lastState)) stats.lap(this.track.id, c.race.lastLap);
+      const clean = ['purple', 'green', 'yellow'].includes(c.race.lastState);
+      if (clean) stats.lap(this.track.id, c.race.lastLap);
+      // Per-agent lap verdicts (evaluations): [agent, tick, clean, lap time, game state].
+      stats.lapEv?.push([(stats.base ?? 0) + a.k, stats.tick ?? 0, clean ? 1 : 0, +(c.race.lastLap ?? 0).toFixed(3), c.race.lastState ?? null]);
     }
     // Reached states worth restarting from: legal, moving, intact.
     if (legal && c.speed > 8 && c.damage - a.dmg0 < 0.05 && this.rng() < 0.01) {
@@ -213,6 +216,7 @@ export class World {
     else if (a.slowFor > 4 && a.t > 6) { done = true; why = 'stuck'; }
     if (done) reward -= R.terminal ?? 3;
     if (done && why !== 'dq') { this.failures.push(c.s); if (this.failures.length > 128) this.failures.shift(); }
+    if (done) stats.endEv?.push([(stats.base ?? 0) + a.k, stats.tick ?? 0, why, Math.round(c.s)]);
     if (done && stats.wrecks && stats.wrecks.length < 64) stats.wrecks.push([this.track.id, Math.round(c.s), why, +c.speed.toFixed(1), +c.lateral.toFixed(1)]);
     const trunc = !done && a.t >= a.horizon;
     return { reward, done, trunc, why: why ?? (trunc ? 'horizon' : null) };
