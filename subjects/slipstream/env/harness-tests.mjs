@@ -82,5 +82,25 @@ const drive = (w, n, steer, pedal, st = stats()) => {
   check('decide-flag', wrong === 0 && decided > 0 && decided < rows, `wrong=${wrong} decideRate=${(decided / rows).toFixed(3)} (${(30 * decided / rows).toFixed(1)} Hz)`);
 }
 
+// 6. Frame latency model (browser measurements): replies land exactly one frame (or, at extraP, two) after the observation,
+// the frame time is fixed within an episode, and the decide flag stays exact.
+{
+  const latency = { frames: [[1, 0.3], [2, 0.35], [3, 0.1], [4, 0.15], [8, 0.1]], extraP: 0.05, longP: 0, longMin: 8, longMax: 30 };
+  const w = new World({ ...base, learners: 3, latency }, mk(6)), st = stats(), n = w.agents.length;
+  const act = new Float32Array(n * 2), out = new Float32Array(n * ROW);
+  let wrong = 0, decided = 0, rows = 0, badLat = 0, sends = 0;
+  w.tick(act, out, 4, st);
+  for (let k = 0; k < 600; k++) {
+    const dec = w.agents.map((a, i) => out[i * ROW + OBS + 4]), ended = w.agents.map((a) => a.end), busy0 = w.agents.map((a) => a.busy ?? 0), sub0 = w.sub;
+    for (let i = 0; i < n; i++) { act[2 * i] = Math.sin(k * 0.1 + i) * 0.3; act[2 * i + 1] = 0.6; }
+    w.tick(act, out, 4, st);
+    w.agents.forEach((a, i) => {
+      if (ended[i]) return; rows++; decided += dec[i]; if ((dec[i] === 1) === ((a.busy ?? 0) > busy0[i])) wrong++;
+      if (dec[i] === 1 && a.inflight) { sends++; const lat = a.inflight.at - sub0; if (lat !== a.frame && lat !== 2 * a.frame) badLat++; }
+    });
+  }
+  check('frame-latency', wrong === 0 && badLat === 0 && sends > 0, `wrong=${wrong} badLatency=${badLat}/${sends} decideRate=${(30 * decided / rows).toFixed(1)} Hz`);
+}
+
 for (const r of results) console.log(`${r.ok ? 'PASS' : 'FAIL'} ${r.name} ${r.detail}`);
 process.exit(results.every((r) => r.ok) ? 0 : 1);

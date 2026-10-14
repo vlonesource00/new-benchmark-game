@@ -23,7 +23,7 @@ function resetSpeed(road, s, grip = 13) {
 
 export class World {
   /**
-   * cfg: { track, weather, seed, learners, ai: [ids], latency: { min, max, longP, longMin, longMax },
+   * cfg: { track, weather, seed, learners, ai: [ids], latency: { min, max, longP, longMin, longMax } | { frames: [[substeps, weight]...], extraP, longP, longMin, longMax },
    *        episode: { min, max }, starts: { snapshot, standing }, lifetime }
    */
   constructor(cfg, rng) {
@@ -93,6 +93,9 @@ export class World {
     a.offFor = 0; a.wasLegal = true; a.slowFor = 0; a.backFor = 0; a.dist = 0; a.legalDist = 0;
     a.illegalSubs = 0; a.offEnters = 0;
     a.applied = [0, 0]; a.appliedAge = 0; a.inflight = null; a.sent = [0, 0]; a.pending = 0;
+    // Frame model (browser/test-seat.mjs measurements): the game steps physics once per rendered frame and takes worker
+    // replies between frames, so a reply lands one frame (sometimes two) after its observation; the frame time is drawn per episode.
+    const F = cfg.latency?.frames; if (F) { let u = rng() * F.reduce((t, x) => t + x[1], 0), i = 0; while (u >= F[i][1] && i < F.length - 1) u -= F[i++][1]; a.frame = F[i][0]; }
     a.first = 1; a.end = 0;
   }
 
@@ -108,6 +111,7 @@ export class World {
     steer = clamp(steer, -1, 1); pedal = clamp(pedal, -1, 1); a.sent = [steer, pedal];
     const L = this.cfg.latency ?? {}, rng = this.rng;
     const sub = rng() < (L.longP ?? 0.03) ? (L.longMin ?? 8) + Math.floor(rng() * ((L.longMax ?? 30) - (L.longMin ?? 8) + 1))
+      : a.frame ? a.frame * (rng() < (L.extraP ?? 0.05) ? 2 : 1)
       : (L.min ?? 1) + Math.floor(rng() * ((L.max ?? 6) - (L.min ?? 1) + 1));
     a.inflight = { at: now + sub, steer, pedal }; a.pending = 1;
   }
@@ -136,7 +140,7 @@ export class World {
         if (e.pit || e.pitPlan) { e.pit = null; e.pitPlan = null; a.car.race.pitLap = false; }
         // Track limits exactly as the game judges them: its timing adds 1/120 s to `offtrack` on every illegal physics tick.
         const off = a.car.race.offtrack ?? 0, illegal = off > a.offPrev; a.offPrev = off;
-        if (illegal) { a.illegalSubs++; if (a.wasLegal) a.offEnters++; }
+        if (illegal) { a.illegalSubs++; if (a.wasLegal) { a.offEnters++; if (this.cfg.starts?.offSites) this.noteFailure(a.car.s); } }
         a.wasLegal = !illegal;
       }
     }
@@ -155,6 +159,9 @@ export class World {
     }
     if (recycle) this.recycle();
   }
+
+  /** Failure starts replay the run-up to places where the learner crashed or (starts.offSites) broke track limits. */
+  noteFailure(s) { this.failures.push(s); if (this.failures.length > 128) this.failures.shift(); }
 
   recycle() {
     this.cfg = { ...this.cfg, seed: (this.cfg.seed * 1103515245 + 12345) >>> 0 };
@@ -204,7 +211,7 @@ export class World {
     else if (a.backFor > 1.5) { done = true; why = 'backwards'; }
     else if (a.slowFor > 4 && a.t > 6) { done = true; why = 'stuck'; }
     if (done) reward -= R.terminal ?? 3;
-    if (done && why !== 'dq') { this.failures.push(c.s); if (this.failures.length > 128) this.failures.shift(); }
+    if (done && why !== 'dq') this.noteFailure(c.s);
     if (done) stats.endEv?.push([(stats.base ?? 0) + a.k, stats.tick ?? 0, why, Math.round(c.s)]);
     if (done && stats.wrecks && stats.wrecks.length < 64) stats.wrecks.push([this.track.id, Math.round(c.s), why, +c.speed.toFixed(1), +c.lateral.toFixed(1)]);
     const trunc = !done && a.t >= a.horizon;
