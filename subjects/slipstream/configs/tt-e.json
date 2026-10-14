@@ -1,0 +1,66 @@
+{
+ "worlds": 12,
+ "seed": 3,
+ "substeps": 4,
+ "statsEvery": 600,
+ "tracks": [
+  "harbor-ring",
+  "nurburgring",
+  "solenne",
+  "nurburgring",
+  "alpine",
+  "desert",
+  "nurburgring"
+ ],
+ "weathers": [
+  "clear"
+ ],
+ "world": {
+  "learners": 4,
+  "ai": [],
+  "classId": "gt",
+  "lifetime": 900,
+  "latency": {
+   "frames": [
+    [
+     1,
+     0.3
+    ],
+    [
+     2,
+     0.35
+    ],
+    [
+     3,
+     0.1
+    ],
+    [
+     4,
+     0.15
+    ],
+    [
+     8,
+     0.1
+    ]
+   ],
+   "extraP": 0.05,
+   "longP": 0.01,
+   "longMin": 8,
+   "longMax": 30
+  },
+  "episode": {
+   "min": 60,
+   "max": 120
+  },
+  "starts": {
+   "snapshot": 0.3,
+   "failure": 0.25,
+   "standing": 0.1,
+   "offSites": true
+  },
+  "reward": {
+   "terminal": 15,
+   "offEnter": 4
+  }
+ }
+}

@@ -108,11 +108,13 @@ def main():
     ap.add_argument('--lam', type=float, default=0.95)
     ap.add_argument('--clip', type=float, default=0.2)
     ap.add_argument('--ent', type=float, default=0.0)
-    ap.add_argument('--std-min', default='', help='exploration floor per action, e.g. 0.06,0.10 (steer,pedal); empty = none')
+    ap.add_argument('--std-min', default='', help='exploration floor per action, e.g. 0.06,0.10 (steer,pedal): std = floor + learned; empty = none')
     ap.add_argument('--vcoef', type=float, default=0.5)
     ap.add_argument('--kl', type=float, default=0.03)
     ap.add_argument('--resume', default='')
     ap.add_argument('--save-every', type=int, default=50)
+    ap.add_argument('--ema-half', type=float, default=200, help='half-life in iterations of the weight average saved as *-ema.pt; 0 = off')
+    ap.add_argument('--snap-min', type=float, default=10, help='write snap-<min>.pt (and snap-<min>-ema.pt) every this many minutes; 0 = off')
     a = ap.parse_args()
     assert re.fullmatch(r'[a-z0-9-]+', a.name, re.I), 'run name'
     out = os.path.join(SUBJECT, 'runs', a.name)
@@ -133,8 +135,10 @@ def main():
     net = Slipstream(env.layout).to(dev)
     # Exploration floor: the sampling std never drops below std_min. A collapsed std both stops new states being
     # visited and makes every small mean shift a large KL, so updates stop early (the tt-b2 plateau).
-    floor = torch.log(torch.tensor([float(x) for x in a.std_min.split(',')], device=dev)) if a.std_min else None
-    log_std = (lambda: torch.maximum(net.log_std, floor)) if floor is not None else (lambda: net.log_std)
+    # std = floor + exp(log_std): the learned part keeps its gradient, so the policy can still raise its exploration
+    # above the floor (a hard max(log_std, log floor) froze log_std wherever it sat below the floor, as in tt-c2).
+    floor = torch.tensor([float(x) for x in a.std_min.split(',')], device=dev) if a.std_min else None
+    log_std = (lambda: torch.log(floor + net.log_std.exp())) if floor is not None else (lambda: net.log_std)
     opt = torch.optim.Adam(net.parameters(), lr=a.lr, eps=1e-5)
     norm, ret_rms = RunningNorm(D, binary_columns(env.layout)), RunningNorm(())
     it0 = 0
@@ -145,6 +149,21 @@ def main():
         norm.load(ck['norm'])
         ret_rms.load(ck['ret'])
         it0 = ck.get('iter', 0)
+    # Weight average. Single checkpoints of the deterministic policy swing between 0/10 and 10/10 per track
+    # (tt-b2 at 90/120/150 min: 7, 9, 35 of 50 completions), so the evaluated and deployed policy is a slow average
+    # of the trained weights instead of whichever weights the run stopped on.
+    ema = {k: v.detach().clone() for k, v in net.state_dict().items()}
+    if a.resume and 'ema' in ck:
+        ema = {k: v.to(dev) for k, v in ck['ema'].items()}
+    ema_decay = 0.5 ** (1 / a.ema_half) if a.ema_half > 0 else 0.0
+    next_snap = a.snap_min
+
+    def save(path, it_done):
+        state = {'opt': opt.state_dict(), 'norm': norm.state(), 'ret': ret_rms.state(), 'iter': it_done, 'layout': env.layout}
+        torch.save({**state, 'model': net.state_dict(), 'ema': ema}, path + '.pt')
+        if a.ema_half > 0:  # the average as a plain checkpoint, so every tool (complete, export, record) loads it as is
+            torch.save({**state, 'model': ema}, path + '-ema.pt')
+
     log({'agents': N, 'obs': D, 'workers': a.workers, 'params': sum(p.numel() for p in net.parameters())})
 
     row = env.reset()
@@ -244,6 +263,10 @@ def main():
                 stop = True
                 break
         t_upd = time.time() - tu0
+        if ema_decay:
+            with torch.no_grad():
+                for k, v in net.state_dict().items():
+                    ema[k].lerp_(v, 1 - ema_decay) if v.is_floating_point() else ema[k].copy_(v)
 
         for s in env.take_stats():
             if 'sps' not in s:
@@ -273,9 +296,13 @@ def main():
         log(rec)
         print(json.dumps(rec), flush=True)
         if it % a.save_every == a.save_every - 1 or (a.minutes and time.time() - t_start > a.minutes * 60):
-            torch.save({'model': net.state_dict(), 'opt': opt.state_dict(), 'norm': norm.state(), 'ret': ret_rms.state(), 'iter': it + 1, 'layout': env.layout},
-                       os.path.join(out, 'model.pt'))
-        if a.minutes and time.time() - t_start > a.minutes * 60:
+            save(os.path.join(out, 'model'), it + 1)
+        el = (time.time() - t_start) / 60
+        if a.snap_min and el >= next_snap:
+            save(os.path.join(out, f'snap-{round(next_snap)}'), it + 1)
+            next_snap += a.snap_min
+        if a.minutes and el > a.minutes:
+            save(os.path.join(out, 'final'), it + 1)
             break
     env.close()
 

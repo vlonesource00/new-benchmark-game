@@ -35,11 +35,16 @@ def main():
     ap.add_argument('--seed', type=int, default=101)
     ap.add_argument('--workers', type=int, default=1)
     ap.add_argument('--name', default='')
+    ap.add_argument('--latency', default='uniform', choices=['uniform', 'frames'],
+                    help='uniform: the original 1-6 substep reply delay (continuity with earlier results); '
+                         'frames: the measured browser model (one frame of 1/2/3/4/8 substeps per attempt)')
     a = ap.parse_args()
     tracks = a.tracks.split(',')
+    latency = {'min': 1, 'max': 6, 'longP': 0.03, 'longMin': 8, 'longMax': 30} if a.latency == 'uniform' else \
+        {'frames': [[1, 0.3], [2, 0.35], [3, 0.1], [4, 0.15], [8, 0.1]], 'extraP': 0.05, 'longP': 0.01, 'longMin': 8, 'longMax': 30}
     cfg = {'worlds': len(tracks) * a.attempts // a.workers, 'seed': a.seed, 'substeps': 4, 'statsEvery': 60, 'tracks': tracks, 'weathers': ['clear'],
            'world': {'learners': 1, 'ai': [], 'classId': 'gt', 'lifetime': 1e9, 'fuel': 60,
-                     'latency': {'min': 1, 'max': 6, 'longP': 0.03, 'longMin': 8, 'longMax': 30},
+                     'latency': latency,
                      'episode': {'min': 1e9, 'max': 1e9}, 'starts': {'snapshot': 0, 'failure': 0, 'standing': 1}}}
     assert cfg['worlds'] * a.workers == len(tracks) * a.attempts, 'attempts x tracks must split evenly over workers'
     fd, cfg_path = tempfile.mkstemp(suffix='.json')
@@ -102,7 +107,7 @@ def main():
                     break
     env.close()
     os.remove(cfg_path)
-    out = {'ckpt': a.ckpt, 'seed': a.seed, 'attempts': a.attempts, 'laps': a.laps, 'sim_s': round(tick / 30), 'tracks': {}}
+    out = {'ckpt': a.ckpt, 'seed': a.seed, 'latency': a.latency, 'attempts': a.attempts, 'laps': a.laps, 'sim_s': round(tick / 30), 'tracks': {}}
     for t in tracks:
         rs = [r for r in att if r['track'] == t]
         clean = [x for r in rs for x in r['laps'] if x]
