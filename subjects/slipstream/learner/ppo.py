@@ -21,7 +21,7 @@ import numpy as np
 import torch
 
 from contract import layout_of, migrate_v1_v2, obs_len
-from model import Slipstream
+from model import GraphedSequence, Slipstream
 from teacher import TeacherData, bc_loss, torch_norm
 from vecenv import VecEnv
 
@@ -128,6 +128,8 @@ def main():
     ap.add_argument('--critic-warmup', type=int, default=0,
                     help='first N iterations of a resumed run train only the value head (trunk and policy frozen), '
                          'so a changed reward is learned by the critic before it steers policy updates')
+    ap.add_argument('--no-graphs', action='store_true', help='run the training sequence pass eagerly instead of as a '
+                    'replayed CUDA graph (same results; the graph is ~2-3x faster)')
     ap.add_argument('--snap-min', type=float, default=10, help='write snap-<min>.pt (and snap-<min>-ema.pt) every this many minutes; 0 = off')
     a = ap.parse_args()
     assert re.fullmatch(r'[a-z0-9-]+', a.name, re.I), 'run name'
@@ -162,6 +164,7 @@ def main():
     floor = torch.tensor([float(x) for x in a.std_min.split(',')], device=dev) if a.std_min else None
     log_std = (lambda: torch.log(floor + net.log_std.exp())) if floor is not None else (lambda: net.log_std)
     opt = torch.optim.Adam(net.parameters(), lr=a.lr, eps=1e-5)
+    seq = net.sequence if a.no_graphs or dev.type != 'cuda' else GraphedSequence(net)
     norm, ret_rms = RunningNorm(D, binary_columns(lay)), RunningNorm(())
     it0 = 0
     if a.resume:
@@ -267,7 +270,9 @@ def main():
         for ep in range(a.epochs):
             perm = torch.randperm(N, device=dev)
             for mb in perm.chunk(a.minibatches):
-                mu, v = net.sequence(X[:, mb], H0[mb], F[:, mb], DEC[:, mb])
+                probe = teacher is not None and not warm and not gns  # differentiates twice: eager pass (GraphedSequence)
+                sq = net.sequence if probe else seq
+                mu, v = sq(X[:, mb], H0[mb], F[:, mb], DEC[:, mb])
                 ls = log_std()
                 lp = (-((A[:, mb] - mu) ** 2) / (2 * ls.exp() ** 2) - ls - 0.5 * math.log(2 * math.pi)).sum(2)
                 ratio = (lp - LP[:, mb]).exp()
@@ -279,8 +284,8 @@ def main():
                 ent = (ls + 0.5 * math.log(2 * math.pi * math.e)).sum()
                 loss = pg + a.vcoef * vl - a.ent * ent
                 if teacher and not warm:
-                    bcl = bc_loss(net, *teacher.batch(a.bc_batch, a.bc_chunk, bc_rng), nf, a.bc_burn)
-                    if not gns:  # once per iteration: how hard each term pulls the policy head (sets the --bc scale)
+                    bcl = bc_loss(net, *teacher.batch(a.bc_batch, a.bc_chunk, bc_rng), nf, a.bc_burn, sq)
+                    if probe:  # once per iteration: how hard each term pulls the policy head (sets the --bc scale)
                         head = list(net.pi.parameters())
                         gp = torch.autograd.grad(pg, head, retain_graph=True)
                         gb = torch.autograd.grad(bc_w * bcl, head, retain_graph=True)

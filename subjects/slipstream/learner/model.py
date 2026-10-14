@@ -70,3 +70,33 @@ class Slipstream(nn.Module):
             hs.append(h)
         z = torch.cat([torch.stack(hs), f], 2)
         return self.pi(z), self.v(z).squeeze(2)
+
+
+class GraphedSequence:
+    """net.sequence for training, captured once per input shape as a CUDA graph (forward and backward) and replayed.
+    The recurrent pass is 128 small steps whose cost is kernel launches, not arithmetic; a replay launches them as one
+    unit. Same kernels, same order: outputs and gradients are bit-identical to net.sequence. Shapes must repeat (PPO
+    minibatches and imitation batches do); parameters are read in place, so optimizer steps and loads stay live.
+    One backward per forward: the captured backward reuses the forward's saved-activation memory, so a second backward
+    (retain_graph) reads clobbered values. Anything that differentiates twice must use net.sequence."""
+
+    class _Seq(nn.Module):
+        def __init__(self, net):
+            super().__init__()
+            self.net = net
+
+        def forward(self, x, h0, first, decide):
+            mu, v = self.net.sequence(x, h0, first, decide)
+            return mu + 0 * self.net.log_std, v  # every parameter in the graph (capture differentiates them all)
+
+    def __init__(self, net):
+        self.net, self.graphs = net, {}
+
+    def __call__(self, x, h0, first, decide):
+        key = (tuple(x.shape), tuple(h0.shape))
+        if key not in self.graphs:
+            # one wrapper per shape: capturing a module replaces its forward with that graph
+            self.graphs[key] = torch.cuda.make_graphed_callables(
+                self._Seq(self.net), (x.detach().clone(), h0.detach().clone(), first.clone(), decide.clone()), num_warmup_iters=3)
+        return self.graphs[key](x, h0, first, decide)
+

@@ -75,10 +75,11 @@ def torch_norm(norm, dev):
     return f
 
 
-def bc_loss(net, x, y, clean, nf, burn):
+def bc_loss(net, x, y, clean, nf, burn, seq=None):
+    """seq: a stand-in for net.sequence with the same signature (the trainer's CUDA-graphed one)."""
     C, B = x.shape[:2]
     first = torch.zeros(C, B, device=x.device); first[0] = 1
-    mu, _ = net.sequence(nf(x), torch.zeros(B, net.hidden, device=x.device), first, torch.ones(C, B, device=x.device))
+    mu, _ = (seq or net.sequence)(nf(x), torch.zeros(B, net.hidden, device=x.device), first, torch.ones(C, B, device=x.device))
     m = clean.clone(); m[:burn] = 0
     return ((((mu - y) ** 2).sum(2)) * m).sum() / m.sum().clamp(min=1)
 
