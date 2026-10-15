@@ -1,0 +1,97 @@
+{
+ "worlds": 12,
+ "seed": 3,
+ "substeps": 4,
+ "statsEvery": 600,
+ "tracks": [
+  "alpine"
+ ],
+ "weathers": [
+  "clear"
+ ],
+ "world": {
+  "learners": 4,
+  "ai": [],
+  "classId": "gt",
+  "lifetime": 900,
+  "latency": {
+   "frames": [
+    [
+     1,
+     0.3
+    ],
+    [
+     2,
+     0.35
+    ],
+    [
+     3,
+     0.1
+    ],
+    [
+     4,
+     0.15
+    ],
+    [
+     8,
+     0.1
+    ]
+   ],
+   "extraP": 0.05,
+   "longP": 0.01,
+   "longMin": 8,
+   "longMax": 30
+  },
+  "episode": {
+   "min": 60,
+   "max": 120
+  },
+  "starts": {
+   "snapshot": 0.3,
+   "failure": 0.25,
+   "standing": 0.1,
+   "offSites": true,
+   "sites": {
+    "alpine": [
+     798,
+     802,
+     802,
+     803,
+     803,
+     805,
+     805,
+     807,
+     807,
+     842,
+     1560,
+     1576,
+     2139,
+     2404,
+     2426,
+     2468,
+     2594,
+     2598,
+     2609,
+     2610,
+     2612,
+     2615,
+     2621,
+     2624,
+     2627,
+     2627,
+     2629,
+     2629,
+     2637,
+     2673
+    ]
+   },
+   "siteP": 0.15
+  },
+  "reward": {
+   "terminal": 15,
+   "offEnter": 4,
+   "margin": 0.5,
+   "marginM": 1.0
+  }
+ }
+}
