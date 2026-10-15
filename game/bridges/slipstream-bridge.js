@@ -14,6 +14,8 @@ const TRACK_WEIGHTS = {
   nurburgring: () => import('../../subjects/slipstream/policy/slipstream-nurburgring.json')
 };
 const weights = {};
+/** Headless benchmarks: race this export on every track (instead of the deployed policy files), set before any seat loads. */
+export function useWeights(exp) { weights.main = Promise.resolve(exp); for (const k of Object.keys(TRACK_WEIGHTS)) weights[k] = weights.main; }
 const loadWeights = (trackId) => {
   const key = TRACK_WEIGHTS[trackId] ? trackId : 'main';
   return (weights[key] ??= (TRACK_WEIGHTS[trackId]?.() ?? import('../../subjects/slipstream/policy/slipstream.json')).then((m) => m.default ?? m));

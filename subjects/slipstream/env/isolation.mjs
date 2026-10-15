@@ -1,23 +1,38 @@
-// World isolation: world A's trajectory must be identical whether it runs alone or beside
-// other worlds (same track, real AI seats) in one process — no shared mutable track or AI state.
-import { World, ROW } from './world.mjs';
-const mk = (seed) => { let s = seed; return () => { s = (s + 0x6D2B79F5) >>> 0; let t = s; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; };
-const base = { learners: 2, classId: 'gt', lifetime: 900, latency: { min: 1, max: 6, longP: 0.03, longMin: 8, longMax: 30, dropP: 0.01 }, episode: { min: 60, max: 120 } };
-const A = { ...base, track: 'harbor-ring', ai: ['intercept', 'apex', 'razor'], seed: 5 };
-const others = [{ ...base, track: 'harbor-ring', ai: ['intercept', 'razor', 'apex'], seed: 9 }, { ...base, track: 'solenne', ai: ['apex', 'intercept'], seed: 3 }];
+// World isolation, through the worker's own world builder (env/build.mjs): a world's trajectory must not depend on
+//   1. what the other worlds in its process do (their actions: throttle vs braking),
+//   2. how the worlds are split over workers (4 worlds in one worker vs 2 + 2).
+// Both catch shared mutable state: track / AI state and, before per-world generators, one random stream per worker
+// (a neighbour's driving shifted the tested world's latency and reset draws within seconds).
+import { buildWorlds } from './build.mjs';
+import { ROW } from './world.mjs';
+
 const ticks = +(process.argv[2] ?? 1500);
-function run(withOthers) {
-  const ws = [new World(A, mk(1)), ...(withOthers ? others.map((c, i) => new World(c, mk(50 + i))) : [])];
+const base = { learners: 2, classId: 'gt', lifetime: 900, latency: { min: 1, max: 6, longP: 0.03, longMin: 8, longMax: 30, dropP: 0.01 },
+  episode: { min: 20, max: 40 }, starts: { standing: 0.2, grid: 0.3 } };
+const cfg = (worlds) => ({ worlds, seed: 3, tracks: ['harbor-ring'], world: { ...base, ai: ['intercept', 'apex', 'razor'] }, alt: { ...base, ai: [] } });
+
+/** Steps the worlds; `drive(i, k, j)` is world i's action j at tick k. Returns per-world traces sampled every 25 ticks. */
+function run(ws, drive) {
   const act = ws.map((w) => new Float32Array(w.agents.length * 2)), out = ws.map((w) => new Float32Array(w.agents.length * ROW));
-  const st = { ticks: 0, dist: 0, legal: 0, speed: 0, episodes: 0, terminal: 0, why: {}, lap() {} };
-  let r = 7; const rnd = () => ((r = (r * 1103515245 + 12345) >>> 0) / 2 ** 32);
-  const trace = [];
+  const st = { ticks: 0, dist: 0, legal: 0, speed: 0, episodes: 0, terminal: 0, why: {}, lap() {}, wrecks: [], lapEv: [], endEv: [] };
+  const trace = ws.map(() => []);
   for (let k = 0; k < ticks; k++) {
-    ws.forEach((w, i) => { for (let j = 0; j < act[i].length; j++) act[i][j] = i === 0 ? (j % 2 ? 0.3 + 0.5 * rnd() : (rnd() - 0.5) * 0.2) : Math.sin(k * 0.1 + j); });
+    ws.forEach((w, i) => { for (let j = 0; j < act[i].length; j++) act[i][j] = drive(i, k, j); });
     ws.forEach((w, i) => w.tick(act[i], out[i], 4, st));
-    if (k % 50 === 49) trace.push(ws[0].env.race.cars.map((c) => [c.x, c.z, c.speed, c.damage].join(',')).join(';') + '|' + Array.from(out[0]).join(','));
+    if (k % 25 === 24) ws.forEach((w, i) => trace[i].push(w.env.race.cars.map((c) => [c.x, c.z, c.speed, c.damage].join(',')).join(';') + '|' + Array.from(out[i]).join(',')));
   }
   return trace;
 }
-const a = run(false), b = run(true), first = a.findIndex((x, i) => x !== b[i]);
-console.log(JSON.stringify({ ticks, identical: first < 0, firstDiffTick: first < 0 ? null : (first + 1) * 50 }));
+const tested = (k, j) => (j % 2 ? 0.55 + 0.35 * Math.sin(k * 0.013 + j) : 0.15 * Math.sin(k * 0.021 + j));
+const diff = (a, b) => { const i = a.findIndex((x, n) => x !== b[n]); return i < 0 ? null : (i + 1) * 25; };
+
+// 1. neighbours throttle vs brake; world 0 drives the same
+const thr = run(buildWorlds(cfg(3), 0), (i, k, j) => (i === 0 ? tested(k, j) : j % 2 ? 0.9 : Math.sin(k * 0.05)));
+const brk = run(buildWorlds(cfg(3), 0), (i, k, j) => (i === 0 ? tested(k, j) : j % 2 ? -0.8 : -Math.sin(k * 0.03)));
+// 2. worlds 0..3 in one worker vs worker 0 (g 0, 1) + worker 1 (g 2, 3); world g drives tested(k, j + g)
+const one = run(buildWorlds(cfg(4), 0), (i, k, j) => tested(k, j + i));
+const split = [...run(buildWorlds(cfg(2), 0), (i, k, j) => tested(k, j + i)), ...run(buildWorlds(cfg(2), 1), (i, k, j) => tested(k, j + 2 + i))];
+const neighbours = diff(thr[0], brk[0]), splitDiff = one.map((t, g) => diff(t, split[g]));
+const ok = neighbours === null && splitDiff.every((d) => d === null);
+console.log(JSON.stringify({ ticks, ok, neighboursFirstDiffTick: neighbours, splitFirstDiffTick: splitDiff }));
+process.exit(ok ? 0 : 1);

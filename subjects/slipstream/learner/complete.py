@@ -10,8 +10,10 @@ stuck, DQ); the car is never reset mid-attempt. Same --seed = same starts, laten
 checkpoint, so checkpoints compare like for like.
 """
 import argparse
+import hashlib
 import json
 import os
+import subprocess
 import tempfile
 from collections import defaultdict
 
@@ -44,6 +46,8 @@ def main():
                     '(as the game seats SLIPSTREAM first), instead of shuffled slots')
     ap.add_argument('--grid', action='store_true', help='traffic test: start from the race grid (shuffled slots) with the AI '
                     'seats, standing, as a real race start; the attempt counts the same laps and failures')
+    ap.add_argument('--noise', default='', help='diagnostic: drive with Gaussian action noise of this std per action '
+                    '(steer,pedal), as training samples it (e.g. 0.06,0.10); empty = the deterministic mean action')
     a = ap.parse_args()
     tracks = a.tracks.split(',')
     latency = {'min': 1, 'max': 6, 'longP': 0.03, 'longMin': 8, 'longMax': 30} if a.latency == 'uniform' else \
@@ -100,10 +104,14 @@ def main():
             elif len(r['laps']) >= a.laps:
                 r['status'] = 'success'
 
+    noise = torch.tensor([float(v) for v in a.noise.split(',')]) if a.noise else None
+    gen = torch.Generator().manual_seed(a.seed)
     with torch.no_grad():
         while True:
             x = torch.from_numpy(norm(row[:, :obs_len(lay)])).to(dev)
             mu, _, h = net.step(x, h, torch.from_numpy(row[:, D + 3].copy()).to(dev), torch.from_numpy(row[:, D + 4].copy()).to(dev))
+            if noise is not None:
+                mu = mu + noise * torch.randn(mu.shape, generator=gen).to(dev)
             row = env.step(mu.cpu().numpy())
             tick += 1
             if tick % 60 == 0:
@@ -120,7 +128,14 @@ def main():
                     break
     env.close()
     os.remove(cfg_path)
-    out = {'ckpt': a.ckpt, 'seed': a.seed, 'latency': a.latency, 'ai': a.ai, 'grid': a.grid, 'pole': a.pole, 'attempts': a.attempts, 'laps': a.laps, 'sim_s': round(tick / 30), 'tracks': {}}
+    # Identity of what ran: checkpoint bytes, source revision, world random streams (2 = one generator per world).
+    with open(os.path.join(SUBJECT, a.ckpt), 'rb') as f:
+        sha = hashlib.sha256(f.read()).hexdigest()[:12]
+    try:
+        rev = subprocess.run(['git', 'rev-parse', '--short', 'HEAD'], cwd=SUBJECT, capture_output=True, text=True).stdout.strip()
+    except OSError:
+        rev = ''
+    out = {'ckpt': a.ckpt, 'ckpt_sha': sha, 'rev': rev, 'rngv': 2, 'noise': a.noise, 'seed': a.seed, 'latency': a.latency, 'ai': a.ai, 'grid': a.grid, 'pole': a.pole, 'attempts': a.attempts, 'laps': a.laps, 'sim_s': round(tick / 30), 'tracks': {}}
     for t in tracks:
         rs = [r for r in att if r['track'] == t]
         clean = [x for r in rs for x in r['laps'] if x]

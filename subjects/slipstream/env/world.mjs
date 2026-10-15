@@ -53,15 +53,23 @@ export class World {
     // charge both cars alike. Read them before the stewards consume them and keep, per car, the hardest contact this
     // tick in which it was the car behind (less race progress by over 2 m; closer than that is side by side).
     // rub: physics ticks this tick in which the car touched any car at all (reward.rub, side contact included).
+    // An impact is the onset of a pair's contact (no contact between them for the previous ONSET physics ticks): a
+    // sustained push is one impact plus rubbing, not a rear-end charge on every decision it lasts (which priced a 1 s
+    // push at 1 m/s like thirty impacts). reward.rearEveryTick restores the old per-decision charge.
     this.rear = new Float32Array(race.cars.length); this.rub = new Float32Array(race.cars.length);
-    const st = race.stewards;
+    const st = race.stewards, ONSET = 30, lastTouch = new Map(), everyTick = cfg.reward?.rearEveryTick;
+    let phys = 0;
     if (st) {
       const step = st.step.bind(st);
       st.step = (dt) => {
+        phys++;
         const hit = new Set();
         for (const [i, j] of st.pairs) { hit.add(i); hit.add(j); }
         for (const i of hit) this.rub[i]++;
         for (const [i, j, closing] of st.pairs) {
+          const key = i < j ? i * 64 + j : j * 64 + i, onset = phys - (lastTouch.get(key) ?? -1e9) > ONSET;
+          lastTouch.set(key, phys);
+          if (!onset && !everyTick) continue;
           const d = race.cars[i].race.progress - race.cars[j].race.progress;
           if (Math.abs(d) > 2) { const b = d < 0 ? i : j; this.rear[b] = Math.max(this.rear[b], closing); }
         }
@@ -312,24 +320,30 @@ export class World {
     const illegalFrac = a.illegalSubs / substeps, enters = a.offEnters; a.illegalSubs = 0; a.offEnters = 0;
     const legal = illegalFrac === 0;
     const dDmg = Math.max(0, c.damage - a.prevDmg); a.prevDmg = c.damage;
-    let reward = ds * (R.progress ?? 0.05) * (1 - illegalFrac) - illegalFrac * (R.offTick ?? 0.1) - enters * (R.offEnter ?? 1);
-    reward -= dDmg * (R.damage ?? 40);
+    // Reward ledger (stats.ledger): every term's contribution summed per term, so the worker stats show what the reward
+    // is made of (the reward itself is the plain sum; the ledger only records it).
+    const lg = (stats.ledger ??= {});
+    let reward = 0;
+    const add = (k, v) => { if (v) { reward += v; lg[k] = (lg[k] ?? 0) + v; } };
+    add('progress', ds * (R.progress ?? 0.05) * (1 - illegalFrac));
+    add('off', -illegalFrac * (R.offTick ?? 0.1) - enters * (R.offEnter ?? 1));
+    add('damage', -dDmg * (R.damage ?? 40));
     // Near-miss margin (reward.margin per second, default off): a dense cost that grows as the outermost wheel's legal
     // margin (the game's half-car-inside test, as observed) shrinks below marginM metres, so the policy learns where
     // the limit is before it crosses it. A rare crossing penalty alone is a sparse signal: cheap cuts kept winning.
     if (R.margin) {
       const M = R.marginM ?? 0.5, m = this.limit - (Math.abs(c.lateral) - (c.spec?.track ?? 1.72) / 2);
-      if (m < M) reward -= R.margin * dt * Math.min(1, 1 - m / M);
+      if (m < M) add('margin', -R.margin * dt * Math.min(1, 1 - m / M));
     }
     // Incident points as the game's stewards award them (off track 1x, loss of control / wall 2x, heavy contact 4x).
     const inc = this.env.race.stewards?.of(a.entry)?.inc ?? 0, dInc = Math.max(0, inc - a.inc); a.inc = inc;
-    reward -= dInc * (R.incident ?? 0.5);
+    add('incident', -dInc * (R.incident ?? 0.5));
     if (dInc) stats.incidents = (stats.incidents ?? 0) + dInc;
     // Fault-attributed traffic costs (default off). rearEnd: per m/s of closing speed in a contact where this car was
     // the one behind; being hit is not charged. ttc: a dense cost per second while closing on a car ahead in this car's
     // lane (lateral overlap) with under ttcS seconds to contact, growing as that time shrinks, so the policy learns to
     // lift, brake or change line before the contact the sparse costs only price afterwards.
-    if (R.rearEnd && this.rear[a.ci] > 0) { reward -= R.rearEnd * this.rear[a.ci]; stats.rearEnds = (stats.rearEnds ?? 0) + 1; }
+    if (R.rearEnd && this.rear[a.ci] > 0) { add('rearEnd', -R.rearEnd * this.rear[a.ci]); stats.rearEnds = (stats.rearEnds ?? 0) + 1; }
     if (R.ttc) {
       const T = R.ttcS ?? 1.0, w = (c.spec?.track ?? 1.72) + 0.3;
       let worst = 0;
@@ -340,12 +354,12 @@ export class World {
         const t = (gap - 4.6) / close; // 4.6 m: one car length, centre to centre
         if (t < T) worst = Math.max(worst, Math.min(1, 1 - t / T));
       }
-      if (worst > 0) { reward -= R.ttc * dt * worst; stats.ttc = (stats.ttc ?? 0) + dt; }
+      if (worst > 0) { add('ttc', -R.ttc * dt * worst); stats.ttc = (stats.ttc ?? 0) + dt; }
     }
     // rub: per second in contact with any car (closing speed and side irrelevant): leaning on cars to get past is not
     // free. clear: per second alongside a car (within 5 m along the lap) with the centre-to-centre lateral gap under
     // clearM, growing from 0 at clearM to 1 at a car's width, so passes are made with room (using the track's width).
-    if (R.rub && this.rub[a.ci] > 0) { const sec = this.rub[a.ci] * FIXED_DT; reward -= R.rub * sec; stats.rub = (stats.rub ?? 0) + sec; }
+    if (R.rub && this.rub[a.ci] > 0) { const sec = this.rub[a.ci] * FIXED_DT; add('rub', -R.rub * sec); stats.rub = (stats.rub ?? 0) + sec; }
     if (R.clear) {
       const W = 1.96, M = R.clearM ?? 2.6; // W: car width of the collision box (2 x 0.98 m, vehicle.js collisions)
       let worst = 0;
@@ -354,7 +368,7 @@ export class World {
         const gap = wrapPi(((r.s - c.s) / L) * TAU) * L / TAU, sep = Math.abs(r.lateral - c.lateral);
         if (Math.abs(gap) < 5 && sep < M) worst = Math.max(worst, Math.min(1, (M - sep) / (M - W)));
       }
-      if (worst > 0) { reward -= R.clear * dt * worst; stats.clear = (stats.clear ?? 0) + dt; }
+      if (worst > 0) { add('clear', -R.clear * dt * worst); stats.clear = (stats.clear ?? 0) + dt; }
     }
     // Pass challenge rewards (cfg.challenge). A pass is a rival that stays behind for passHold s; it pays reward.pass,
     // half of it scaled by how quickly the pass followed closing within 1 s (passT s for nothing extra), and nothing
@@ -378,15 +392,15 @@ export class World {
         if (o.pend && a.t - o.since >= HOLD) {
           if (o.pend === 'pass') {
             const took = o.since - (o.closeAt ?? o.since);
-            if (!o.dirty) reward += (R.pass ?? 0) * (0.5 + 0.5 * clamp(1 - took / T, 0, 1));
+            if (!o.dirty) add('pass', (R.pass ?? 0) * (0.5 + 0.5 * clamp(1 - took / T, 0, 1)));
             stats.passes = (stats.passes ?? 0) + 1;
             if (o.dirty) { stats.dirty = (stats.dirty ?? 0) + 1; (stats.dirtyWhy ??= {})[o.why] = (stats.dirtyWhy[o.why] ?? 0) + 1; }
-          } else { reward -= R.lost ?? R.pass ?? 0; stats.lostP = (stats.lostP ?? 0) + 1; }
+          } else { add('lost', -(R.lost ?? R.pass ?? 0)); stats.lostP = (stats.lostP ?? 0) + 1; }
           o.pend = null; o.closeAt = null; o.dirty = false;
         }
       }
-      if (stuck) { reward -= (R.stuck ?? 0) * dt; stats.stuckS = (stats.stuckS ?? 0) + dt; }
-      if (R.behind) reward -= R.behind * dt * a.opp.filter((o) => o.ahead).length;
+      if (stuck) { add('stuck', -(R.stuck ?? 0) * dt); stats.stuckS = (stats.stuckS ?? 0) + dt; }
+      if (R.behind) add('behind', -R.behind * dt * a.opp.filter((o) => o.ahead).length);
       if (this.cfg.challenge) a.cleared = a.opp.every((o) => !o.ahead && !o.pend);
     }
     a.dist += ds; if (legal) a.legalDist += ds;
@@ -415,7 +429,7 @@ export class World {
     else if (a.offFor > 2) { done = true; why = 'offtrack'; }
     else if (a.backFor > 1.5) { done = true; why = 'backwards'; }
     else if (a.slowFor > 4 && a.t > 6) { done = true; why = 'stuck'; }
-    if (done) reward -= R.terminal ?? 3;
+    if (done) add('terminal', -(R.terminal ?? 3));
     if (done && why !== 'dq') this.noteFailure(c.s);
     if (done) stats.endEv?.push([(stats.base ?? 0) + a.k, stats.tick ?? 0, why, Math.round(c.s)]);
     if (done && stats.wrecks && stats.wrecks.length < 64) stats.wrecks.push([this.track.id, Math.round(c.s), why, +c.speed.toFixed(1), +c.lateral.toFixed(1)]);

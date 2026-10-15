@@ -5,23 +5,12 @@
 //   stdout -> Float32 [agents x ROW]     obs | reward, done, truncated, first, decide
 // Stats: one JSON line on stderr every `statsEvery` ticks.
 import { readFileSync, writeFileSync } from 'node:fs';
-import { World, OBS, ROW, EGO_F, ROAD_K, ROAD_F, RIVAL_N, RIVAL_F } from './world.mjs';
+import { OBS, ROW, EGO_F, ROAD_K, ROAD_F, RIVAL_N, RIVAL_F } from './world.mjs';
+import { buildWorlds } from './build.mjs';
 
 const cfg = JSON.parse(readFileSync(process.argv[2], 'utf8'));
 const index = +process.argv[3] || 0;
-let seed = (cfg.seed ?? 1) * 7919 + index * 104729;
-const rng = () => { seed = (seed + 0x6D2B79F5) >>> 0; let t = seed; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
-
-// World list: explicit, or drawn round-robin from the track / weather pools.
-const worlds = [];
-const tracks = cfg.tracks ?? ['harbor-ring'], weathers = cfg.weathers ?? ['clear'];
-// alt: world overrides for every other pass over the track pool (so each track gets both kinds), e.g. solo worlds
-// beside traffic worlds.
-for (let w = 0; w < cfg.worlds; w++) {
-  const g = index * cfg.worlds + w;
-  const alt = cfg.alt && Math.floor(g / tracks.length) % 2 === 1 ? cfg.alt : {};
-  worlds.push(new World({ ...cfg.world, ...alt, track: tracks[g % tracks.length], weather: weathers[Math.floor(g / tracks.length) % weathers.length], seed: 1000 + g * 31 + (cfg.seed ?? 1) }, rng));
-}
+const worlds = buildWorlds(cfg, index);
 const offsets = []; let agents = 0;
 for (const w of worlds) { offsets.push(agents); agents += w.agents.length; }
 const actions = new Float32Array(agents * 2), out = new Float32Array(agents * ROW), outBuf = Buffer.from(out.buffer);
@@ -44,7 +33,7 @@ function step() {
   if (++tick % (cfg.statsEvery ?? 600) === 0) {
     const now = performance.now(), wall = (now - tStats) / 1000;
     process.stderr.write(JSON.stringify({ w: index, tick, sps: Math.round(st.ticks / wall), busy: +(busy / (now - tStats)).toFixed(3),
-      speed: +(st.speed / Math.max(1, st.ticks)).toFixed(2), legal: +(st.legal / Math.max(1, st.ticks)).toFixed(4), eps: st.episodes, term: st.terminal, inc: st.incidents ?? 0, rear: st.rearEnds ?? 0, ttc: +(st.ttc ?? 0).toFixed(2), rub: +(st.rub ?? 0).toFixed(2), clear: +(st.clear ?? 0).toFixed(2), passes: st.passes ?? 0, dirty: st.dirty ?? 0, lostP: st.lostP ?? 0, stuckS: +(st.stuckS ?? 0).toFixed(1), why: st.why, laps: st.laps, wrecks: st.wrecks, lapEv: st.lapEv, endEv: st.endEv }) + '\n');
+      speed: +(st.speed / Math.max(1, st.ticks)).toFixed(2), legal: +(st.legal / Math.max(1, st.ticks)).toFixed(4), eps: st.episodes, term: st.terminal, inc: st.incidents ?? 0, rear: st.rearEnds ?? 0, ttc: +(st.ttc ?? 0).toFixed(2), rub: +(st.rub ?? 0).toFixed(2), clear: +(st.clear ?? 0).toFixed(2), passes: st.passes ?? 0, dirty: st.dirty ?? 0, lostP: st.lostP ?? 0, stuckS: +(st.stuckS ?? 0).toFixed(1), ticks: st.ticks, ledger: Object.fromEntries(Object.entries(st.ledger ?? {}).map(([k, v]) => [k, +v.toFixed(3)])), why: st.why, laps: st.laps, wrecks: st.wrecks, lapEv: st.lapEv, endEv: st.endEv }) + '\n');
     st = stats(); busy = 0; tStats = now;
   }
 }

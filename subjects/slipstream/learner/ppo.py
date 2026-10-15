@@ -145,6 +145,9 @@ def main():
                     '(the combat head restarts near zero as a correction to the pace expert); empty keeps the checkpoint mode')
     ap.add_argument('--anchor', type=float, default=0.0, help='MoE: weight of the squared distance of the action mean from '
                     'the pace expert, on every decision row (deviating from the specialist must earn its reward)')
+    ap.add_argument('--noise-gate', type=float, default=-1.0, help='MoE: exploration std scaled by s0 + (1 - s0) * g per '
+                    'decision (s0 = this value, -1 = off), so the frozen pace expert is not driven with noise where the '
+                    'router leaves it in charge; rollout log-probs and the update use the same per-row std')
     ap.add_argument('--snap-min', type=float, default=10, help='write snap-<min>.pt (and snap-<min>-ema.pt) every this many minutes; 0 = off')
     a = ap.parse_args()
     assert re.fullmatch(r'[a-z0-9-]+', a.name, re.I), 'run name'
@@ -179,6 +182,8 @@ def main():
     # above the floor (a hard max(log_std, log floor) froze log_std wherever it sat below the floor, as in tt-c2).
     floor = torch.tensor([float(x) for x in a.std_min.split(',')], device=dev) if a.std_min else None
     log_std = (lambda: torch.log(floor + net.log_std.exp())) if floor is not None else (lambda: net.log_std)
+    ngate = moe and a.noise_gate >= 0
+    nscale = lambda g: a.noise_gate + (1 - a.noise_gate) * g
     opt = torch.optim.Adam([p for p in net.parameters() if p.requires_grad], lr=a.lr, eps=1e-5)
     seq = net.sequence if a.no_graphs or dev.type != 'cuda' else GraphedSequence(net)
     norm, ret_rms = RunningNorm(D, binary_columns(lay)), RunningNorm(())
@@ -285,9 +290,10 @@ def main():
                 if t == T:
                     break  # bootstrap value only: the next rollout processes this row from h
                 h = h_next
-                std = log_std().exp()
+                lsr = log_std() + (nscale(g_).unsqueeze(1).log() if ngate else 0)
+                std = lsr.exp()
                 act = mu + std * torch.randn_like(mu)
-                logp_b[t] = (-((act - mu) ** 2) / (2 * std ** 2) - log_std() - 0.5 * math.log(2 * math.pi)).sum(1).cpu().numpy()
+                logp_b[t] = (-((act - mu) ** 2) / (2 * std ** 2) - lsr - 0.5 * math.log(2 * math.pi)).sum(1).cpu().numpy()
                 act_b[t] = act.cpu().numpy()
                 te = time.time()
                 row = env.step(act_b[t])
@@ -331,6 +337,7 @@ def main():
         asd = (((ADV - am) ** 2 * M).sum() / mv).sqrt()
         ADV = (ADV - am) / (asd + 1e-8)
         kls, clips, vls, pls, bcs, gns, dls, gls, devs = [], [], [], [], [], [], [], [], []
+        cacc = {'tr': torch.zeros(3, device=dev), 'solo': torch.zeros(3, device=dev)}
         nf = torch_norm(norm, dev) if teacher else None
         bc_w = a.bc * (1 - (1 - a.bc_end) * min(1.0, (time.time() - t_start) / 60 / a.minutes)) if a.minutes else a.bc
         stop = False
@@ -343,7 +350,8 @@ def main():
                 res = sq(X[:, mb], H0[mb], F[:, mb], DEC[:, mb])
                 mu, v = res[0], res[1]
                 ls = log_std()
-                lp = (-((A[:, mb] - mu) ** 2) / (2 * ls.exp() ** 2) - ls - 0.5 * math.log(2 * math.pi)).sum(2)
+                lsr = ls + nscale(res[2]).unsqueeze(2).log() if ngate else ls  # entropy bonus stays on ls: no push on the router
+                lp = (-((A[:, mb] - mu) ** 2) / (2 * lsr.exp() ** 2) - lsr - 0.5 * math.log(2 * math.pi)).sum(2)
                 ratio = (lp - LP[:, mb]).exp()
                 m = M[:, mb]
                 n = m.sum().clamp(min=1)
@@ -358,11 +366,15 @@ def main():
                     if gp_w:
                         gc = g.clamp(1e-4, 1 - 1e-4)
                         gl = gl + gp_w * (-((1 - SOLO[:, mb]) * gc.log() + SOLO[:, mb] * (1 - gc).log()) * m).sum() / n
+                    dev2 = (res[3] ** 2).sum(2)
                     if a.anchor:
-                        gl = gl + a.anchor * (res[3] * m).sum() / n
+                        gl = gl + a.anchor * (dev2 * m).sum() / n
                     loss = loss + gl
                     gls.append(gl.item())
-                    devs.append(((res[3] * m).sum() / n).item())
+                    devs.append(((dev2 * m).sum() / n).item())
+                    with torch.no_grad():  # correction strength per action, traffic vs solo rows: [sum d^2 steer, pedal, rows]
+                        for key, w in (('tr', m * (1 - SOLO[:, mb])), ('solo', m * SOLO[:, mb])):
+                            cacc[key] += torch.cat([((res[3] ** 2) * w.unsqueeze(2)).sum((0, 1)), w.sum().view(1)])
                 if dist and not warm:
                     dm = M[:, mb] * DMASK[mb]
                     dl = (((mu - DT[:, mb]) ** 2).sum(2) * dm).sum() / dm.sum().clamp(min=1)
@@ -414,6 +426,9 @@ def main():
                 agg[k].append(s.get(k, 0))
             for w, c in s['why'].items():
                 agg['why:' + w].append(c)
+            agg['ticks'].append(s.get('ticks', 0) or 0)
+            for k, v in (s.get('ledger') or {}).items():
+                agg['led:' + k].append(v)
             for trk, laps in s['laps'].items():
                 agg['lap:' + trk] += laps
         steps = (it + 1 - it0) * T * N
@@ -424,10 +439,15 @@ def main():
                **({'gate_tr': round(float(gate_b[traffic & (valid > 0)].mean()) if (traffic & (valid > 0)).any() else 0.0, 3),
                    'gate_solo': round(float(gate_b[~traffic & (valid > 0)].mean()) if (~traffic & (valid > 0)).any() else 0.0, 3),
                    'traffic': round(float(traffic[valid > 0].mean()), 3), 'gl': round(float(np.mean(gls)), 4) if gls else 0.0,
-                   'dev': round(float(np.mean(devs)), 5) if devs else 0.0} if moe else {}),
+                   'dev': round(float(np.mean(devs)), 5) if devs else 0.0,
+                   # RMS correction applied on top of the pace expert [steer, pedal], in traffic and solo
+                   **{f'corr_{k}': [round(float(x), 4) for x in (c[:2] / c[2].clamp(min=1)).sqrt().tolist()] for k, c in cacc.items()}} if moe else {}),
                'kl': round(float(np.mean(kls)), 4), 'clip': round(float(np.mean(clips)), 3), 'vl': round(float(np.mean(vls)), 3),
                'std': [round(x, 3) for x in log_std().exp().tolist()], 'stopped': stop, 'warm': warm, 'decide': round(float(dec[:T].mean()), 3)}
         if it % 10 == 9:
+            dn = max(1.0, float(sum(agg.pop('ticks', []))))
+            # reward ledger: each term's summed contribution per 1000 agent decisions (raw reward units, before scaling)
+            rec['ledger'] = {k[4:]: round(1000 * sum(agg.pop(k)) / dn, 3) for k in [k for k in agg if k.startswith('led:')]}
             for k, v in list(agg.items()):
                 if k.startswith('lap:'):
                     rec[k] = {'n': len(v), 'best': round(min(v), 3), 'med': round(float(np.median(v)), 3)} if v else None

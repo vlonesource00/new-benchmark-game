@@ -143,8 +143,8 @@ class SlipstreamMoE(nn.Module):
         return (*out, g) if with_gate else out
 
     def sequence(self, x, h0, first, decide=None):
-        """Returns (mu, v, g, dev): the router output g [T,B] is trained by the PPO loss through mu and regularised there;
-        dev [T,B] is the squared distance of the action mean from the pace expert's (the anchor cost's input)."""
+        """Returns (mu, v, g, d): the router output g [T,B] is trained by the PPO loss through mu and regularised there;
+        d [T,B,2] is the action mean minus the pace expert's (the correction actually applied; the anchor cost's input)."""
         T, B = x.shape[:2]
         with torch.no_grad():
             mb, _ = self.base.sequence(self.base_view(x.reshape(T * B, -1)).reshape(T, B, -1), h0[:, :self.eh], first, decide)
@@ -157,7 +157,7 @@ class SlipstreamMoE(nn.Module):
             hs.append(h)
         zc = torch.cat([torch.stack(hs), f], 2)
         mu, g = self.mix(mb, self.cmb.pi(zc), zc)
-        return mu, self.cmb.v(zc).squeeze(2), g, ((mu - mb) ** 2).sum(2)
+        return mu, self.cmb.v(zc).squeeze(2), g, mu - mb
 
 
 def build_net(ck_or_layout, hidden=256):
