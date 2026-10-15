@@ -377,7 +377,8 @@ export class World {
     // Pass challenge rewards (cfg.challenge). A pass is a rival that stays behind for passHold s; it pays reward.pass,
     // half of it scaled by how quickly the pass followed closing within 1 s (passT s for nothing extra), and nothing
     // when this car touched any car, broke track limits or drew incident points from closing until the pass held.
-    // Being passed costs reward.lost (>= pass, so giving a place back to retake it never pays). stuck: per second
+    // Being passed costs reward.lost (>= pass, so giving a place back to retake it never pays; with passDirty > 0 a
+    // dirty pass pays less than that, so the same holds). stuck: per second
     // within 1 s behind a rival; behind: per second per rival still ahead at any distance (the clock of the
     // challenge, so following out of the 1 s window does not escape it). Every rival passed ends the episode.
     if (a.opp) {
@@ -396,7 +397,10 @@ export class World {
         if (o.pend && a.t - o.since >= HOLD) {
           if (o.pend === 'pass') {
             const took = o.since - (o.closeAt ?? o.since);
-            if (!o.dirty) add('pass', (R.pass ?? 0) * (0.5 + 0.5 * clamp(1 - took / T, 0, 1)));
+            // passDirty: the share still paid when the pass was dirty (its contact, offs and incidents are priced by their
+            // own terms; 0 = a dirty pass pays nothing, which with ~70% of passes touching left passing rarely paid).
+            const pay = (R.pass ?? 0) * (0.5 + 0.5 * clamp(1 - took / T, 0, 1));
+            add('pass', o.dirty ? pay * (R.passDirty ?? 0) : pay);
             stats.passes = (stats.passes ?? 0) + 1;
             if (o.dirty) { stats.dirty = (stats.dirty ?? 0) + 1; (stats.dirtyWhy ??= {})[o.why] = (stats.dirtyWhy[o.why] ?? 0) + 1; }
           } else { add('lost', -(R.lost ?? R.pass ?? 0)); stats.lostP = (stats.lostP ?? 0) + 1; }
