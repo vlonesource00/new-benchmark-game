@@ -239,7 +239,7 @@ def main():
     if switched:  # new head: its old Adam moments and a resumed weight average no longer apply
         net.make_residual()
         opt = torch.optim.Adam([p for p in net.parameters() if p.requires_grad], lr=a.lr, eps=1e-5)
-    pres_cols = binary_columns(lay)
+    pres_cols = binary_columns(lay)[:lay['rivalN']]  # presence flags only (v3 appends its race-context columns)
     gap_cols = pres_cols + 7  # rival feature 7: along-track gap / 100 m (env/observe.mjs)
     # Weight average. Single checkpoints of the deterministic policy swing between 0/10 and 10/10 per track
     # (tt-b2 at 90/120/150 min: 7, 9, 35 of 50 completions), so the evaluated and deployed policy is a slow average
