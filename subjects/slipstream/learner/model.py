@@ -78,7 +78,10 @@ class SlipstreamMoE(nn.Module):
     whose value head is the critic. The router reads the combat expert's policy input (memory + ego/road/rival-attention
     features) and outputs g in [0, 1]; the action mean is (1 - g) * base + g * cmb. Inputs arrive normalised by the
     training normaliser (frozen for MoE runs); the base expert's view is re-normalised from them with its own statistics.
-    Memory is the two GRU states side by side: h = [h_base, h_cmb]."""
+    Memory is the two GRU states side by side: h = [h_base, h_cmb].
+    Residual mode (buffer `residual`): the action mean is base + g * cmb, so the combat expert's head is a correction
+    to the pace expert's driving, not a replacement for it; with that head at zero the network drives exactly as the
+    specialist (tt-moe3: replacing the specialist in traffic traded contact for offs)."""
 
     def __init__(self, layout, hidden=256, gate_bias=-2.0):
         super().__init__()
@@ -93,11 +96,23 @@ class SlipstreamMoE(nn.Module):
         for k in ('t_mean', 't_std', 'b_mean', 'b_std'):
             self.register_buffer(k, torch.zeros(D) if 'mean' in k else torch.ones(D))
         self.register_buffer('skip', torch.zeros(D, dtype=torch.bool))
+        self.register_buffer('residual', torch.zeros((), dtype=torch.bool))
         self.hidden, self.eh = 2 * hidden, hidden
 
     @property
     def v(self):
         return self.cmb.v
+
+    def load_state_dict(self, sd, strict=True, **kw):
+        if 'residual' not in sd:  # checkpoints from before residual mode are blends
+            sd = {**sd, 'residual': torch.zeros((), dtype=torch.bool)}
+        return super().load_state_dict(sd, strict=strict, **kw)
+
+    def make_residual(self):
+        """Switch to residual mode: the combat head restarts near zero (a correction to learn), trunk and router kept."""
+        self.residual.fill_(True)
+        nn.init.orthogonal_(self.cmb.pi[-1].weight, 0.01)
+        nn.init.zeros_(self.cmb.pi[-1].bias)
 
     def set_norms(self, train, base, skip):
         """train/base: (mean, std) arrays of the training and base normalisers; skip: raw (unnormalised) columns."""
@@ -113,7 +128,8 @@ class SlipstreamMoE(nn.Module):
 
     def mix(self, mb, mc, zc):
         g = torch.sigmoid(self.gate(zc))
-        return (1 - g) * mb + g * mc, g.squeeze(-1)
+        # torch.where, not a Python branch on the buffer: no host sync, so CUDA-graph capture stays legal
+        return torch.where(self.residual, mb + g * mc, (1 - g) * mb + g * mc), g.squeeze(-1)
 
     def step(self, x, h, first, decide=None, with_gate=False):
         hb, hc = h[:, :self.eh], h[:, self.eh:]
@@ -127,7 +143,8 @@ class SlipstreamMoE(nn.Module):
         return (*out, g) if with_gate else out
 
     def sequence(self, x, h0, first, decide=None):
-        """Returns (mu, v, g): the router output g [T,B] is trained by the PPO loss through mu and regularised there."""
+        """Returns (mu, v, g, dev): the router output g [T,B] is trained by the PPO loss through mu and regularised there;
+        dev [T,B] is the squared distance of the action mean from the pace expert's (the anchor cost's input)."""
         T, B = x.shape[:2]
         with torch.no_grad():
             mb, _ = self.base.sequence(self.base_view(x.reshape(T * B, -1)).reshape(T, B, -1), h0[:, :self.eh], first, decide)
@@ -140,7 +157,7 @@ class SlipstreamMoE(nn.Module):
             hs.append(h)
         zc = torch.cat([torch.stack(hs), f], 2)
         mu, g = self.mix(mb, self.cmb.pi(zc), zc)
-        return mu, self.cmb.v(zc).squeeze(2), g
+        return mu, self.cmb.v(zc).squeeze(2), g, ((mu - mb) ** 2).sum(2)
 
 
 def build_net(ck_or_layout, hidden=256):

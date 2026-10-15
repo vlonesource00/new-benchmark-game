@@ -89,10 +89,11 @@ export class Policy {
 }
 
 /** Mixture of experts (learner/model.py SlipstreamMoE): a frozen pace expert and a combat expert, each with its own
- * normaliser and memory, and a router reading the combat expert's policy input: mean = (1 - g) * base + g * cmb. */
+ * normaliser and memory, and a router reading the combat expert's policy input: mean = (1 - g) * base + g * cmb, or in
+ * residual mode base + g * cmb (the combat head is a correction to the pace expert's driving). */
 export class MoEPolicy {
   constructor(exp) {
-    this.base = new Policy(exp.base); this.cmb = new Policy(exp.cmb);
+    this.base = new Policy(exp.base); this.cmb = new Policy(exp.cmb); this.residual = Boolean(exp.residual);
     this.g = {}; for (const [k, v] of Object.entries(exp.gate)) this.g[k] = decode(v);
     this.g1 = new Float32Array(this.g['0.weight'].shape[0]); this.g2 = new Float32Array(1); this.gate = 0;
   }
@@ -103,8 +104,8 @@ export class MoEPolicy {
     const [bs, bp] = this.base.act(raw, first, decide), [cs, cp] = this.cmb.act(raw, first, decide);
     linear(this.g['0.weight'], this.g['0.bias'], this.cmb.buf.z, this.g1, true);
     linear(this.g['2.weight'], this.g['2.bias'], this.g1, this.g2);
-    const g = this.gate = sig(this.g2[0]);
-    return [(1 - g) * bs + g * cs, (1 - g) * bp + g * cp];
+    const g = this.gate = sig(this.g2[0]), k = this.residual ? 1 : 1 - g;
+    return [k * bs + g * cs, k * bp + g * cp];
   }
 }
 

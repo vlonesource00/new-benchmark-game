@@ -13,7 +13,7 @@ const BENCH = /^(duel\d+)\s+(\S+)\s+(.*)$/;
 const source = (m) => {
   if (m === 'spec') return { run: 'tt-sn4', snap: 20, note: 'deployed Nürburgring specialist' };
   if (m.startsWith('hyb')) return { run: null, snap: null, note: 'specialist + combat net switched on traffic (scripted)' };
-  const x = /^([a-z]+\d+)(?:-(\d+))?$/.exec(m);
+  const x = /^([a-z]+\d+[a-z]?)(?:-(\d+))?$/.exec(m); // e.g. moe2-10, moe4a-20 (A/B arms)
   return x ? { run: 'tt-' + x[1], snap: x[2] ? +x[2] : null, note: '' } : { run: null, snap: null, note: '' };
 };
 const seen = new Set(existsSync(OUT) ? readFileSync(OUT, 'utf8').split('\n').filter(Boolean).map((l) => { const r = JSON.parse(l); return r.key; }) : []);

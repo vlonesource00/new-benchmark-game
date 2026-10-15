@@ -141,6 +141,10 @@ def main():
     ap.add_argument('--gate-prior', type=float, default=0.0, help='MoE: weight of a cross-entropy pull of the router to the '
                     'traffic window (1 with a rival 60 m ahead to 20 m behind, else 0), so it routes before PPO can value routing')
     ap.add_argument('--gate-prior-end', type=float, default=0.1, help='router prior weight at the end of --minutes, as a fraction (linear)')
+    ap.add_argument('--moe-mode', default='', choices=['', 'residual'], help='MoE: residual = action base + g * combat '
+                    '(the combat head restarts near zero as a correction to the pace expert); empty keeps the checkpoint mode')
+    ap.add_argument('--anchor', type=float, default=0.0, help='MoE: weight of the squared distance of the action mean from '
+                    'the pace expert, on every decision row (deviating from the specialist must earn its reward)')
     ap.add_argument('--snap-min', type=float, default=10, help='write snap-<min>.pt (and snap-<min>-ema.pt) every this many minutes; 0 = off')
     a = ap.parse_args()
     assert re.fullmatch(r'[a-z0-9-]+', a.name, re.I), 'run name'
@@ -197,13 +201,17 @@ def main():
         bn = RunningNorm(D, binary_columns(lay))
         bn.load(bk['norm'])
         net.set_norms((norm.mean, np.sqrt(norm.var + 1e-8)), (bn.mean, np.sqrt(bn.var + 1e-8)), binary_columns(lay))
+    switched = moe and a.moe_mode == 'residual' and not bool(net.residual)
+    if switched:  # new head: its old Adam moments and a resumed weight average no longer apply
+        net.make_residual()
+        opt = torch.optim.Adam([p for p in net.parameters() if p.requires_grad], lr=a.lr, eps=1e-5)
     pres_cols = binary_columns(lay)
     gap_cols = pres_cols + 7  # rival feature 7: along-track gap / 100 m (env/observe.mjs)
     # Weight average. Single checkpoints of the deterministic policy swing between 0/10 and 10/10 per track
     # (tt-b2 at 90/120/150 min: 7, 9, 35 of 50 completions), so the evaluated and deployed policy is a slow average
     # of the trained weights instead of whichever weights the run stopped on.
     ema = {k: v.detach().clone() for k, v in net.state_dict().items()}
-    if a.resume and 'ema' in ck:
+    if a.resume and 'ema' in ck and not switched:
         ema = {k: v.to(dev) for k, v in ck['ema'].items()}
     ema_decay = 0.5 ** (1 / a.ema_half) if a.ema_half > 0 else 0.0
     secs = json.load(open(os.path.join(SUBJECT, a.bc_sections)))['sections'] if a.bc_sections else None
@@ -322,7 +330,7 @@ def main():
         am = (ADV * M).sum() / mv
         asd = (((ADV - am) ** 2 * M).sum() / mv).sqrt()
         ADV = (ADV - am) / (asd + 1e-8)
-        kls, clips, vls, pls, bcs, gns, dls, gls = [], [], [], [], [], [], [], []
+        kls, clips, vls, pls, bcs, gns, dls, gls, devs = [], [], [], [], [], [], [], [], []
         nf = torch_norm(norm, dev) if teacher else None
         bc_w = a.bc * (1 - (1 - a.bc_end) * min(1.0, (time.time() - t_start) / 60 / a.minutes)) if a.minutes else a.bc
         stop = False
@@ -350,8 +358,11 @@ def main():
                     if gp_w:
                         gc = g.clamp(1e-4, 1 - 1e-4)
                         gl = gl + gp_w * (-((1 - SOLO[:, mb]) * gc.log() + SOLO[:, mb] * (1 - gc).log()) * m).sum() / n
+                    if a.anchor:
+                        gl = gl + a.anchor * (res[3] * m).sum() / n
                     loss = loss + gl
                     gls.append(gl.item())
+                    devs.append(((res[3] * m).sum() / n).item())
                 if dist and not warm:
                     dm = M[:, mb] * DMASK[mb]
                     dl = (((mu - DT[:, mb]) ** 2).sum(2) * dm).sum() / dm.sum().clamp(min=1)
@@ -412,7 +423,8 @@ def main():
                **({'dist': round(float(np.mean(dls)), 4)} if dls else {}),
                **({'gate_tr': round(float(gate_b[traffic & (valid > 0)].mean()) if (traffic & (valid > 0)).any() else 0.0, 3),
                    'gate_solo': round(float(gate_b[~traffic & (valid > 0)].mean()) if (~traffic & (valid > 0)).any() else 0.0, 3),
-                   'traffic': round(float(traffic[valid > 0].mean()), 3), 'gl': round(float(np.mean(gls)), 4) if gls else 0.0} if moe else {}),
+                   'traffic': round(float(traffic[valid > 0].mean()), 3), 'gl': round(float(np.mean(gls)), 4) if gls else 0.0,
+                   'dev': round(float(np.mean(devs)), 5) if devs else 0.0} if moe else {}),
                'kl': round(float(np.mean(kls)), 4), 'clip': round(float(np.mean(clips)), 3), 'vl': round(float(np.mean(vls)), 3),
                'std': [round(x, 3) for x in log_std().exp().tolist()], 'stopped': stop, 'warm': warm, 'decide': round(float(dec[:T].mean()), 3)}
         if it % 10 == 9:
