@@ -31,9 +31,18 @@ ROOT = os.path.dirname(os.path.dirname(SUBJECT))
 
 
 def opt_names(layout, ck):
-    """Names of the parameters Adam holds for a checkpoint's network, in order (trainable ones only)."""
+    """Names of the parameters Adam holds for a checkpoint's network, in order (trainable ones it has: a checkpoint
+    from before a head was added holds no state for it)."""
     net = SlipstreamMoE(layout) if 'moe' in ck else Slipstream(layout)
-    return [n for n, p in net.named_parameters() if p.requires_grad]
+    return [n for n, p in net.named_parameters() if p.requires_grad and n in ck['model']]
+
+
+def remap_opt(sd, old, new):
+    """Adam state dict over parameter names `old` -> over `new` (one group): moments follow their parameter by name;
+    parameters new to the network start without state."""
+    idx = {n: i for i, n in enumerate(old)}
+    state = {j: sd['state'][idx[n]] for j, n in enumerate(new) if n in idx and idx[n] in sd['state']}
+    return {'state': state, 'param_groups': [{**sd['param_groups'][0], 'params': list(range(len(new)))}]}
 
 
 def binary_columns(layout):
@@ -158,6 +167,10 @@ def main():
     ap.add_argument('--noise-gate', type=float, default=-1.0, help='MoE: exploration std scaled by s0 + (1 - s0) * g per '
                     'decision (s0 = this value, -1 = off), so the frozen pace expert is not driven with noise where the '
                     'router leaves it in charge; rollout log-probs and the update use the same per-row std')
+    ap.add_argument('--risk-head', action='store_true', help='two critics: task (progress, passes, places) and risk '
+                    '(the safety-cost part of the env row: offs, contact, damage, margins, crashes); each its own GAE')
+    ap.add_argument('--risk-w', type=float, default=1.0, help='with --risk-head: weight of the risk advantage in the '
+                    'policy advantage (1 = the plain total reward)')
     ap.add_argument('--snap-min', type=float, default=10, help='write snap-<min>.pt (and snap-<min>-ema.pt) every this many minutes; 0 = off')
     a = ap.parse_args()
     assert re.fullmatch(r'[a-z0-9-]+', a.name, re.I), 'run name'
@@ -203,7 +216,8 @@ def main():
         norm.load(ck['norm'])
     elif a.resume:
         net.load_state_dict(ck['model'])
-        opt.load_state_dict(ck['opt'])
+        old, new = opt_names(lay, ck), [n for n, p in net.named_parameters() if p.requires_grad]
+        opt.load_state_dict(ck['opt'] if old == new else remap_opt(ck['opt'], old, new))
         for g in opt.param_groups:  # the saved optimizer state carries the parent's lr; --lr wins
             g['lr'] = a.lr
         norm.load(ck['norm'])
@@ -218,6 +232,9 @@ def main():
         bn = RunningNorm(D, binary_columns(lay))
         bn.load(bk['norm'])
         net.set_norms((norm.mean, np.sqrt(norm.var + 1e-8)), (bn.mean, np.sqrt(bn.var + 1e-8)), binary_columns(lay))
+    vnet = net.cmb if moe else net
+    vnet.split_v = a.risk_head  # value [task, risk]: two critics over the env row's reward split, summed for the policy
+    K = 2 if a.risk_head else 1
     switched = moe and a.moe_mode == 'residual' and not bool(net.residual)
     if switched:  # new head: its old Adam moments and a resumed weight average no longer apply
         net.make_residual()
@@ -230,6 +247,7 @@ def main():
     ema = {k: v.detach().clone() for k, v in net.state_dict().items()}
     if a.resume and 'ema' in ck and not switched:
         ema = {k: v.to(dev) for k, v in ck['ema'].items()}
+        ema = {k: ema.get(k, v.detach().clone()) for k, v in net.state_dict().items()}  # heads added since: start at the net's
     ema_decay = 0.5 ** (1 / a.ema_half) if a.ema_half > 0 else 0.0
     secs = json.load(open(os.path.join(SUBJECT, a.bc_sections)))['sections'] if a.bc_sections else None
     teacher = TeacherData(a.teacher.split(','), D, dev, secs) if a.teacher and a.bc > 0 else None
@@ -274,7 +292,8 @@ def main():
         flg_b = np.zeros((T + 1, N, 5), np.float32)
         act_b = np.zeros((T, N, 2), np.float32)
         logp_b = np.zeros((T, N), np.float32)
-        val_b = np.zeros((T + 1, N), np.float32)
+        val_b = np.zeros((T + 1, N, K), np.float32)
+        risk_b = np.zeros((T + 1, N), np.float32)
         gate_b = np.zeros((T, N), np.float32)
         h0 = h.clone()
         DT = torch.zeros(T, N, 2, device=dev) if dist else None
@@ -283,6 +302,8 @@ def main():
             for t in range(T + 1):
                 raw_b[t] = row[:, :D]
                 flg_b[t] = row[:, E:E + 5]
+                if env.row > E + 5:
+                    risk_b[t] = row[:, E + 5]
                 obs_b[t] = norm(row[:, :D])
                 x = torch.from_numpy(obs_b[t]).to(dev)
                 first = torch.from_numpy(flg_b[t, :, 3]).to(dev)
@@ -298,7 +319,7 @@ def main():
                     for d in dist:
                         tmu, _, d['h'] = collect_step(d['net'], torch.from_numpy(d['norm'](raw_b[t])).to(dev), d['h'], first, decf)
                         DT[t, d['mask']] = tmu[d['mask']]
-                val_b[t] = v.cpu().numpy()
+                val_b[t] = v.reshape(N, K).cpu().numpy()
                 if t == T:
                     break  # bootstrap value only: the next rollout processes this row from h
                 h = h_next
@@ -326,8 +347,17 @@ def main():
             ret_acc = ret_acc * a.gamma * (1 - ended_next[t]) + rew[t]
             ret_rms.update(ret_acc.reshape(-1, 1).squeeze(1)) if t % 8 == 0 else None
         rs = rew / math.sqrt(ret_rms.var + 1e-8)
-        adv = semi_gae(rs, val_b, done, ended_next, dec, a.gamma, a.lam)
-        tgt = adv + val_b[:T]
+        if a.risk_head:  # GAE is linear in rewards and values: the two critics' advantages sum to the total's
+            rr = risk_b[1:] / math.sqrt(ret_rms.var + 1e-8)
+            advs = [semi_gae(r_, val_b[..., k], done, ended_next, dec, a.gamma, a.lam) for k, r_ in enumerate((rs - rr, rr))]
+            adv = advs[0] + a.risk_w * advs[1]
+            tgt = np.stack(advs, 2) + val_b[:T]
+        else:
+            adv = semi_gae(rs, val_b[..., 0], done, ended_next, dec, a.gamma, a.lam)
+            tgt = (adv + val_b[:T, :, 0])[..., None]
+        # explained variance of each critic on its targets (live rows): how much of the return the value predicts
+        lv = live.astype(bool)
+        ev = [round(float(1 - np.var(tgt[..., k][lv] - val_b[:T, :, k][lv]) / max(np.var(tgt[..., k][lv]), 1e-8)), 3) for k in range(K)]
         t_roll = time.time() - tr0
 
         # ---- update: minibatches split over agents, full-sequence BPTT ----
@@ -360,7 +390,7 @@ def main():
                 probe = teacher is not None and not warm and not gns  # differentiates twice: eager pass (GraphedSequence)
                 sq = net.sequence if probe else seq
                 res = sq(X[:, mb], H0[mb], F[:, mb], DEC[:, mb])
-                mu, v = res[0], res[1]
+                mu, v = res[0], res[1].reshape(T, -1, K)
                 ls = log_std()
                 lsr = ls + nscale(res[2]).unsqueeze(2).log() if ngate else ls  # entropy bonus stays on ls: no push on the router
                 lp = (-((A[:, mb] - mu) ** 2) / (2 * lsr.exp() ** 2) - lsr - 0.5 * math.log(2 * math.pi)).sum(2)
@@ -369,7 +399,7 @@ def main():
                 n = m.sum().clamp(min=1)
                 pg = -(torch.min(ratio * ADV[:, mb], ratio.clamp(1 - a.clip, 1 + a.clip) * ADV[:, mb]) * m).sum() / n
                 mv_ = MV[:, mb]
-                vl = (((v - TGT[:, mb]) ** 2) * mv_).sum() / mv_.sum().clamp(min=1)
+                vl = (((v - TGT[:, mb]) ** 2).sum(2) * mv_).sum() / mv_.sum().clamp(min=1)
                 ent = (ls + 0.5 * math.log(2 * math.pi * math.e)).sum()
                 loss = pg + a.vcoef * vl - a.ent * ent
                 if moe and not warm:  # router: no combat expert without a rival in view, and a small price for using it
@@ -403,7 +433,7 @@ def main():
                     bcs.append(bcl.item())
                 opt.zero_grad(set_to_none=True)
                 if warm:  # value head only: gradients reach nothing the policy reads
-                    torch.autograd.backward(a.vcoef * vl, inputs=list(net.v.parameters()))
+                    torch.autograd.backward(a.vcoef * vl, inputs=net.value_params())
                 else:
                     loss.backward()
                 torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
@@ -454,7 +484,7 @@ def main():
                    'dev': round(float(np.mean(devs)), 5) if devs else 0.0,
                    # RMS correction applied on top of the pace expert [steer, pedal], in traffic and solo
                    **{f'corr_{k}': [round(float(x), 4) for x in (c[:2] / c[2].clamp(min=1)).sqrt().tolist()] for k, c in cacc.items()}} if moe else {}),
-               'kl': round(float(np.mean(kls)), 4), 'clip': round(float(np.mean(clips)), 3), 'vl': round(float(np.mean(vls)), 3),
+               'ev': ev, 'kl': round(float(np.mean(kls)), 4), 'clip': round(float(np.mean(clips)), 3), 'vl': round(float(np.mean(vls)), 3),
                'std': [round(x, 3) for x in log_std().exp().tolist()], 'stopped': stop, 'warm': warm, 'decide': round(float(dec[:T].mean()), 3)}
         if it % 10 == 9:
             dn = max(1.0, float(sum(agg.pop('ticks', []))))

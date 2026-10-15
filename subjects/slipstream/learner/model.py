@@ -38,6 +38,25 @@ class Slipstream(nn.Module):
         nn.init.orthogonal_(self.pi[-1].weight, 0.01)
         nn.init.zeros_(self.pi[-1].bias)
         self.hidden = hidden
+        # Risk critic: the value of the safety-cost part of the reward (env row's risk value); v then values the rest.
+        # Starts at zero, so a network from before it values exactly as it did. Registered last: older optimizer
+        # states keep their parameter order (ppo maps them by name). split_v: value outputs [task, risk], else their sum.
+        self.vr = mlp(hidden + feat, 256, 1)
+        nn.init.zeros_(self.vr[-1].weight)
+        nn.init.zeros_(self.vr[-1].bias)
+        self.split_v = False
+
+    def load_state_dict(self, sd, strict=True, **kw):
+        if strict and not any(k.startswith('vr.') for k in sd):  # from before the risk critic: keep its zero init
+            sd = {**sd, **{'vr.' + k: v for k, v in self.vr.state_dict().items()}}
+        return super().load_state_dict(sd, strict=strict, **kw)
+
+    def value(self, z):
+        v = torch.cat([self.v(z), self.vr(z)], -1)
+        return v if self.split_v else v.sum(-1)
+
+    def value_params(self):
+        return [*self.v.parameters(), *self.vr.parameters()]
 
     def features(self, x):
         b = x.shape[0]
@@ -63,7 +82,7 @@ class Slipstream(nn.Module):
         hn = self.gru(self.pre(f), h * (1 - first).unsqueeze(1))
         h = hn if decide is None else torch.where(decide.unsqueeze(1) > 0.5, hn, h)
         z = torch.cat([h, f], 1)
-        return self.pi(z), self.v(z).squeeze(1), h
+        return self.pi(z), self.value(z), h
 
     def sequence(self, x, h0, first, decide=None):
         """x [T,B,obs], first/decide [T,B]: recomputes the memory through a rollout segment (held on non-decide ticks)."""
@@ -76,7 +95,7 @@ class Slipstream(nn.Module):
             h = hn if decide is None else torch.where(decide[t].unsqueeze(1) > 0.5, hn, h)
             hs.append(h)
         z = torch.cat([torch.stack(hs), f], 2)
-        return self.pi(z), self.v(z).squeeze(2)
+        return self.pi(z), self.value(z)
 
 
 class SlipstreamMoE(nn.Module):
@@ -106,13 +125,15 @@ class SlipstreamMoE(nn.Module):
         self.register_buffer('residual', torch.zeros((), dtype=torch.bool))
         self.hidden, self.eh = 2 * hidden, hidden
 
-    @property
-    def v(self):
-        return self.cmb.v
+    def value_params(self):
+        return self.cmb.value_params()
 
     def load_state_dict(self, sd, strict=True, **kw):
         if 'residual' not in sd:  # checkpoints from before residual mode are blends
             sd = {**sd, 'residual': torch.zeros((), dtype=torch.bool)}
+        for e in ('base', 'cmb'):  # from before the risk critic: keep its zero init
+            if strict and not any(k.startswith(e + '.vr.') for k in sd):
+                sd = {**sd, **{f'{e}.vr.' + k: v for k, v in getattr(self, e).vr.state_dict().items()}}
         return super().load_state_dict(sd, strict=strict, **kw)
 
     def make_residual(self):
@@ -146,7 +167,7 @@ class SlipstreamMoE(nn.Module):
         hc = hn if decide is None else torch.where(decide.unsqueeze(1) > 0.5, hn, hc)
         zc = torch.cat([hc, fc], 1)
         mu, g = self.mix(mb, self.cmb.pi(zc), zc)
-        out = (mu, self.cmb.v(zc).squeeze(1), torch.cat([hb, hc], 1))
+        out = (mu, self.cmb.value(zc), torch.cat([hb, hc], 1))
         return (*out, g) if with_gate else out
 
     def sequence(self, x, h0, first, decide=None):
@@ -164,7 +185,7 @@ class SlipstreamMoE(nn.Module):
             hs.append(h)
         zc = torch.cat([torch.stack(hs), f], 2)
         mu, g = self.mix(mb, self.cmb.pi(zc), zc)
-        return mu, self.cmb.v(zc).squeeze(2), g, mu - mb
+        return mu, self.cmb.value(zc), g, mu - mb
 
 
 def build_net(ck_or_layout, hidden=256):

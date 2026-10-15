@@ -9,10 +9,13 @@ export { OBS, EGO_F, ROAD_K, ROAD_F, RIVAL_N, RIVAL_F, EGO_X, RIVAL_X };
 const TAU = Math.PI * 2;
 const wrapPi = (a) => Math.atan2(Math.sin(a), Math.cos(a));
 const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
+// Safety-cost reward terms (the row's risk value); the rest (progress, pass, lost, stuck, behind) is the task.
+const RISK = new Set(['off', 'damage', 'margin', 'incident', 'rearEnd', 'ttc', 'rub', 'clear', 'terminal']);
 
 // decide: 1 when the seat is free, i.e. the browser would query the NN on this state and the next action is delivered.
 // While a reply is in flight the browser never sees the state, so the learner must not step its memory or train on it.
-export const TAIL = 5; // reward, done, truncated, first, decide
+// risk: the part of reward that is a safety cost (RISK terms below), for a critic that values it apart from the task.
+export const TAIL = 6; // reward, done, truncated, first, decide, risk
 export const ROW = OBS + TAIL;
 
 /** Safe-ish speed from the sharpest smoothed curvature ahead: only used to pick plausible reset speeds. */
@@ -289,12 +292,13 @@ export class World {
     const recycle = race.time > (this.cfg.lifetime ?? 900) || race.phase !== 'racing';
     for (const a of this.agents) {
       const row = out.subarray(a.k * ROW, (a.k + 1) * ROW);
-      if (a.first) { this.observe(a, row); row[OBS] = 0; row[OBS + 1] = 0; row[OBS + 2] = recycle ? 1 : 0; row[OBS + 3] = 1; row[OBS + 4] = a.inflight ? 0 : 1; a.first = 0; a.illegalSubs = a.offEnters = 0; continue; }
+      if (a.first) { this.observe(a, row); row[OBS] = 0; row[OBS + 1] = 0; row[OBS + 2] = recycle ? 1 : 0; row[OBS + 3] = 1; row[OBS + 4] = a.inflight ? 0 : 1; row[OBS + 5] = 0; a.first = 0; a.illegalSubs = a.offEnters = 0; continue; }
       const r = this.reward(a, dt, substeps, stats);
       if (recycle && !r.done && !r.trunc) { r.trunc = true; r.why = 'recycle'; }
       this.observe(a, row);
       row[OBS] = r.reward; row[OBS + 1] = r.done ? 1 : 0; row[OBS + 2] = r.trunc ? 1 : 0; row[OBS + 3] = 0;
       row[OBS + 4] = (r.done || r.trunc || !a.inflight) ? 1 : 0; // a final observation is always consumed (bootstrap value)
+      row[OBS + 5] = r.risk;
       if (r.done || r.trunc) { a.end = 1; stats.episodes++; stats.terminal += r.done ? 1 : 0; stats.why[r.why] = (stats.why[r.why] ?? 0) + 1; }
     }
     // A pass challenge is one episode: when it ends (cleared, timed out or failed) the next build draws a new one.
@@ -323,8 +327,8 @@ export class World {
     // Reward ledger (stats.ledger): every term's contribution summed per term, so the worker stats show what the reward
     // is made of (the reward itself is the plain sum; the ledger only records it).
     const lg = (stats.ledger ??= {});
-    let reward = 0;
-    const add = (k, v) => { if (v) { reward += v; lg[k] = (lg[k] ?? 0) + v; } };
+    let reward = 0, risk = 0;
+    const add = (k, v) => { if (v) { reward += v; lg[k] = (lg[k] ?? 0) + v; if (RISK.has(k)) risk += v; } };
     add('progress', ds * (R.progress ?? 0.05) * (1 - illegalFrac));
     add('off', -illegalFrac * (R.offTick ?? 0.1) - enters * (R.offEnter ?? 1));
     add('damage', -dDmg * (R.damage ?? 40));
@@ -434,7 +438,7 @@ export class World {
     if (done) stats.endEv?.push([(stats.base ?? 0) + a.k, stats.tick ?? 0, why, Math.round(c.s)]);
     if (done && stats.wrecks && stats.wrecks.length < 64) stats.wrecks.push([this.track.id, Math.round(c.s), why, +c.speed.toFixed(1), +c.lateral.toFixed(1)]);
     const trunc = !done && (a.t >= a.horizon || a.cleared);
-    return { reward, done, trunc, why: why ?? (a.cleared ? 'cleared' : trunc ? 'horizon' : null) };
+    return { reward, risk, done, trunc, why: why ?? (a.cleared ? 'cleared' : trunc ? 'horizon' : null) };
   }
 
   // ---- replay recording (viewer) -------------------------------------------------------------------

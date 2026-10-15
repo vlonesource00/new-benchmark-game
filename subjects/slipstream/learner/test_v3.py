@@ -11,7 +11,7 @@ import torch
 
 from contract import V3, layout_of, migrate_v2_v3, obs_len
 from model import Slipstream, SlipstreamMoE
-from ppo import SUBJECT, RunningNorm, binary_columns, opt_names
+from ppo import SUBJECT, RunningNorm, binary_columns, opt_names, remap_opt
 
 
 def build(ck):
@@ -34,9 +34,9 @@ def main():
         v3 = migrate_v2_v3(ck, opt_names(layout_of(ck), ck))
         (n2, z2, D2), (n3, z3, D3) = build(ck), build(v3)
         assert D3 == obs_len(V3) and D3 > D2
-        if 'opt' in v3:  # Adam state shapes match the migrated parameters
+        if 'opt' in v3:  # Adam state shapes match the migrated parameters (by name, as ppo maps them)
             opt = torch.optim.Adam([p for p in n3.parameters() if p.requires_grad], lr=1e-4)
-            opt.load_state_dict(v3['opt'])
+            opt.load_state_dict(remap_opt(v3['opt'], opt_names(V3, v3), [n for n, p in n3.named_parameters() if p.requires_grad]))
         rng = np.random.default_rng(1)
         raw = (z2.mean + np.sqrt(z2.var) * rng.normal(size=(a.steps, D2))).astype(np.float32)
         raw[:, binary_columns(layout_of(ck))] = (rng.random((a.steps, 8)) < 0.5)
