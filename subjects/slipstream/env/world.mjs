@@ -59,7 +59,8 @@ export class World {
     // An impact is the onset of a pair's contact (no contact between them for the previous ONSET physics ticks): a
     // sustained push is one impact plus rubbing, not a rear-end charge on every decision it lasts (which priced a 1 s
     // push at 1 m/s like thirty impacts). reward.rearEveryTick restores the old per-decision charge.
-    this.rear = new Float32Array(race.cars.length); this.rub = new Float32Array(race.cars.length);
+    // nose: physics ticks this tick in contact with a car over 2 m ahead (this car ran into it; reward.dirtyBlame).
+    this.rear = new Float32Array(race.cars.length); this.rub = new Float32Array(race.cars.length); this.nose = new Float32Array(race.cars.length);
     const st = race.stewards, ONSET = 30, lastTouch = new Map(), everyTick = cfg.reward?.rearEveryTick;
     let phys = 0;
     if (st) {
@@ -72,8 +73,9 @@ export class World {
         for (const [i, j, closing] of st.pairs) {
           const key = i < j ? i * 64 + j : j * 64 + i, onset = phys - (lastTouch.get(key) ?? -1e9) > ONSET;
           lastTouch.set(key, phys);
-          if (!onset && !everyTick) continue;
           const d = race.cars[i].race.progress - race.cars[j].race.progress;
+          if (Math.abs(d) > 2) this.nose[d < 0 ? i : j]++;
+          if (!onset && !everyTick) continue;
           if (Math.abs(d) > 2) { const b = d < 0 ? i : j; this.rear[b] = Math.max(this.rear[b], closing); }
         }
         return step(dt);
@@ -273,7 +275,7 @@ export class World {
       this.send(a, actions[a.k * 2], actions[a.k * 2 + 1], this.sub ?? 0);
     }
     this.gridStart = false; // grid starts hold only for the episodes that begin with the build
-    this.rear.fill(0); this.rub.fill(0);
+    this.rear.fill(0); this.rub.fill(0); this.nose.fill(0);
     for (let i = 0; i < substeps; i++) {
       this.sub = (this.sub ?? 0) + 1;
       for (const a of this.agents) this.applyArrivals(a, this.sub);
@@ -383,14 +385,17 @@ export class World {
     // challenge, so following out of the 1 s window does not escape it). Every rival passed ends the episode.
     if (a.opp) {
       const v = Math.max(c.speed, 10), HOLD = R.passHold ?? 2, T = R.passT ?? 15;
-      const dirtyNow = this.rub[a.ci] > 0 || illegalFrac > 0 || dInc > 0;
+      // dirtyBlame: only this car's own fault makes a pass dirty (running into a car ahead, breaking track limits);
+      // being hit, side contact and incident points the stewards charge both cars for keep the pass paid (each is still
+      // priced by its own term). Otherwise any contact, off or incident does.
+      const dirtyNow = R.dirtyBlame ? this.nose[a.ci] > 0 || illegalFrac > 0 : this.rub[a.ci] > 0 || illegalFrac > 0 || dInc > 0;
       let stuck = false;
       for (const o of a.opp) {
         const g = wrapPi(((o.c.s - c.s) / L) * TAU) * L / TAU, gs = g / v;
         if (gs > 0 && gs < 1) { stuck = true; if (o.closeAt == null) { o.closeAt = a.t; stats.closes = (stats.closes ?? 0) + 1; } } // closes: encounters (passes per close = conversion)
         if (gs > 1.5 && !o.pend) { o.closeAt = null; o.dirty = false; }
         if ((o.closeAt !== null || Math.abs(g) < 10) && dirtyNow && !o.dirty) { // first cause, for the stats
-          o.dirty = true; o.why = this.rub[a.ci] > 0 ? 'rub' : illegalFrac > 0 ? 'off' : 'inc';
+          o.dirty = true; o.why = R.dirtyBlame && this.nose[a.ci] > 0 ? 'nose' : this.rub[a.ci] > 0 && !R.dirtyBlame ? 'rub' : illegalFrac > 0 ? 'off' : 'inc';
         }
         const ahead = g > 0; // sides swap only near the car: a rival half a lap away wrapping across is not a pass
         if (ahead !== o.ahead && Math.abs(g) < 100) { o.ahead = ahead; o.since = a.t; o.pend = ahead ? 'lost' : 'pass'; }

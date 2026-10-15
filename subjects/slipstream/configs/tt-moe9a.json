@@ -1,0 +1,253 @@
+{
+ "worlds": 12,
+ "seed": 3,
+ "substeps": 4,
+ "statsEvery": 600,
+ "tracks": [
+  "nurburgring"
+ ],
+ "weathers": [
+  "clear"
+ ],
+ "world": {
+  "learners": 4,
+  "ai": [
+   "intercept",
+   "razor",
+   "intercept:lmdh",
+   "apex:lmdh",
+   "razor:lmdh",
+   "intercept:lmdh",
+   "apex:lmdh",
+   "razor:lmdh"
+  ],
+  "classId": "gt",
+  "lifetime": 180,
+  "latency": {
+   "frames": [
+    [
+     1,
+     0.3
+    ],
+    [
+     2,
+     0.35
+    ],
+    [
+     3,
+     0.1
+    ],
+    [
+     4,
+     0.15
+    ],
+    [
+     8,
+     0.1
+    ]
+   ],
+   "extraP": 0.05,
+   "longP": 0.01,
+   "longMin": 8,
+   "longMax": 30
+  },
+  "episode": {
+   "min": 60,
+   "max": 150
+  },
+  "starts": {
+   "snapshot": 0.3,
+   "failure": 0.25,
+   "standing": 0.1,
+   "offSites": true,
+   "sites": {
+    "nurburgring": [
+     3380,
+     3383,
+     3386,
+     3390,
+     3393,
+     3394,
+     3399,
+     4263,
+     4271,
+     4272,
+     4281,
+     5421,
+     5642,
+     5896,
+     5948,
+     6052,
+     9734,
+     10776,
+     10779,
+     12762,
+     17324,
+     17329,
+     17472,
+     17487,
+     17554,
+     17605,
+     17614,
+     18581,
+     18599,
+     19879,
+     19906,
+     19920,
+     19926,
+     21309,
+     25045,
+     25052,
+     25059,
+     25064
+    ]
+   },
+   "siteP": 0.25,
+   "tyreSnap": 0.5,
+   "grid": 0.6,
+   "pack": 0.4,
+   "gridCold": true
+  },
+  "reward": {
+   "terminal": 15,
+   "offEnter": 12,
+   "margin": 0.5,
+   "marginM": 1.0,
+   "incident": 1.0,
+   "rearEnd": 15,
+   "ttc": 6,
+   "ttcS": 1.5,
+   "rub": 6,
+   "clear": 2,
+   "clearM": 2.4,
+   "pass": 15,
+   "lost": 15,
+   "passT": 15,
+   "passHold": 2,
+   "stuck": 0.5,
+   "damage": 60,
+   "passDirty": 0.5
+  },
+  "gridOrder": "shuffle",
+  "challenge": null,
+  "racePass": true
+ },
+ "alt": {
+  "learners": 2,
+  "ai": [
+   "intercept",
+   "apex",
+   "razor"
+  ],
+  "classId": "gt",
+  "lifetime": 45,
+  "latency": {
+   "frames": [
+    [
+     1,
+     0.3
+    ],
+    [
+     2,
+     0.35
+    ],
+    [
+     3,
+     0.1
+    ],
+    [
+     4,
+     0.15
+    ],
+    [
+     8,
+     0.1
+    ]
+   ],
+   "extraP": 0.05,
+   "longP": 0.01,
+   "longMin": 8,
+   "longMax": 30
+  },
+  "episode": {
+   "min": 60,
+   "max": 150
+  },
+  "starts": {
+   "snapshot": 0.3,
+   "failure": 0.25,
+   "standing": 0.1,
+   "offSites": true,
+   "sites": {
+    "nurburgring": [
+     3380,
+     3383,
+     3386,
+     3390,
+     3393,
+     3394,
+     3399,
+     4263,
+     4271,
+     4272,
+     4281,
+     5421,
+     5642,
+     5896,
+     5948,
+     6052,
+     9734,
+     10776,
+     10779,
+     12762,
+     17324,
+     17329,
+     17472,
+     17487,
+     17554,
+     17605,
+     17614,
+     18581,
+     18599,
+     19879,
+     19906,
+     19920,
+     19926,
+     21309,
+     25045,
+     25052,
+     25059,
+     25064
+    ]
+   },
+   "siteP": 0.25,
+   "tyreSnap": 0.5,
+   "grid": 1.0,
+   "pack": 0.3,
+   "gridCold": true
+  },
+  "reward": {
+   "terminal": 15,
+   "offEnter": 12,
+   "margin": 0.5,
+   "marginM": 1.0,
+   "incident": 1.0,
+   "rearEnd": 15,
+   "ttc": 6,
+   "ttcS": 1.5,
+   "rub": 6,
+   "clear": 2,
+   "clearM": 2.4,
+   "pass": 15,
+   "lost": 15,
+   "passT": 15,
+   "passHold": 2,
+   "stuck": 0.5,
+   "damage": 60,
+   "passDirty": 0.5
+  },
+  "gridOrder": "shuffle",
+  "challenge": null,
+  "racePass": true
+ }
+}
