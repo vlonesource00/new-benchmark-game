@@ -21,7 +21,7 @@ for (const track of tracks.split(',')) {
   // Per rival: which side we are on, since when (for the hold), and the current closing episode behind it.
   const st = env.cars.map((c) => ({ ahead: c === me ? null : me.race.progress > c.race.progress, since: 0, closeAt: null, pend: null }));
   const passes = [], lost = [], pitAt = env.cars.map(() => -1e9); let stuck = 0; // pitAt: last tick each car was in the pit lane
-  const cap = laps * 160 + 90, lapList = []; let lapSeen = me.race.lap, pitS = 0;
+  const cap = laps * Math.max(160, env.track.length / 35) + 90, lapList = []; let lapSeen = me.race.lap, pitS = 0;
   while (me.race.finishTime === null && race.time < cap && !me.race.dq) {
     env.step(4);
     const t = race.time, v = Math.max(me.speed, 10);
@@ -52,5 +52,6 @@ for (const track of tracks.split(',')) {
     passes: passes.length, passedBy: lost.length, medianTook: passes.length ? passes.map((p) => p.took).sort((a, b) => a - b)[Math.floor(passes.length / 2)] : null,
     stuckS: +stuck.toFixed(1), inc: sw.inc ?? 0, penalties: (sw.penalties ?? []).length, damage: +me.damage.toFixed(3),
     stops: entry.strategist?.stops ?? null, pitS: +pitS.toFixed(1), lapTimes: lapList,
-    finished: me.race.finishTime !== null, time: me.race.finishTime && +me.race.finishTime.toFixed(2), passList: passes, lostList: lost }));
+    finished: me.race.finishTime !== null, time: me.race.finishTime && +me.race.finishTime.toFixed(2), passList: passes, lostList: lost,
+    incLog: (sw.log ?? []).map((l) => [+l.time.toFixed(1), l.kind, l.points]) }));
 }
