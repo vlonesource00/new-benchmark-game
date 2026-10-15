@@ -3,7 +3,7 @@
 // most once per 1/30 s of race time, the recurrent memory stepping only on those decisions; in between the
 // last controls are held. Under the async seat protocol a decision lands one frame later; when stepped every
 // substep (headless or fallback) it is staged one substep, the shortest delay the policy was trained with.
-import { Policy } from '../../subjects/slipstream/browser/policy.mjs';
+import { makePolicy } from '../../subjects/slipstream/browser/policy.mjs';
 import { observe, roadTable, OBS } from '../../subjects/slipstream/env/observe.mjs';
 
 const GAP = 4 / 120;
@@ -23,7 +23,7 @@ export function createSlipstreamBridge({ hostTrack, index = 0 }) {
   let policy = null, road = null, first = true, lastDecision = -1e9, held = [0, 0], staged = null;
   let seen = null, appliedAt = 0, sent = [0, 0];
   const o = new Float32Array(OBS), limit = hostTrack.halfWidth + (hostTrack.curbWidth ?? 0);
-  loadWeights(hostTrack.id).then((exp) => { policy = new Policy(exp); }, (e) => { console.warn('[slipstream] weights failed', e); });
+  loadWeights(hostTrack.id).then((exp) => { policy = makePolicy(exp); }, (e) => { console.warn('[slipstream] weights failed', e); });
   const toControls = ([st, pd]) => ({ steer: st, throttle: pd > 0 ? pd : 0, brake: pd < 0 ? -pd : 0 });
   return {
     id: 'slipstream', native: true, errors: 0,

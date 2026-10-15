@@ -72,6 +72,85 @@ class Slipstream(nn.Module):
         return self.pi(z), self.v(z).squeeze(2)
 
 
+class SlipstreamMoE(nn.Module):
+    """Two experts and a learned router. `base` is a frozen pace expert (a track specialist: its weights and its own
+    input normaliser are fixed, so combat training cannot erode its driving); `cmb` is the trainable combat expert,
+    whose value head is the critic. The router reads the combat expert's policy input (memory + ego/road/rival-attention
+    features) and outputs g in [0, 1]; the action mean is (1 - g) * base + g * cmb. Inputs arrive normalised by the
+    training normaliser (frozen for MoE runs); the base expert's view is re-normalised from them with its own statistics.
+    Memory is the two GRU states side by side: h = [h_base, h_cmb]."""
+
+    def __init__(self, layout, hidden=256, gate_bias=-2.0):
+        super().__init__()
+        self.base, self.cmb = Slipstream(layout, hidden), Slipstream(layout, hidden)
+        self.base.requires_grad_(False)
+        D = self.cmb.ego_f + self.cmb.k * self.cmb.rf_f + self.cmb.rn * self.cmb.rv_f
+        feat = 128 + 128 + 64
+        self.gate = mlp(hidden + feat, 64, 1)
+        nn.init.zeros_(self.gate[-1].weight)
+        nn.init.constant_(self.gate[-1].bias, gate_bias)
+        self.log_std = self.cmb.log_std
+        for k in ('t_mean', 't_std', 'b_mean', 'b_std'):
+            self.register_buffer(k, torch.zeros(D) if 'mean' in k else torch.ones(D))
+        self.register_buffer('skip', torch.zeros(D, dtype=torch.bool))
+        self.hidden, self.eh = 2 * hidden, hidden
+
+    @property
+    def v(self):
+        return self.cmb.v
+
+    def set_norms(self, train, base, skip):
+        """train/base: (mean, std) arrays of the training and base normalisers; skip: raw (unnormalised) columns."""
+        for k, val in (('t_mean', train[0]), ('t_std', train[1]), ('b_mean', base[0]), ('b_std', base[1])):
+            getattr(self, k).copy_(torch.as_tensor(val, dtype=torch.float32))
+        self.skip.zero_()
+        self.skip[torch.as_tensor(skip, dtype=torch.long)] = True
+
+    def base_view(self, x):
+        raw = x * self.t_std + self.t_mean
+        xb = ((raw - self.b_mean) / self.b_std).clamp(-10, 10)
+        return torch.where(self.skip, x, xb)
+
+    def mix(self, mb, mc, zc):
+        g = torch.sigmoid(self.gate(zc))
+        return (1 - g) * mb + g * mc, g.squeeze(-1)
+
+    def step(self, x, h, first, decide=None, with_gate=False):
+        hb, hc = h[:, :self.eh], h[:, self.eh:]
+        mb, _, hb = self.base.step(self.base_view(x), hb, first, decide)
+        fc = self.cmb.features(x)
+        hn = self.cmb.gru(self.cmb.pre(fc), hc * (1 - first).unsqueeze(1))
+        hc = hn if decide is None else torch.where(decide.unsqueeze(1) > 0.5, hn, hc)
+        zc = torch.cat([hc, fc], 1)
+        mu, g = self.mix(mb, self.cmb.pi(zc), zc)
+        out = (mu, self.cmb.v(zc).squeeze(1), torch.cat([hb, hc], 1))
+        return (*out, g) if with_gate else out
+
+    def sequence(self, x, h0, first, decide=None):
+        """Returns (mu, v, g): the router output g [T,B] is trained by the PPO loss through mu and regularised there."""
+        T, B = x.shape[:2]
+        with torch.no_grad():
+            mb, _ = self.base.sequence(self.base_view(x.reshape(T * B, -1)).reshape(T, B, -1), h0[:, :self.eh], first, decide)
+        f = self.cmb.features(x.reshape(T * B, -1)).reshape(T, B, -1)
+        p = self.cmb.pre(f)
+        h, hs = h0[:, self.eh:], []
+        for t in range(T):
+            hn = self.cmb.gru(p[t], h * (1 - first[t]).unsqueeze(1))
+            h = hn if decide is None else torch.where(decide[t].unsqueeze(1) > 0.5, hn, h)
+            hs.append(h)
+        zc = torch.cat([torch.stack(hs), f], 2)
+        mu, g = self.mix(mb, self.cmb.pi(zc), zc)
+        return mu, self.cmb.v(zc).squeeze(2), g
+
+
+def build_net(ck_or_layout, hidden=256):
+    """The network a checkpoint holds (plain or MoE), from the checkpoint dict or a layout."""
+    if isinstance(ck_or_layout, dict) and 'moe' in ck_or_layout:
+        return SlipstreamMoE(ck_or_layout['layout'], hidden)
+    lay = ck_or_layout['layout'] if isinstance(ck_or_layout, dict) and 'layout' in ck_or_layout and 'ego' not in ck_or_layout else ck_or_layout
+    return Slipstream(lay, hidden)
+
+
 class GraphedSequence:
     """net.sequence for training, captured once per input shape as a CUDA graph (forward and backward) and replayed.
     The recurrent pass is 128 small steps whose cost is kernel launches, not arithmetic; a replay launches them as one
@@ -86,8 +165,8 @@ class GraphedSequence:
             self.net = net
 
         def forward(self, x, h0, first, decide):
-            mu, v = self.net.sequence(x, h0, first, decide)
-            return mu + 0 * self.net.log_std, v  # every parameter in the graph (capture differentiates them all)
+            out = self.net.sequence(x, h0, first, decide)  # (mu, v) or, for the MoE, (mu, v, gate)
+            return (out[0] + 0 * self.net.log_std, *out[1:])  # every parameter in the graph (capture differentiates them all)
 
     def __init__(self, net):
         self.net, self.graphs = net, {}

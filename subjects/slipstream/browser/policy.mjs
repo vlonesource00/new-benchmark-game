@@ -87,3 +87,26 @@ export class Policy {
     return [B.mu[0], B.mu[1]];
   }
 }
+
+/** Mixture of experts (learner/model.py SlipstreamMoE): a frozen pace expert and a combat expert, each with its own
+ * normaliser and memory, and a router reading the combat expert's policy input: mean = (1 - g) * base + g * cmb. */
+export class MoEPolicy {
+  constructor(exp) {
+    this.base = new Policy(exp.base); this.cmb = new Policy(exp.cmb);
+    this.g = {}; for (const [k, v] of Object.entries(exp.gate)) this.g[k] = decode(v);
+    this.g1 = new Float32Array(this.g['0.weight'].shape[0]); this.g2 = new Float32Array(1); this.gate = 0;
+  }
+
+  reset() { this.base.reset(); this.cmb.reset(); }
+
+  act(raw, first = false, decide = true) {
+    const [bs, bp] = this.base.act(raw, first, decide), [cs, cp] = this.cmb.act(raw, first, decide);
+    linear(this.g['0.weight'], this.g['0.bias'], this.cmb.buf.z, this.g1, true);
+    linear(this.g['2.weight'], this.g['2.bias'], this.g1, this.g2);
+    const g = this.gate = sig(this.g2[0]);
+    return [(1 - g) * bs + g * cs, (1 - g) * bp + g * cp];
+  }
+}
+
+/** The actor an export describes: plain or mixture of experts. */
+export const makePolicy = (exp) => (exp.moe ? new MoEPolicy(exp) : new Policy(exp));

@@ -27,7 +27,7 @@ function learnerBridge(actions, slot) {
 }
 
 /**
- * seats: [{ learner: true } | { ai: 'intercept' | 'apex' | 'razor' | 'next-racer' | ... }]
+ * seats: [{ learner: true } | { ai: 'intercept' | 'apex' | 'razor' | 'next-racer' | ... }], each optionally with classId ('gt' | 'lmdh')
  * Returns { race, cars, learners (car indices), actions (Float32Array 2/learner), step(substeps) }.
  */
 export function createRaceEnv({ track = 'harbor-ring', seats, seed = 7, weather = 'clear', laps = 30, classId = 'gt', startType = 'standing', format = null }) {
@@ -37,7 +37,7 @@ export function createRaceEnv({ track = 'harbor-ring', seats, seed = 7, weather 
   const teams = seats.map((s, i) => {
     const id = s.learner ? LEARNER_ROSTER_ID : s.ai;
     return { id: `t${i}`, name: s.learner ? `SLIP${i}` : id.toUpperCase(), short: s.learner ? `SL${i}` : id.slice(0, 3).toUpperCase(),
-      color: LIVERY[i % LIVERY.length], index: i, starter: 0, grid: i,
+      color: LIVERY[i % LIVERY.length], index: i, starter: 0, grid: i, ...(s.classId ? { classId: s.classId } : {}),
       drivers: [{ kind: 'ai', id, name: id, short: id.slice(0, 3), learner: Boolean(s.learner) }] };
   });
   const makeBridge = (driver, index, race) => driver.learner ? learnerBridge(actions, learners.indexOf(index)) : createSeatBridge(driver, index, race);

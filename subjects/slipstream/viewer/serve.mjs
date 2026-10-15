@@ -66,14 +66,17 @@ function trainStatus(job) {
   if (!existsSync(log)) return { state: 'queued', progress: 0 };
   const ls = lines(log), head = JSON.parse(ls[0]), recs = oneWriter(ls.slice(1).flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } }).filter((r) => r.it != null));
   const budget = head.args?.minutes || 0, last = recs.at(-1) ?? { min: 0 };
-  const done = !!job.stopped || existsSync(join(dir, 'final.pt'));  // stopped: ended early on purpose
+  // done: final.pt written. stopped: ended early, marked in the queue or its log quiet for 3 min with no final
+  // checkpoint (the process is gone). Only 'running' runs are live.
+  const quiet = Date.now() - statSync(log).mtimeMs > 180000;
+  const state = existsSync(join(dir, 'final.pt')) ? 'done' : job.stopped || quiet ? 'stopped' : 'running', done = state !== 'running';
   const stride = Math.max(1, Math.ceil(recs.length / 300));
-  const curve = recs.filter((_, i) => i % stride === 0 || i === recs.length - 1).map((r) => [r.it, r.min, r.rew, r.std?.[0], r.std?.[1], r.kl, r.sps, r.steps]);
+  const curve = recs.filter((_, i) => i % stride === 0 || i === recs.length - 1).map((r) => [r.it, r.min, r.rew, r.std?.[0], r.std?.[1], r.kl, r.sps, r.steps, r.gate_tr, r.gate_solo]);
   return {
     stdMin: head.args?.std_min || null, stopped: recs.filter((r) => r.stopped).length, updates: recs.length,
-    state: done ? 'done' : 'running', progress: done ? 1 : Math.min(1, last.min / (budget || 1)), etaMin: done ? 0 : Math.max(0, budget - last.min),
-    minutes: budget, elapsed: last.min, resume: head.args?.resume, config: head.args?.config,
-    latest: { it: last.it, steps: last.steps, rew: last.rew, std: last.std, kl: last.kl, sps: last.sps, decide: last.decide },
+    state, progress: done ? 1 : Math.min(1, last.min / (budget || 1)), etaMin: done ? 0 : Math.max(0, budget - last.min),
+    minutes: budget, elapsed: last.min, resume: head.args?.resume, config: head.args?.config, moe: Boolean(head.args?.moe_base) || last.gate_tr != null,
+    latest: { it: last.it, steps: last.steps, rew: last.rew, std: last.std, kl: last.kl, sps: last.sps, decide: last.decide, gate_tr: last.gate_tr, gate_solo: last.gate_solo },
     tracks: head.config?.tracks, latency: head.config?.world?.latency, curve, stale: !done && Date.now() - statSync(log).mtimeMs > 120000
   };
 }
@@ -87,31 +90,71 @@ function evalStatus(job) {
   return { state: 'queued', progress: 0 };
 }
 
+// Completion results, each file parsed once per change (hundreds of files, polled every 5 s).
+const resCache = new Map();
 function results() {
   const dir = join(RUNS, 'completion');
   if (!existsSync(dir)) return [];
   return readdirSync(dir).filter((f) => f.endsWith('.json') && !f.endsWith('.progress.json')).flatMap((f) => {
+    const m = statSync(join(dir, f)).mtimeMs, hit = resCache.get(f);
+    if (hit?.m === m) return [hit.v];
     const r = tryJson(join(dir, f));
     if (!r) return [];
-    return { name: f.slice(0, -5), ckpt: r.ckpt, total: r.complete_total, of: Object.values(r.tracks).reduce((a, t) => a + t.of, 0),
-      tracks: Object.fromEntries(Object.entries(r.tracks).map(([k, t]) => [k, [t.complete, t.of, t.gap_median_pct]])), mtime: statSync(join(dir, f)).mtimeMs };
+    const v = { name: f.slice(0, -5), ckpt: r.ckpt, seed: r.seed, laps: r.laps ?? 1, ai: r.ai || '', total: r.complete_total, of: Object.values(r.tracks).reduce((a, t) => a + t.of, 0),
+      tracks: Object.fromEntries(Object.entries(r.tracks).map(([k, t]) => [k, [t.complete, t.of, t.gap_median_pct]])), mtime: m };
+    resCache.set(f, { m, v });
+    return [v];
   }).sort((a, b) => a.mtime - b.mtime);
+}
+
+// Reliability: completion results grouped per checkpoint (run + snapshot + test kind), seeds side by side. Result
+// names are <run>-snap<min>[-ema][-s<seed>] or <run>-final[-ema][-s<seed>]; any other name is its own group.
+function reliability(res) {
+  const groups = new Map();
+  for (const r of res) {
+    const m = /^(.*?)-(snap\d+|final)(-ema)?(?:-s(\d+))?$/.exec(r.name);
+    const run = m ? m[1] : r.name, snap = m ? (m[2] === 'final' ? 'final' : +m[2].slice(4)) : null;
+    const key = [run, snap, m?.[3] ?? '', r.laps, r.ai, Object.keys(r.tracks).join(',')].join('|');
+    const g = groups.get(key) ?? { run, snap, ema: Boolean(m?.[3]), laps: r.laps, ai: r.ai, seeds: {}, tracks: {}, mtime: 0 };
+    g.seeds[r.seed ?? m?.[4] ?? '?'] = [r.total, r.of];
+    for (const [t, v] of Object.entries(r.tracks)) { const a = (g.tracks[t] ??= [0, 0]); a[0] += v[0]; a[1] += v[1]; }
+    g.mtime = Math.max(g.mtime, r.mtime); groups.set(key, g);
+  }
+  return [...groups.values()].map((g) => ({ ...g, total: Object.values(g.seeds).reduce((a, s) => a + s[0], 0), of: Object.values(g.seeds).reduce((a, s) => a + s[1], 0) }))
+    .sort((a, b) => b.mtime - a.mtime);
+}
+
+// Benchmarks recorded by viewer/bench-add.mjs (runs/benchmarks.jsonl), oldest first.
+function benchmarks() {
+  const p = join(RUNS, 'benchmarks.jsonl');
+  return existsSync(p) ? lines(p).flatMap((l) => { try { const { key, ...r } = JSON.parse(l); return [r]; } catch { return []; } }) : [];
 }
 
 function status() {
   const q = existsSync(join(RUNS, 'queue.json')) ? readJson(join(RUNS, 'queue.json')) : { jobs: [] };
   const jobs = q.jobs.map((j) => ({ ...j, ...(j.kind === 'train' ? trainStatus(j) : evalStatus(j)) }));
+  // A test still 'queued' while a later job has finished was dropped from its pipeline: skipped, not pending.
+  let laterDone = false;
+  for (let i = jobs.length - 1; i >= 0; i--) { if (jobs[i].state === 'queued' && laterDone) jobs[i].state = 'skipped'; if (['done', 'stopped'].includes(jobs[i].state)) laterDone = true; }
   const cur = jobs.find((j) => j.state === 'running') ?? jobs.find((j) => j.state === 'queued') ?? null;
-  // Every training run in progress (parallel arms are shown side by side); otherwise the latest finished one.
+  // Live: every training run in progress (parallel arms side by side); otherwise the latest finished one.
   const running = jobs.filter((j) => j.kind === 'train' && j.state === 'running');
   const last = [...jobs].reverse().find((j) => j.kind === 'train' && j.state !== 'queued');
   const trainings = running.length ? running : last ? [last] : [];
+  const rel = reliability(results()), bench = benchmarks();
+  // Experiments: one row per training run, newest first, with its tests attached.
+  const experiments = jobs.filter((j) => j.kind === 'train').reverse().map((j) => ({
+    run: j.run, title: j.title, state: j.state, minutes: j.minutes, elapsed: j.elapsed, resume: j.resume, config: j.config, moe: j.moe,
+    rew: j.latest?.rew, samples: j.latest?.steps, reliability: rel.filter((g) => g.run === j.run), bench: bench.filter((b) => b.run === j.run),
+    tests: jobs.filter((e) => e.kind === 'eval' && e.name.startsWith(j.run + '-')).map((e) => ({ name: e.name, state: e.state }))
+  }));
+  const strip = ({ curve, result, ...j }) => j;
   return {
     now: Date.now(), label: q.label, network: network(),
-    jobs: jobs.map(({ curve, result, ...j }) => ({ ...j, total: result?.complete_total })),
+    active: jobs.filter((j) => j.state === 'running' || j.state === 'queued').map(strip),
+    counts: Object.fromEntries(['done', 'stopped', 'skipped', 'running', 'queued'].map((k) => [k, jobs.filter((j) => j.state === k).length])),
     current: cur && { title: cur.title, kind: cur.kind, state: cur.state, progress: cur.progress, etaMin: cur.etaMin, detail: cur.detail },
-    overall: jobs.length ? jobs.reduce((a, j) => a + j.progress, 0) / jobs.length : 0,
-    trainings, results: results()
+    trainings, live: running.length > 0, experiments, reliability: rel, benchmarks: bench
   };
 }
 

@@ -1,4 +1,4 @@
-// SLIPSTREAM viewer: header job bar and the "Network & jobs" view, fed by /api/status every 5 s.
+// SLIPSTREAM viewer: header job bar and the "Training & tests" view (tabs: live training, experiments, combat benchmarks, reliability, network), fed by /api/status every 5 s.
 (() => {
   const $ = (id) => document.getElementById(id);
   const fmtMin = (m) => m == null ? '' : m >= 60 ? `${Math.floor(m / 60)} h ${String(Math.round(m % 60)).padStart(2, '0')} min` : `${Math.round(m)} min`;
@@ -57,43 +57,138 @@
     });
   }
   const RUNCOL = ['#8ab4ff', '#f2b84b', '#4cc38a', '#ff5a4e'];
+  const esc = (t) => String(t ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const store = { get(k, d) { try { return localStorage.getItem('slp.' + k) ?? d; } catch { return d; } }, set(k, v) { try { localStorage.setItem('slp.' + k, v); } catch {} } };
+  // A training title reads "Train <run> — what it tests — outcome notes": the run name is its own column.
+  const what = (e) => esc(e.title.replace(new RegExp(`^Train ${e.run}\\s*[—-]?\\s*`), ''));
+  const snapName = (s) => s === 'final' ? 'final' : s == null ? '' : `@${s}`;
+
+  // ---- tabs ------------------------------------------------------------------------------------
+  let tab = store.get('tab', 'live');
+  const UI = { expAll: false, relAll: false, open: new Set() };
+  function setTab(t) {
+    tab = t; store.set('tab', t);
+    for (const b of document.querySelectorAll('#tabs button')) b.classList.toggle('on', b.dataset.tab === t);
+    for (const s of document.querySelectorAll('#net section')) s.hidden = s.dataset.tab !== t;
+    if (ST) draw();
+  }
+  for (const b of document.querySelectorAll('#tabs button')) b.onclick = () => { setTab(b.dataset.tab); b.blur(); };
+  $('expFilter').oninput = () => draw(); $('relFilter').oninput = () => draw();
+  $('expMore').onclick = () => { UI.expAll = !UI.expAll; draw(); };
+  $('relMore').onclick = () => { UI.relAll = !UI.relAll; draw(); };
+  $('exp').onclick = (ev) => { const r = ev.target.closest('tr[data-run]'); if (!r) return; const k = r.dataset.run; UI.open.has(k) ? UI.open.delete(k) : UI.open.add(k); draw(); };
+  setTab(tab);
+
+  // ---- live training -----------------------------------------------------------------------------
+  function drawLive(s) {
+    const A = s.active ?? [], C = s.counts ?? {};
+    $('liveJobs').innerHTML = A.length ? A.map((j) => {
+      const extra = j.kind === 'train' ? (j.state === 'running' ? `${fmtMin(j.elapsed)} / ${fmtMin(j.minutes)} · ${fmtMin(j.etaMin)} left` : `${fmtMin(j.minutes)}`)
+        : j.detail ? `${j.detail.done}/${j.detail.total} attempts · ${j.detail.complete} ok` : '';
+      return `<span class="st ${j.state}">${j.state}</span><span class="jt">${esc(j.title)}</span><div class="bar ${j.state === 'queued' ? 'q' : ''}"><i style="width:${pct(j.progress)}"></i></div><span class="x">${extra}</span>`;
+    }).join('') : '<span class="ev" style="grid-column:1/-1">Nothing running or queued.</span>';
+    $('liveCounts').textContent = `${C.done ?? 0} finished · ${C.stopped ?? 0} stopped early · ${C.skipped ?? 0} skipped — see Experiments`;
+    const T = s.trainings ?? [];
+    $('liveTitle').textContent = s.live ? (T.length > 1 ? `${T.map((t) => t.run).join(' vs ')} · curves by samples collected` : T[0]?.run ?? '')
+      : T[0] ? `nothing training · last run ${T[0].run} (${T[0].state})` : 'nothing training';
+    if (!T.length) { $('liveInfo').innerHTML = ''; $('curves').innerHTML = ''; return; }
+    const many = T.length > 1;
+    $('liveInfo').innerHTML = T.map((t, k) => {
+      const L = t.latest, recent = t.curve.slice(-20), stopRate = t.updates ? Math.round(100 * t.stopped / t.updates) : 0;
+      return `<div class="lcard" style="border-left-color:${RUNCOL[k]}"><div class="lhead"><b>${t.run}</b><span class="st ${t.state}">${t.state}</span>
+        <div class="bar ${t.state === 'running' ? '' : 'done'}"><i style="width:${pct(t.progress)}"></i></div><span class="x">${fmtMin(t.elapsed)} / ${fmtMin(t.minutes)}${t.state === 'running' ? ` · ${fmtMin(t.etaMin)} left` : ''}${t.stale && t.state === 'running' ? ' · no log for 2 min' : ''}</span></div>
+        <div class="ltitle">${esc(t.title)}</div>
+        <div class="trow"><span>from <b>${esc(t.resume ?? 'scratch')}</b></span><span>config <b>${esc(t.config)}</b></span><span>iteration <b>${L.it}</b></span><span>samples <b>${kfmt(L.steps)}</b></span>
+        <span>throughput <b>${kfmt(Math.round(recent.reduce((a, r) => a + r[6], 0) / Math.max(1, recent.length)))}/s</b></span><span>reward <b>${L.rew?.toFixed(4)}</b></span>
+        ${t.moe ? `<span>router in traffic <b>${pct(L.gate_tr ?? 0)}</b></span><span>router solo <b>${pct(L.gate_solo ?? 0)}</b></span>` : ''}
+        <span>exploration floor <b>${t.stdMin ? t.stdMin.replace(',', ' / ') : 'none'}</b></span><span>updates cut short <b>${stopRate}%</b></span><span>decide <b>${(30 * (L.decide ?? 0)).toFixed(1)} Hz</b></span></div></div>`;
+    }).join('');
+    const anyMoe = T.some((t) => t.moe), want = anyMoe ? 5 : 4;
+    if ($('curves').children.length !== want) $('curves').innerHTML = '<canvas></canvas>'.repeat(want);
+    const [c1, c2, c3, c4, c5] = $('curves').children;
+    const ser = (i, extra = {}) => T.map((t, k) => ({ x: t.curve.map((r) => r[7]), v: t.curve.map((r) => r[i]), c: RUNCOL[k], n: many ? t.run : '', ...extra }));
+    curve(c1, 'Reward per decision', ser(2), (v) => v.toFixed(4));
+    if (anyMoe) curve(c2, 'Router share to combat expert', [...ser(8).map((x) => ({ ...x, n: `${x.n} traffic`.trim() })), ...ser(9, { dash: true }).map((x) => ({ ...x, n: `${x.n} alone`.trim() }))], (v) => pct(v));
+    const rest = anyMoe ? [c3, c4, c5] : [c2, c3, c4];
+    curve(rest[0], 'Policy std', [...ser(3).map((x) => ({ ...x, n: `${x.n} steer`.trim() })), ...ser(4, { dash: true }).map((x) => ({ ...x, n: `${x.n} pedal`.trim() }))]);
+    curve(rest[1], 'KL per update', ser(5), (v) => v.toFixed(4));
+    curve(rest[2], 'Samples / s', ser(6), (v) => kfmt(Math.round(v)));
+  }
+
+  // ---- combat benchmarks -----------------------------------------------------------------------------
+  // Columns: key, label, better direction (+1 higher is better, -1 lower), format.
+  const BCOLS = [['gained', 'places gained', 1], ['passes', 'passes', 1], ['lost', 'places lost', -1], ['rubS', 'rubbing s', -1], ['heavy', 'heavy contacts', -1],
+    ['dmg', 'damage', -1], ['meanPos', 'mean finish', -1], ['stuckS', 'stuck s', -1]];
+  const BENCH_INFO = {
+    duel3: 'Mid-race combat: 24 races, 2 laps on the Nürburgring. SLIPSTREAM is held on the grid 3–13 s, then must fight back through 3 AIs (INTERCEPT / RAZOR). Deployment gate: at least the specialist\'s places gained with less rubbing and damage.',
+    duel2: 'Earlier, smaller combat benchmark (8 races). Superseded by duel3.'
+  };
+  const verdict = (r, base) => {
+    if (!base || r === base) return r === base ? '<span class="tag base">baseline</span>' : '';
+    const m = r.metrics, b = base.metrics, ok = m.gained >= b.gained && m.rubS < b.rubS && m.dmg < b.dmg;
+    return ok ? '<span class="tag good">passes gate</span>' : '<span class="tag">below gate</span>';
+  };
+  function benchTable(rows, base) {
+    const cell = (r, [k, , dir]) => {
+      const v = r.metrics[k]; if (v == null) return '<td></td>';
+      const b = base?.metrics[k], cls = base && r !== base && b != null && v !== b ? ((v - b) * dir > 0 ? 'better' : 'worse') : '';
+      return `<td class="${cls}">${typeof v === 'number' ? +v.toFixed(2) : esc(v)}</td>`;
+    };
+    return `<table class="grid"><tr><th>model</th><th>checkpoint</th>${BCOLS.map((c) => `<th>${c[1]}</th>`).join('')}<th></th></tr>` + rows.map((r) =>
+      `<tr class="${r === base ? 'baserow' : ''}"><td><b>${esc(r.model)}</b></td><td class="dim">${r.run ? esc(r.run) + ' ' + snapName(r.snap) : ''}${r.note ? ` <span class="ev">${esc(r.note)}</span>` : ''}</td>${BCOLS.map((c) => cell(r, c)).join('')}<td>${verdict(r, base)}</td></tr>`).join('') + '</table>';
+  }
+  function drawBench(s) {
+    const B = s.benchmarks ?? [], names = [...new Set(B.map((b) => b.bench))].sort().reverse();
+    $('benchBody').innerHTML = names.length ? names.map((n) => {
+      const rows = B.filter((b) => b.bench === n), base = [...rows].reverse().find((r) => r.model === 'spec');
+      return `<h3>${n}</h3><p class="ev">${BENCH_INFO[n] ?? ''} Green / red: better / worse than the baseline.</p><div class="scroll">${benchTable(rows, base)}</div>`;
+    }).join('') : '<p class="ev">No benchmark recorded yet.</p>';
+  }
+
+  // ---- reliability -------------------------------------------------------------------------------------
+  const rcls = (c, of) => !of ? '' : c >= 0.9 * of ? 'ok' : c >= 0.7 * of ? 'mid' : 'low';
+  const testKind = (g) => `${g.laps} lap${g.laps > 1 ? 's' : ''}${g.ai ? ' · with ' + esc(g.ai) : ' · solo'} · ${Object.keys(g.tracks).join(', ')}`;
+  function drawRel(s) {
+    const f = $('relFilter').value.trim().toLowerCase();
+    let G = (s.reliability ?? []).filter((g) => !f || `${g.run} ${snapName(g.snap)} ${Object.keys(g.tracks).join(' ')}`.toLowerCase().includes(f));
+    const n = G.length; if (!UI.relAll && !f) G = G.slice(0, 25);
+    const seeds = [...new Set(G.flatMap((g) => Object.keys(g.seeds)))].sort();
+    $('rel').innerHTML = `<tr><th>checkpoint</th><th>test</th>${seeds.map((x) => `<th>seed ${x}</th>`).join('')}<th>total</th><th>finished</th><th>when</th></tr>` + G.map((g) =>
+      `<tr><td><b>${esc(g.run)}</b> ${snapName(g.snap)}${g.ema ? ' <span class="ev">avg</span>' : ''}</td><td class="dim">${testKind(g)}</td>${seeds.map((x) => { const v = g.seeds[x]; return v ? `<td class="${rcls(v[0], v[1])}">${v[0]}/${v[1]}</td>` : '<td></td>'; }).join('')}
+      <td class="${rcls(g.total, g.of)}"><b>${g.total}/${g.of}</b></td><td>${pct(g.total / Math.max(1, g.of))}</td><td class="dim">${new Date(g.mtime).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</td></tr>`).join('');
+    $('relMore').hidden = !!f || n <= 25; $('relMore').textContent = UI.relAll ? 'Show newest 25' : `Show all ${n}`;
+  }
+
+  // ---- experiments -------------------------------------------------------------------------------------
+  function drawExp(s) {
+    const f = $('expFilter').value.trim().toLowerCase();
+    let E = (s.experiments ?? []).filter((e) => !f || `${e.run} ${e.title}`.toLowerCase().includes(f));
+    const n = E.length; if (!UI.expAll && !f) E = E.slice(0, 12);
+    const best = (e) => { const g = [...e.reliability].filter((x) => x.of).sort((a, b) => b.total / b.of - a.total / a.of)[0]; return g ? `<span class="${rcls(g.total, g.of)}">${g.total}/${g.of}</span> <span class="ev">${snapName(g.snap)}</span>` : '<span class="ev">–</span>'; };
+    const combat = (e) => { const d = e.bench.filter((b) => b.bench === 'duel3'); if (!d.length) return '<span class="ev">–</span>'; const b = [...d].sort((x, y) => y.metrics.gained - x.metrics.gained)[0]; return `+${b.metrics.gained} places · rub ${b.metrics.rubS}s <span class="ev">${snapName(b.snap)}</span>`; };
+    $('exp').innerHTML = '<tr><th>run</th><th>status</th><th>length</th><th>what it tested</th><th>best reliability</th><th>best combat (duel3)</th></tr>' + E.map((e) => {
+      const open = UI.open.has(e.run);
+      const detail = open ? `<tr class="detail"><td colspan="6">
+        <div class="trow"><span>from <b>${esc(e.resume ?? 'scratch')}</b></span><span>config <b>${esc(e.config ?? '')}</b></span><span>samples <b>${kfmt(e.samples)}</b></span><span>final reward <b>${e.rew?.toFixed(4) ?? '–'}</b></span>${e.moe ? '<span><b>mixture of experts</b></span>' : ''}</div>
+        ${e.reliability.length ? `<div class="chips">${e.reliability.map((g) => `<span class="chip ${rcls(g.total, g.of)}">${snapName(g.snap)} ${g.total}/${g.of} <span class="ev">(${Object.entries(g.seeds).map(([k, v]) => `s${k} ${v[0]}`).join(' · ')}) ${g.laps}-lap${g.ai ? ' · ai' : ''}</span></span>`).join('')}</div>` : '<p class="ev">No reliability results.</p>'}
+        ${e.bench.length ? benchTable(e.bench, null) : ''}</td></tr>` : '';
+      return `<tr data-run="${esc(e.run)}" class="exprow ${open ? 'open' : ''}"><td><b>${esc(e.run)}</b></td><td><span class="st ${e.state}">${e.state}</span></td><td class="dim">${e.state === 'queued' ? '' : `${fmtMin(e.elapsed)}${e.minutes && e.state !== 'done' ? ' / ' + fmtMin(e.minutes) : ''}`}</td>
+        <td class="what">${what(e)}</td><td>${best(e)}</td><td>${combat(e)}</td></tr>${detail}`;
+    }).join('');
+    $('expMore').hidden = !!f || n <= 12; $('expMore').textContent = UI.expAll ? 'Show newest 12' : `Show all ${n}`;
+  }
 
   function draw() {
     const s = ST, n = s.network;
-    if (n) {
+    $('jobsLabel').textContent = s.label ?? '';
+    if (tab === 'netw' && n) {
       $('netInfo').innerHTML = `<span>checkpoint <b>${n.ckpt}</b></span><span>iteration <b>${n.iter}</b></span><span>parameters <b>${kfmt(n.params)}</b></span><span>decides <b>up to 30 / s</b></span><span>deployed <b>${new Date(n.updated).toLocaleString()}</b></span>`;
       $('arch').innerHTML = archSvg(n);
     }
-    $('jobsLabel').textContent = s.label ? `· ${s.label} · overall ${pct(s.overall)}` : '';
-    $('jobs').innerHTML = s.jobs.map((j) => {
-      const extra = j.kind === 'train'
-        ? (j.state === 'queued' ? '' : `${fmtMin(j.elapsed)} / ${fmtMin(j.minutes)}${j.state === 'running' ? ` · ${fmtMin(j.etaMin)} left` : ''}${j.stale ? ' · no log for 2 min' : ''}`)
-        : j.state === 'done' ? `${j.total} complete` : j.detail ? `${j.detail.done}/${j.detail.total} attempts · ${j.detail.complete} ok` : '';
-      return `<span class="st ${j.state}">${j.state}</span><span>${j.title}</span><div class="bar ${j.state === 'done' ? 'done' : j.state === 'queued' ? 'q' : ''}"><i style="width:${pct(j.progress)}"></i></div><span class="x">${extra}</span>`;
-    }).join('');
-    const T = s.trainings ?? [];
-    if (T.length) {
-      const t0 = T[0], many = T.length > 1, nm = (t) => t.run;
-      $('trainLabel').textContent = `· ${T.map(nm).join(' vs ')} · ${t0.config} · from ${t0.resume ?? 'scratch'}${many ? ' · curves by samples collected' : ''}`;
-      const lat = t0.latency?.frames ? 'frame model ' + t0.latency.frames.map((f) => f[0]).join('/') + ' substeps' : `uniform ${t0.latency?.min}–${t0.latency?.max} substeps`;
-      const tr = [...new Set(t0.tracks ?? [])].map((x) => `${x}${t0.tracks.filter((y) => y === x).length > 1 ? ' ×' + t0.tracks.filter((y) => y === x).length : ''}`).join(', ');
-      $('trainInfo').innerHTML = T.map((t, k) => {
-        const L = t.latest, recent = t.curve.slice(-20), stopRate = t.updates ? Math.round(100 * t.stopped / t.updates) : 0;
-        return `<div class="trow"><span style="color:${RUNCOL[k]}"><b>${t.run}</b></span><span>exploration floor <b>${t.stdMin ? t.stdMin.replace(',', ' / ') : 'none'}</b></span><span>iteration <b>${L.it}</b></span><span>samples <b>${kfmt(L.steps)}</b></span><span>throughput <b>${kfmt(Math.round(recent.reduce((a, r) => a + r[6], 0) / Math.max(1, recent.length)))}/s</b></span><span>updates cut short <b>${stopRate}%</b></span><span>decide rate <b>${(30 * (L.decide ?? 0)).toFixed(1)} Hz</b></span></div>`;
-      }).join('') + `<div class="trow"><span>latency <b>${lat}</b></span><span>tracks <b>${tr}</b></span></div>`;
-      if (!$('curves').children.length) $('curves').innerHTML = '<canvas></canvas><canvas></canvas><canvas></canvas><canvas></canvas>';
-      const [c1, c2, c3, c4] = $('curves').children;
-      const ser = (i, extra = {}) => T.map((t, k) => ({ x: t.curve.map((r) => r[7]), v: t.curve.map((r) => r[i]), c: RUNCOL[k], n: many ? t.run : '', ...extra }));
-      curve(c1, 'Reward per decision', ser(2), (v) => v.toFixed(4));
-      curve(c2, 'Policy std', [...ser(3).map((x) => ({ ...x, n: `${x.n} steer`.trim() })), ...ser(4, { dash: true }).map((x) => ({ ...x, n: `${x.n} pedal`.trim() }))]);
-      curve(c3, 'KL per update', ser(5), (v) => v.toFixed(4));
-      curve(c4, 'Samples / s', ser(6), (v) => kfmt(Math.round(v)));
-    }
-    const tracks = [...new Set(s.results.flatMap((r) => Object.keys(r.tracks)))];
-    const cls = (c, of) => c >= 0.9 * of ? 'ok' : c >= 0.5 * of ? 'mid' : 'low';
-    $('res').innerHTML = `<tr><th>checkpoint</th>${tracks.map((x) => `<th>${x}</th>`).join('')}<th>total</th></tr>` + s.results.map((r) => `<tr><td>${r.name}</td>${tracks.map((x) => {
-      const v = r.tracks[x]; return v ? `<td class="${cls(v[0], v[1])}">${v[0]}/${v[1]}${v[2] != null ? ` <span class="ev">+${v[2]}%</span>` : ''}</td>` : '<td></td>';
-    }).join('')}<td><b>${r.total}/${r.of}</b></td></tr>`).join('');
+    if (tab === 'live') drawLive(s);
+    if (tab === 'exp') drawExp(s);
+    if (tab === 'bench') drawBench(s);
+    if (tab === 'rel') drawRel(s);
   }
 
   async function poll() {

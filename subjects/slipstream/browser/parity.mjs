@@ -2,10 +2,10 @@
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Policy } from './policy.mjs';
+import { makePolicy } from './policy.mjs';
 
 const dir = join(dirname(fileURLToPath(import.meta.url)), '..', 'runs', 'export'), name = process.argv[2];
-const pol = new Policy(JSON.parse(readFileSync(join(dir, `${name}.json`), 'utf8')));
+const pol = makePolicy(JSON.parse(readFileSync(join(dir, `${name}.json`), 'utf8')));
 const fx = JSON.parse(readFileSync(join(dir, `${name}.fixture.json`), 'utf8'));
 let worst = 0; const t0 = performance.now();
 fx.raw.forEach((raw, t) => {

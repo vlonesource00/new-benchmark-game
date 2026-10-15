@@ -13,7 +13,7 @@ import os
 import numpy as np
 import torch
 
-from model import Slipstream
+from model import Slipstream, SlipstreamMoE
 from ppo import SUBJECT, RunningNorm, binary_columns
 
 ACTOR = ('ego.', 'road.', 'tok.', 'query.', 'null', 'attn.', 'pre.', 'gru.', 'pi.')
@@ -29,15 +29,23 @@ def main():
     a = ap.parse_args()
     ck = torch.load(os.path.join(SUBJECT, a.ckpt), map_location='cpu', weights_only=False)
     layout = ck['layout']
-    net = Slipstream(layout).eval()
+    moe = 'moe' in ck
+    net = (SlipstreamMoE(layout) if moe else Slipstream(layout)).eval()
     net.load_state_dict(ck['model'])
     skip = binary_columns(layout)
-    norm = RunningNorm(net.ego_f + net.k * net.rf_f + net.rn * net.rv_f, skip)
+    D = layout['ego'] + layout['roadK'] * layout['roadF'] + layout['rivalN'] * layout['rivalF']
+    norm = RunningNorm(D, skip)
     norm.load(ck['norm'])
-    params = {k: {'shape': list(v.shape), 'data': base64.b64encode(v.detach().float().numpy().astype('<f4').tobytes()).decode()}
-              for k, v in net.state_dict().items() if k.startswith(ACTOR)}
-    out = {'ckpt': a.ckpt, 'iter': ck.get('iter'), 'layout': layout, 'hidden': net.hidden, 'skip': skip.tolist(),
-           'mean': norm.mean.astype(np.float32).tolist(), 'std': np.sqrt(norm.var + 1e-8).astype(np.float32).tolist(), 'params': params}
+    enc = lambda v: {'shape': list(v.shape), 'data': base64.b64encode(v.detach().float().numpy().astype('<f4').tobytes()).decode()}
+    actor = lambda m: {k: enc(v) for k, v in m.state_dict().items() if k.startswith(ACTOR)}
+    std = np.sqrt(norm.var + 1e-8).astype(np.float32).tolist()
+    out = {'ckpt': a.ckpt, 'iter': ck.get('iter'), 'layout': layout, 'skip': skip.tolist(), 'mean': norm.mean.astype(np.float32).tolist(), 'std': std}
+    if moe:  # two expert actors (each with its own normaliser, as browser/policy.mjs runs them) and the router
+        sub = lambda m, mean, sd: {'layout': layout, 'hidden': net.eh, 'skip': skip.tolist(), 'mean': mean.tolist(), 'std': sd.tolist(), 'params': actor(m)}
+        out.update(moe=True, hidden=net.hidden, base=sub(net.base, net.b_mean, net.b_std), cmb=sub(net.cmb, net.t_mean, net.t_std),
+                   gate={k: enc(v) for k, v in net.gate.state_dict().items()})
+    else:
+        out.update(hidden=net.hidden, params=actor(net))
     if a.blind_rivals:
         out['blindRivals'] = True
     d = os.path.join(SUBJECT, 'runs', 'export')
@@ -62,7 +70,8 @@ def main():
             mus.append(mu[0].tolist())
     with open(os.path.join(d, f'{a.name}.fixture.json'), 'w') as f:
         json.dump({'raw': raw.tolist(), 'first': first.tolist(), 'decide': dec.tolist(), 'mu': mus}, f)
-    print(json.dumps({'export': f'runs/export/{a.name}.json', 'mb': round(os.path.getsize(os.path.join(d, f'{a.name}.json')) / 1e6, 2), 'params': int(sum(np.prod(p['shape']) for p in params.values()))}))
+    n = sum(np.prod(p['shape']) for e in ([out['base'], out['cmb']] if moe else [out]) for p in e['params'].values())
+    print(json.dumps({'export': f'runs/export/{a.name}.json', 'mb': round(os.path.getsize(os.path.join(d, f'{a.name}.json')) / 1e6, 2), 'params': int(n)}))
 
 
 if __name__ == '__main__':

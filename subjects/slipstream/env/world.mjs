@@ -34,7 +34,12 @@ export class World {
   build() {
     const cfg = this.cfg, seats = [];
     for (let i = 0; i < cfg.learners; i++) seats.push({ learner: true });
-    for (const id of cfg.ai ?? []) seats.push({ ai: id });
+    // challenge: every build is one short pass challenge against challenge.opp [min, max] rivals drawn from cfg.ai.
+    const C = cfg.challenge;
+    // An AI entry 'id:class' (e.g. 'intercept:lmdh') races that car class; plain ids race cfg.classId (multiclass fields).
+    const aiSeat = (e) => { const [ai, classId] = e.split(':'); return classId ? { ai, classId } : { ai }; };
+    if (C) { const n = C.opp[0] + Math.floor(this.rng() * (C.opp[1] - C.opp[0] + 1)); for (let i = 0; i < n; i++) seats.push(aiSeat(cfg.ai[Math.floor(this.rng() * cfg.ai.length)])); }
+    else for (const id of cfg.ai ?? []) seats.push(aiSeat(id));
     // gridOrder 'shuffle': grid slots (seat order) drawn per build, so learners start anywhere in the pack.
     if (cfg.gridOrder === 'shuffle') for (let i = seats.length - 1; i > 0; i--) { const j = Math.floor(this.rng() * (i + 1)); [seats[i], seats[j]] = [seats[j], seats[i]]; }
     // starts.grid: share of builds in which every learner keeps its grid slot and starts standing with the whole field
@@ -44,9 +49,29 @@ export class World {
     const race = this.env.race;
     // Skip the lights: the field starts racing from its grid slots and learners are placed by their episodes.
     race.countdown = 0; race.phase = 'racing'; race.primeSeats();
+    // Contact fault (reward.rearEnd): the physics reports contact pairs with their closing speed to the stewards, who
+    // charge both cars alike. Read them before the stewards consume them and keep, per car, the hardest contact this
+    // tick in which it was the car behind (less race progress by over 2 m; closer than that is side by side).
+    // rub: physics ticks this tick in which the car touched any car at all (reward.rub, side contact included).
+    this.rear = new Float32Array(race.cars.length); this.rub = new Float32Array(race.cars.length);
+    const st = race.stewards;
+    if (st) {
+      const step = st.step.bind(st);
+      st.step = (dt) => {
+        const hit = new Set();
+        for (const [i, j] of st.pairs) { hit.add(i); hit.add(j); }
+        for (const i of hit) this.rub[i]++;
+        for (const [i, j, closing] of st.pairs) {
+          const d = race.cars[i].race.progress - race.cars[j].race.progress;
+          if (Math.abs(d) > 2) { const b = d < 0 ? i : j; this.rear[b] = Math.max(this.rear[b], closing); }
+        }
+        return step(dt);
+      };
+    }
     this.track = this.env.track; this.road = this.roadCache ?? (this.roadCache = roadTable(this.track));
     this.limit = this.track.halfWidth + (this.track.curbWidth ?? 0);
     this.agents = this.env.learners.map((ci, k) => ({ ci, k, car: race.cars[ci], entry: race.entries[ci] }));
+    if (C) this.placeChallenge();
     this.snapshots ??= [];
     this.failures ??= [];
     for (const a of this.agents) this.resetAgent(a, true);
@@ -68,6 +93,7 @@ export class World {
     // starts.siteLead [min, max] metres before the site (default 40-200); a longer lead lets the car reach its own
     // approach speed and line before the corner instead of arriving at the reset speed and lateral draw.
     const lead = starts.siteLead ?? [40, 200];
+    if (cfg.challenge) { this.placeLearner(a); return this.beginEpisode(a, false); }
     // Pack starts: a further starts.pack share begins 8-45 m behind or beside another moving car at its speed (+-8%),
     // so close running (draft, braking in a queue, side by side) is practised; plain starts keep 70 m from everyone.
     const p1 = p0 + (starts.siteP ?? 0);
@@ -119,6 +145,50 @@ export class World {
     return false;
   }
 
+  /**
+   * Pass challenge (cfg.challenge): the rivals run as a train from a random place on the lap, gapM [min, max] metres
+   * apart at a share speed [min, max] of the corner-limited speed there, each on a random compound from compounds with
+   * a random wear [min, max] (the cliff starts at 0.72). Race progress follows the lap position, so the order is real.
+   */
+  placeChallenge() {
+    const race = this.env.race, rng = this.rng, C = this.cfg.challenge, L = this.track.length, hw = this.track.halfWidth;
+    const draw = (r) => r[0] + rng() * (r[1] - r[0]);
+    const rivals = race.cars.filter((c, i) => !this.env.learners.includes(i));
+    const s0 = rng() * L; let off = 0;
+    this.challengeTail = s0; this.challengeBase = race.cars[0].race.progress;
+    for (const c of rivals) { // the rearmost rival first: progress grows along the train
+      const s = (s0 + off) % L;
+      c.place(this.track, s, (rng() * 2 - 1) * hw * 0.5, resetSpeed(this.road, s) * draw(C.speed ?? [0.6, 0.9]));
+      this.fitDrawn(c);
+      c.race.previousS = c.s; c.race.progress = this.challengeBase + off;
+      off += draw(C.gapM ?? [15, 45]);
+    }
+  }
+
+  /**
+   * The learner behind the rearmost rival by leadM [min, max] metres, on its own draws (learnerCompounds, learnerWear;
+   * default the rivals'). matchSpeed [min, max]: start at that share of the rearmost rival's speed instead of an
+   * independent draw. With the AIs at about the learner's pace, a challenge can only be won from a pace advantage (as
+   * real passes come from tyre and speed deltas): fresher tyres than the rivals' and no speed deficit at the start.
+   */
+  placeLearner(a) {
+    const { car } = a, race = this.env.race, rng = this.rng, C = this.cfg.challenge, L = this.track.length, hw = this.track.halfWidth;
+    const lead = C.leadM ?? [20, 60], back = lead[0] + rng() * (lead[1] - lead[0]), s = (((this.challengeTail - back) % L) + L) % L;
+    const tail = race.cars.filter((o) => o !== car).reduce((m, o) => (o.race.progress < m.race.progress ? o : m));
+    const v = C.matchSpeed ? Math.min(resetSpeed(this.road, s), tail.speed * (C.matchSpeed[0] + rng() * (C.matchSpeed[1] - C.matchSpeed[0]))) : resetSpeed(this.road, s) * (0.6 + 0.3 * rng());
+    car.place(this.track, s, (rng() * 2 - 1) * hw * 0.6, v);
+    this.fitDrawn(car, C.learnerCompounds, C.learnerWear);
+    car.fuel = this.cfg.fuel ?? (25 + rng() * 45);
+    car.race.previousS = car.s; car.race.progress = this.challengeBase - back;
+  }
+
+  fitDrawn(c, compounds, wear) {
+    const C = this.cfg.challenge, rng = this.rng, comp = compounds ?? C.compounds ?? ['soft', 'medium', 'hard'];
+    this.env.race.fitTyres(c, comp[Math.floor(rng() * comp.length)], true);
+    const w = wear ?? C.wear ?? [0, 0.65], x = w[0] + rng() * (w[1] - w[0]);
+    c.wheels.forEach((wh) => { wh.tyre.wear = clamp(x + (rng() - 0.5) * 0.04, 0, 1); });
+  }
+
   /** Episode bookkeeping after placement. fresh: grid and pack starts, which skipped the plain start's tyres and fuel. */
   beginEpisode(a, fresh) {
     const { car, entry } = a, race = this.env.race, rng = this.rng, cfg = this.cfg;
@@ -148,6 +218,15 @@ export class World {
     // replies between frames, so a reply lands one frame (sometimes two) after its observation; the frame time is drawn per episode.
     const F = cfg.latency?.frames; if (F) { let u = rng() * F.reduce((t, x) => t + x[1], 0), i = 0; while (u >= F[i][1] && i < F.length - 1) u -= F[i++][1]; a.frame = F[i][0]; }
     a.first = 1; a.end = 0;
+    // Pass challenge: per rival, which side of it we are on, since when, and the current pass attempt (see reward).
+    // racePass: the same place scoring in ordinary race worlds, against AI rivals of this car's class only (being
+    // lapped by a faster class is not a lost place; contact with it is still charged by the traffic costs).
+    if (cfg.challenge || cfg.racePass) {
+      const L = this.track.length, cls = car.classId ?? 'gt';
+      a.opp = race.cars.filter((o) => o !== car && !this.env.learners.includes(o.id) && (cfg.challenge || (o.classId ?? 'gt') === cls))
+        .map((o) => ({ c: o, ahead: wrapPi(((o.s - car.s) / L) * TAU) > 0, since: 0, closeAt: null, dirty: false, pend: null }));
+      a.cleared = false;
+    }
   }
 
   // ---- command delivery -------------------------------------------------------------------------
@@ -183,6 +262,7 @@ export class World {
       this.send(a, actions[a.k * 2], actions[a.k * 2 + 1], this.sub ?? 0);
     }
     this.gridStart = false; // grid starts hold only for the episodes that begin with the build
+    this.rear.fill(0); this.rub.fill(0);
     for (let i = 0; i < substeps; i++) {
       this.sub = (this.sub ?? 0) + 1;
       for (const a of this.agents) this.applyArrivals(a, this.sub);
@@ -209,7 +289,8 @@ export class World {
       row[OBS + 4] = (r.done || r.trunc || !a.inflight) ? 1 : 0; // a final observation is always consumed (bootstrap value)
       if (r.done || r.trunc) { a.end = 1; stats.episodes++; stats.terminal += r.done ? 1 : 0; stats.why[r.why] = (stats.why[r.why] ?? 0) + 1; }
     }
-    if (recycle) this.recycle();
+    // A pass challenge is one episode: when it ends (cleared, timed out or failed) the next build draws a new one.
+    if (recycle || (this.cfg.challenge && this.agents.every((a) => a.end))) this.recycle();
   }
 
   /** Failure starts replay the run-up to places where the learner crashed or (starts.offSites) broke track limits. */
@@ -244,6 +325,70 @@ export class World {
     const inc = this.env.race.stewards?.of(a.entry)?.inc ?? 0, dInc = Math.max(0, inc - a.inc); a.inc = inc;
     reward -= dInc * (R.incident ?? 0.5);
     if (dInc) stats.incidents = (stats.incidents ?? 0) + dInc;
+    // Fault-attributed traffic costs (default off). rearEnd: per m/s of closing speed in a contact where this car was
+    // the one behind; being hit is not charged. ttc: a dense cost per second while closing on a car ahead in this car's
+    // lane (lateral overlap) with under ttcS seconds to contact, growing as that time shrinks, so the policy learns to
+    // lift, brake or change line before the contact the sparse costs only price afterwards.
+    if (R.rearEnd && this.rear[a.ci] > 0) { reward -= R.rearEnd * this.rear[a.ci]; stats.rearEnds = (stats.rearEnds ?? 0) + 1; }
+    if (R.ttc) {
+      const T = R.ttcS ?? 1.0, w = (c.spec?.track ?? 1.72) + 0.3;
+      let worst = 0;
+      for (const r of this.env.race.cars) {
+        if (r === c) continue;
+        const gap = wrapPi(((r.s - c.s) / L) * TAU) * L / TAU, close = c.speed - r.speed;
+        if (gap <= 0 || gap > 60 || close <= 0.5 || Math.abs(r.lateral - c.lateral) > w) continue;
+        const t = (gap - 4.6) / close; // 4.6 m: one car length, centre to centre
+        if (t < T) worst = Math.max(worst, Math.min(1, 1 - t / T));
+      }
+      if (worst > 0) { reward -= R.ttc * dt * worst; stats.ttc = (stats.ttc ?? 0) + dt; }
+    }
+    // rub: per second in contact with any car (closing speed and side irrelevant): leaning on cars to get past is not
+    // free. clear: per second alongside a car (within 5 m along the lap) with the centre-to-centre lateral gap under
+    // clearM, growing from 0 at clearM to 1 at a car's width, so passes are made with room (using the track's width).
+    if (R.rub && this.rub[a.ci] > 0) { const sec = this.rub[a.ci] * FIXED_DT; reward -= R.rub * sec; stats.rub = (stats.rub ?? 0) + sec; }
+    if (R.clear) {
+      const W = 1.96, M = R.clearM ?? 2.6; // W: car width of the collision box (2 x 0.98 m, vehicle.js collisions)
+      let worst = 0;
+      for (const r of this.env.race.cars) {
+        if (r === c) continue;
+        const gap = wrapPi(((r.s - c.s) / L) * TAU) * L / TAU, sep = Math.abs(r.lateral - c.lateral);
+        if (Math.abs(gap) < 5 && sep < M) worst = Math.max(worst, Math.min(1, (M - sep) / (M - W)));
+      }
+      if (worst > 0) { reward -= R.clear * dt * worst; stats.clear = (stats.clear ?? 0) + dt; }
+    }
+    // Pass challenge rewards (cfg.challenge). A pass is a rival that stays behind for passHold s; it pays reward.pass,
+    // half of it scaled by how quickly the pass followed closing within 1 s (passT s for nothing extra), and nothing
+    // when this car touched any car, broke track limits or drew incident points from closing until the pass held.
+    // Being passed costs reward.lost (>= pass, so giving a place back to retake it never pays). stuck: per second
+    // within 1 s behind a rival; behind: per second per rival still ahead at any distance (the clock of the
+    // challenge, so following out of the 1 s window does not escape it). Every rival passed ends the episode.
+    if (a.opp) {
+      const v = Math.max(c.speed, 10), HOLD = R.passHold ?? 2, T = R.passT ?? 15;
+      const dirtyNow = this.rub[a.ci] > 0 || illegalFrac > 0 || dInc > 0;
+      let stuck = false;
+      for (const o of a.opp) {
+        const g = wrapPi(((o.c.s - c.s) / L) * TAU) * L / TAU, gs = g / v;
+        if (gs > 0 && gs < 1) { stuck = true; o.closeAt ??= a.t; }
+        if (gs > 1.5 && !o.pend) { o.closeAt = null; o.dirty = false; }
+        if ((o.closeAt !== null || Math.abs(g) < 10) && dirtyNow && !o.dirty) { // first cause, for the stats
+          o.dirty = true; o.why = this.rub[a.ci] > 0 ? 'rub' : illegalFrac > 0 ? 'off' : 'inc';
+        }
+        const ahead = g > 0; // sides swap only near the car: a rival half a lap away wrapping across is not a pass
+        if (ahead !== o.ahead && Math.abs(g) < 100) { o.ahead = ahead; o.since = a.t; o.pend = ahead ? 'lost' : 'pass'; }
+        if (o.pend && a.t - o.since >= HOLD) {
+          if (o.pend === 'pass') {
+            const took = o.since - (o.closeAt ?? o.since);
+            if (!o.dirty) reward += (R.pass ?? 0) * (0.5 + 0.5 * clamp(1 - took / T, 0, 1));
+            stats.passes = (stats.passes ?? 0) + 1;
+            if (o.dirty) { stats.dirty = (stats.dirty ?? 0) + 1; (stats.dirtyWhy ??= {})[o.why] = (stats.dirtyWhy[o.why] ?? 0) + 1; }
+          } else { reward -= R.lost ?? R.pass ?? 0; stats.lostP = (stats.lostP ?? 0) + 1; }
+          o.pend = null; o.closeAt = null; o.dirty = false;
+        }
+      }
+      if (stuck) { reward -= (R.stuck ?? 0) * dt; stats.stuckS = (stats.stuckS ?? 0) + dt; }
+      if (R.behind) reward -= R.behind * dt * a.opp.filter((o) => o.ahead).length;
+      if (this.cfg.challenge) a.cleared = a.opp.every((o) => !o.ahead && !o.pend);
+    }
     a.dist += ds; if (legal) a.legalDist += ds;
     a.offFor = illegalFrac === 1 ? a.offFor + dt : 0;
     a.slowFor = c.speed < 2 ? a.slowFor + dt : 0;
@@ -274,8 +419,8 @@ export class World {
     if (done && why !== 'dq') this.noteFailure(c.s);
     if (done) stats.endEv?.push([(stats.base ?? 0) + a.k, stats.tick ?? 0, why, Math.round(c.s)]);
     if (done && stats.wrecks && stats.wrecks.length < 64) stats.wrecks.push([this.track.id, Math.round(c.s), why, +c.speed.toFixed(1), +c.lateral.toFixed(1)]);
-    const trunc = !done && a.t >= a.horizon;
-    return { reward, done, trunc, why: why ?? (trunc ? 'horizon' : null) };
+    const trunc = !done && (a.t >= a.horizon || a.cleared);
+    return { reward, done, trunc, why: why ?? (a.cleared ? 'cleared' : trunc ? 'horizon' : null) };
   }
 
   // ---- replay recording (viewer) -------------------------------------------------------------------

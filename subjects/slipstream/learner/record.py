@@ -15,7 +15,7 @@ import numpy as np
 import torch
 
 from contract import layout_of, obs_len
-from model import Slipstream
+from model import Slipstream, SlipstreamMoE
 from ppo import ROOT, SUBJECT, RunningNorm, binary_columns
 from vecenv import VecEnv
 
@@ -53,7 +53,7 @@ def main():
     env = VecEnv(ROOT, cfg_path, 1)
     ck = torch.load(ck_path, map_location=dev, weights_only=False)
     lay = layout_of(ck)  # the checkpoint's own input contract: it reads only its own columns
-    net = Slipstream(lay).to(dev).eval()
+    net = (SlipstreamMoE(lay) if 'moe' in ck else Slipstream(lay)).to(dev).eval()
     net.load_state_dict(ck['model'])
     norm = RunningNorm(obs_len(lay), binary_columns(lay))
     norm.load(ck['norm'])

@@ -21,7 +21,7 @@ import numpy as np
 import torch
 
 from contract import layout_of, migrate_v1_v2, obs_len
-from model import GraphedSequence, Slipstream
+from model import GraphedSequence, Slipstream, SlipstreamMoE
 from teacher import TeacherData, bc_loss, torch_norm
 from vecenv import VecEnv
 
@@ -134,6 +134,13 @@ def main():
                          'so a changed reward is learned by the critic before it steers policy updates')
     ap.add_argument('--no-graphs', action='store_true', help='run the training sequence pass eagerly instead of as a '
                     'replayed CUDA graph (same results; the graph is ~2-3x faster)')
+    ap.add_argument('--moe-base', default='', help='mixture of experts: this checkpoint is the frozen pace expert, --resume '
+                    '(a plain or MoE checkpoint) the trainable combat expert, plus a learned router; the input normaliser is frozen')
+    ap.add_argument('--gate-solo', type=float, default=5.0, help='MoE: weight of g^2 on decision rows with no rival in view')
+    ap.add_argument('--gate-cost', type=float, default=0.02, help='MoE: weight of g on every decision row (use the combat expert only where it pays)')
+    ap.add_argument('--gate-prior', type=float, default=0.0, help='MoE: weight of a cross-entropy pull of the router to the '
+                    'traffic window (1 with a rival 60 m ahead to 20 m behind, else 0), so it routes before PPO can value routing')
+    ap.add_argument('--gate-prior-end', type=float, default=0.1, help='router prior weight at the end of --minutes, as a fraction (linear)')
     ap.add_argument('--snap-min', type=float, default=10, help='write snap-<min>.pt (and snap-<min>-ema.pt) every this many minutes; 0 = off')
     a = ap.parse_args()
     assert re.fullmatch(r'[a-z0-9-]+', a.name, re.I), 'run name'
@@ -160,18 +167,22 @@ def main():
             ck = migrate_v1_v2(ck, [n for n, _ in Slipstream(lay).named_parameters()])
             lay = layout_of(ck)
     D = obs_len(lay)  # this network's input columns; the env row carries E >= D, then the 5 flags
-    net = Slipstream(lay).to(dev)
+    moe = bool(a.moe_base) or bool(ck and 'moe' in ck)
+    net = (SlipstreamMoE(lay) if moe else Slipstream(lay)).to(dev)
     # Exploration floor: the sampling std never drops below std_min. A collapsed std both stops new states being
     # visited and makes every small mean shift a large KL, so updates stop early (the tt-b2 plateau).
     # std = floor + exp(log_std): the learned part keeps its gradient, so the policy can still raise its exploration
     # above the floor (a hard max(log_std, log floor) froze log_std wherever it sat below the floor, as in tt-c2).
     floor = torch.tensor([float(x) for x in a.std_min.split(',')], device=dev) if a.std_min else None
     log_std = (lambda: torch.log(floor + net.log_std.exp())) if floor is not None else (lambda: net.log_std)
-    opt = torch.optim.Adam(net.parameters(), lr=a.lr, eps=1e-5)
+    opt = torch.optim.Adam([p for p in net.parameters() if p.requires_grad], lr=a.lr, eps=1e-5)
     seq = net.sequence if a.no_graphs or dev.type != 'cuda' else GraphedSequence(net)
     norm, ret_rms = RunningNorm(D, binary_columns(lay)), RunningNorm(())
     it0 = 0
-    if a.resume:
+    if a.resume and moe and 'moe' not in ck:  # a plain checkpoint becomes the combat expert (fresh optimizer)
+        net.cmb.load_state_dict(ck['model'])
+        norm.load(ck['norm'])
+    elif a.resume:
         net.load_state_dict(ck['model'])
         opt.load_state_dict(ck['opt'])
         for g in opt.param_groups:  # the saved optimizer state carries the parent's lr; --lr wins
@@ -179,6 +190,15 @@ def main():
         norm.load(ck['norm'])
         ret_rms.load(ck['ret'])
         it0 = ck.get('iter', 0)
+    if a.moe_base:  # the pace expert: weights and normaliser fixed; the training normaliser is frozen from here on
+        bk = torch.load(os.path.join(SUBJECT, a.moe_base), map_location=dev, weights_only=False)
+        assert obs_len(layout_of(bk)) == D, 'pace expert contract != combat expert'
+        net.base.load_state_dict(bk['model'])
+        bn = RunningNorm(D, binary_columns(lay))
+        bn.load(bk['norm'])
+        net.set_norms((norm.mean, np.sqrt(norm.var + 1e-8)), (bn.mean, np.sqrt(bn.var + 1e-8)), binary_columns(lay))
+    pres_cols = binary_columns(lay)
+    gap_cols = pres_cols + 7  # rival feature 7: along-track gap / 100 m (env/observe.mjs)
     # Weight average. Single checkpoints of the deterministic policy swing between 0/10 and 10/10 per track
     # (tt-b2 at 90/120/150 min: 7, 9, 35 of 50 completions), so the evaluated and deployed policy is a slow average
     # of the trained weights instead of whichever weights the run stopped on.
@@ -210,7 +230,7 @@ def main():
     next_snap = a.snap_min
 
     def save(path, it_done):
-        state = {'opt': opt.state_dict(), 'norm': norm.state(), 'ret': ret_rms.state(), 'iter': it_done, 'layout': lay}
+        state = {'opt': opt.state_dict(), 'norm': norm.state(), 'ret': ret_rms.state(), 'iter': it_done, 'layout': lay, **({'moe': True} if moe else {})}
         torch.save({**state, 'model': net.state_dict(), 'ema': ema}, path + '.pt')
         if a.ema_half > 0:  # the average as a plain checkpoint, so every tool (complete, export, record) loads it as is
             torch.save({**state, 'model': ema}, path + '-ema.pt')
@@ -230,6 +250,7 @@ def main():
         act_b = np.zeros((T, N, 2), np.float32)
         logp_b = np.zeros((T, N), np.float32)
         val_b = np.zeros((T + 1, N), np.float32)
+        gate_b = np.zeros((T, N), np.float32)
         h0 = h.clone()
         DT = torch.zeros(T, N, 2, device=dev) if dist else None
         t_env = 0.0
@@ -242,7 +263,12 @@ def main():
                 first = torch.from_numpy(flg_b[t, :, 3]).to(dev)
                 # Row T is the bootstrap: same processing as row 0 of the next rollout, which starts from h (not committed here).
                 decf = torch.from_numpy(flg_b[t, :, 4]).to(dev)
-                mu, v, h_next = collect_step(net, x, h, first, decf)
+                if moe:
+                    mu, v, h_next, g_ = net.step(x, h, first, decf, with_gate=True)
+                    if t < T:
+                        gate_b[t] = g_.cpu().numpy()
+                else:
+                    mu, v, h_next = collect_step(net, x, h, first, decf)
                 if t < T:  # teachers see rows 0..T-1 (row T is row 0 of the next rollout)
                     for d in dist:
                         tmu, _, d['h'] = collect_step(d['net'], torch.from_numpy(d['norm'](raw_b[t])).to(dev), d['h'], first, decf)
@@ -258,7 +284,11 @@ def main():
                 te = time.time()
                 row = env.step(act_b[t])
                 t_env += time.time() - te
-        norm.update(raw_b[:T].reshape(-1, D)[::4])
+        if not moe:
+            norm.update(raw_b[:T].reshape(-1, D)[::4])
+        # In traffic: a rival within 60 m ahead or 20 m behind (as the hybrid bridge's hand-over window).
+        gp = raw_b[:T][:, :, gap_cols]
+        traffic = ((raw_b[:T][:, :, pres_cols] > 0.5) & (gp < 0.6) & (gp > -0.2)).any(2)
         rew = flg_b[1:, :, 0]
         done = flg_b[1:, :, 1]
         ended_next = np.clip(flg_b[1:, :, 1] + flg_b[1:, :, 2], 0, 1)
@@ -284,13 +314,15 @@ def main():
         ADV = torch.from_numpy(adv).to(dev)
         TGT = torch.from_numpy(tgt).to(dev)
         M = torch.from_numpy(valid).to(dev)
+        SOLO = torch.from_numpy((~traffic).astype(np.float32)).to(dev)
+        gp_w = a.gate_prior * (1 - (1 - a.gate_prior_end) * min(1.0, (time.time() - t_start) / 60 / a.minutes)) if a.minutes else a.gate_prior
         MV = torch.from_numpy(live).to(dev)
         H0 = h0
         mv = M.sum().clamp(min=1)
         am = (ADV * M).sum() / mv
         asd = (((ADV - am) ** 2 * M).sum() / mv).sqrt()
         ADV = (ADV - am) / (asd + 1e-8)
-        kls, clips, vls, pls, bcs, gns, dls = [], [], [], [], [], [], []
+        kls, clips, vls, pls, bcs, gns, dls, gls = [], [], [], [], [], [], [], []
         nf = torch_norm(norm, dev) if teacher else None
         bc_w = a.bc * (1 - (1 - a.bc_end) * min(1.0, (time.time() - t_start) / 60 / a.minutes)) if a.minutes else a.bc
         stop = False
@@ -300,7 +332,8 @@ def main():
             for mb in perm.chunk(a.minibatches):
                 probe = teacher is not None and not warm and not gns  # differentiates twice: eager pass (GraphedSequence)
                 sq = net.sequence if probe else seq
-                mu, v = sq(X[:, mb], H0[mb], F[:, mb], DEC[:, mb])
+                res = sq(X[:, mb], H0[mb], F[:, mb], DEC[:, mb])
+                mu, v = res[0], res[1]
                 ls = log_std()
                 lp = (-((A[:, mb] - mu) ** 2) / (2 * ls.exp() ** 2) - ls - 0.5 * math.log(2 * math.pi)).sum(2)
                 ratio = (lp - LP[:, mb]).exp()
@@ -311,6 +344,14 @@ def main():
                 vl = (((v - TGT[:, mb]) ** 2) * mv_).sum() / mv_.sum().clamp(min=1)
                 ent = (ls + 0.5 * math.log(2 * math.pi * math.e)).sum()
                 loss = pg + a.vcoef * vl - a.ent * ent
+                if moe and not warm:  # router: no combat expert without a rival in view, and a small price for using it
+                    g = res[2]
+                    gl = a.gate_solo * (g ** 2 * m * SOLO[:, mb]).sum() / n + a.gate_cost * (g * m).sum() / n
+                    if gp_w:
+                        gc = g.clamp(1e-4, 1 - 1e-4)
+                        gl = gl + gp_w * (-((1 - SOLO[:, mb]) * gc.log() + SOLO[:, mb] * (1 - gc).log()) * m).sum() / n
+                    loss = loss + gl
+                    gls.append(gl.item())
                 if dist and not warm:
                     dm = M[:, mb] * DMASK[mb]
                     dl = (((mu - DT[:, mb]) ** 2).sum(2) * dm).sum() / dm.sum().clamp(min=1)
@@ -354,6 +395,12 @@ def main():
                 agg[k].append(s[k])
             agg['eps'].append(s['eps'])
             agg['inc'].append(s.get('inc', 0))
+            agg['rear'].append(s.get('rear', 0))
+            agg['ttc'].append(s.get('ttc', 0))
+            agg['rub'].append(s.get('rub', 0))
+            agg['clear'].append(s.get('clear', 0))
+            for k in ('passes', 'dirty', 'lostP', 'stuckS'):
+                agg[k].append(s.get(k, 0))
             for w, c in s['why'].items():
                 agg['why:' + w].append(c)
             for trk, laps in s['laps'].items():
@@ -363,13 +410,16 @@ def main():
                't_roll': round(t_roll, 2), 't_env': round(t_env, 2), 't_upd': round(t_upd, 2), 'rew': round(float(rew[live.astype(bool)].mean()), 4),
                **({'bc': round(float(np.mean(bcs)), 4), 'bc_w': round(bc_w, 3), 'gn': [round(x, 4) for x in gns[0]]} if bcs else {}),
                **({'dist': round(float(np.mean(dls)), 4)} if dls else {}),
+               **({'gate_tr': round(float(gate_b[traffic & (valid > 0)].mean()) if (traffic & (valid > 0)).any() else 0.0, 3),
+                   'gate_solo': round(float(gate_b[~traffic & (valid > 0)].mean()) if (~traffic & (valid > 0)).any() else 0.0, 3),
+                   'traffic': round(float(traffic[valid > 0].mean()), 3), 'gl': round(float(np.mean(gls)), 4) if gls else 0.0} if moe else {}),
                'kl': round(float(np.mean(kls)), 4), 'clip': round(float(np.mean(clips)), 3), 'vl': round(float(np.mean(vls)), 3),
                'std': [round(x, 3) for x in log_std().exp().tolist()], 'stopped': stop, 'warm': warm, 'decide': round(float(dec[:T].mean()), 3)}
         if it % 10 == 9:
             for k, v in list(agg.items()):
                 if k.startswith('lap:'):
                     rec[k] = {'n': len(v), 'best': round(min(v), 3), 'med': round(float(np.median(v)), 3)} if v else None
-                elif k.startswith('why:') or k in ('eps', 'inc'):
+                elif k.startswith('why:') or k in ('eps', 'inc', 'rear', 'passes', 'dirty', 'lostP'):
                     rec[k] = int(sum(v))
                 else:
                     rec[k] = round(float(np.mean(v)), 4)
