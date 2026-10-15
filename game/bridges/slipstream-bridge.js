@@ -8,14 +8,22 @@ import { observe, roadTable, OBS } from '../../subjects/slipstream/env/observe.m
 
 const GAP = 4 / 120;
 const inWorker = typeof WorkerGlobalScope !== 'undefined' && globalThis instanceof WorkerGlobalScope;
-let weights = null; // Vite serves the JSON as a module; headless sims add the json attribute via scripts/json-loader.mjs
-const loadWeights = () => (weights ??= import('../../subjects/slipstream/policy/slipstream.json').then((m) => m.default ?? m));
+// Vite serves the JSON as a module; headless sims add the json attribute via scripts/json-loader.mjs. Tracks listed
+// in TRACK_WEIGHTS race a track specialist instead of the main policy (static imports, so Vite bundles them).
+const TRACK_WEIGHTS = {
+  nurburgring: () => import('../../subjects/slipstream/policy/slipstream-nurburgring.json')
+};
+const weights = {};
+const loadWeights = (trackId) => {
+  const key = TRACK_WEIGHTS[trackId] ? trackId : 'main';
+  return (weights[key] ??= (TRACK_WEIGHTS[trackId]?.() ?? import('../../subjects/slipstream/policy/slipstream.json')).then((m) => m.default ?? m));
+};
 
 export function createSlipstreamBridge({ hostTrack, index = 0 }) {
   let policy = null, road = null, first = true, lastDecision = -1e9, held = [0, 0], staged = null;
   let seen = null, appliedAt = 0, sent = [0, 0];
   const o = new Float32Array(OBS), limit = hostTrack.halfWidth + (hostTrack.curbWidth ?? 0);
-  loadWeights().then((exp) => { policy = new Policy(exp); }, (e) => { console.warn('[slipstream] weights failed', e); });
+  loadWeights(hostTrack.id).then((exp) => { policy = new Policy(exp); }, (e) => { console.warn('[slipstream] weights failed', e); });
   const toControls = ([st, pd]) => ({ steer: st, throttle: pd > 0 ? pd : 0, brake: pd < 0 ? -pd : 0 });
   return {
     id: 'slipstream', native: true, errors: 0,

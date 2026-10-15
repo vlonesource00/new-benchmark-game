@@ -13,7 +13,8 @@ for (const track of tracks.split(',')) for (const slot of slots.split(',').map(N
   await new Promise((r) => setTimeout(r, 1500)); // weights load asynchronously
   const me = env.cars[slot], laps = [];
   let lap = me.race.lap, off0 = 0;
-  for (let k = 0; k < (want * 140 + 30) * 30 && laps.length < want; k++) {
+  const lapCap = Math.max(140, env.track.length / 40); // s per lap: 140 on the ~5 km tracks, ~630 on Nurburgring
+  for (let k = 0; k < (want * lapCap + 30) * 30 && laps.length < want; k++) {
     env.step(4);
     if (me.race.lap !== lap) {
       const off = me.race.offtrack ?? 0;
