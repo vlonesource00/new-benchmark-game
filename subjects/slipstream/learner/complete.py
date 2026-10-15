@@ -111,7 +111,7 @@ def main():
             x = torch.from_numpy(norm(row[:, :obs_len(lay)])).to(dev)
             mu, _, h = net.step(x, h, torch.from_numpy(row[:, D + 3].copy()).to(dev), torch.from_numpy(row[:, D + 4].copy()).to(dev))
             if noise is not None:
-                mu = mu + noise * torch.randn(mu.shape, generator=gen).to(dev)
+                mu = mu + (noise * torch.randn(mu.shape, generator=gen)).to(dev)  # draws on the CPU generator (seeded), then moved
             row = env.step(mu.cpu().numpy())
             tick += 1
             if tick % 60 == 0:
