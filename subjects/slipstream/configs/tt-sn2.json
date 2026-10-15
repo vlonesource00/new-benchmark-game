@@ -1,0 +1,78 @@
+{
+ "worlds": 12,
+ "seed": 3,
+ "substeps": 4,
+ "statsEvery": 600,
+ "tracks": [
+  "nurburgring"
+ ],
+ "weathers": [
+  "clear"
+ ],
+ "world": {
+  "learners": 4,
+  "ai": [],
+  "classId": "gt",
+  "lifetime": 1500,
+  "latency": {
+   "frames": [
+    [
+     1,
+     0.3
+    ],
+    [
+     2,
+     0.35
+    ],
+    [
+     3,
+     0.1
+    ],
+    [
+     4,
+     0.15
+    ],
+    [
+     8,
+     0.1
+    ]
+   ],
+   "extraP": 0.05,
+   "longP": 0.01,
+   "longMin": 8,
+   "longMax": 30
+  },
+  "episode": {
+   "min": 240,
+   "max": 600
+  },
+  "starts": {
+   "snapshot": 0.3,
+   "failure": 0.25,
+   "standing": 0.1,
+   "offSites": true,
+   "sites": {
+    "nurburgring": [
+     3167,
+     4460,
+     9678,
+     9720,
+     10757,
+     10764,
+     17537,
+     17540,
+     17602,
+     17613,
+     18617
+    ]
+   },
+   "siteP": 0.15
+  },
+  "reward": {
+   "terminal": 15,
+   "offEnter": 4,
+   "margin": 0.5,
+   "marginM": 1.0
+  }
+ }
+}

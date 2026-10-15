@@ -86,6 +86,12 @@ export class World {
       const v = standing ? 0 : resetSpeed(this.road, s) * (0.35 + 0.6 * rng());
       car.place(this.track, s, lat, v);
       race.fitTyres(car, 'medium', true);
+      // starts.tyreSnap: share of these starts that take the tyres' thermal state and wear from a reached snapshot, so
+      // fail sites are also practised on long-run tyres (fronts cool 8-11 C under optimum), not only freshly fitted ones.
+      if (starts.tyreSnap && this.snapshots.length > 8 && rng() < starts.tyreSnap) {
+        const sn = this.snapshots[Math.floor(rng() * this.snapshots.length)];
+        car.wheels.forEach((w, i) => { const st = sn.wheels?.[i]?.tyre; if (st) for (const k of ['surface', 'core', 'inner', 'outer', 'pressure', 'wear']) w.tyre[k] = st[k]; });
+      }
       car.fuel = cfg.fuel ?? (25 + rng() * 45); // evaluations fix it; training draws it (rng untouched when fixed)
       // Mild perturbation of a feasible state: heading and sideslip within what a driven car shows.
       const dy = (rng() * 2 - 1) * 0.08, beta = (rng() * 2 - 1) * 0.04;
