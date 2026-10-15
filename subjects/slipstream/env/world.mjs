@@ -386,7 +386,7 @@ export class World {
       let stuck = false;
       for (const o of a.opp) {
         const g = wrapPi(((o.c.s - c.s) / L) * TAU) * L / TAU, gs = g / v;
-        if (gs > 0 && gs < 1) { stuck = true; o.closeAt ??= a.t; }
+        if (gs > 0 && gs < 1) { stuck = true; if (o.closeAt == null) { o.closeAt = a.t; stats.closes = (stats.closes ?? 0) + 1; } } // closes: encounters (passes per close = conversion)
         if (gs > 1.5 && !o.pend) { o.closeAt = null; o.dirty = false; }
         if ((o.closeAt !== null || Math.abs(g) < 10) && dirtyNow && !o.dirty) { // first cause, for the stats
           o.dirty = true; o.why = this.rub[a.ci] > 0 ? 'rub' : illegalFrac > 0 ? 'off' : 'inc';

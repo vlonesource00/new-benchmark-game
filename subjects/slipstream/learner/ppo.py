@@ -464,7 +464,7 @@ def main():
             agg['ttc'].append(s.get('ttc', 0))
             agg['rub'].append(s.get('rub', 0))
             agg['clear'].append(s.get('clear', 0))
-            for k in ('passes', 'dirty', 'lostP', 'stuckS'):
+            for k in ('passes', 'dirty', 'lostP', 'stuckS', 'closes'):
                 agg[k].append(s.get(k, 0))
             for w, c in s['why'].items():
                 agg['why:' + w].append(c)
@@ -493,7 +493,7 @@ def main():
             for k, v in list(agg.items()):
                 if k.startswith('lap:'):
                     rec[k] = {'n': len(v), 'best': round(min(v), 3), 'med': round(float(np.median(v)), 3)} if v else None
-                elif k.startswith('why:') or k in ('eps', 'inc', 'rear', 'passes', 'dirty', 'lostP'):
+                elif k.startswith('why:') or k in ('eps', 'inc', 'rear', 'passes', 'dirty', 'lostP', 'closes'):
                     rec[k] = int(sum(v))
                 else:
                     rec[k] = round(float(np.mean(v)), 4)
