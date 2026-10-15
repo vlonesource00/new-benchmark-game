@@ -5,7 +5,7 @@
 //   stdout -> Float32 [agents x ROW]     obs | reward, done, truncated, first, decide
 // Stats: one JSON line on stderr every `statsEvery` ticks.
 import { readFileSync, writeFileSync } from 'node:fs';
-import { OBS, ROW, EGO_F, ROAD_K, ROAD_F, RIVAL_N, RIVAL_F } from './world.mjs';
+import { OBS, ROW, EGO_F, ROAD_K, ROAD_F, RIVAL_N, RIVAL_F, EGO_X, RIVAL_X } from './world.mjs';
 import { buildWorlds } from './build.mjs';
 
 const cfg = JSON.parse(readFileSync(process.argv[2], 'utf8'));
@@ -16,7 +16,7 @@ for (const w of worlds) { offsets.push(agents); agents += w.agents.length; }
 const actions = new Float32Array(agents * 2), out = new Float32Array(agents * ROW), outBuf = Buffer.from(out.buffer);
 const substeps = cfg.substeps ?? 4;
 
-process.stdout.write(JSON.stringify({ agents, obs: OBS, row: ROW, ego: EGO_F, roadK: ROAD_K, roadF: ROAD_F, rivalN: RIVAL_N, rivalF: RIVAL_F, worlds: worlds.map((w) => ({ track: w.track.id, agents: w.agents.length, ai: w.cfg.ai ?? [] })) }) + '\n');
+process.stdout.write(JSON.stringify({ agents, obs: OBS, row: ROW, ego: EGO_F, roadK: ROAD_K, roadF: ROAD_F, rivalN: RIVAL_N, rivalF: RIVAL_F, egoX: EGO_X, rivalX: RIVAL_X, worlds: worlds.map((w) => ({ track: w.track.id, agents: w.agents.length, ai: w.cfg.ai ?? [] })) }) + '\n');
 
 const stats = () => ({ ticks: 0, dist: 0, legal: 0, speed: 0, episodes: 0, terminal: 0, why: {}, laps: {}, wrecks: [], lapEv: [], endEv: [], lap(track, t) { (this.laps[track] ??= []).push(+t.toFixed(3)); } });
 // Replay recording (viewer): world 0 only, written when the learner closes the pipe.

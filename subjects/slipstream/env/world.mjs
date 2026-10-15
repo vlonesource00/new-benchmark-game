@@ -3,8 +3,8 @@
 // observations, rewards on the game's own rules, and episode resets.
 // Nothing here drives the car: learner controls come only from the policy.
 import { createRaceEnv, FIXED_DT } from './race-env.mjs';
-import { observe, roadTable, OBS, EGO_F, ROAD_K, ROAD_F, RIVAL_N, RIVAL_F } from './observe.mjs';
-export { OBS, EGO_F, ROAD_K, ROAD_F, RIVAL_N, RIVAL_F };
+import { observe, roadTable, OBS, EGO_F, ROAD_K, ROAD_F, RIVAL_N, RIVAL_F, EGO_X, RIVAL_X } from './observe.mjs';
+export { OBS, EGO_F, ROAD_K, ROAD_F, RIVAL_N, RIVAL_F, EGO_X, RIVAL_X };
 
 const TAU = Math.PI * 2;
 const wrapPi = (a) => Math.atan2(Math.sin(a), Math.cos(a));

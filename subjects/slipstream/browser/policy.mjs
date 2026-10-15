@@ -25,7 +25,9 @@ export class Policy {
     this.L = exp.layout; this.H = exp.hidden;
     this.mean = Float32Array.from(exp.mean); this.std = Float32Array.from(exp.std); this.skip = new Set(exp.skip);
     this.p = {}; for (const [k, v] of Object.entries(exp.params)) this.p[k] = decode(v);
-    const L = this.L; this.D = L.ego + L.roadK * L.roadF + L.rivalN * L.rivalF;
+    // Contract v3: egoX / rivalX race-context values after the v2 block, concatenated onto the ego and token inputs.
+    const L = this.L; this.ex = L.egoX ?? 0; this.rx = L.rivalX ?? 0; this.v2 = L.ego + L.roadK * L.roadF + L.rivalN * L.rivalF;
+    this.D = this.v2 + this.ex + L.rivalN * this.rx;
     // blindRivals: every rival slot reads empty (raw zeros, as in a solo race), for actors not yet trained in traffic.
     this.seen = exp.blindRivals ? L.ego + L.roadK * L.roadF : this.D;
     this.h = new Float32Array(this.H);
@@ -33,7 +35,8 @@ export class Policy {
       t1: new Float32Array(64), tok: Array.from({ length: L.rivalN + 1 }, () => new Float32Array(64)), q: new Float32Array(64), qp: new Float32Array(64),
       kp: Array.from({ length: L.rivalN + 1 }, () => new Float32Array(64)), vp: Array.from({ length: L.rivalN + 1 }, () => new Float32Array(64)),
       att: new Float32Array(64), ao: new Float32Array(64), f: new Float32Array(320), pre: new Float32Array(this.H), gi: new Float32Array(3 * this.H),
-      gh: new Float32Array(3 * this.H), z: new Float32Array(this.H + 320), p1: new Float32Array(256), mu: new Float32Array(2) };
+      gh: new Float32Array(3 * this.H), z: new Float32Array(this.H + 320), p1: new Float32Array(256), mu: new Float32Array(2),
+      egoIn: new Float32Array(L.ego + this.ex), tokIn: new Float32Array(L.rivalF + this.rx) };
   }
 
   reset() { this.h.fill(0); }
@@ -43,7 +46,9 @@ export class Policy {
     const { p, L, b: _ } = this, B = this.buf, x = B.x;
     if (first) this.h.fill(0);
     for (let i = 0; i < this.D; i++) { const v = i < this.seen ? raw[i] : 0; x[i] = this.skip.has(i) ? v : Math.max(-10, Math.min(10, (v - this.mean[i]) / this.std[i])); }
-    linear(p['ego.0.weight'], p['ego.0.bias'], x.subarray(0, L.ego), B.e1, true);
+    let ein = x.subarray(0, L.ego);
+    if (this.ex) { B.egoIn.set(ein, 0); B.egoIn.set(x.subarray(this.v2, this.v2 + this.ex), L.ego); ein = B.egoIn; }
+    linear(p['ego.0.weight'], p['ego.0.bias'], ein, B.e1, true);
     linear(p['ego.2.weight'], p['ego.2.bias'], B.e1, B.e);
     const r0 = L.ego + L.roadK * L.roadF;
     linear(p['road.0.weight'], p['road.0.bias'], x.subarray(L.ego, r0), B.r1, true);
@@ -52,8 +57,9 @@ export class Policy {
     B.tok[0].set(p['null'].w.subarray(0, 64));
     let nt = 1;
     for (let i = 0; i < L.rivalN; i++) {
-      const rv = x.subarray(r0 + i * L.rivalF, r0 + (i + 1) * L.rivalF);
+      let rv = x.subarray(r0 + i * L.rivalF, r0 + (i + 1) * L.rivalF);
       if (!(rv[0] > 0.5)) continue;
+      if (this.rx) { const x0 = this.v2 + this.ex + i * this.rx; B.tokIn.set(rv, 0); B.tokIn.set(x.subarray(x0, x0 + this.rx), L.rivalF); rv = B.tokIn; }
       linear(p['tok.0.weight'], p['tok.0.bias'], rv, B.t1, true);
       linear(p['tok.2.weight'], p['tok.2.bias'], B.t1, B.tok[nt++]);
     }

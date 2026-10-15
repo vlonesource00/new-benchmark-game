@@ -8,8 +8,15 @@ const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
 // values. v1 declared 48, which shifted every later value one place past its block and masked real rivals out of the
 // attention (each token's presence flag read the previous slot's last value). The values and their order are unchanged,
 // so the first 296 columns are exactly v1's: v1 checkpoints keep running on them (learner/contract.py).
-export const ROAD_K = 24, ROAD_F = 6, RIVAL_N = 8, RIVAL_F = 13, EGO_F = 49;
-export const OBS = EGO_F + ROAD_K * ROAD_F + RIVAL_N * RIVAL_F;
+// Contract v3 (multiclass race context) appends, after the v2 values (which are unchanged, so v2 networks keep reading
+// their 297 columns): EGO_X ego values (own class tier) and RIVAL_X values per rival slot, in the slot order above
+// (same class, class tier difference, lap difference, size difference). The networks concatenate them onto the ego and
+// rival-token inputs; a migrated v2 network gives them zero weights, so it drives exactly as before.
+export const ROAD_K = 24, ROAD_F = 6, RIVAL_N = 8, RIVAL_F = 13, EGO_F = 49, EGO_X = 1, RIVAL_X = 4;
+export const OBS_V2 = EGO_F + ROAD_K * ROAD_F + RIVAL_N * RIVAL_F;
+export const OBS = OBS_V2 + EGO_X + RIVAL_N * RIVAL_X;
+// Class tier: 1 for prototypes (LMDh / GTP, prototype), 0 for GT and touring cars.
+const tier = (car) => (car.classId === 'lmdh' || car.classId === 'prototype' ? 1 : 0);
 const RIVAL_RANGE = 160;
 
 /** 1 m centreline table so observations never call track.at per sample. */
@@ -63,12 +70,26 @@ export function observe(o, ctx) {
     if (Math.abs(g) < RIVAL_RANGE) near.push([Math.abs(g), g, r]);
   }
   near.sort((p, q) => p[0] - q[0]);
+  const slots = [];
   for (let i = 0; i < RIVAL_N; i++) {
     const p = near[i];
     if (!p) { for (let f = 0; f < RIVAL_F; f++) put(0); continue; }
-    const [, g, r] = p, dx = r.x - c.x, dz = r.z - c.z, dvx = r.vx - c.vx, dvz = r.vz - c.vz, ry = wrapPi(r.yaw - c.yaw);
+    const [, g, r] = p; slots.push(p);
+    const dx = r.x - c.x, dz = r.z - c.z, dvx = r.vx - c.vx, dvz = r.vz - c.vz, ry = wrapPi(r.yaw - c.yaw);
     put(1); put(fwd(dx, dz) / 50); put(lat(dx, dz) / 10); put(fwd(dvx, dvz) / 20); put(lat(dvx, dvz) / 10);
     put(Math.sin(ry)); put(Math.cos(ry)); put(g / 100); put(r.lateral / trk.halfWidth); put(r.speed / 50);
     put(r.damage * 4); put(r.ghost ? 1 : 0); put(learnerIds.includes(r.id) ? 1 : 0);
+  }
+  // v3 block: race context. Lap difference: whole laps between the two cars beyond the along-track gap (+1 = the rival
+  // is a lap ahead: it is lapping us, not racing us for position; -1 = we are lapping it).
+  put(tier(c));
+  const cp = c.race?.progress;
+  for (let i = 0; i < RIVAL_N; i++) {
+    const p = slots[i];
+    if (!p) { for (let f = 0; f < RIVAL_X; f++) put(0); continue; }
+    const [, g, r] = p, rp = r.race?.progress;
+    put((r.classId ?? 'gt') === (c.classId ?? 'gt') ? 1 : 0); put(tier(r) - tier(c));
+    put(cp == null || rp == null ? 0 : clamp(Math.round((rp - cp - g) / L), -1, 1));
+    put(((r.spec?.halfLength ?? 2.3) - (c.spec?.halfLength ?? 2.3)) * 2);
   }
 }

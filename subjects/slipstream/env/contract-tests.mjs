@@ -1,6 +1,6 @@
 // Observation contract tests: every block holds exactly what its declared boundaries say.
 //   node --import ./scripts/json-loader.mjs subjects/slipstream/env/contract-tests.mjs
-import { World, OBS, EGO_F, ROAD_K, ROAD_F, RIVAL_N, RIVAL_F } from './world.mjs';
+import { World, OBS, EGO_F, ROAD_K, ROAD_F, RIVAL_N, RIVAL_F, EGO_X, RIVAL_X } from './world.mjs';
 
 const mk = (seed) => { let s = seed; return () => { s = (s + 0x6D2B79F5) >>> 0; let t = s; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; };
 const results = [];
@@ -19,7 +19,8 @@ const unwritten = [...o.subarray(0, OBS)].filter((x) => x === SENT).length;
 check('length', unwritten === 0 && o.subarray(OBS).every((x) => x === SENT), `OBS=${OBS} unwritten=${unwritten} spill=${o.subarray(OBS).filter((x) => x !== SENT).length}`);
 
 // 2. Ego block ends with the hybrid charge (GT car: 0) and the declared sizes add up.
-check('sizes', OBS === EGO_F + ROAD_K * ROAD_F + RIVAL_N * RIVAL_F, `${EGO_F}+${ROAD_K * ROAD_F}+${RIVAL_N * RIVAL_F}=${OBS}`);
+const V2 = EGO_F + ROAD_K * ROAD_F + RIVAL_N * RIVAL_F;
+check('sizes', OBS === V2 + EGO_X + RIVAL_N * RIVAL_X, `${EGO_F}+${ROAD_K * ROAD_F}+${RIVAL_N * RIVAL_F}+${EGO_X}+${RIVAL_N * RIVAL_X}=${OBS}`);
 
 // 3. Road block: sample 0 is ahead of the car (forward > 0), cos(relative heading) near 1 on a start straight.
 const fwd0 = o[EGO_F] * 100, cos0 = o[EGO_F + 3];
@@ -31,7 +32,10 @@ const tok = o.subarray(R0, R0 + RIVAL_F);
 check('rival-token', tok[0] === 1 && Math.abs(tok[7] * 100 - g) < 1 && tok[12] === 1 && tok[11] === 0,
   `present=${tok[0]} gap=${(tok[7] * 100).toFixed(1)} vs ${g.toFixed(1)} learner=${tok[12]} ghost=${tok[11]}`);
 // 5. Unused rival slots are fully zero (no value from a neighbouring slot).
-check('empty-slots', [...o.subarray(R0 + RIVAL_F, OBS)].every((x) => x === 0), 'slots 1..7');
+check('empty-slots', [...o.subarray(R0 + RIVAL_F, V2)].every((x) => x === 0) && [...o.subarray(V2 + EGO_X + RIVAL_X, OBS)].every((x) => x === 0), 'slots 1..7 (v2 tokens and v3 context)');
+// 6. v3 race context: own tier (GT = 0); slot 0 (the other GT learner): same class, no tier, lap or size difference.
+const cx = o.subarray(V2 + EGO_X, V2 + EGO_X + RIVAL_X);
+check('race-context', o[V2] === 0 && cx[0] === 1 && cx[1] === 0 && cx[2] === 0 && cx[3] === 0, `tier=${o[V2]} slot0=[${[...cx].join(',')}]`);
 
 for (const r of results) console.log(`${r.ok ? 'PASS' : 'FAIL'} ${r.name} ${r.detail}`);
 process.exit(results.every((r) => r.ok) ? 0 : 1);

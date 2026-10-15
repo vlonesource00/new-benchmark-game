@@ -20,7 +20,7 @@ from collections import defaultdict
 import numpy as np
 import torch
 
-from contract import layout_of, migrate_v1_v2, obs_len
+from contract import layout_of, migrate_to, obs_len
 from model import GraphedSequence, Slipstream, SlipstreamMoE
 from teacher import TeacherData, bc_loss, torch_norm
 from vecenv import VecEnv
@@ -30,10 +30,20 @@ SUBJECT = os.path.dirname(HERE)
 ROOT = os.path.dirname(os.path.dirname(SUBJECT))
 
 
+def opt_names(layout, ck):
+    """Names of the parameters Adam holds for a checkpoint's network, in order (trainable ones only)."""
+    net = SlipstreamMoE(layout) if 'moe' in ck else Slipstream(layout)
+    return [n for n, p in net.named_parameters() if p.requires_grad]
+
+
 def binary_columns(layout):
-    """Rival presence flags: the model masks attention on them, so they must reach it as raw 0/1."""
+    """Rival presence flags: the model masks attention on them, so they must reach it as raw 0/1. Contract v3's
+    race-context block (flags and small integers: same class, tier, lap and size differences) also reaches it raw."""
     base = layout['ego'] + layout['roadK'] * layout['roadF']
-    return np.array([base + i * layout['rivalF'] for i in range(layout['rivalN'])])
+    cols = [base + i * layout['rivalF'] for i in range(layout['rivalN'])]
+    v2 = base + layout['rivalN'] * layout['rivalF']
+    cols += list(range(v2, v2 + layout.get('egoX', 0) + layout['rivalN'] * layout.get('rivalX', 0)))
+    return np.array(cols, dtype=np.int64)
 
 
 class RunningNorm:
@@ -171,7 +181,7 @@ def main():
         ck = torch.load(a.resume, map_location=dev, weights_only=False)
         lay = layout_of(ck)
         if a.migrate and lay != env.layout:
-            ck = migrate_v1_v2(ck, [n for n, _ in Slipstream(lay).named_parameters()])
+            ck = migrate_to(ck, env.layout, opt_names)
             lay = layout_of(ck)
     D = obs_len(lay)  # this network's input columns; the env row carries E >= D, then the 5 flags
     moe = bool(a.moe_base) or bool(ck and 'moe' in ck)
@@ -201,6 +211,8 @@ def main():
         it0 = ck.get('iter', 0)
     if a.moe_base:  # the pace expert: weights and normaliser fixed; the training normaliser is frozen from here on
         bk = torch.load(os.path.join(SUBJECT, a.moe_base), map_location=dev, weights_only=False)
+        if layout_of(bk) != lay:  # the frozen pace expert follows the combat expert's contract (zero-weight new inputs)
+            bk = migrate_to(bk, lay, opt_names)
         assert obs_len(layout_of(bk)) == D, 'pace expert contract != combat expert'
         net.base.load_state_dict(bk['model'])
         bn = RunningNorm(D, binary_columns(lay))

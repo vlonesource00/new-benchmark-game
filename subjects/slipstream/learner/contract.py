@@ -6,15 +6,20 @@ began with the previous slot's last value. The token's first value is the attent
 almost always masked out; the eighth rival's last value fell off the end.
 v2: the same values in the same order, with the declared ego block widened to 49 (297 values). The first 296 values are
 identical, so a v1 network still runs exactly as trained on v2 rows by reading only its first 296 columns.
+v3 (multiclass race context): v2's 297 values unchanged, then egoX ego values and rivalN x rivalX rival values
+(env/observe.mjs). A v2 network reads only its first 297 columns; migrate_v2_v3 gives a v2 network the new inputs with
+zero weights (ego and rival-token input layers), so it computes exactly what it did, and learns to use them in training.
 """
 import torch
 
 V1 = {'ego': 48, 'roadK': 24, 'roadF': 6, 'rivalN': 8, 'rivalF': 13}
 V2 = {**V1, 'ego': 49}
+V3 = {**V2, 'egoX': 1, 'rivalX': 4}
 
 
 def obs_len(layout):
-    return layout['ego'] + layout['roadK'] * layout['roadF'] + layout['rivalN'] * layout['rivalF']
+    return (layout['ego'] + layout['roadK'] * layout['roadF'] + layout['rivalN'] * layout['rivalF']
+            + layout.get('egoX', 0) + layout['rivalN'] * layout.get('rivalX', 0))
 
 
 def layout_of(ck):
@@ -55,3 +60,58 @@ def migrate_v1_v2(ck, param_names):
     out['layout'] = dict(V2)
     out['migrated_from'] = 'v1'
     return out
+
+
+def _pad_inputs(name, t, ego_x, rival_x):
+    """One v2 tensor -> v3: the ego and rival-token input layers gain zero-weight columns for the new values (any
+    module prefix: plain, MoE base / cmb). Weights, averages and Adam moments alike (all linear in the input columns)."""
+    if t.dim() == 2 and name.endswith('ego.0.weight'):
+        return torch.cat([t, torch.zeros_like(t[:, :1]).expand(-1, ego_x)], 1)
+    if t.dim() == 2 and name.endswith('tok.0.weight'):
+        return torch.cat([t, torch.zeros_like(t[:, :1]).expand(-1, rival_x)], 1)
+    return t
+
+
+def migrate_v2_v3(ck, param_names):
+    """Returns a v3 copy of a v2 checkpoint (plain or MoE): same actions on every v3 row as the v2 network on its first
+    297 columns. param_names: names of the optimizer's parameters in order (trainable ones, as ppo builds Adam).
+    Normaliser statistics for the new columns are mean 0 / var 1 (they reach the network raw, as binary_columns lists them)."""
+    import numpy as np
+    lay = layout_of(ck)
+    assert lay == V2, f'not a v2 checkpoint: {lay}'
+    ex, rx = V3['egoX'], V3['rivalX']
+    new = ex + V3['rivalN'] * rx
+    out = dict(ck)
+    out['model'] = {k: _pad_inputs(k, v, ex, rx) for k, v in ck['model'].items()}
+    if 'ema' in ck:
+        out['ema'] = {k: _pad_inputs(k, v, ex, rx) for k, v in ck['ema'].items()}
+    for sd in [out['model']] + ([out['ema']] if 'ema' in out else []):  # MoE normaliser buffers over the input columns
+        for k in ('t_mean', 'b_mean'):
+            if k in sd:
+                sd[k] = torch.cat([sd[k], torch.zeros(new, dtype=sd[k].dtype, device=sd[k].device)])
+        for k in ('t_std', 'b_std'):
+            if k in sd:
+                sd[k] = torch.cat([sd[k], torch.ones(new, dtype=sd[k].dtype, device=sd[k].device)])
+        if 'skip' in sd:
+            sd['skip'] = torch.cat([sd['skip'], torch.ones(new, dtype=torch.bool, device=sd['skip'].device)])
+    if 'opt' in ck:
+        opt = {**ck['opt'], 'state': {}}
+        for i, st in ck['opt']['state'].items():
+            name = param_names[int(i)]
+            opt['state'][i] = {k: (_pad_inputs(name, v, ex, rx) if torch.is_tensor(v) else v) for k, v in st.items()}
+        out['opt'] = opt
+    n = ck['norm']
+    out['norm'] = {'mean': np.append(n['mean'], np.zeros(new)), 'var': np.append(n['var'], np.ones(new)), 'n': n['n']}
+    out['layout'] = dict(V3)
+    out['migrated_from'] = 'v2'
+    return out
+
+
+def migrate_to(ck, layout, names_for):
+    """Chains migrations up to the env's layout (v1 -> v2 -> v3). names_for(layout, ck): the optimizer's parameter names."""
+    if layout_of(ck) == V1 and layout != V1:
+        ck = migrate_v1_v2(ck, names_for(V1, ck))
+    if layout_of(ck) == V2 and layout == V3:
+        ck = migrate_v2_v3(ck, names_for(V2, ck))
+    assert layout_of(ck) == layout, f'no migration from {layout_of(ck)} to {layout}'
+    return ck

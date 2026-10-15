@@ -14,6 +14,7 @@ import numpy as np
 import torch
 
 from model import Slipstream, SlipstreamMoE
+from contract import obs_len
 from ppo import SUBJECT, RunningNorm, binary_columns
 
 ACTOR = ('ego.', 'road.', 'tok.', 'query.', 'null', 'attn.', 'pre.', 'gru.', 'pi.')
@@ -33,7 +34,7 @@ def main():
     net = (SlipstreamMoE(layout) if moe else Slipstream(layout)).eval()
     net.load_state_dict(ck['model'])
     skip = binary_columns(layout)
-    D = layout['ego'] + layout['roadK'] * layout['roadF'] + layout['rivalN'] * layout['rivalF']
+    D = obs_len(layout)
     norm = RunningNorm(D, skip)
     norm.load(ck['norm'])
     enc = lambda v: {'shape': list(v.shape), 'data': base64.b64encode(v.detach().float().numpy().astype('<f4').tobytes()).decode()}

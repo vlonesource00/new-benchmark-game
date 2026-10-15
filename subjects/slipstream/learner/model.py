@@ -20,9 +20,12 @@ class Slipstream(nn.Module):
     def __init__(self, layout, hidden=256):
         super().__init__()
         self.ego_f, self.k, self.rf_f, self.rn, self.rv_f = layout['ego'], layout['roadK'], layout['roadF'], layout['rivalN'], layout['rivalF']
-        self.ego = mlp(self.ego_f, 128, 128)
+        # contract v3: race-context values after the v2 block, concatenated onto the ego and rival-token inputs
+        self.ex, self.rx = layout.get('egoX', 0), layout.get('rivalX', 0)
+        self.v2 = self.ego_f + self.k * self.rf_f + self.rn * self.rv_f
+        self.ego = mlp(self.ego_f + self.ex, 128, 128)
         self.road = mlp(self.k * self.rf_f, 256, 128)
-        self.tok = mlp(self.rv_f, 64, 64)
+        self.tok = mlp(self.rv_f + self.rx, 64, 64)
         self.query = nn.Linear(256, 64)
         self.null = nn.Parameter(torch.zeros(1, 1, 64))
         self.attn = nn.MultiheadAttention(64, 4, batch_first=True)
@@ -38,11 +41,15 @@ class Slipstream(nn.Module):
 
     def features(self, x):
         b = x.shape[0]
-        e = self.ego(x[:, :self.ego_f])
+        ein = x[:, :self.ego_f] if not self.ex else torch.cat([x[:, :self.ego_f], x[:, self.v2:self.v2 + self.ex]], 1)
+        e = self.ego(ein)
         r0 = self.ego_f + self.k * self.rf_f
         r = self.road(x[:, self.ego_f:r0])
         riv = x[:, r0:r0 + self.rn * self.rv_f].reshape(b, self.rn, self.rv_f)
         present = riv[:, :, 0] > 0.5
+        if self.rx:
+            x0 = self.v2 + self.ex
+            riv = torch.cat([riv, x[:, x0:x0 + self.rn * self.rx].reshape(b, self.rn, self.rx)], 2)
         t = torch.cat([self.null.expand(b, 1, 64), self.tok(riv)], 1)
         mask = torch.cat([torch.zeros(b, 1, dtype=torch.bool, device=x.device), ~present], 1)
         q = self.query(torch.cat([e, r], 1)).unsqueeze(1)
@@ -87,7 +94,7 @@ class SlipstreamMoE(nn.Module):
         super().__init__()
         self.base, self.cmb = Slipstream(layout, hidden), Slipstream(layout, hidden)
         self.base.requires_grad_(False)
-        D = self.cmb.ego_f + self.cmb.k * self.cmb.rf_f + self.cmb.rn * self.cmb.rv_f
+        D = self.cmb.v2 + self.cmb.ex + self.cmb.rn * self.cmb.rx
         feat = 128 + 128 + 64
         self.gate = mlp(hidden + feat, 64, 1)
         nn.init.zeros_(self.gate[-1].weight)
