@@ -31,4 +31,7 @@ console.log(`duel3 ${label}`, 'meanPos', (s('finishPos') / R.length).toFixed(2),
   'heavy', R.reduce((a, r) => a + r.incLog.filter((l) => l[1] === 'contact').length, 0), 'otherInc', R.reduce((a, r) => a + r.incLog.filter((l) => l[1] !== 'contact').length, 0),
   'dmg', s('damage').toFixed(2), 'offS', s('offS').toFixed(1), 'invalid', s('invalidLaps'), 'impactMax', Math.max(...R.map((r) => r.maxImpact)).toFixed(1),
   'clrMed', med(clr)?.toFixed(2) ?? null, 'tookMed', med(P.map((p) => p.took)), 'sep<3', seps.filter((x) => x < 3).length + '/' + seps.length,
-  'unfinished', R.filter((r) => !r.finished).length);
+  'unfinished', R.filter((r) => !r.finished).length,
+  // contact seconds by geometry (nose: ran into a car ahead; tail: hit from behind; side: alongside), and races with an off
+  'nose/tail/side', ['nose', 'tail', 'side'].map((k) => R.reduce((a, r) => a + (r.rubKinds?.[k] ?? 0), 0).toFixed(1)).join('/'),
+  'offRaces', R.filter((r) => r.offS > 0).length);

@@ -42,11 +42,18 @@ for (const track of tracks.split(',')) {
   const passes = [], lost = [], pitAt = env.cars.map(() => -1e9); let stuck = 0; // pitAt: last tick each car was in the pit lane
   // Rubbing: physics ticks in contact with any car (from the pairs the stewards consume), and per pass the widest
   // lateral separation from the passed car while alongside (|progress gap| < 5 m): how much track width a pass uses.
+  // Contact geometry per car pair and physics tick: nose (the other car more than half a length ahead: this car ran into
+  // it), tail (more than half a length behind: it ran into this car), side (overlapping along the track).
   let rubTicks = 0, maxImpact = 0, minClr = Infinity, invalidLaps = 0; const alongLat = env.cars.map(() => 0), st0 = race.stewards;
-  const win = () => ({ rub: rubTicks, off: me.race.offtrack, clr: Infinity });
+  const kinds = { nose: 0, tail: 0, side: 0 };
+  const win = () => ({ rub: rubTicks, off: me.race.offtrack, clr: Infinity, kinds: { ...kinds } });
   if (st0) { const step = st0.step.bind(st0); st0.step = (dt) => {
     let mine = false;
-    for (const [i, j, closing] of st0.pairs) if (i === slot || j === slot) { mine = true; maxImpact = Math.max(maxImpact, closing ?? 0); }
+    for (const [i, j, closing] of st0.pairs) if (i === slot || j === slot) {
+      mine = true; maxImpact = Math.max(maxImpact, closing ?? 0);
+      const dp = env.cars[i === slot ? j : i].race.progress - me.race.progress;
+      kinds[dp > CAR_L / 2 ? 'nose' : dp < -CAR_L / 2 ? 'tail' : 'side'] += 1 / 120;
+    }
     if (mine) rubTicks++;
     return step(dt); }; }
   const cap = laps * Math.max(160, env.track.length / 35) + 90, lapList = []; let lapSeen = me.race.lap, pitS = 0;
@@ -75,7 +82,8 @@ for (const track of tracks.split(',')) {
         else {
           const w = s.win ?? win(), contactS = (rubTicks - w.rub) / 120, offS = me.race.offtrack - w.off;
           passes.push({ rival: rivals[j], t: +t.toFixed(1), took: +(s.since - s.pend.closeAt).toFixed(1), lap: me.race.lap, sepM: +alongLat[j].toFixed(2),
-            clean: contactS === 0 && offS < 1e-9, contactS: +contactS.toFixed(2), offS: +offS.toFixed(2), minClrM: Number.isFinite(w.clr) ? +w.clr.toFixed(2) : null });
+            clean: contactS === 0 && offS < 1e-9, contactS: +contactS.toFixed(2), offS: +offS.toFixed(2), minClrM: Number.isFinite(w.clr) ? +w.clr.toFixed(2) : null,
+            kinds: Object.fromEntries(Object.entries(kinds).map(([k, v]) => [k, +(v - w.kinds[k]).toFixed(2)])) });
         }
         s.pend = null; s.win = null; if (!s.ahead) s.closeAt = null;
       }
@@ -92,7 +100,7 @@ for (const track of tracks.split(',')) {
   console.log(JSON.stringify({ track, subject, rivals, laps, startPos, finishPos: pos(), gained: startPos - pos(),
     passes: passes.length, cleanPasses: passes.filter((p) => p.clean).length, passedBy: lost.length,
     offS: +me.race.offtrack.toFixed(2), invalidLaps, maxImpact: +maxImpact.toFixed(2), minClrM: Number.isFinite(minClr) ? +minClr.toFixed(2) : null, medianTook: passes.length ? passes.map((p) => p.took).sort((a, b) => a - b)[Math.floor(passes.length / 2)] : null,
-    stuckS: +stuck.toFixed(1), rubS: +(rubTicks / 120).toFixed(2), medianSepM: passes.length ? passes.map((p) => p.sepM).sort((a, b) => a - b)[Math.floor(passes.length / 2)] : null, inc: sw.inc ?? 0, penalties: (sw.penalties ?? []).length, damage: +me.damage.toFixed(3),
+    stuckS: +stuck.toFixed(1), rubS: +(rubTicks / 120).toFixed(2), rubKinds: Object.fromEntries(Object.entries(kinds).map(([k, v]) => [k, +v.toFixed(2)])), medianSepM: passes.length ? passes.map((p) => p.sepM).sort((a, b) => a - b)[Math.floor(passes.length / 2)] : null, inc: sw.inc ?? 0, penalties: (sw.penalties ?? []).length, damage: +me.damage.toFixed(3),
     stops: entry.strategist?.stops ?? null, pitS: +pitS.toFixed(1), lapTimes: lapList,
     finished: me.race.finishTime !== null, time: me.race.finishTime && +me.race.finishTime.toFixed(2), passList: passes, lostList: lost,
     incLog: (sw.log ?? []).map((l) => [+l.time.toFixed(1), l.kind, l.points]) }));
