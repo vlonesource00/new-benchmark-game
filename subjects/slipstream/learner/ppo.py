@@ -169,6 +169,11 @@ def main():
     ap.add_argument('--noise-gate', type=float, default=-1.0, help='MoE: exploration std scaled by s0 + (1 - s0) * g per '
                     'decision (s0 = this value, -1 = off), so the frozen pace expert is not driven with noise where the '
                     'router leaves it in charge; rollout log-probs and the update use the same per-row std')
+    ap.add_argument('--noise-tau', type=float, default=0.0, help='exploration noise as an AR(1) process with this time '
+                    'constant in seconds (0 = white noise per row). The marginal stays N(mu, std^2), so log-probs are unchanged; '
+                    'a sustained lift or line change is then sampled as one coherent action instead of averaging out')
+    ap.add_argument('--noise-tau-all', action='store_true', help='with --noise-tau: correlated noise on every row; '
+                    'default only in traffic rows (solo rows keep white noise, so the pace expert is not driven off its line)')
     ap.add_argument('--risk-head', action='store_true', help='two critics: task (progress, passes, places) and risk '
                     '(the safety-cost part of the env row: offs, contact, damage, margins, crashes); each its own GAE')
     ap.add_argument('--risk-w', type=float, default=1.0, help='with --risk-head: weight of the risk advantage in the '
@@ -287,6 +292,8 @@ def main():
     ret_acc = np.zeros(N)
     t_start = time.time()
     agg = defaultdict(list)
+    rho = math.exp(-(1 / 30) / a.noise_tau) if a.noise_tau > 0 else 0.0  # per env row (30 Hz)
+    eps = torch.zeros(N, 2, device=dev)
     for it in range(it0, a.iters):
         tr0 = time.time()
         obs_b = np.zeros((T + 1, N, D), np.float32)
@@ -327,7 +334,18 @@ def main():
                 h = h_next
                 lsr = log_std() + (nscale(g_).unsqueeze(1).log() if ngate else 0)
                 std = lsr.exp()
-                act = mu + std * torch.randn_like(mu)
+                z = torch.randn_like(mu)
+                if rho > 0:  # AR(1): eps_t = rho eps_{t-1} + sqrt(1 - rho^2) z_t, restarted with each episode
+                    ar = rho * eps * (1 - first).unsqueeze(1) + math.sqrt(1 - rho * rho) * z
+                    ar = torch.where((first > 0.5).unsqueeze(1), z, ar)
+                    if not a.noise_tau_all:
+                        r_ = torch.from_numpy(raw_b[t]).to(dev)
+                        gt = r_[:, gap_cols]
+                        tr_ = ((r_[:, pres_cols] > 0.5) & (gt < 0.6) & (gt > -0.2)).any(1).unsqueeze(1)
+                        ar = torch.where(tr_, ar, z)
+                    eps = ar
+                    z = ar
+                act = mu + std * z
                 logp_b[t] = (-((act - mu) ** 2) / (2 * std ** 2) - lsr - 0.5 * math.log(2 * math.pi)).sum(1).cpu().numpy()
                 act_b[t] = act.cpu().numpy()
                 te = time.time()

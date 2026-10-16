@@ -51,16 +51,30 @@ export class World {
     // An AI entry 'id:class' (e.g. 'intercept:lmdh') races that car class; plain ids race cfg.classId (multiclass fields).
     const aiSeat = (e) => { const [ai, classId] = e.split(':'); return classId ? { ai, classId } : { ai }; };
     if (C) { const n = C.opp[0] + Math.floor(this.rng() * (C.opp[1] - C.opp[0] + 1)); for (let i = 0; i < n; i++) seats.push(aiSeat(cfg.ai[Math.floor(this.rng() * cfg.ai.length)])); }
+    else if (cfg.field) {
+      // field: AI seats drawn per build as two-car same-AI teams (as env/racebench.mjs races them), teams [min, max]
+      // drawn from pool; pairs false = one car per team; lmdhP: share of teams racing the LMDh class (a faster class
+      // that laps the GT learners, as multiclass races do).
+      const F = cfg.field, nT = F.teams[0] + Math.floor(this.rng() * (F.teams[1] - F.teams[0] + 1));
+      for (let t = 0; t < nT; t++) {
+        const ai = F.pool[Math.floor(this.rng() * F.pool.length)], lm = F.lmdhP > 0 && this.rng() < F.lmdhP;
+        for (let k = 0; k < (F.pairs === false ? 1 : 2); k++) seats.push(lm ? { ai, classId: 'lmdh' } : { ai });
+      }
+    }
     else for (const id of cfg.ai ?? []) seats.push(aiSeat(id));
     // gridOrder 'shuffle': grid slots (seat order) drawn per build, so learners start anywhere in the pack.
     if (cfg.gridOrder === 'shuffle') for (let i = seats.length - 1; i > 0; i--) { const j = Math.floor(this.rng() * (i + 1)); [seats[i], seats[j]] = [seats[j], seats[i]]; }
     // starts.grid: share of builds in which every learner keeps its grid slot and starts standing with the whole field
     // (the race's first lap in a pack). Held until the learners' first episodes begin (see tick).
     this.gridStart = (cfg.starts?.grid ?? 0) > 0 && this.rng() < cfg.starts.grid; // no draw unless configured (seeded tests)
-    this.env = createRaceEnv({ track: cfg.track, seats, seed: cfg.seed, weather: cfg.weather ?? 'clear', classId: cfg.classId ?? 'gt' });
+    // starts.rolling: share of the other builds that start as the game's rolling start: the formation autopilot forms
+    // the field two-wide before the line and hands the cars over 1 s before green; the learners' first episodes begin at
+    // green in their formation slots (see the end of build). Not with challenges.
+    this.rollingStart = !C && !this.gridStart && (cfg.starts?.rolling ?? 0) > 0 && this.rng() < cfg.starts.rolling;
+    this.env = createRaceEnv({ track: cfg.track, seats, seed: cfg.seed, weather: cfg.weather ?? 'clear', classId: cfg.classId ?? 'gt', ...(this.rollingStart ? { startType: 'rolling' } : {}) });
     const race = this.env.race;
     // Skip the lights: the field starts racing from its grid slots and learners are placed by their episodes.
-    race.countdown = 0; race.phase = 'racing'; race.primeSeats();
+    if (!this.rollingStart) { race.countdown = 0; race.phase = 'racing'; race.primeSeats(); }
     // Contact fault (reward.rearEnd): the physics reports contact pairs with their closing speed to the stewards, who
     // charge both cars alike. Read them before the stewards consume them and keep, per car, the hardest contact this
     // tick in which it was the car behind (less race progress by over 2 m; closer than that is side by side).
@@ -94,6 +108,9 @@ export class World {
     this.limit = this.track.halfWidth + (this.track.curbWidth ?? 0);
     this.agents = this.env.learners.map((ci, k) => ({ ci, k, car: race.cars[ci], entry: race.entries[ci] }));
     if (C) this.placeChallenge();
+    // The formation lap (about 26 s of race time from forming up to green) runs here; the learner seats hold zero
+    // controls through the 1 s hand-over before green.
+    if (this.rollingStart) { this.env.actions.fill(0); for (let k = 0; race.formation && k < 120 * 240; k++) race.step(FIXED_DT); }
     this.snapshots ??= [];
     this.failures ??= [];
     for (const a of this.agents) this.resetAgent(a, true);
@@ -120,6 +137,11 @@ export class World {
     // so close running (draft, braking in a queue, side by side) is practised; plain starts keep 70 m from everyone.
     const p1 = p0 + (starts.siteP ?? 0);
     const fromPack = !initial && !fromFail && !fromSite && pick >= p1 && pick < p1 + (starts.pack ?? 0) && this.packStart(a);
+    if (this.rollingStart) return this.beginEpisode(a, false); // the race's own start tyres and fuel
+    // Pit-exit starts: a further starts.pitOut share rejoins at the pit hand-over on a fresh cold set (the out-lap).
+    const p2 = p1 + (starts.pack ?? 0);
+    const fromPit = !initial && !fromFail && !fromSite && !fromPack && pick >= p2 && pick < p2 + (starts.pitOut ?? 0) && this.pitOutStart(a);
+    if (fromPit) return this.beginEpisode(a, false);
     if (this.gridStart || fromPack) return this.beginEpisode(a, true);
     let s = 0, tries = 0;
     // starts.at (evaluation / failure tracing): a fixed place, optionally spread +-starts.spread metres.
@@ -165,6 +187,24 @@ export class World {
       return true;
     }
     return false;
+  }
+
+  /**
+   * Pit-exit start (starts.pitOut): the learner rejoins where the pit autopilot hands a car back (race.lane.handover,
+   * on the rejoin line) at 18-28 m/s on a fresh cold set from starts.pitCompounds, as on an out-lap, if a moving car is
+   * 20-400 m behind on track (the merge a pit cycle produces) and nobody is within 8 m; false otherwise.
+   */
+  pitOutStart(a) {
+    const { car } = a, race = this.env.race, rng = this.rng, L = this.track.length, lane = race.lane;
+    if (!lane) return false;
+    const s = lane.handover, back = (o) => (((s - o.s) % L) + L) % L;
+    if (!race.cars.some((o) => o !== car && o.speed > 15 && back(o) > 20 && back(o) < 400)) return false;
+    if (!race.cars.every((o) => o === car || Math.hypot(Math.min(back(o), L - back(o)), o.lateral - lane.rejoinLat) > 8)) return false;
+    car.place(this.track, s, lane.rejoinLat, 18 + rng() * 10); fitGear(car);
+    const comp = this.cfg.starts.pitCompounds ?? ['soft', 'medium', 'hard'];
+    race.fitTyres(car, comp[Math.floor(rng() * comp.length)], false);
+    car.fuel = this.cfg.fuel ?? (25 + rng() * 45);
+    return true;
   }
 
   /**
@@ -314,7 +354,7 @@ export class World {
       if (a.end) { this.resetAgent(a); continue; }
       this.send(a, actions[a.k * 2], actions[a.k * 2 + 1], this.sub ?? 0);
     }
-    this.gridStart = false; // grid starts hold only for the episodes that begin with the build
+    this.gridStart = false; this.rollingStart = false; // grid and rolling starts hold only for the episodes that begin with the build
     this.rear.fill(0); this.rub.fill(0); this.nose.fill(0);
     for (let i = 0; i < substeps; i++) {
       this.sub = (this.sub ?? 0) + 1;
