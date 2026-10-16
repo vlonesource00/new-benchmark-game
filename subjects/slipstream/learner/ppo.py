@@ -513,6 +513,9 @@ def main():
         if a.minutes and el > a.minutes:
             save(os.path.join(out, 'final'), it + 1)
             break
+    else:  # --iters reached: final.pt too (only the minutes cap wrote it, so iteration-budget runs ended unsaved)
+        if a.iters > it0:
+            save(os.path.join(out, 'final'), a.iters)
     env.close()
 
 
