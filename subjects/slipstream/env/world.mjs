@@ -4,6 +4,7 @@
 // Nothing here drives the car: learner controls come only from the policy.
 import { createRaceEnv, FIXED_DT } from './race-env.mjs';
 import { observe, roadTable, OBS, EGO_F, ROAD_K, ROAD_F, RIVAL_N, RIVAL_F, EGO_X, RIVAL_X, CORR_X } from './observe.mjs';
+import { maneuvers, MANEUVERS } from './maneuvers.mjs';
 export { OBS, EGO_F, ROAD_K, ROAD_F, RIVAL_N, RIVAL_F, EGO_X, RIVAL_X, CORR_X };
 
 const TAU = Math.PI * 2;
@@ -107,6 +108,7 @@ export class World {
     this.track = this.env.track; this.road = this.roadCache ?? (this.roadCache = roadTable(this.track));
     this.limit = this.track.halfWidth + (this.track.curbWidth ?? 0);
     this.agents = this.env.learners.map((ci, k) => ({ ci, k, car: race.cars[ci], entry: race.entries[ci] }));
+    this.mv = null; // maneuver detector (reward.maneuver / reward.attempt): started once the challenge's learners are placed
     if (C) this.placeChallenge();
     // The formation lap (about 26 s of race time from forming up to green) runs here; the learner seats hold zero
     // controls through the 1 s hand-over before green.
@@ -359,11 +361,20 @@ export class World {
       this.send(a, actions[a.k * 2], actions[a.k * 2 + 1], this.sub ?? 0);
     }
     this.gridStart = false; this.rollingStart = false; // grid and rolling starts hold only for the episodes that begin with the build
+    // The detector reads order changes from race progress, so it starts after the learners are placed behind the train
+    // (a detector built before that would see the placement as a swap). Its hold is a little under passHold so a
+    // maneuver is classified no later than the pass is paid.
+    const RW = this.cfg.reward ?? {};
+    if ((RW.maneuver || RW.attempt) && this.cfg.challenge && !this.mv) {
+      this.mv = maneuvers(race, this.env.learners, this.track, { hold: (RW.passHold ?? 2) - 0.1, road: this.road });
+      for (const a of this.agents) { a.mvPass = 0; a.mvFail = 0; }
+    }
     this.rear.fill(0); this.rub.fill(0); this.nose.fill(0);
     for (let i = 0; i < substeps; i++) {
       this.sub = (this.sub ?? 0) + 1;
       for (const a of this.agents) this.applyArrivals(a, this.sub);
       race.step(FIXED_DT);
+      this.mv?.update();
       for (const a of this.agents) {
         a.appliedAge += FIXED_DT; const e = a.entry;
         if (e.pit || e.pitPlan) { e.pit = null; e.pitPlan = null; a.car.race.pitLap = false; }
@@ -503,6 +514,17 @@ export class World {
       // being hit, side contact and incident points the stewards charge both cars for keep the pass paid (each is still
       // priced by its own term). Otherwise any contact, off or incident does.
       const dirtyNow = R.dirtyBlame ? this.nose[a.ci] > 0 || illegalFrac > 0 : this.rub[a.ci] > 0 || illegalFrac > 0 || dInc > 0;
+      // The detector's verdicts since the last decision: each pass's kind goes on its rival (paid with the pass below);
+      // attempt: a failed maneuver attempt (alongside a car ahead, classified as a maneuver, little contact) pays
+      // reward.attempt, once per rival per challenge, so trying a move is not a pure loss.
+      if (this.mv) {
+        const res = this.mv.result(a.ci), byCar = (j) => a.opp.find((o) => o.c === this.env.race.cars[j]);
+        for (; a.mvPass < res.mvList.length; a.mvPass++) { const p = res.mvList[a.mvPass], o = byCar(p.rival); if (o) o.mvKind = p.kind; }
+        for (; a.mvFail < res.mvFailed.length; a.mvFail++) {
+          const f = res.mvFailed[a.mvFail], o = byCar(f.rival);
+          if (R.attempt && o && !o.attPaid && MANEUVERS.includes(f.kind) && (f.contactS ?? 0) < 0.2) { o.attPaid = true; add('attempt', R.attempt); stats.attempts = (stats.attempts ?? 0) + 1; }
+        }
+      }
       let stuck = false;
       for (const o of a.opp) {
         const g = wrapPi(((o.c.s - c.s) / L) * TAU) * L / TAU, gs = g / v;
@@ -516,6 +538,9 @@ export class World {
         if (o.pend && a.t - o.since >= HOLD) {
           if (o.pend === 'pass') {
             const took = o.since - (o.closeAt ?? o.since);
+            // maneuver: extra pay for a clean pass the detector classified as a maneuver (dive, around the outside,
+            // switchback, slipstream move, forced error) rather than a pace pass.
+            if (R.maneuver && !o.dirty && o.mvKind && MANEUVERS.includes(o.mvKind)) { add('maneuver', R.maneuver); stats['mv:' + o.mvKind] = (stats['mv:' + o.mvKind] ?? 0) + 1; }
             // passDirty: the share still paid when the pass was dirty (its contact, offs and incidents are priced by their
             // own terms; 0 = a dirty pass pays nothing, which with ~70% of passes touching left passing rarely paid).
             const pay = (R.pass ?? 0) * (0.5 + 0.5 * clamp(1 - took / T, 0, 1));
@@ -523,7 +548,7 @@ export class World {
             stats.passes = (stats.passes ?? 0) + 1;
             if (o.dirty) { stats.dirty = (stats.dirty ?? 0) + 1; (stats.dirtyWhy ??= {})[o.why] = (stats.dirtyWhy[o.why] ?? 0) + 1; }
           } else { add('lost', -(R.lost ?? R.pass ?? 0)); stats.lostP = (stats.lostP ?? 0) + 1; }
-          o.pend = null; o.closeAt = null; o.dirty = false;
+          o.pend = null; o.closeAt = null; o.dirty = false; o.mvKind = null;
         }
       }
       if (stuck) { add('stuck', -(R.stuck ?? 0) * dt); stats.stuckS = (stats.stuckS ?? 0) + dt; }

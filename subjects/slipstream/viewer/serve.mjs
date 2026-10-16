@@ -39,7 +39,7 @@ const netCache = {};
 
 // What the viewer shows: the networks in the game and their current challengers. Older experiments stay on disk (runs/,
 // runs/queue.json, runs/completion) and out of the page; add a run here to show it again.
-const CURRENT = ['tt-d6', 'tt-sn4', 'tt-s1a', 'tt-s1b', 'tt-sc1a', 'tt-sc1b', 'tt-sc1c'];
+const CURRENT = ['tt-d6', 'tt-sn4', 'tt-s1a', 'tt-s1b', 'tt-sc1a', 'tt-sc1b', 'tt-sc1c', 'tt-sc2'];
 // Plain descriptions (the queue titles carry the full training recipe), and the one snapshot per run that counts:
 // the copy in the game for d6 and sn4, the end of training for the rest.
 const PLAIN = {
@@ -50,6 +50,7 @@ const PLAIN = {
   'tt-sc1a': 'Combat add-on A on top of d6, started from the Nürburgring combat add-on; our tyres a little fresher in practice',
   'tt-sc1b': 'Combat add-on B: as A with equal tyres in practice, so a pass needs a real move',
   'tt-sc1c': 'Combat add-on C: as A but started fresh',
+  'tt-sc2': 'Combat add-on 2: C trained on, paid extra for real maneuvers and for trying them, free to change line near rivals',
 };
 const SNAP = { 'tt-d6': 20, 'tt-sn4': 20 };
 const isCurrent = (name) => CURRENT.some((r) => name === r || name.startsWith(r + '-'));
@@ -63,6 +64,9 @@ const RACES = [
   { label: 'sc1a', run: 'tt-sc1a', who: 'd6 + sc1a', what: 'Combat add-on A (from the Nürburgring one)' },
   { label: 'sc1b', run: 'tt-sc1b', who: 'd6 + sc1b', what: 'Combat add-on B (A, no tyre advantage in practice)' },
   { label: 'sc1c', run: 'tt-sc1c', who: 'd6 + sc1c', what: 'Combat add-on C (A, started fresh)' },
+  { label: 'sc2', run: 'tt-sc2', who: 'd6 + sc2', what: 'Combat add-on 2: C paid for real maneuvers' },
+  { label: 'd6-c', run: 'tt-d6', who: 'd6 · fresh seeds', what: 'Confirmation races, seeds 11-15: compare with the row below only' },
+  { label: 'sc1c-c', run: 'tt-sc1c', who: 'd6 + sc1c · fresh seeds', what: 'Confirmation races, seeds 11-15' },
 ];
 const raceCache = new Map();
 function races() {

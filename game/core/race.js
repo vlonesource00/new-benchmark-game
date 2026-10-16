@@ -17,7 +17,7 @@ import { AI_DRIVERS } from './teams.js';
 import { Stewards, MEATBALL_DAMAGE } from './stewards.js';
 import { fitHybrid, hybridStep, aiDeployMode, deployMap, HYBRID } from './hybrid.js';
 import { classProfile, classForCar } from './classes.js';
-import { FormationPilot, ROLLING, rollingLead } from './formation.js';
+import { FormationPilot, ROLLING, rollingLead, paceSpeed } from './formation.js';
 import { RaceControl } from './caution.js';
 
 export const FIXED_DT = 1 / 120;
@@ -134,7 +134,10 @@ export class EnduranceRace {
       const rolling = this.startType === 'rolling';
       const back = quali ? QUALI_RUNUP + i * Math.min(QUALI_SPACING, (track.length - QUALI_RUNUP) / this.entries.length) : rolling ? lead + Math.floor(i / 2) * ROLLING.row : Math.floor(i / 2) * rowSpacing;
       const lane = rolling ? Math.min(ROLLING.lane, track.halfWidth * 0.4) : laneOff;
-      c.place(track, (rolling ? track.finishS : track.gridS) - back, quali ? 0 : i % 2 ? -lane : lane, rolling ? ROLLING.pace * 0.8 : 0);
+      // A rolling slot can sit in a bend when the field is longer than the straight before the line (Harbor Ring's back
+      // rows reach its last hairpin): the car starts at the pace that bend allows, or it spins before the green.
+      const at = (rolling ? track.finishS : track.gridS) - back, lat = quali ? 0 : i % 2 ? -lane : lane;
+      c.place(track, at, lat, rolling ? Math.min(ROLLING.pace * 0.8, paceSpeed(track, at, lat)) : 0);
       c.fuelScale = this.cal.fuelScale;
       c.fuel = quali ? Math.min(TANK_LITRES, (TANK_LITRES / this.cal.fuelLaps) * (QUALI_LAPS + 1.6)) : TANK_LITRES;
       // All-AI teams pick their own start tyre; a human team starts on the chosen one.
@@ -365,7 +368,7 @@ export class EnduranceRace {
     if (plan.penalty) {
       // Drive-through: no service, the car is released as soon as the lane is clear.
       if (!p.serviced) { p.serviced = true; this.stewards.serve(e); }
-      if (this.releaseClear(e, c)) p.release();
+      if (this.releaseClear(e)) p.release();
       return;
     }
     c.fuel = Math.min(TANK_LITRES, c.fuel + plan.litres * dt / Math.max(0.1, p.serviceTotal));
@@ -383,13 +386,17 @@ export class EnduranceRace {
       e.pitStopTime += p.serviceTotal;
     }
     // Unsafe-release guard: wait while another car is about to pass the box.
-    if (p.serviced && this.releaseClear(e, c)) p.release();
+    if (p.serviced && this.releaseClear(e)) p.release();
   }
-  releaseClear(e, c) {
-    const lane = this.lane;
-    return this.cars.every((o) => {
-      if (o === c) return true;
-      const s = this.track.nearest(o.x, o.z).s;
+  // Only a car driving down the lane past this box counts: cars racing on the track beside the lane (their position
+  // along the lap is inside its window), cars being serviced, and cars stopping at a box short of this one never pass it.
+  releaseClear(e) {
+    const lane = this.lane, span = lane.d(lane.boxStart, lane.boxEnd);
+    return this.entries.every((o) => {
+      const p = o.pit;
+      if (o === e || !p || p.phase === 'service') return true;
+      if (p.phase !== 'release' && !o.pitPlan?.penalty && lane.d(o.box, e.box) <= span) return true;
+      const s = this.track.nearest(o.car.x, o.car.z).s;
       if (!lane.inLane(s)) return true;
       return lane.d(s, e.box) > 35 && lane.d(e.box, s) > 8;
     });

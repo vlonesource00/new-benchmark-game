@@ -166,6 +166,9 @@ def main():
                     '(the combat head restarts near zero as a correction to the pace expert); empty keeps the checkpoint mode')
     ap.add_argument('--anchor', type=float, default=0.0, help='MoE: weight of the squared distance of the action mean from '
                     'the pace expert, on every decision row (deviating from the specialist must earn its reward)')
+    ap.add_argument('--anchor-traffic', type=float, default=1.0, help='MoE: the share of the anchor on rows with a rival in view '
+                    '(1 = the full anchor everywhere; 0 = anchored only where no rival is in view, so the combat expert is free '
+                    'to take another line near rivals)')
     ap.add_argument('--noise-gate', type=float, default=-1.0, help='MoE: exploration std scaled by s0 + (1 - s0) * g per '
                     'decision (s0 = this value, -1 = off), so the frozen pace expert is not driven with noise where the '
                     'router leaves it in charge; rollout log-probs and the update use the same per-row std')
@@ -434,7 +437,8 @@ def main():
                         gl = gl + gp_w * (-((1 - SOLO[:, mb]) * gc.log() + SOLO[:, mb] * (1 - gc).log()) * m).sum() / n
                     dev2 = (res[3] ** 2).sum(2)
                     if a.anchor:
-                        gl = gl + a.anchor * (dev2 * m).sum() / n
+                        aw = SOLO[:, mb] + a.anchor_traffic * (1 - SOLO[:, mb])
+                        gl = gl + a.anchor * (dev2 * aw * m).sum() / n
                     loss = loss + gl
                     gls.append(gl.item())
                     devs.append(((dev2 * m).sum() / n).item())
@@ -488,8 +492,11 @@ def main():
             agg['ttc'].append(s.get('ttc', 0))
             agg['rub'].append(s.get('rub', 0))
             agg['clear'].append(s.get('clear', 0))
-            for k in ('passes', 'dirty', 'lostP', 'stuckS', 'closes', 'leadS', 'followS', 'closeS', 'relV'):
+            for k in ('passes', 'dirty', 'lostP', 'stuckS', 'closes', 'leadS', 'followS', 'closeS', 'relV', 'attempts'):
                 agg[k].append(s.get(k, 0))
+            for k, v in s.items():
+                if k.startswith('mv:'):
+                    agg[k].append(v)
             for w, c in s['why'].items():
                 agg['why:' + w].append(c)
             agg['ticks'].append(s.get('ticks', 0) or 0)
@@ -517,7 +524,7 @@ def main():
             for k, v in list(agg.items()):
                 if k.startswith('lap:'):
                     rec[k] = {'n': len(v), 'best': round(min(v), 3), 'med': round(float(np.median(v)), 3)} if v else None
-                elif k.startswith('why:') or k in ('eps', 'inc', 'rear', 'passes', 'dirty', 'lostP', 'closes'):
+                elif k.startswith('why:') or k.startswith('mv:') or k in ('eps', 'inc', 'rear', 'passes', 'dirty', 'lostP', 'closes', 'attempts'):
                     rec[k] = int(sum(v))
                 else:
                     rec[k] = round(float(np.mean(v)), 4)

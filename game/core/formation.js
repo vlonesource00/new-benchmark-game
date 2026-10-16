@@ -24,6 +24,16 @@ export function rollingLead(track, cars) {
   return ROLLING.lead;
 }
 
+/** Pace speed at `s` on a lane: capped by the bend radius ahead and a gentle braking envelope. */
+export function paceSpeed(track, s, lat) {
+  let v = ROLLING.pace;
+  for (let d = 0; d <= 160; d += 10) {
+    const k = Math.abs(track.at(s + d, 0).curvature), r = k > 1e-4 ? Math.max(12, 1 / k - Math.abs(lat)) : 1e4;
+    v = Math.min(v, Math.sqrt(6 * r + 2 * 3.5 * d));
+  }
+  return v;
+}
+
 export class FormationPilot {
   constructor(race) {
     this.race = race; this.lead = rollingLead(race.track, race.cars.length); this.lane = Math.min(ROLLING.lane, race.track.halfWidth * 0.4);
@@ -33,15 +43,7 @@ export class FormationPilot {
   slot(i) { return { row: Math.floor(i / 2), lat: i % 2 ? -this.lane : this.lane }; }
   /** Metres the leader still has to run before the green. */
   toGreen() { return -ROLLING.green - this.race.cars[0].race.progress; }
-  /** Pace speed at `s` on a lane: capped by the bend radius ahead and a gentle braking envelope. */
-  capSpeed(s, lat) {
-    const track = this.race.track; let v = ROLLING.pace;
-    for (let d = 0; d <= 160; d += 10) {
-      const k = Math.abs(track.at(s + d, 0).curvature), r = k > 1e-4 ? Math.max(12, 1 / k - Math.abs(lat)) : 1e4;
-      v = Math.min(v, Math.sqrt(6 * r + 2 * 3.5 * d));
-    }
-    return v;
-  }
+  capSpeed(s, lat) { return paceSpeed(this.race.track, s, lat); }
   drive(i, c, dt) {
     const race = this.race, track = race.track, st = this.state[i], { row, lat } = this.slot(i);
     const p = track.nearest(c.x, c.z), s = p.s, lead = race.cars[0];
