@@ -373,7 +373,9 @@ def main():
         TGT = torch.from_numpy(tgt).to(dev)
         M = torch.from_numpy(valid).to(dev)
         SOLO = torch.from_numpy((~traffic).astype(np.float32)).to(dev)
-        gp_w = a.gate_prior * (1 - (1 - a.gate_prior_end) * min(1.0, (time.time() - t_start) / 60 / a.minutes)) if a.minutes else a.gate_prior
+        # Schedules run over the budget: --minutes, or with --iters as the budget (equal-decision A/Bs) the iterations.
+        frac = min(1.0, (time.time() - t_start) / 60 / a.minutes) if a.minutes else (it - it0) / max(1, a.iters - it0) if a.iters < 100000 else None
+        gp_w = a.gate_prior * (1 - (1 - a.gate_prior_end) * frac) if frac is not None else a.gate_prior
         MV = torch.from_numpy(live).to(dev)
         H0 = h0
         mv = M.sum().clamp(min=1)
@@ -383,7 +385,7 @@ def main():
         kls, clips, vls, pls, bcs, gns, dls, gls, devs = [], [], [], [], [], [], [], [], []
         cacc = {'tr': torch.zeros(3, device=dev), 'solo': torch.zeros(3, device=dev)}
         nf = torch_norm(norm, dev) if teacher else None
-        bc_w = a.bc * (1 - (1 - a.bc_end) * min(1.0, (time.time() - t_start) / 60 / a.minutes)) if a.minutes else a.bc
+        bc_w = a.bc * (1 - (1 - a.bc_end) * frac) if frac is not None else a.bc
         stop = False
         warm = it - it0 < a.critic_warmup
         for ep in range(a.epochs):
