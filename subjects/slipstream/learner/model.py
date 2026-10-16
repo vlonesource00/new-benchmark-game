@@ -84,8 +84,9 @@ class Slipstream(nn.Module):
         z = torch.cat([h, f], 1)
         return self.pi(z), self.value(z), h
 
-    def sequence(self, x, h0, first, decide=None):
-        """x [T,B,obs], first/decide [T,B]: recomputes the memory through a rollout segment (held on non-decide ticks)."""
+    def sequence(self, x, h0, first, decide=None, with_h=False):
+        """x [T,B,obs], first/decide [T,B]: recomputes the memory through a rollout segment (held on non-decide ticks).
+        with_h: also the memory after each tick [T,B,H]."""
         T, B = x.shape[:2]
         f = self.features(x.reshape(T * B, -1)).reshape(T, B, -1)
         p = self.pre(f)
@@ -94,8 +95,9 @@ class Slipstream(nn.Module):
             hn = self.gru(p[t], h * (1 - first[t]).unsqueeze(1))
             h = hn if decide is None else torch.where(decide[t].unsqueeze(1) > 0.5, hn, h)
             hs.append(h)
-        z = torch.cat([torch.stack(hs), f], 2)
-        return self.pi(z), self.value(z)
+        hs = torch.stack(hs)
+        z = torch.cat([hs, f], 2)
+        return (self.pi(z), self.value(z), hs) if with_h else (self.pi(z), self.value(z))
 
 
 class SlipstreamMoE(nn.Module):
@@ -107,15 +109,29 @@ class SlipstreamMoE(nn.Module):
     Memory is the two GRU states side by side: h = [h_base, h_cmb].
     Residual mode (buffer `residual`): the action mean is base + g * cmb, so the combat expert's head is a correction
     to the pace expert's driving, not a replacement for it; with that head at zero the network drives exactly as the
-    specialist (tt-moe3: replacing the specialist in traffic traded contact for offs)."""
+    specialist (tt-moe3: replacing the specialist in traffic traded contact for offs).
+    v4 wiring (layout with corrX, contract v4): the correction sees what it corrects and what decides contact. The combat
+    expert's pre layer also reads the collision-corridor block; its policy head and the router also read the pace
+    expert's action mean and that block; the critic further reads the pace expert's memory, the router output and the
+    applied action mean (no gradient into those). New columns enter only through widened first layers
+    (contract.moe_widths), so a migrated v3 MoE (zero columns) computes exactly what it did."""
 
     def __init__(self, layout, hidden=256, gate_bias=-2.0):
         super().__init__()
         self.base, self.cmb = Slipstream(layout, hidden), Slipstream(layout, hidden)
         self.base.requires_grad_(False)
-        D = self.cmb.v2 + self.cmb.ex + self.cmb.rn * self.cmb.rx
+        self.cx = layout.get('corrX', 0)
+        D = self.cmb.v2 + self.cmb.ex + self.cmb.rn * self.cmb.rx + self.cx
+        self.c0 = D - self.cx
         feat = 128 + 128 + 64
-        self.gate = mlp(hidden + feat, 64, 1)
+        ax = 2 + self.cx if self.cx else 0
+        self.gate = mlp(hidden + feat + ax, 64, 1)
+        if self.cx:
+            vx = ax + hidden + 1 + 2
+            self.cmb.pre[0] = nn.Linear(feat + self.cx, hidden)
+            self.cmb.pi[0] = nn.Linear(hidden + feat + ax, 256)
+            self.cmb.v[0] = nn.Linear(hidden + feat + vx, 256)
+            self.cmb.vr[0] = nn.Linear(hidden + feat + vx, 256)
         nn.init.zeros_(self.gate[-1].weight)
         nn.init.constant_(self.gate[-1].bias, gate_bias)
         self.log_std = self.cmb.log_std
@@ -154,8 +170,8 @@ class SlipstreamMoE(nn.Module):
         xb = ((raw - self.b_mean) / self.b_std).clamp(-10, 10)
         return torch.where(self.skip, x, xb)
 
-    def mix(self, mb, mc, zc):
-        g = torch.sigmoid(self.gate(zc))
+    def mix(self, mb, mc, za):
+        g = torch.sigmoid(self.gate(za))
         # torch.where, not a Python branch on the buffer: no host sync, so CUDA-graph capture stays legal
         return torch.where(self.residual, mb + g * mc, (1 - g) * mb + g * mc), g.squeeze(-1)
 
@@ -163,11 +179,14 @@ class SlipstreamMoE(nn.Module):
         hb, hc = h[:, :self.eh], h[:, self.eh:]
         mb, _, hb = self.base.step(self.base_view(x), hb, first, decide)
         fc = self.cmb.features(x)
-        hn = self.cmb.gru(self.cmb.pre(fc), hc * (1 - first).unsqueeze(1))
+        corr = x[:, self.c0:self.c0 + self.cx]
+        hn = self.cmb.gru(self.cmb.pre(torch.cat([fc, corr], 1) if self.cx else fc), hc * (1 - first).unsqueeze(1))
         hc = hn if decide is None else torch.where(decide.unsqueeze(1) > 0.5, hn, hc)
         zc = torch.cat([hc, fc], 1)
-        mu, g = self.mix(mb, self.cmb.pi(zc), zc)
-        out = (mu, self.cmb.value(zc), torch.cat([hb, hc], 1))
+        za = torch.cat([zc, mb, corr], 1) if self.cx else zc
+        mu, g = self.mix(mb, self.cmb.pi(za), za)
+        zv = torch.cat([za, hb.detach(), g.detach().unsqueeze(-1), mu.detach()], 1) if self.cx else zc
+        out = (mu, self.cmb.value(zv), torch.cat([hb, hc], 1))
         return (*out, g) if with_gate else out
 
     def sequence(self, x, h0, first, decide=None):
@@ -175,17 +194,20 @@ class SlipstreamMoE(nn.Module):
         d [T,B,2] is the action mean minus the pace expert's (the correction actually applied; the anchor cost's input)."""
         T, B = x.shape[:2]
         with torch.no_grad():
-            mb, _ = self.base.sequence(self.base_view(x.reshape(T * B, -1)).reshape(T, B, -1), h0[:, :self.eh], first, decide)
+            mb, _, hb = self.base.sequence(self.base_view(x.reshape(T * B, -1)).reshape(T, B, -1), h0[:, :self.eh], first, decide, with_h=True)
         f = self.cmb.features(x.reshape(T * B, -1)).reshape(T, B, -1)
-        p = self.cmb.pre(f)
+        corr = x[:, :, self.c0:self.c0 + self.cx]
+        p = self.cmb.pre(torch.cat([f, corr], 2) if self.cx else f)
         h, hs = h0[:, self.eh:], []
         for t in range(T):
             hn = self.cmb.gru(p[t], h * (1 - first[t]).unsqueeze(1))
             h = hn if decide is None else torch.where(decide[t].unsqueeze(1) > 0.5, hn, h)
             hs.append(h)
         zc = torch.cat([torch.stack(hs), f], 2)
-        mu, g = self.mix(mb, self.cmb.pi(zc), zc)
-        return mu, self.cmb.value(zc), g, mu - mb
+        za = torch.cat([zc, mb, corr], 2) if self.cx else zc
+        mu, g = self.mix(mb, self.cmb.pi(za), za)
+        zv = torch.cat([za, hb, g.detach().unsqueeze(-1), mu.detach()], 2) if self.cx else zc
+        return mu, self.cmb.value(zv), g, mu - mb
 
 
 def build_net(ck_or_layout, hidden=256):

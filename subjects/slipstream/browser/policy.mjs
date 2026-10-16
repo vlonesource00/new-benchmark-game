@@ -27,7 +27,10 @@ export class Policy {
     this.p = {}; for (const [k, v] of Object.entries(exp.params)) this.p[k] = decode(v);
     // Contract v3: egoX / rivalX race-context values after the v2 block, concatenated onto the ego and token inputs.
     const L = this.L; this.ex = L.egoX ?? 0; this.rx = L.rivalX ?? 0; this.v2 = L.ego + L.roadK * L.roadF + L.rivalN * L.rivalF;
-    this.D = this.v2 + this.ex + L.rivalN * this.rx;
+    // Contract v4: corrX collision-corridor values last. Only a wired expert (exp.wired: the v4 MoE's combat expert)
+    // reads them, through its pre layer and, with the pace expert's mean, its policy head (and the router).
+    this.cx = L.corrX ?? 0; this.D = this.v2 + this.ex + L.rivalN * this.rx + this.cx; this.c0 = this.D - this.cx;
+    this.wired = Boolean(exp.wired) && this.cx > 0; const ax = this.wired ? 2 + this.cx : 0;
     // blindRivals: every rival slot reads empty (raw zeros, as in a solo race), for actors not yet trained in traffic.
     this.seen = exp.blindRivals ? L.ego + L.roadK * L.roadF : this.D;
     this.h = new Float32Array(this.H);
@@ -35,14 +38,16 @@ export class Policy {
       t1: new Float32Array(64), tok: Array.from({ length: L.rivalN + 1 }, () => new Float32Array(64)), q: new Float32Array(64), qp: new Float32Array(64),
       kp: Array.from({ length: L.rivalN + 1 }, () => new Float32Array(64)), vp: Array.from({ length: L.rivalN + 1 }, () => new Float32Array(64)),
       att: new Float32Array(64), ao: new Float32Array(64), f: new Float32Array(320), pre: new Float32Array(this.H), gi: new Float32Array(3 * this.H),
-      gh: new Float32Array(3 * this.H), z: new Float32Array(this.H + 320), p1: new Float32Array(256), mu: new Float32Array(2),
+      gh: new Float32Array(3 * this.H), z: new Float32Array(this.H + 320 + ax), p1: new Float32Array(256), mu: new Float32Array(2),
+      preIn: new Float32Array(320 + (this.wired ? this.cx : 0)),
       egoIn: new Float32Array(L.ego + this.ex), tokIn: new Float32Array(L.rivalF + this.rx) };
   }
 
   reset() { this.h.fill(0); }
 
-  /** raw: un-normalised observation (Float32Array D). Returns [steer, pedal] in [-1, 1]. decide=false holds memory. */
-  act(raw, first = false, decide = true) {
+  /** raw: un-normalised observation (Float32Array D). Returns [steer, pedal] in [-1, 1]. decide=false holds memory.
+   *  mb: the pace expert's action mean (a wired combat expert reads it). */
+  act(raw, first = false, decide = true, mb = null) {
     const { p, L, b: _ } = this, B = this.buf, x = B.x;
     if (first) this.h.fill(0);
     for (let i = 0; i < this.D; i++) { const v = i < this.seen ? raw[i] : 0; x[i] = this.skip.has(i) ? v : Math.max(-10, Math.min(10, (v - this.mean[i]) / this.std[i])); }
@@ -77,7 +82,10 @@ export class Policy {
     }
     linear(p['attn.out_proj.weight'], p['attn.out_proj.bias'], B.att, B.ao);
     B.f.set(B.ao, 256);
-    linear(p['pre.0.weight'], p['pre.0.bias'], B.f, B.pre, true);
+    const corr = x.subarray(this.c0, this.c0 + this.cx);
+    let pin = B.f;
+    if (this.wired) { B.preIn.set(B.f, 0); B.preIn.set(corr, 320); pin = B.preIn; }
+    linear(p['pre.0.weight'], p['pre.0.bias'], pin, B.pre, true);
     const H = this.H, h = this.h;
     if (decide) {
       linear(p['gru.weight_ih'], p['gru.bias_ih'], B.pre, B.gi);
@@ -88,6 +96,7 @@ export class Policy {
       }
     }
     B.z.set(h, 0); B.z.set(B.f, H);
+    if (this.wired) { B.z[H + 320] = mb[0]; B.z[H + 321] = mb[1]; B.z.set(corr, H + 322); }
     linear(p['pi.0.weight'], p['pi.0.bias'], B.z, B.p1, true);
     linear(p['pi.2.weight'], p['pi.2.bias'], B.p1, B.mu);
     return [B.mu[0], B.mu[1]];
@@ -96,7 +105,8 @@ export class Policy {
 
 /** Mixture of experts (learner/model.py SlipstreamMoE): a frozen pace expert and a combat expert, each with its own
  * normaliser and memory, and a router reading the combat expert's policy input: mean = (1 - g) * base + g * cmb, or in
- * residual mode base + g * cmb (the combat head is a correction to the pace expert's driving). */
+ * residual mode base + g * cmb (the combat head is a correction to the pace expert's driving). A wired combat expert
+ * (contract v4) and the router read the pace expert's mean and the collision corridor too (the router reads cmb's z). */
 export class MoEPolicy {
   constructor(exp) {
     this.base = new Policy(exp.base); this.cmb = new Policy(exp.cmb); this.residual = Boolean(exp.residual);
@@ -107,7 +117,7 @@ export class MoEPolicy {
   reset() { this.base.reset(); this.cmb.reset(); }
 
   act(raw, first = false, decide = true) {
-    const [bs, bp] = this.base.act(raw, first, decide), [cs, cp] = this.cmb.act(raw, first, decide);
+    const [bs, bp] = this.base.act(raw, first, decide), [cs, cp] = this.cmb.act(raw, first, decide, [bs, bp]);
     linear(this.g['0.weight'], this.g['0.bias'], this.cmb.buf.z, this.g1, true);
     linear(this.g['2.weight'], this.g['2.bias'], this.g1, this.g2);
     const g = this.gate = sig(this.g2[0]), k = this.residual ? 1 : 1 - g;

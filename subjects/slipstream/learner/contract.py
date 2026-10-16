@@ -9,17 +9,22 @@ identical, so a v1 network still runs exactly as trained on v2 rows by reading o
 v3 (multiclass race context): v2's 297 values unchanged, then egoX ego values and rivalN x rivalX rival values
 (env/observe.mjs). A v2 network reads only its first 297 columns; migrate_v2_v3 gives a v2 network the new inputs with
 zero weights (ego and rival-token input layers), so it computes exactly what it did, and learns to use them in training.
+v4 (collision corridor): v3's values unchanged, then corrX values (env/observe.mjs: the nearest car ahead in our corridor
+and the nearest car alongside on each side). A plain network never reads them. A v4 MoE is wired to them (model.py:
+SlipstreamMoE): migrate_v3_v4 widens the combat expert's and the router's first layers with zero columns, so a migrated
+MoE computes exactly what it did.
 """
 import torch
 
 V1 = {'ego': 48, 'roadK': 24, 'roadF': 6, 'rivalN': 8, 'rivalF': 13}
 V2 = {**V1, 'ego': 49}
 V3 = {**V2, 'egoX': 1, 'rivalX': 4}
+V4 = {**V3, 'corrX': 13}
 
 
 def obs_len(layout):
     return (layout['ego'] + layout['roadK'] * layout['roadF'] + layout['rivalN'] * layout['rivalF']
-            + layout.get('egoX', 0) + layout['rivalN'] * layout.get('rivalX', 0))
+            + layout.get('egoX', 0) + layout['rivalN'] * layout.get('rivalX', 0) + layout.get('corrX', 0))
 
 
 def layout_of(ck):
@@ -107,11 +112,58 @@ def migrate_v2_v3(ck, param_names):
     return out
 
 
+def moe_widths(cx, hidden):
+    """Extra input columns of the v4 MoE's widened first layers: the combat expert's pre layer reads the corridor block;
+    its policy head and the router also read the pace expert's action mean; the critic further reads the pace expert's
+    memory, the router output and the applied action mean (model.py SlipstreamMoE)."""
+    act = 2 + cx
+    return {'cmb.pre.0.weight': cx, 'cmb.pi.0.weight': act, 'gate.0.weight': act,
+            'cmb.v.0.weight': act + hidden + 1 + 2, 'cmb.vr.0.weight': act + hidden + 1 + 2}
+
+
+def migrate_v3_v4(ck, param_names):
+    """Returns a v4 copy of a v3 checkpoint. Plain: only the normaliser grows (a plain network never reads the corridor
+    block). MoE: the widened first layers gain zero columns (weights, averages, Adam moments), so the migrated network
+    computes exactly what it did on every v4 row; normaliser buffers grow with raw (skip) columns."""
+    import numpy as np
+    lay = layout_of(ck)
+    assert lay == V3, f'not a v3 checkpoint: {lay}'
+    cx = V4['corrX']
+    widths = moe_widths(cx, ck['model']['cmb.gru.weight_hh'].shape[1]) if 'moe' in ck else {}
+    pad = lambda k, t: torch.cat([t, torch.zeros(t.shape[0], widths[k], dtype=t.dtype, device=t.device)], 1) if k in widths and t.dim() == 2 else t
+    out = dict(ck)
+    out['model'] = {k: pad(k, v) for k, v in ck['model'].items()}
+    if 'ema' in ck:
+        out['ema'] = {k: pad(k, v) for k, v in ck['ema'].items()}
+    for sd in [out['model']] + ([out['ema']] if 'ema' in out else []):
+        for k in ('t_mean', 'b_mean'):
+            if k in sd:
+                sd[k] = torch.cat([sd[k], torch.zeros(cx, dtype=sd[k].dtype, device=sd[k].device)])
+        for k in ('t_std', 'b_std'):
+            if k in sd:
+                sd[k] = torch.cat([sd[k], torch.ones(cx, dtype=sd[k].dtype, device=sd[k].device)])
+        if 'skip' in sd:
+            sd['skip'] = torch.cat([sd['skip'], torch.ones(cx, dtype=torch.bool, device=sd['skip'].device)])
+    if 'opt' in ck:
+        opt = {**ck['opt'], 'state': {}}
+        for i, st in ck['opt']['state'].items():
+            name = param_names[int(i)]
+            opt['state'][i] = {k: (pad(name, v) if torch.is_tensor(v) else v) for k, v in st.items()}
+        out['opt'] = opt
+    n = ck['norm']
+    out['norm'] = {'mean': np.append(n['mean'], np.zeros(cx)), 'var': np.append(n['var'], np.ones(cx)), 'n': n['n']}
+    out['layout'] = dict(V4)
+    out['migrated_from'] = 'v3'
+    return out
+
+
 def migrate_to(ck, layout, names_for):
-    """Chains migrations up to the env's layout (v1 -> v2 -> v3). names_for(layout, ck): the optimizer's parameter names."""
+    """Chains migrations up to the env's layout (v1 -> v2 -> v3 -> v4). names_for(layout, ck): the optimizer's parameter names."""
     if layout_of(ck) == V1 and layout != V1:
         ck = migrate_v1_v2(ck, names_for(V1, ck))
-    if layout_of(ck) == V2 and layout == V3:
+    if layout_of(ck) == V2 and layout in (V3, V4):
         ck = migrate_v2_v3(ck, names_for(V2, ck))
+    if layout_of(ck) == V3 and layout == V4:
+        ck = migrate_v3_v4(ck, names_for(V3, ck))
     assert layout_of(ck) == layout, f'no migration from {layout_of(ck)} to {layout}'
     return ck

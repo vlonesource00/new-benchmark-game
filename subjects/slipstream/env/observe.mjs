@@ -12,12 +12,19 @@ const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
 // their 297 columns): EGO_X ego values (own class tier) and RIVAL_X values per rival slot, in the slot order above
 // (same class, class tier difference, lap difference, size difference). The networks concatenate them onto the ego and
 // rival-token inputs; a migrated v2 network gives them zero weights, so it drives exactly as before.
-export const ROAD_K = 24, ROAD_F = 6, RIVAL_N = 8, RIVAL_F = 13, EGO_F = 49, EGO_X = 1, RIVAL_X = 4;
+// Contract v4 (collision corridor) appends CORR_X values after the v3 block, a direct path for what decides contact
+// (the attention compresses the rival set into 64 values): the nearest car ahead in our corridor (present, body
+// clearance, closing speed, relative longitudinal acceleration, time to contact, lateral offset, its brake lights) and
+// the nearest car alongside on each side (present, lateral body clearance, along-track offset). Earlier networks read
+// only their own columns; the v4 MoE wiring feeds the block straight to the combat expert, router and critic.
+export const ROAD_K = 24, ROAD_F = 6, RIVAL_N = 8, RIVAL_F = 13, EGO_F = 49, EGO_X = 1, RIVAL_X = 4, CORR_X = 13;
 export const OBS_V2 = EGO_F + ROAD_K * ROAD_F + RIVAL_N * RIVAL_F;
-export const OBS = OBS_V2 + EGO_X + RIVAL_N * RIVAL_X;
+export const OBS_V3 = OBS_V2 + EGO_X + RIVAL_N * RIVAL_X;
+export const OBS = OBS_V3 + CORR_X;
 // Class tier: 1 for prototypes (LMDh / GTP, prototype), 0 for GT and touring cars.
 const tier = (car) => (car.classId === 'lmdh' || car.classId === 'prototype' ? 1 : 0);
 const RIVAL_RANGE = 160;
+const CORR_AHEAD = 120; // m of body clearance looked through for the car ahead
 
 /** 1 m centreline table so observations never call track.at per sample. */
 export function roadTable(track) {
@@ -91,5 +98,25 @@ export function observe(o, ctx) {
     put((r.classId ?? 'gt') === (c.classId ?? 'gt') ? 1 : 0); put(tier(r) - tier(c));
     put(cp == null || rp == null ? 0 : clamp(Math.round((rp - cp - g) / L), -1, 1));
     put(((r.spec?.halfLength ?? 2.3) - (c.spec?.halfLength ?? 2.3)) * 2);
+  }
+  // v4 block: collision corridor, ego frame, body to body (half lengths and half widths of both cars).
+  const hlC = c.spec?.halfLength ?? 2.3, hwC = c.spec?.halfWidth ?? 0.99;
+  let ahead = null, left = null, right = null;
+  for (const p of near) {
+    const r = p[2], dx = r.x - c.x, dz = r.z - c.z, f = fwd(dx, dz), l = lat(dx, dz);
+    const hl = hlC + (r.spec?.halfLength ?? 2.3), hw = hwC + (r.spec?.halfWidth ?? 0.99);
+    if (f > hl && f - hl < CORR_AHEAD && Math.abs(l) < hw + 0.6) { if (!ahead || f < ahead.f) ahead = { r, f, l, hl }; }
+    else if (Math.abs(f) <= hl + 1) {
+      const side = { r, f, gap: Math.abs(l) - hw };
+      if (l < 0) { if (!left || side.gap < left.gap) left = side; } else if (!right || side.gap < right.gap) right = side;
+    }
+  }
+  if (ahead) {
+    const { r, f, l, hl } = ahead, clear = f - hl, closing = -fwd(r.vx - c.vx, r.vz - c.vz);
+    put(1); put(clamp(clear / 30, 0, 4)); put(clamp(closing / 10, -3, 3)); put(clamp(((r.ax ?? 0) - (c.ax ?? 0)) / 10, -3, 3));
+    put(closing > 0.5 ? clamp(clear / closing, 0, 6) / 6 : 1); put(clamp(l / 2, -2, 2)); put(clamp(r.controls?.brake ?? 0, 0, 1));
+  } else { put(0); put(4); put(0); put(0); put(1); put(0); put(0); }
+  for (const sd of [left, right]) {
+    if (sd) { put(1); put(clamp(sd.gap / 2, -1, 2)); put(clamp(sd.f / 5, -2, 2)); } else { put(0); put(2); put(0); }
   }
 }

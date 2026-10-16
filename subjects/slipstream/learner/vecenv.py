@@ -31,7 +31,8 @@ class VecEnv:
         h = self.hs[0]
         self.obs_dim, self.row = h['obs'], h['row']
         self.layout = dict(ego=h['ego'], roadK=h['roadK'], roadF=h['roadF'], rivalN=h['rivalN'], rivalF=h['rivalF'],
-                           **({'egoX': h['egoX'], 'rivalX': h['rivalX']} if h.get('egoX') or h.get('rivalX') else {}))
+                           **({'egoX': h['egoX'], 'rivalX': h['rivalX']} if h.get('egoX') or h.get('rivalX') else {}),
+                           **({'corrX': h['corrX']} if h.get('corrX') else {}))
         self.n = sum(self.sizes)
         self.offsets = np.cumsum([0] + self.sizes)
 

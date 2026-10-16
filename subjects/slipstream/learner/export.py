@@ -43,7 +43,8 @@ def main():
     out = {'ckpt': a.ckpt, 'iter': ck.get('iter'), 'layout': layout, 'skip': skip.tolist(), 'mean': norm.mean.astype(np.float32).tolist(), 'std': std}
     if moe:  # two expert actors (each with its own normaliser, as browser/policy.mjs runs them) and the router
         sub = lambda m, mean, sd: {'layout': layout, 'hidden': net.eh, 'skip': skip.tolist(), 'mean': mean.tolist(), 'std': sd.tolist(), 'params': actor(m)}
-        out.update(moe=True, residual=bool(net.residual), hidden=net.hidden, base=sub(net.base, net.b_mean, net.b_std), cmb=sub(net.cmb, net.t_mean, net.t_std),
+        # v4 wiring: the combat expert's pre and policy layers also read the corridor block (and the pace expert's mean)
+        out.update(moe=True, residual=bool(net.residual), hidden=net.hidden, base=sub(net.base, net.b_mean, net.b_std), cmb={**sub(net.cmb, net.t_mean, net.t_std), 'wired': bool(net.cx)},
                    gate={k: enc(v) for k, v in net.gate.state_dict().items()})
     else:
         out.update(hidden=net.hidden, params=actor(net))

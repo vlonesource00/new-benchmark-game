@@ -51,7 +51,9 @@ def binary_columns(layout):
     base = layout['ego'] + layout['roadK'] * layout['roadF']
     cols = [base + i * layout['rivalF'] for i in range(layout['rivalN'])]
     v2 = base + layout['rivalN'] * layout['rivalF']
-    cols += list(range(v2, v2 + layout.get('egoX', 0) + layout['rivalN'] * layout.get('rivalX', 0)))
+    v3 = v2 + layout.get('egoX', 0) + layout['rivalN'] * layout.get('rivalX', 0)
+    cols += list(range(v2, v3))
+    cols += list(range(v3, v3 + layout.get('corrX', 0)))  # v4 collision corridor: already scaled to about +-4, raw
     return np.array(cols, dtype=np.int64)
 
 
