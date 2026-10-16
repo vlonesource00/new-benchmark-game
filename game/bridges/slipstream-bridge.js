@@ -5,6 +5,7 @@
 // substep (headless or fallback) it is staged one substep, the shortest delay the policy was trained with.
 import { makePolicy } from '../../subjects/slipstream/browser/policy.mjs';
 import { observe, roadTable, OBS } from '../../subjects/slipstream/env/observe.mjs';
+import { createSlipstreamLens } from './slipstream-lens.js';
 
 const GAP = 4 / 120;
 const inWorker = typeof WorkerGlobalScope !== 'undefined' && globalThis instanceof WorkerGlobalScope;
@@ -24,7 +25,7 @@ const loadWeights = (trackId) => {
 export function createSlipstreamBridge({ hostTrack, index = 0 }) {
   let policy = null, road = null, first = true, lastDecision = -1e9, held = [0, 0], staged = null;
   let seen = null, appliedAt = 0, sent = [0, 0];
-  const o = new Float32Array(OBS), limit = hostTrack.halfWidth + (hostTrack.curbWidth ?? 0);
+  const o = new Float32Array(OBS), limit = hostTrack.halfWidth + (hostTrack.curbWidth ?? 0), lens = createSlipstreamLens(hostTrack);
   loadWeights(hostTrack.id).then((exp) => { policy = makePolicy(exp); }, (e) => { console.warn('[slipstream] weights failed', e); });
   const toControls = ([st, pd]) => ({ steer: st, throttle: pd > 0 ? pd : 0, brake: pd < 0 ? -pd : 0 });
   return {
@@ -44,6 +45,7 @@ export function createSlipstreamBridge({ hostTrack, index = 0 }) {
           const [st, pd] = policy.act(o, first, true); first = false;
           if (!Number.isFinite(st) || !Number.isFinite(pd)) throw new Error('non-finite SLIPSTREAM action');
           sent = [Math.max(-1, Math.min(1, st)), Math.max(-1, Math.min(1, pd))];
+          try { lens.decide(car, cars, time, policy, sent, Math.max(0, time - appliedAt)); } catch { /* the debugger never stops the car */ }
           if (inWorker) held = sent; else staged = sent;
         }
         car.controls = toControls(held);
@@ -52,8 +54,8 @@ export function createSlipstreamBridge({ hostTrack, index = 0 }) {
         car.controls = { steer: 0, throttle: 0, brake: 0.6 };
       }
     },
-    reset() { first = true; lastDecision = -1e9; held = [0, 0]; staged = null; seen = null; sent = [0, 0]; policy?.reset(); },
-    debug() { return { architecture: 'SLIPSTREAM · learned direct control (PPO, GRU)', sent, errors: this.errors, lastError: this.lastError }; },
-    visualDebug() { return null; }
+    reset() { first = true; lastDecision = -1e9; held = [0, 0]; staged = null; seen = null; sent = [0, 0]; policy?.reset(); lens.reset(); },
+    debug() { return { ...lens.debug(), sent, errors: this.errors, lastError: this.lastError }; },
+    visualDebug() { return lens.visualDebug(); }
   };
 }

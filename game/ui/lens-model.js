@@ -47,7 +47,8 @@ const THEMES = {
   'solinator-6.1': { color: '#ffce45', mind: 'Gate-to-gate arrivals; full-plant transfer graph' },
   apex: { color: '#00e0b8', mind: 'Identified g-g-v limit line; shadow lanes rolled out against predicted rivals' },
   razor: { color: '#ff6238', mind: 'Fast line to the wake; committed open-space attacks with smooth joins' },
-  tempest: { color: '#3ad6ff', mind: 'Rolls every lane forward against forecast rivals, their wake and the water; commits only when it beats the held line' }
+  tempest: { color: '#3ad6ff', mind: 'Rolls every lane forward against forecast rivals, their wake and the water; commits only when it beats the held line' },
+  slipstream: { color: '#7cf29c', mind: 'Learned direct control: a pace network drives; near rivals a router hands part of the wheel to a combat add-on' }
 };
 
 // CRV packs its scored lanes as "kind*:score ..." in debug() and as geometry in visualDebug().
@@ -220,6 +221,36 @@ PROFILES.tempest = (d, v) => {
     tags: [d.pending && `→ ${d.pending} pending`, f?.why === 'stopped' && 'stopped car ahead', f?.why === 'slower' && 'slower car ahead', f?.why === 'contact' && 'contact on the line', d.wake > .3 && 'in the wake', d.water?.active && 'wet'].filter(Boolean),
     log: (cb.events ?? []).slice().reverse().map((e) => `${e.t.toFixed(0)} s  ${e.kind === 'pass' ? '▲ PASS' : '▼ PASSED BY'} #${e.id}  in ${e.state}`),
     marks: Array.isArray(v?.marks) ? v.marks : null
+  };
+};
+
+// SLIPSTREAM: no plan, so the panel shows the network's own quantities: the router's share for the combat add-on, the
+// add-on's correction to the pace driver's steering and pedal, the action sent and its age. The two paths are where
+// each steering command points (pace driver alone vs with the add-on), held for 1.2 s: the gap between them is the
+// track width the add-on is taking.
+PROFILES.slipstream = (d, v) => {
+  const st = d.stats ?? {}, g = num(d.g), c = d.corr, out = d.out ?? [0, 0], x = v?.extras ?? null;
+  const dir = (k, pos, neg) => (Math.abs(k) < 0.02 ? '' : k > 0 ? pos : neg);
+  return {
+    intent: d.intent ?? 'DRIVE', sub: d.sub ?? '', tagText: d.sub ?? '', suppressInference: true,
+    focus: d.focus != null ? { id: d.focus, kind: d.focusKind ?? 'follow' } : null,
+    side: c ? Math.sign(c[0]) * (Math.abs(c[0]) > 0.02 ? 1 : 0) : 0,
+    cands: (v?.candidates ?? []).map((q) => ({ label: q.kind, score: q.score, chosen: q.chosen, points: q.points })),
+    candNote: 'where each steering command points, held 1.2 s',
+    gauges: [
+      gauge('router → add-on', g, g == null ? 'no add-on' : pct(g), g > 0.5 ? '#ff4d6d' : '#3ddc84'),
+      gauge('add-on steering', c ? Math.min(1, Math.abs(c[0]) / 0.3) : null, c ? `${c[0] >= 0 ? '+' : ''}${(c[0] * 100).toFixed(0)}% lock ${dir(c[0], '(left)', '(right)')}` : '', '#ff8f3d'),
+      gauge('add-on pedal', c ? Math.min(1, Math.abs(c[1]) / 0.3) : null, c ? `${c[1] >= 0 ? '+' : ''}${(c[1] * 100).toFixed(0)}% ${dir(c[1], 'more throttle', 'more brake')}` : '', '#c77dff'),
+      gauge('steering sent', Math.abs(out[0]), `${out[0] >= 0 ? '+' : ''}${(out[0] * 100).toFixed(0)}%`, '#4fd1e8'),
+      gauge('pedal sent', Math.abs(out[1]), out[1] >= 0 ? `throttle ${pct(out[1])}` : `brake ${pct(-out[1])}`, out[1] >= 0 ? '#3ddc84' : '#ff4d4d'),
+      gauge('action age', num(d.age) == null ? null : Math.min(1, d.age / 0.1), num(d.age) == null ? '' : `${(d.age * 1000).toFixed(0)} ms`, '#9aa4b2'),
+      gauge('dirty air', num(d.wake), num(d.wake) == null ? '' : pct(clamp01(d.wake)), '#9aa4b2')
+    ],
+    counters: [counter('add-on in control', st.decisions ? pct(st.combatShare ?? 0) : null), counter('passes', st.passes), counter('with add-on', st.addonPasses), counter('passed by', st.lost), counter('decisions', st.decisions)],
+    tags: [d.wake > .3 && 'in the wake', g != null && g > 0.5 && 'add-on driving'].filter(Boolean),
+    log: (d.events ?? []).slice().reverse().map((e) => `${e.t.toFixed(0)} s  ${e.kind === 'pass' ? '▲ PASS' : '▼ PASSED BY'} #${e.id}  add-on ${Math.round(e.g * 100)}%`),
+    radar: x ? { half: x.half, me: x.me, rivals: x.rivals ?? [], lanes: x.lanes ?? [], contact: null, cap: null } : null,
+    extras: x
   };
 };
 
