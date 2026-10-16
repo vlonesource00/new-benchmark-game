@@ -20,6 +20,13 @@ Argon's 24 source/integration files were preserved before editing in the workspa
 
 ## Performance work still open
 
+The [17 October combat review](COMBAT-REVIEW-2026-10-17.md) is the current combat assessment.
+The independent short-encounter scoreboard separates backmarker passes from
+same-class passes. Gearbox rollout history and the defensive clearance timer
+are corrected, but the same-class passing bottleneck remains. Broader defensive
+holding and earlier setup experiments were rejected; keep the passing and latency
+regression gates before changing move commitment.
+
 - Establish a same-pace combat gain across fresh seeds and proper race finishes. Current five-car spot checks show competitive lap pace but poor conversion of attacks into retained passes.
 - Keep the wet Nürburgring GT3 and heavily worn Harbor GT3 cases in the acceptance matrix; both now pass after the braking correction.
 - Treat rolling-start formation failures separately from VANGUARD's own control. The shared formation controller owns applied commands until release.

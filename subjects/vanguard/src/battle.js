@@ -6,11 +6,12 @@ import { bodyContact } from './body.js';
 import { deployment } from './strategy.js';
 
 /** Closed-loop rollout evaluation on compiled corridor demand with exact 2D body contact and hybrid co-state. */
-export function evaluate(path, car, course, observer, target, horizon = 3.4) {
+export function evaluate(path, car, course, observer, target, horizon = target?.hazard ? 3.4 : (course.options.combatHorizon ?? 3.4)) {
   const model = course.model, t = course.track, c = path.closest(car.x, car.z);
   let i = c.i, f = c.f, v = Math.max(2, car.speed), time = 0, arc = 0, risk = 0, blocked = 0, cleared = false, threat = null, peakRisk = 0;
   const startS = observer.me.s, initialGap = target?.ds ?? 0;
   let energy = car.hybrid?.energy ?? 0;
+  let gear = car.gear;
   while (time < horizon) {
     const h = 0.10, k = path.sample(path.ks, i, f), d = path.sample(path.lat, i, f), heading = path.heading(i, f),
       body = { x: path.sample(path.px, i, f), z: path.sample(path.pz, i, f), h: heading, vx: Math.sin(heading) * v, vz: Math.cos(heading) * v };
@@ -40,7 +41,8 @@ export function evaluate(path, car, course, observer, target, horizon = 3.4) {
     }
     const demand = longitudinalDemand(path, { i, f }, v, model, { cap, wake });
     const pedals = allocate(demand.acceleration, v, model, { share: Math.sqrt(Math.max(0, 1 - use ** 3)), reserve: 1, spin: 0 }, course.options);
-    const gear = model.gearAt(v, car.gear), drag = model.dragK * v * v + 0.13, drive = model.driveG(v, gear, car.spec.mass + car.fuel * 0.75);
+    gear = model.gearAt(v, gear);
+    const drag = model.dragK * v * v + 0.13, drive = model.driveG(v, gear, car.spec.mass + car.fuel * 0.75);
     const targetGap = target ? gap(observer.at(target, time).s, road, t.length) : Infinity;
     const fight = Boolean(path.attackSide && target?.eligible && Math.abs(targetGap) < 22);
     const spend = deployment(energy / 3e6, v, {
@@ -159,6 +161,14 @@ export class Battle {
       this.clearAt = null;
     } else if (this.state === 'ALONGSIDE' && r.ds > HALF_LENGTH + r.along + 0.35) {
       this.state = 'ATTACK';
+    }
+    const ownSpeed = observer.car?.speed ?? observer.me.v;
+    if (this.state === 'DEFEND' && r.ds < 0 && r.ds > -Math.max(26, ownSpeed * 0.65) &&
+      (r.referenceSpeed ?? r.v) > ownSpeed - 0.7) {
+      // We began this move ahead. The passing clear timer would return us to
+      // the racing line just as the attacker arrives alongside.
+      this.clearAt = null;
+      return r;
     }
     if (r.ds < -(HALF_LENGTH + r.along + 0.4)) {
       this.clearAt ??= now;

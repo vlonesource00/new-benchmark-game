@@ -135,6 +135,7 @@ export class VanguardDriver {
     return {
       architecture: 'VANGUARD',
       intent: this.battle?.state ?? 'INIT',
+      returnReason: this.battle?.returnReason ?? null,
       maneuver: this.battle?.moveKind ?? null,
       mode: c?.mode,
       targetSpeed: c?.targetSpeed,

@@ -68,6 +68,11 @@ The production build passes. Its existing large-chunk warning remains; no unrela
 
 ## Boundaries of this continuation
 
+For the subsequent five-driver combat screen, CPU regression fixes and rejected
+experiments, see [COMBAT-REVIEW-2026-10-17.md](COMBAT-REVIEW-2026-10-17.md).
+Its results are separate from the earlier solo matrix and do not establish an
+overall championship ranking or a new same-class passing gain.
+
 Argon's architecture is retained. The short arrival predictor calls the original vehicle physics, while the longer tactical rollout remains approximate. Explicit switchback selection, online adaptation and wet-line selection need broader race-level evidence. No zero-allocation or universal performance claim is made.
 
 The original audit, all failed diagnostics and large traces remain available locally. Version-1 compound/wear comparisons are superseded because their requested tyres were reset before driving. Generated reports are ignored by Git to avoid committing large traces.

@@ -4,7 +4,7 @@ import lines from '../../apex/data/lines.json' with { type: 'json' };
 import { tyreWet } from '../../../game/engine/sim/water.js';
 import { clamp, advance, roadSample, gap, angle } from './math.js';
 
-const STEP = 0.1, COUNT = 36;
+const STEP = 0.1;
 
 /** Cached physical forecast per observed rival, with 2D inertial scrub for spun/stopped hazards. */
 export class RivalMotion {
@@ -48,7 +48,8 @@ export class RivalMotion {
     let i = c.i, f = c.f, v = Math.max(0, r.car.vx * Math.sin(heading) + r.car.vz * Math.cos(heading)),
       gear = r.car.gear ?? 1, road = r.s;
     const rows = [];
-    for (let n = 0; n < COUNT; n++) {
+    const count = Math.max(36, Math.ceil(Math.min(8, this.course.options.combatHorizon ?? 3.4) / STEP) + 2);
+    for (let n = 0; n < count; n++) {
       const t = n * STEP, s = roadSample(line, i, f, track.length);
       if (n) road += gap(s, road, track.length);
       const d = line.sample(line.lat, i, f) + offset + lateralRate * Math.min(t, 0.7),
@@ -72,8 +73,8 @@ export class RivalMotion {
     if (r.hazard && (Math.abs(r.psi) > 0.55 || r.car.speed < 7) && this.observer) {
       return this.observer.at(r, time);
     }
-    const rows = this.of(r), x = clamp(time / STEP, 0, COUNT - 1),
-      i = Math.min(COUNT - 2, Math.floor(x)), f = x - i, a = rows[i], b = rows[i + 1];
+    const rows = this.of(r), horizon = (rows.length - 1) * STEP, x = clamp(time / STEP, 0, rows.length - 1),
+      i = Math.min(rows.length - 2, Math.floor(x)), f = x - i, a = rows[i], b = rows[i + 1];
     const s = a.s + (b.s - a.s) * f, d = a.d + (b.d - a.d) * f,
       v = a.v + (b.v - a.v) * f, h = a.h + angle(b.h - a.h) * f, q = this.course.track.at(s);
     return {
@@ -83,7 +84,7 @@ export class RivalMotion {
       vx: Math.sin(h) * v,
       vz: Math.cos(h) * v,
       sigma: 0.15 + 0.12 * Math.min(3.5, time) ** 2,
-      valid: time >= 0 && time <= 3.5
+      valid: time >= 0 && time <= horizon
     };
   }
 }

@@ -29,7 +29,20 @@ node --import ./scripts/json-loader.mjs subjects/vanguard/tools/learning-check.m
 node --import ./scripts/json-loader.mjs subjects/vanguard/tools/maneuver-check.mjs
 node --import ./scripts/json-loader.mjs subjects/vanguard/tools/attack-check.mjs
 node --import ./scripts/json-loader.mjs subjects/vanguard/tools/setup-check.mjs
+node --import ./scripts/json-loader.mjs subjects/vanguard/tools/combat-metrics-check.mjs
+node --import ./scripts/json-loader.mjs subjects/vanguard/tools/rollout-check.mjs
+node --import ./scripts/json-loader.mjs subjects/vanguard/tools/defence-check.mjs
 ```
+
+For short combat comparisons against INTERCEPT, RAZOR, APEX and TEMPEST, run
+`node --import ./scripts/json-loader.mjs subjects/vanguard/tools/combat-bench.mjs --tag combat-local`.
+It runs one below-normal-priority child at a time, with no GPU. Reports distinguish
+same-class passing, backmarkers, defence and braking. `--drivers vanguard`,
+`--only harbor-momentum`, `--seeds 19`, `--station-offset 8`, `--seconds 40` and
+`--trace-case harbor-momentum` allow focused comparisons. Use `--opts '{"combatHorizon":5.5}'`
+only as an experiment: the longer tactical horizon has not demonstrated a passing gain.
+`tools/forecast-audit.mjs <trace.json>` compares rival forecasts with the actual
+later trajectory in a two-car VANGUARD trace, using exact-time interpolation.
 
 Run the game-scored solo matrix, including both car classes and all five tracks:
 
@@ -52,6 +65,10 @@ Open `http://127.0.0.1:4192/subjects/vanguard/tools/browser.html` and run the ch
 ## Read the results correctly
 
 See [RESULTS.md](RESULTS.md). Three clean laps on one seed demonstrate a working case, not a statistically established reliability rate. Same-pace combat remains a limitation: successful scripted encounters do not establish a full-field advantage. The explicit switchback candidate is implemented and geometry-tested, but it has not yet demonstrated a race-level benefit.
+
+The [17 October combat review](COMBAT-REVIEW-2026-10-17.md) compares five drivers,
+documents the accepted fixes and rejected experiments, and identifies tactical
+interaction prediction and sustained corner advantage as the next work.
 
 The speed solver and controller still allocate objects. Zero-GC operation, complete exact-physics tactical rollouts and dominance over the other racers are not established claims.
 
