@@ -164,10 +164,12 @@
 
   // ---- reliability -------------------------------------------------------------------------------------
   const rcls = (c, of) => !of ? '' : c >= 0.9 * of ? 'ok' : c >= 0.7 * of ? 'mid' : 'low';
-  const testKind = (g) => `${g.laps} lap${g.laps > 1 ? 's' : ''}${g.ai ? ' · with ' + esc(g.ai) : ' · solo'} · ${Object.keys(g.tracks).join(', ')}`;
+  // The name's variant tags (rng2, noise, traffic...) follow the test; '2lap' repeats the lap count and is dropped.
+  const variant = (g) => (g.variant ?? '').split('-').filter((x) => x && !/^\d+lap$/.test(x)).join(' ');
+  const testKind = (g) => `${g.laps} lap${g.laps > 1 ? 's' : ''}${g.ai ? ' · with ' + esc(g.ai) : ' · solo'} · ${Object.keys(g.tracks).join(', ')}${variant(g) ? ' · ' + esc(variant(g)) : ''}`;
   function drawRel(s) {
     const f = $('relFilter').value.trim().toLowerCase();
-    let G = (s.reliability ?? []).filter((g) => !f || `${g.run} ${snapName(g.snap)} ${Object.keys(g.tracks).join(' ')}`.toLowerCase().includes(f));
+    let G = (s.reliability ?? []).filter((g) => !f || `${g.run} ${snapName(g.snap)} ${g.variant ?? ''} ${Object.keys(g.tracks).join(' ')}`.toLowerCase().includes(f));
     const n = G.length; if (!UI.relAll && !f) G = G.slice(0, 25);
     const seeds = [...new Set(G.flatMap((g) => Object.keys(g.seeds)))].sort();
     $('rel').innerHTML = `<tr><th>checkpoint</th><th>test</th>${seeds.map((x) => `<th>seed ${x}</th>`).join('')}<th>total</th><th>finished</th><th>when</th></tr>` + G.map((g) =>

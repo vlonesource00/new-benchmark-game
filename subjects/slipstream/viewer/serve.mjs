@@ -107,16 +107,17 @@ function results() {
   }).sort((a, b) => a.mtime - b.mtime);
 }
 
-// Reliability: completion results grouped per checkpoint (run + snapshot + test kind), seeds side by side. Result
-// names are <run>-snap<min>[-ema][-s<seed>] or <run>-final[-ema][-s<seed>]; any other name is its own group.
+// Reliability: completion results grouped per checkpoint (run + snapshot + test variant), seeds side by side. Result
+// names are <run>-snap[-]<min>[-ema][-<variant>...][-s<seed>] or <run>-final[...]; variants such as -2lap-rng2 or
+// -noise name the test. Any other name is its own group.
 function reliability(res) {
   const groups = new Map();
   for (const r of res) {
-    const m = /^(.*?)-(snap\d+|final)(-ema)?(?:-s(\d+))?$/.exec(r.name);
-    const run = m ? m[1] : r.name, snap = m ? (m[2] === 'final' ? 'final' : +m[2].slice(4)) : null;
-    const key = [run, snap, m?.[3] ?? '', r.laps, r.ai, Object.keys(r.tracks).join(',')].join('|');
-    const g = groups.get(key) ?? { run, snap, ema: Boolean(m?.[3]), laps: r.laps, ai: r.ai, seeds: {}, tracks: {}, mtime: 0 };
-    g.seeds[r.seed ?? m?.[4] ?? '?'] = [r.total, r.of];
+    const m = /^(.*?)-(snap-?\d+|final)(-ema)?((?:-[a-z0-9]+)*?)(?:-s(\d+))?$/.exec(r.name);
+    const run = m ? m[1] : r.name, snap = m ? (m[2] === 'final' ? 'final' : +m[2].replace(/\D/g, '')) : null, variant = m?.[4]?.slice(1) ?? '';
+    const key = [run, snap, m?.[3] ?? '', variant, r.laps, r.ai, Object.keys(r.tracks).join(',')].join('|');
+    const g = groups.get(key) ?? { run, snap, ema: Boolean(m?.[3]), variant, laps: r.laps, ai: r.ai, seeds: {}, tracks: {}, mtime: 0 };
+    g.seeds[r.seed ?? m?.[5] ?? '?'] = [r.total, r.of];
     for (const [t, v] of Object.entries(r.tracks)) { const a = (g.tracks[t] ??= [0, 0]); a[0] += v[0]; a[1] += v[1]; }
     g.mtime = Math.max(g.mtime, r.mtime); groups.set(key, g);
   }
