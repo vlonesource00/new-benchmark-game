@@ -57,7 +57,9 @@ for (const track of tracks.split(',')) {
     if (mine) rubTicks++;
     return step(dt); }; }
   const cap = laps * Math.max(160, env.track.length / 35) + 90, lapList = []; let lapSeen = me.race.lap, pitS = 0;
-  while (me.race.finishTime === null && race.time < cap && !me.race.dq) {
+  // The race stops its clock once it is over (every car home, or 120 s after the winner): a subject still out then is
+  // unfinished, not a reason to step a frozen race forever.
+  while (me.race.finishTime === null && race.time < cap && !me.race.dq && race.phase === 'racing') {
     env.step(4);
     if (rec) rec.frames.push(frameOf(race, slot));
     const t = race.time, v = Math.max(me.speed, 10);
