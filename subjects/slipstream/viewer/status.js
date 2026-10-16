@@ -228,8 +228,10 @@
       const same = N.nurb && JSON.stringify(N.nurb.layout) === JSON.stringify(N.main.layout) && N.nurb.params === N.main.params;
       $('archNote').textContent = `Decides up to 30 times a second; between decisions the last controls are held and the memory does not step.${same ? ' Both networks in the game have this shape, with different weights.' : ''}`;
       $('arch').innerHTML = archSvg(N.main);
-      $('moeWrap').hidden = !N.combat?.moe;
-      if (N.combat?.moe) $('moe').innerHTML = moeSvg(N.combat);
+      // The two-expert diagram: the game's own network when it is one, else the one in test.
+      const mo = N.main.moe ? N.main : N.combat?.moe ? N.combat : null;
+      $('moeWrap').hidden = !mo;
+      if (mo) { $('moeTitle').textContent = mo === N.main ? 'Combat add-on (in the game)' : 'Combat add-on (in test)'; $('moe').innerHTML = moeSvg(mo); }
     }
     if (tab === 'over') drawOverview(s);
     if (tab === 'live') drawLive(s);

@@ -33,7 +33,7 @@ const list = () => {
 const NETS = [
   { key: 'main', file: 'policy/slipstream.json', role: 'Short tracks and every track without its own network' },
   { key: 'nurb', file: 'policy/slipstream-nurburgring.json', role: 'Nürburgring' },
-  { key: 'combat', file: 'runs/export/pas1c.json', role: 'Combat network in test (not in the game yet)' },
+  { key: 'combat', file: 'runs/export/sc2.json', role: 'Combat add-on in test (not in the game yet)' },
 ];
 const netCache = {};
 
@@ -96,6 +96,7 @@ function networks() {
         Object.assign(v, { moe: true, residual: Boolean(e.residual), wired: Boolean(e.cmb.wired), base: actorInfo(e.base.params), cmb: actorInfo(e.cmb.params),
           gate: { shapes: gate.shapes, params: gate.params }, expertHidden: e.base.hidden });
         v.params = v.base.params + v.cmb.params + gate.params;
+        v.shapes = v.base.shapes; v.blocks = v.base.blocks; // the pace actor diagram draws the pace expert
       } else Object.assign(v, actorInfo(e.params));
       netCache[n.key] = { m, v };
     }
