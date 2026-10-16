@@ -10,7 +10,7 @@ const TAU = Math.PI * 2;
 const wrapPi = (a) => Math.atan2(Math.sin(a), Math.cos(a));
 const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
 // Safety-cost reward terms (the row's risk value); the rest (progress, pass, lost, stuck, behind) is the task.
-const RISK = new Set(['off', 'damage', 'margin', 'incident', 'rearEnd', 'ttc', 'rub', 'clear', 'terminal']);
+const RISK = new Set(['off', 'damage', 'margin', 'incident', 'rearEnd', 'ttc', 'rub', 'clear', 'terminal', 'lapVoid']);
 
 // decide: 1 when the seat is free, i.e. the browser would query the NN on this state and the next action is delivered.
 // While a reply is in flight the browser never sees the state, so the learner must not step its memory or train on it.
@@ -195,6 +195,7 @@ export class World {
    */
   placeLearner(a) {
     const { car } = a, race = this.env.race, rng = this.rng, C = this.cfg.challenge, L = this.track.length, hw = this.track.halfWidth;
+    if (C.spawnClear != null || C.retail) return this.placeLearnerClear(a);
     const lead = C.leadM ?? [20, 60], back = lead[0] + rng() * (lead[1] - lead[0]), s = (((this.challengeTail - back) % L) + L) % L;
     const tail = race.cars.filter((o) => o !== car).reduce((m, o) => (o.race.progress < m.race.progress ? o : m));
     const v = C.matchSpeed ? Math.min(resetSpeed(this.road, s), tail.speed * (C.matchSpeed[0] + rng() * (C.matchSpeed[1] - C.matchSpeed[0]))) : resetSpeed(this.road, s) * (0.6 + 0.3 * rng());
@@ -202,6 +203,32 @@ export class World {
     this.fitDrawn(car, C.learnerCompounds, C.learnerWear);
     car.fuel = this.cfg.fuel ?? (25 + rng() * 45);
     car.race.previousS = car.s; car.race.progress = this.challengeBase - back;
+  }
+
+  /**
+   * placeLearner with challenge.retail and/or challenge.spawnClear (metres). The plain placement measures from where the
+   * train started, with no clearance: both learners spawned overlapping in 27% of tt-fol2 challenges, and a learner
+   * restarted after an early end (a crash, or clearing the train) landed ~650 m behind the rivals, then drove alone
+   * until the world recycled. retail: measure from the rearmost rival as it is now (a restart is a new attempt on the
+   * same train). spawnClear: redraw (up to 20 times) until every other car is over a car length + spawnClear away along
+   * the track or 2.2 m apart laterally.
+   */
+  placeLearnerClear(a) {
+    const { car } = a, race = this.env.race, rng = this.rng, C = this.cfg.challenge, L = this.track.length, hw = this.track.halfWidth;
+    const rivals = race.cars.filter((o, i) => !this.env.learners.includes(i));
+    const rt = rivals.reduce((m, o) => (o.race.progress < m.race.progress ? o : m));
+    const tailS = C.retail ? rt.s : this.challengeTail, tailP = C.retail ? rt.race.progress : this.challengeBase;
+    const lead = C.leadM ?? [20, 60], clr = C.spawnClear ?? 0;
+    const along = (p, q) => Math.abs(wrapPi(((p - q) / L) * TAU)) * L / TAU;
+    let back, s, lat, tries = 0;
+    do {
+      back = lead[0] + rng() * (lead[1] - lead[0]); s = (((tailS - back) % L) + L) % L; lat = (rng() * 2 - 1) * hw * 0.6;
+    } while (clr > 0 && ++tries < 20 && !race.cars.every((o) => o === car || along(o.s, s) > 4.7 + clr || Math.abs(o.lateral - lat) > 2.2));
+    const v = C.matchSpeed ? Math.min(resetSpeed(this.road, s), rt.speed * (C.matchSpeed[0] + rng() * (C.matchSpeed[1] - C.matchSpeed[0]))) : resetSpeed(this.road, s) * (0.6 + 0.3 * rng());
+    car.place(this.track, s, lat, v); fitGear(car);
+    this.fitDrawn(car, C.learnerCompounds, C.learnerWear);
+    car.fuel = this.cfg.fuel ?? (25 + rng() * 45);
+    car.race.previousS = car.s; car.race.progress = tailP - back;
   }
 
   fitDrawn(c, compounds, wear) {
@@ -234,7 +261,11 @@ export class World {
     a.prevS = car.s; a.dmg0 = car.damage; a.prevDmg = car.damage; a.t = 0;
     a.horizon = (cfg.episode?.min ?? 60) + rng() * ((cfg.episode?.max ?? 120) - (cfg.episode?.min ?? 60));
     a.offFor = 0; a.wasLegal = true; a.slowFor = 0; a.backFor = 0; a.dist = 0; a.legalDist = 0;
-    a.illegalSubs = 0; a.offEnters = 0;
+    a.illegalSubs = 0; a.offEnters = 0; a.lapVoid = false;
+    // reward.lapValue: the lap from the line to the start point counts as driven clean (not paid, but at stake), so a cut
+    // costs what the game would void there; starting the count at the reset would make cuts free right after site starts.
+    const L0 = this.track.length;
+    a.lapAcc = cfg.reward?.lapValue ? cfg.reward.lapValue * ((((car.s - (this.track.finishS ?? 0)) % L0) + L0) % L0) / L0 : 0;
     a.applied = [0, 0]; a.appliedAge = 0; a.inflight = null; a.sent = [0, 0]; a.pending = 0;
     // Frame model (browser/test-seat.mjs measurements): the game steps physics once per rendered frame and takes worker
     // replies between frames, so a reply lands one frame (sometimes two) after its observation; the frame time is drawn per episode.
@@ -342,6 +373,14 @@ export class World {
     const add = (k, v) => { if (v) { reward += v; lg[k] = (lg[k] ?? 0) + v; if (RISK.has(k)) risk += v; } };
     add('progress', ds * (R.progress ?? 0.05) * (1 - illegalFrac));
     add('off', -illegalFrac * (R.offTick ?? 0.1) - enters * (R.offEnter ?? 1));
+    // Valid-lap value (reward.lapValue per lap, default off): the game voids a whole lap on its first illegal physics
+    // tick, so a cut costs the lap so far, not a fixed fee. The lap's value is paid as it is driven (lapValue per lap
+    // length of legal progress) and every unit paid on the current lap is taken back when it is voided; a voided lap
+    // pays nothing more until the line. At an episode start the lap so far is at stake as if driven clean (beginEpisode).
+    if (R.lapValue) {
+      if (enters && !a.lapVoid) { add('lapVoid', -a.lapAcc); a.lapAcc = 0; a.lapVoid = true; stats.voids = (stats.voids ?? 0) + 1; }
+      else if (!a.lapVoid && legal) { const v = R.lapValue * ds / L; add('lap', v); a.lapAcc += v; }
+    }
     add('damage', -dDmg * (R.damage ?? 40));
     // Near-miss margin (reward.margin per second, default off): a dense cost that grows as the outermost wheel's legal
     // margin (the game's half-car-inside test, as observed) shrinks below marginM metres, so the policy learns where
@@ -454,7 +493,7 @@ export class World {
     a.backFor = Math.cos(wrapPi(c.yaw - head)) < 0 ? a.backFor + dt : 0;
     // Laps are scored only as the game scores them: its timing's lap verdict (purple/green/yellow = clean).
     if (c.race.lap !== a.lapSeen) {
-      a.lapSeen = c.race.lap;
+      a.lapSeen = c.race.lap; a.lapAcc = 0; a.lapVoid = false; // what the finished lap paid is kept
       const clean = ['purple', 'green', 'yellow'].includes(c.race.lastState);
       if (clean) stats.lap(this.track.id, c.race.lastLap);
       // Per-agent lap verdicts (evaluations): [agent, tick, clean, lap time, game state, first track-limit breach s this lap].
