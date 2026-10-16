@@ -444,33 +444,33 @@ resize(); loadList(); requestAnimationFrame(loop);
 </script>
 <!-- Overview board: champion and challengers per slot, in plain words. Edit after each decision (badge: game = in the
      game, test = best in tests but not in the game, wait = no result yet). Numbers come from runs/racebench and runs/completion. -->
-<script type="application/json" id="board">
-{
- "asOf": "2026-10-16 20:00",
- "now": "The combat add-on sc1c on top of d6 won 18 of 20 races (average place 1.6 vs 3.85 for d6 alone). Tonight it races on fresh seeds to confirm, while combat add-on 2 trains to make more real maneuvers.",
+<script type="application/json" id="board">{
+ "asOf": "2026-10-16 21:45",
+ "now": "In the game now: d6 with the combat add-on sc1c (GT3 only). It confirmed on fresh seeds: average place 2.2 vs 4.4 for d6 alone, half the incidents. Next problem: in long stints it fades and cuts corners once the tyres are worn, because it never trained on worn tyres. Two fixes are training (w1a, w1b).",
  "winners": [
   {
-   "cat": "Pace driver · short tracks",
-   "who": "d6",
+   "cat": "In the game · short tracks (GT3)",
+   "who": "d6 + sc1c",
    "code": "champion",
    "badge": "game",
    "facts": [
-    "Races: average place 3.85, 11 wins in 20",
-    "Real maneuver passes 3.65 per race"
+    "Fresh-seed races: average place 2.2, 15 wins in 20 (d6 alone 4.4, 14 wins)",
+    "Incidents 4.3 pts (d6 alone 8.6)",
+    "Stint test: from tyre wear ~0.5 it leaves the track every lap (laps 6-12 on)"
    ],
-   "why": "Drives every track except the Nürburgring. s1a and s1b did not beat it clearly, so they are dropped."
+   "why": "Better than d6 alone everywhere in races. The stint fade comes from the pace driver d6, which sc1c sits on."
   },
   {
-   "cat": "Combat add-on · short tracks",
-   "who": "sc1c",
-   "code": "challenger",
-   "badge": "test",
+   "cat": "Stint fix · pace driver",
+   "who": "w1a · w1b",
+   "code": "training",
+   "badge": "wait",
    "facts": [
-    "Races: average place 1.6, 18 wins in 20",
-    "Fewer incidents (3.95 vs 10.5 pts), similar damage",
-    "Same number of real maneuver passes as d6 (3.6)"
+    "d6 trained on with half its starts on worn tyres (wear 0-0.9)",
+    "w1a keeps the track teachers, w1b drops them (they never saw worn tyres)",
+    "Judged on 20-lap stints: no invalid laps, pace kept"
    ],
-   "why": "Goes in the game if it also wins on fresh seeds 11-15 (results tonight)."
+   "why": "The winner becomes the new pace driver; the combat add-on is then retrained on it."
   },
   {
    "cat": "Combat add-on 2",
@@ -478,11 +478,11 @@ resize(); loadList(); requestAnimationFrame(loop);
    "code": "training",
    "badge": "wait",
    "facts": [
-    "sc1c trained on for 90 min",
+    "sc1c trained on for 90 min (done)",
     "Paid extra for dives, around-the-outside, switchbacks and slipstream moves, and for trying them",
     "Free to take another line when a rival is close"
    ],
-   "why": "Aims for more real maneuvers than sc1c. Races after training."
+   "why": "Aims for more real maneuvers than sc1c. Drills and races finish about 23:45."
   },
   {
    "cat": "Pace driver · Nürburgring",
@@ -497,9 +497,9 @@ resize(); loadList(); requestAnimationFrame(loop);
   }
  ],
  "next": [
-  "~21:30: fresh-seed races d6 vs d6 + sc1c: if sc1c still wins clearly, it goes in the game.",
-  "~21:30: combat add-on 2 done, then maneuver drills and races.",
-  "Fixed tonight in the game: Harbor rolling start (last two cars spun) and the pit exit hold (cars waited up to 50 s)."
+  "~22:10: w1a / w1b training done, then 20-lap stint tests and races (~22:50).",
+  "~23:45: combat add-on 2 (sc2) drills and races vs sc1c.",
+  "SLIPSTREAM stays GT3 only (your call)."
  ],
  "glossary": [
   [
@@ -509,10 +509,6 @@ resize(); loadList(); requestAnimationFrame(loop);
   [
    "Combat add-on",
    "a second network that only adjusts the driving when a rival is close; a router decides how much"
-  ],
-  [
-   "d6",
-   "the pace driver in the game on every track except the Nürburgring"
   ],
   [
    "sn4",
@@ -533,9 +529,20 @@ resize(); loadList(); requestAnimationFrame(loop);
   [
    "Seeds",
    "which set of random races; 1–5 pick a winner, 11–15 confirm it"
+  ],
+  [
+   "d6",
+   "the pace driver under sc1c"
+  ],
+  [
+   "w1a · w1b",
+   "d6 trained on worn tyres, the stint fix"
+  ],
+  [
+   "Stint test",
+   "one car alone for 20 laps: lap times, cuts, off-track, tyre wear"
   ]
  ]
-
 }
 </script>
 <script src="/status.js"></script>
