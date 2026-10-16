@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "name": "VANGUARD",
+  "margin": 0.97,
+  "maxGripSpend": 1.0309278350515463,
+  "jerk": 40,
+  "preview": 0.24,
+  "yawGain": 0.45,
+  "slideGain": 5,
+  "slideBand": 0.02,
+  "steerJerk": 65,
+  "routeFilterRadius": 5,
+  "noseEscape": true,
+  "brakeExp": 1.85,
+  "throttleAllow": 4,
+  "battlePeriod": 0.075,
+  "separation": 2.65,
+  "holdSeparation": 2.35,
+  "maxCandidates": 8,
+  "strategy": true,
+  "perClass": {
+    "lmdh": { "yawGain": 0.65, "evadeYawGain": 2 },
+    "gt": { "routeMargin": 0.96, "reducedGripBrakeExp": 1.4 }
+  },
+  "tracks": {
+    "harbor-ring": { "perClass": { "gt": { "yawGain": 0.8, "brakeExp": 2 } } },
+    "solenne": { "perClass": { "lmdh": { "preview": 0.18 }, "gt": { "margin": 0.985, "brakeExp": 2, "preview": 0.18, "yawGain": 0.8 } } },
+    "alpine": { "perClass": { "gt": { "margin": 0.995 } } },
+    "nurburgring": { "margin": 0.93, "perClass": { "lmdh": { "yawGain": 0.45 }, "gt": { "margin": 0.97 } } }
+  }
+}

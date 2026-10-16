@@ -13,6 +13,9 @@ import { installTempestStrategy } from '../../subjects/tempest/src/strategy.js';
 import { installInterceptStrategy } from '../../subjects/intercept/src/strategy.js';
 import { createInterceptExecutor } from '../bridges/intercept-bridge.js';
 import { interceptState } from '../bridges/intercept-state.js';
+import { installVanguardStrategy } from '../../subjects/vanguard/src/strategy.js';
+import { createVanguardExecutor } from '../bridges/vanguard-bridge.js';
+import { vanguardState } from '../bridges/vanguard-state.js';
 // TEMPEST runs on RAZOR's seat protocol (control timing, epochs, the public race envelope).
 const corridorAi = (id) => id === 'razor' || id === 'tempest';
 import { installNativeStrategy } from '../../subjects/next-racer/src/strategy.js';
@@ -48,6 +51,7 @@ export class AsyncSeats {
       if (driver.id === 'razor') installRazorStrategy(race, race.cars[index]);
       if (driver.id === 'tempest') installTempestStrategy(race, race.cars[index]);
       if (driver.id === 'intercept') installInterceptStrategy(race, race.cars[index]);
+      if (driver.id === 'vanguard') installVanguardStrategy(race, race.cars[index]);
       return this.seat(driver, index, race);
     };
   }
@@ -81,11 +85,16 @@ export class AsyncSeats {
     const host = this.host(index, race), slot = race.teams[index].drivers.indexOf(driver);
     const seats = this;
     let local = null;
-    const executor = driver.id === 'intercept' ? createInterceptExecutor(race.track,index) : null;
+    const executor = driver.id === 'intercept'
+      ? createInterceptExecutor(race.track, index)
+      : driver.id === 'vanguard'
+        ? createVanguardExecutor(race.track, index)
+        : null;
+    const execState = driver.id === 'vanguard' ? vanguardState : interceptState;
     const seat = {
       driverId: driver.id, errors: 0, remote: true,
       seq: -1, inFlight: false, controls: null, pendingDt: 0, lastLatency: 0, sentAt: 0, lastDebug: null,
-      epoch:0,controlTime:null,preview:null,controlDelay:.02,
+      epoch:0,controlTime:null,preview:null,controlDelay:driver.id==='vanguard'?0:.02,
       receive(data) {
         if((driver.id==='next-racer'||corridorAi(driver.id)||executor)&&data.epoch!==this.epoch)return;
         this.inFlight = false; this.controls = data.controls; this.errors = data.errors;
@@ -93,7 +102,14 @@ export class AsyncSeats {
           this.controlDelay=Math.max(0,Math.min(.2,race.time-data.time));}
         if(corridorAi(driver.id)){this.controlTime=data.time;this.controlDelay=Math.max(0,Math.min(.2,race.time-data.time));}
         if (driver.id === 'apex' || corridorAi(driver.id)) this.intent = data.intent ?? null;
-        if(executor){executor.adopt(data.preview,race.cars[index],this.epoch);this.controlTime=data.time;this.preview=data.preview;}
+        if(executor){executor.adopt(data.preview,race.cars[index],this.epoch);this.controlTime=data.time;this.preview=data.preview;
+          if(driver.id==='vanguard'){
+            const observed=Math.max(0,race.time-data.time);
+            // Long stalls are handled by the live executor; they must not make
+            // the next normal reply's predicted arrival hundreds of ms late.
+            if(Number.isFinite(observed)&&observed<=.15)this.controlDelay=.75*this.controlDelay+.25*observed;
+          }
+        }
         this.lastLatency = performance.now() - this.sentAt;
         if (data.debug) this.lastDebug = data.debug;
         if (data.visual !== undefined) this.lastVisual = data.visual;
@@ -109,7 +125,7 @@ export class AsyncSeats {
           previewFeedback(car,race.track,this.preview,context.time)??this.controls,
           {route:previewRoute(race.track,this.preview,context.time),
             age:this.controlTime==null?0:Math.max(0,context.time-this.controlTime)}).controls;
-        if(executor){executor.update(car,cars,dt,{...context,state:interceptState(race,car)});this.errors=executor.bridge.errors;}
+        if(executor){executor.update(car,cars,dt,{...context,state:execState(race,car)});this.errors=executor.bridge.errors;}
         this.pendingDt += dt;
         this.post(context);
       },
@@ -121,7 +137,7 @@ export class AsyncSeats {
       },
       post(context) {
         if (this.inFlight) return;
-        // INTERCEPT replans at a bounded rate. State accumulated while busy is replaced by the newest snapshot.
+        // INTERCEPT/VANGUARD replan at a bounded rate. State accumulated while busy is replaced by the newest snapshot.
         if(executor && this.controls && context.time-(this.lastPostTime??-99)<.075)return;
         this.lastPostTime=context.time;
         this.inFlight = true; this.seq = ++seats.seq; this.sentAt = performance.now();
@@ -140,8 +156,8 @@ export class AsyncSeats {
           ...(driver.id==='next-racer'?{state:nextRacerState(race,race.cars[index]),
             ambient:race.track.ambient,epoch:this.epoch,controlDelay:this.controlDelay,feedbackPeriod:1/120}:{}),
           ...(driver.id === 'apex' ? { state: apexState(race, race.cars[index]) } : {}),
-          ...(executor ? {state:interceptState(race,race.cars[index]),ambient:race.track.ambient,
-            epoch:this.epoch,controlDelay:0,feedbackPeriod:1/120}:{}),
+          ...(executor ? {state:execState(race,race.cars[index]),ambient:race.track.ambient,
+             epoch:this.epoch,controlDelay:driver.id==='vanguard'?this.controlDelay:0,feedbackPeriod:1/120}:{}),
           ...(corridorAi(driver.id) ? { state: razorState(race, race.cars[index]),
             ambient: race.track.ambient, epoch: this.epoch, controlDelay: this.controlDelay } : {}),
           debug: seats.wantDebug || undefined,

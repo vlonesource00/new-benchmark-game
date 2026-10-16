@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>VANGUARD browser verification</title>
+<style>body{font:16px/1.6 system-ui;background:#10191e;color:#e4f3eb;max-width:1100px;margin:45px auto;padding:20px}h1{line-height:1.2}button{font:inherit;padding:12px 24px;border:0;border-radius:6px;background:#77efc6;color:#10251c;cursor:pointer}table{border-collapse:collapse;width:100%;margin:25px 0}td,th{text-align:left;border-bottom:1px solid #364a51;padding:12px}small,p{color:#a7bdb8}pre{white-space:pre-wrap;font-size:12px}#status{color:#77efc6}</style>
+<h1>VANGUARD · real browser workers</h1>
+<p>The original race loop and three real WebWorkers. Runs 20 simulated seconds at each requested frame cadence. No 3D renderer: these are controller and transport measurements, not whole-game FPS claims.</p>
+<button id="run">Run browser checks</button> <span id="status">Ready</span>
+<table><thead><tr><th>Requested / actual FPS</th><th>Host update p95 / p99</th><th>Reply p50 / p95</th><th>Bridge errors</th><th>Damage</th></tr></thead><tbody id="rows"></tbody></table>
+<p>VANGUARD uses current-state feedback on every physics substep. Worker latency still affects tactical freshness; it is measured rather than assumed to be zero.</p>
+<details><summary>Result JSON</summary><pre id="result"></pre></details>
+<script type="module">
+import { Track } from '/game/engine/sim/track.js';
+import { EnduranceRace, FIXED_DT } from '/game/core/race.js';
+import { FORMATS } from '/game/core/rules.js';
+import { AsyncSeats } from '/game/core/async-seats.js';
+import { VanguardDriver } from '/subjects/vanguard/src/driver.js';
+
+let samples = null;
+const update = VanguardDriver.prototype.update;
+VanguardDriver.prototype.update = function(...args) {
+  if (!samples || !this.settings.executor) return update.apply(this, args);
+  const start = performance.now();
+  try { return update.apply(this, args); } finally { samples.push(performance.now() - start); }
+};
+const quantile = (values, p) => { const a = [...values].sort((a,b)=>a-b); return a[Math.min(a.length-1,Math.floor(a.length*p))] ?? null; };
+const display = n => Number.isFinite(n) ? n.toFixed(3) + ' ms' : '—';
+async function runCase(fps) {
+  const ids = ['vanguard', 'intercept', 'razor'];
+  const teams = ids.map((id,i)=>({id:'browser'+i,name:id,short:id.slice(0,3),color:'#77efc6',index:i,grid:i,starter:0,classId:i===2?'gt':'lmdh',drivers:[{id,name:id,short:id.slice(0,3),kind:'ai'}]}));
+  const seats = new AsyncSeats('harbor-ring');
+  const race = new EnduranceRace({track:new Track('harbor-ring'),teams,format:{...FORMATS.custom,mandatoryStops:0,mandatorySwap:false},laps:3,startCompound:'soft',startType:'standing',seed:7,makeBridge:seats.factory()});
+  await seats.start(race);
+  race.start();
+  const costs = [], replies = [], estimated = [], frames = [];
+  samples = costs;
+  let previous = performance.now(), replyAt = -Infinity;
+  try {
+    await new Promise((resolve,reject)=>{
+      const tick = now => {
+        if(now-previous<1000/fps-0.2){requestAnimationFrame(tick);return;}
+        const elapsed=Math.min(0.1,(now-previous)/1000); previous=now; frames.push(elapsed);
+        const steps=Math.max(1,Math.ceil(elapsed/FIXED_DT));
+        try {
+          for(let i=0;i<steps;i++)race.step(elapsed/steps);
+          const seat=race.entries[0].bridges[race.entries[0].active];
+          if(seat.controlTime!=null&&seat.controlTime!==replyAt){replyAt=seat.controlTime;replies.push(seat.lastLatency);estimated.push(seat.controlDelay*1000);}
+          if(race.time>=20)resolve();else requestAnimationFrame(tick);
+        }catch(error){reject(error);}
+      };requestAnimationFrame(tick);
+    });
+    const errors=race.entries.flatMap(e=>e.bridges.map(b=>b.errors));
+    return {requestedFps:fps,actualFps:frames.length/frames.reduce((a,b)=>a+b,0),simSeconds:race.time,
+      host:{p50:quantile(costs,.5),p95:quantile(costs,.95),p99:quantile(costs,.99),max:quantile(costs,1),samples:costs.length},
+      reply:{p50:quantile(replies,.5),p95:quantile(replies,.95),max:quantile(replies,1),count:replies.length},
+      estimatedArrivalMs:quantile(estimated,.5),errors,damage:race.cars.map(c=>c.damage),contacts:race.contacts,
+      finiteControls:race.cars.every(c=>Object.values(c.controls).every(Number.isFinite))};
+  }finally{samples=null;seats.dispose();}
+}
+document.querySelector('#run').onclick=async()=>{
+  const button=document.querySelector('#run'),status=document.querySelector('#status'),rows=document.querySelector('#rows');
+  button.disabled=true;rows.replaceChildren();const results=[];
+  try{
+    for(const fps of [60,30]){
+      status.textContent=`Running ${fps} FPS cadence…`;
+      const r=await runCase(fps);results.push(r);
+      const tr=document.createElement('tr');
+      tr.innerHTML=`<td>${fps} / ${r.actualFps.toFixed(1)}</td><td>${display(r.host.p95)} / ${display(r.host.p99)}</td><td>${display(r.reply.p50)} / ${display(r.reply.p95)}</td><td>${r.errors.join(', ')}</td><td>${r.damage.map(x=>(100*x).toFixed(2)+'%').join(', ')}</td>`;
+      rows.append(tr);document.querySelector('#result').textContent=JSON.stringify(results,null,2);
+    }
+    status.textContent='Complete';
+  }catch(error){status.textContent='Failed: '+error.message;document.querySelector('#result').textContent=error.stack;}
+  finally{button.disabled=false;}
+};
+</script></html>
