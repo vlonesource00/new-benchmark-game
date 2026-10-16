@@ -446,8 +446,8 @@ resize(); loadList(); requestAnimationFrame(loop);
      game, test = best in tests but not in the game, wait = no result yet). Numbers come from runs/racebench and runs/completion. -->
 <script type="application/json" id="board">
 {
- "asOf": "2026-10-16 17:40",
- "now": "Tonight: pick the short-track pace driver (d6, s1a or s1b) from the races, then train three combat add-ons on top of d6 and race them. Results about 20:10, then the winner is confirmed on fresh seeds.",
+ "asOf": "2026-10-16 20:00",
+ "now": "The combat add-on sc1c on top of d6 won 18 of 20 races (average place 1.6 vs 3.85 for d6 alone). Tonight it races on fresh seeds to confirm, while combat add-on 2 trains to make more real maneuvers.",
  "winners": [
   {
    "cat": "Pace driver · short tracks",
@@ -455,22 +455,34 @@ resize(); loadList(); requestAnimationFrame(loop);
    "code": "champion",
    "badge": "game",
    "facts": [
-    "Races: average place 3.8, 14 wins in 20",
-    "Lap test: 79 / 80 clean"
+    "Races: average place 3.85, 11 wins in 20",
+    "Real maneuver passes 3.65 per race"
    ],
-   "why": "Drives every track except the Nürburgring."
+   "why": "Drives every track except the Nürburgring. s1a and s1b did not beat it clearly, so they are dropped."
   },
   {
-   "cat": "Pace driver · challengers",
-   "who": "s1a · s1b",
-   "code": "d6 trained further",
+   "cat": "Combat add-on · short tracks",
+   "who": "sc1c",
+   "code": "challenger",
+   "badge": "test",
+   "facts": [
+    "Races: average place 1.6, 18 wins in 20",
+    "Fewer incidents (3.95 vs 10.5 pts), similar damage",
+    "Same number of real maneuver passes as d6 (3.6)"
+   ],
+   "why": "Goes in the game if it also wins on fresh seeds 11-15 (results tonight)."
+  },
+  {
+   "cat": "Combat add-on 2",
+   "who": "sc2",
+   "code": "training",
    "badge": "wait",
    "facts": [
-    "s1a races: average place 3.65, 15 wins, about half the incidents",
-    "s1a is weak on Desert (place 8.5 vs 5.4)",
-    "s1b races finish about 18:00"
+    "sc1c trained on for 90 min",
+    "Paid extra for dives, around-the-outside, switchbacks and slipstream moves, and for trying them",
+    "Free to take another line when a rival is close"
    ],
-   "why": "The better one replaces d6 only after it also wins on fresh seeds."
+   "why": "Aims for more real maneuvers than sc1c. Races after training."
   },
   {
    "cat": "Pace driver · Nürburgring",
@@ -482,33 +494,21 @@ resize(); loadList(); requestAnimationFrame(loop);
     "Clean two-lap runs only 19 / 40"
    ],
    "why": "Its own network for the Nürburgring. No challenger right now."
-  },
-  {
-   "cat": "Combat add-on · short tracks",
-   "who": "sc1a · sc1b · sc1c",
-   "code": "training tonight",
-   "badge": "wait",
-   "facts": [
-    "Sits on top of the pace driver and acts only near rivals",
-    "Must make more real maneuver passes than d6 without losing places"
-   ],
-   "why": "Not in the game yet. Race results about 20:10."
   }
  ],
  "next": [
-  "~18:00: s1b races done: pick the pace driver (d6, s1a or s1b).",
-  "~19:00: d6 races again, counting real maneuver passes (the combat baseline).",
-  "~20:10: races for the three combat add-ons: pick one, or none.",
-  "Then: confirm the winner on fresh seeds and put it in the game."
+  "~21:30: fresh-seed races d6 vs d6 + sc1c: if sc1c still wins clearly, it goes in the game.",
+  "~21:30: combat add-on 2 done, then maneuver drills and races.",
+  "Fixed tonight in the game: Harbor rolling start (last two cars spun) and the pit exit hold (cars waited up to 50 s)."
  ],
  "glossary": [
   [
    "Pace driver",
-   "the network that drives the car fast and clean; the only part in the game today"
+   "the network that drives the car fast and clean"
   ],
   [
    "Combat add-on",
-   "a second network that only adjusts the driving when a rival is close, to attack; a router decides how much"
+   "a second network that only adjusts the driving when a rival is close; a router decides how much"
   ],
   [
    "d6",
@@ -519,12 +519,8 @@ resize(); loadList(); requestAnimationFrame(loop);
    "the pace driver in the game on the Nürburgring"
   ],
   [
-   "s1a · s1b",
-   "two attempts to improve d6; one may replace it"
-  ],
-  [
-   "sc1a · sc1b · sc1c",
-   "three attempts at the short-track combat add-on, on top of d6"
+   "sc1c · sc2",
+   "combat add-ons on top of d6"
   ],
   [
    "Races",
