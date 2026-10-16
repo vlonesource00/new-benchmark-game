@@ -24,6 +24,15 @@ function resetSpeed(road, s, grip = 13) {
   return Math.min(62, Math.sqrt(grip / kmax));
 }
 
+/** place() resets a car to first gear, and the gearbox refuses an upshift into over 8100 rpm: a car placed above
+ *  ~35 m/s would coast on the limiter in first until it slowed (and from ~25 m/s lose ~0.4 s to a shift chain). Fit
+ *  the lowest gear under 7800 rpm at the placed speed, as a car already driving at it would be in. */
+function fitGear(c) {
+  const S = c.spec, rpm = (g) => c.u / S.radius * S.gears[g] * S.finalDrive * 60 / (2 * Math.PI);
+  let g = 1; while (g < S.gears.length - 1 && rpm(g) > 7800) g++;
+  c.gear = g; c.rpm = Math.max(1100, rpm(g));
+}
+
 export class World {
   /**
    * cfg: { track, weather, seed, learners, ai: [ids], latency: { min, max, longP, longMin, longMax } | { frames: [[substeps, weight]...], extraP, longP, longMin, longMax },
@@ -123,7 +132,7 @@ export class World {
       const standing = pick > 1 - starts.standing;
       const lat = (rng() * 2 - 1) * this.track.halfWidth * 0.7;
       const v = standing ? 0 : resetSpeed(this.road, s) * (0.35 + 0.6 * rng());
-      car.place(this.track, s, lat, v);
+      car.place(this.track, s, lat, v); fitGear(car);
       race.fitTyres(car, 'medium', true);
       // starts.tyreSnap: share of these starts that take the tyres' thermal state and wear from a reached snapshot, so
       // fail sites are also practised on long-run tyres (fronts cool 8-11 C under optimum), not only freshly fitted ones.
@@ -152,7 +161,7 @@ export class World {
       const o = others[Math.floor(rng() * others.length)];
       const p = { s: (((o.s - 8 - rng() * 37) % L) + L) % L, lat: clamp(o.lateral + (rng() * 2 - 1) * 4, -hw * 0.8, hw * 0.8) };
       if (!race.cars.every((q) => q === car || gap(p, q) > 6)) continue;
-      car.place(this.track, p.s, p.lat, o.speed * (0.92 + 0.16 * rng()));
+      car.place(this.track, p.s, p.lat, o.speed * (0.92 + 0.16 * rng())); fitGear(car);
       return true;
     }
     return false;
@@ -171,7 +180,7 @@ export class World {
     this.challengeTail = s0; this.challengeBase = race.cars[0].race.progress;
     for (const c of rivals) { // the rearmost rival first: progress grows along the train
       const s = (s0 + off) % L;
-      c.place(this.track, s, (rng() * 2 - 1) * hw * 0.5, resetSpeed(this.road, s) * draw(C.speed ?? [0.6, 0.9]));
+      c.place(this.track, s, (rng() * 2 - 1) * hw * 0.5, resetSpeed(this.road, s) * draw(C.speed ?? [0.6, 0.9])); fitGear(c);
       this.fitDrawn(c);
       c.race.previousS = c.s; c.race.progress = this.challengeBase + off;
       off += draw(C.gapM ?? [15, 45]);
@@ -189,7 +198,7 @@ export class World {
     const lead = C.leadM ?? [20, 60], back = lead[0] + rng() * (lead[1] - lead[0]), s = (((this.challengeTail - back) % L) + L) % L;
     const tail = race.cars.filter((o) => o !== car).reduce((m, o) => (o.race.progress < m.race.progress ? o : m));
     const v = C.matchSpeed ? Math.min(resetSpeed(this.road, s), tail.speed * (C.matchSpeed[0] + rng() * (C.matchSpeed[1] - C.matchSpeed[0]))) : resetSpeed(this.road, s) * (0.6 + 0.3 * rng());
-    car.place(this.track, s, (rng() * 2 - 1) * hw * 0.6, v);
+    car.place(this.track, s, (rng() * 2 - 1) * hw * 0.6, v); fitGear(car);
     this.fitDrawn(car, C.learnerCompounds, C.learnerWear);
     car.fuel = this.cfg.fuel ?? (25 + rng() * 45);
     car.race.previousS = car.s; car.race.progress = this.challengeBase - back;
