@@ -255,6 +255,8 @@ def main():
     if a.resume and 'ema' in ck and not switched:
         ema = {k: v.to(dev) for k, v in ck['ema'].items()}
         ema = {k: ema.get(k, v.detach().clone()) for k, v in net.state_dict().items()}  # heads added since: start at the net's
+        if a.moe_base:  # a new pace expert: the average holds it and its normalisers as loaded, not the parent's
+            ema.update({k: v.detach().clone() for k, v in net.state_dict().items() if k.startswith('base.') or k in ('b_mean', 'b_std', 't_mean', 't_std', 'skip')})
     ema_decay = 0.5 ** (1 / a.ema_half) if a.ema_half > 0 else 0.0
     secs = json.load(open(os.path.join(SUBJECT, a.bc_sections)))['sections'] if a.bc_sections else None
     teacher = TeacherData(a.teacher.split(','), D, dev, secs) if a.teacher and a.bc > 0 else None

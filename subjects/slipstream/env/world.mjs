@@ -217,6 +217,10 @@ export class World {
     const draw = (r) => r[0] + rng() * (r[1] - r[0]);
     const rivals = race.cars.filter((c, i) => !this.env.learners.includes(i));
     const s0 = rng() * L; let off = 0;
+    // No pit stops inside a challenge (a short track reaches its pit lane within one): a rival boxing for repairs would
+    // be a free pass, and the game's repair plan crashed pitStep when the race-length planner had no compound to fit.
+    // Drive-through penalties still pit.
+    for (const e of race.entries) if (!e.strategist.noPit) { e.strategist.noPit = true; e.strategist.decide = () => null; e.strategist.servicePlan = () => null; }
     this.challengeTail = s0; this.challengeBase = race.cars[0].race.progress;
     for (const c of rivals) { // the rearmost rival first: progress grows along the train
       const s = (s0 + off) % L;
