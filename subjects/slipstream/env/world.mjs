@@ -164,6 +164,13 @@ export class World {
         const sn = this.snapshots[Math.floor(rng() * this.snapshots.length)];
         car.wheels.forEach((w, i) => { const st = sn.wheels?.[i]?.tyre; if (st) for (const k of ['surface', 'core', 'inner', 'outer', 'pressure', 'wear']) w.tyre[k] = st[k]; });
       }
+      // starts.wear {p, range}: a share of these starts on a worn set (one draw per car, +-0.02 per wheel). The game's
+      // stints reach 0.5-0.9 wear and 60-120 s episodes never wear a set past ~0.2, so without it the late stint (less
+      // grip, the cliff past 0.72) is never practised and the car keeps fresh-tyre speeds into the corners.
+      if (starts.wear && rng() < starts.wear.p) {
+        const [w0, w1] = starts.wear.range ?? [0, 0.9], x = w0 + rng() * (w1 - w0);
+        car.wheels.forEach((w) => { w.tyre.wear = clamp(x + (rng() - 0.5) * 0.04, 0, 1); });
+      }
       car.fuel = cfg.fuel ?? (25 + rng() * 45); // evaluations fix it; training draws it (rng untouched when fixed)
       // Mild perturbation of a feasible state: heading and sideslip within what a driven car shows.
       const dy = (rng() * 2 - 1) * 0.08, beta = (rng() * 2 - 1) * 0.04;

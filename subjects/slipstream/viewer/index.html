@@ -445,8 +445,8 @@ resize(); loadList(); requestAnimationFrame(loop);
 <!-- Overview board: champion and challengers per slot, in plain words. Edit after each decision (badge: game = in the
      game, test = best in tests but not in the game, wait = no result yet). Numbers come from runs/racebench and runs/completion. -->
 <script type="application/json" id="board">{
- "asOf": "2026-10-16 21:45",
- "now": "In the game now: d6 with the combat add-on sc1c (GT3 only). It confirmed on fresh seeds: average place 2.2 vs 4.4 for d6 alone, half the incidents. Next problem: in long stints it fades and cuts corners once the tyres are worn, because it never trained on worn tyres. Two fixes are training (w1a, w1b).",
+ "asOf": "2026-10-16 22:05",
+ "now": "Project stopped (your call, 2026-10-16). In the game: d6 with the combat add-on sc1c, GT3 only. Known open problem: it fades and cuts corners late in a stint on worn tyres (never trained on them); the fix (w1a, w1b) was stopped before it finished.",
  "winners": [
   {
    "cat": "In the game · short tracks (GT3)",
@@ -463,26 +463,25 @@ resize(); loadList(); requestAnimationFrame(loop);
   {
    "cat": "Stint fix · pace driver",
    "who": "w1a · w1b",
-   "code": "training",
+   "code": "stopped",
    "badge": "wait",
    "facts": [
     "d6 trained on with half its starts on worn tyres (wear 0-0.9)",
     "w1a keeps the track teachers, w1b drops them (they never saw worn tyres)",
-    "Judged on 20-lap stints: no invalid laps, pace kept"
+    "Stopped at ~60% of training, never tested"
    ],
-   "why": "The winner becomes the new pace driver; the combat add-on is then retrained on it."
+   "why": "Not finished. Restart from configs/tt-w1.json if the project resumes."
   },
   {
    "cat": "Combat add-on 2",
    "who": "sc2",
-   "code": "training",
+   "code": "rejected",
    "badge": "wait",
    "facts": [
-    "sc1c trained on for 90 min (done)",
-    "Paid extra for dives, around-the-outside, switchbacks and slipstream moves, and for trying them",
-    "Free to take another line when a rival is close"
+    "Races (5 of 20, then stopped): average place 8.9 vs 1.5 for sc1c on the same races",
+    "Drills: 19 real maneuver passes vs 50, off track 293 s vs 33 s"
    ],
-   "why": "Aims for more real maneuvers than sc1c. Drills and races finish about 23:45."
+   "why": "Rejected. Its corrections grew ~5x without the line anchor near rivals and push worn tyres off the track."
   },
   {
    "cat": "Pace driver · Nürburgring",
@@ -497,9 +496,8 @@ resize(); loadList(); requestAnimationFrame(loop);
   }
  ],
  "next": [
-  "~22:10: w1a / w1b training done, then 20-lap stint tests and races (~22:50).",
-  "~23:45: combat add-on 2 (sc2) drills and races vs sc1c.",
-  "SLIPSTREAM stays GT3 only (your call)."
+  "Nothing queued: the RL project is stopped.",
+  "To resume: stint fix first (tt-w1a/b, worn-tyre starts), judged on 20-lap stint tests (env/stint.mjs)."
  ],
  "glossary": [
   [
