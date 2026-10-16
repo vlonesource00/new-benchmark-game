@@ -35,13 +35,21 @@ function drills(seed) {
   return out;
 }
 
+/** place() leaves a car in first gear, and the gearbox refuses an upshift into over 8100 rpm: a car placed at speed
+ *  would sit on the limiter in first until it slowed. Fit the lowest gear under 7800 rpm at its speed. */
+function fitGear(c) {
+  const S = c.spec, rpm = (g) => c.u / S.radius * S.gears[g] * S.finalDrive * 60 / (2 * Math.PI);
+  let g = 1; while (g < S.gears.length - 1 && rpm(g) > 7800) g++;
+  c.gear = g; c.rpm = rpm(g);
+}
+
 async function runDrill(d) {
-  const env = createRaceEnv({ track: 'nurburgring', seats: [{ ai: d.ai }, { ai: 'slipstream' }], seed: d.seed, laps: 30, startType: 'rolling' });
+  const env = createRaceEnv({ track: 'nurburgring', seats: [{ ai: d.ai }, { ai: 'slipstream' }], seed: d.seed, laps: 30 }); // standing, then racing at once: a rolling start would hand both cars to the formation autopilot (stewards off) until green
   const race = env.race, [rv, me] = env.cars, L = env.track.length, hw = env.track.halfWidth, road = roadTable(env.track);
   race.countdown = 0; race.phase = 'racing';
   const s0 = d.u * L, sR = (s0 + d.lead) % L, v = resetSpeed(road, sR) * 0.85;
   for (const [c, s, lat] of [[rv, sR, d.latR * hw * 0.4], [me, s0, d.latS * hw * 0.4]]) {
-    c.place(env.track, s, lat, v); race.fitTyres(c, 'medium', true); c.fuel = 40; c.race.previousS = c.s;
+    c.place(env.track, s, lat, v); fitGear(c); race.fitTyres(c, 'medium', true); c.fuel = 40; c.race.previousS = c.s;
   }
   rv.wheels.forEach((w) => { w.tyre.wear = d.wear; });
   const P0 = rv.race.progress; me.race.progress = P0 - d.lead; // order follows the lap position
