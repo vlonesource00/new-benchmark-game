@@ -33,7 +33,7 @@ function step() {
   if (++tick % (cfg.statsEvery ?? 600) === 0) {
     const now = performance.now(), wall = (now - tStats) / 1000;
     process.stderr.write(JSON.stringify({ w: index, tick, sps: Math.round(st.ticks / wall), busy: +(busy / (now - tStats)).toFixed(3),
-      speed: +(st.speed / Math.max(1, st.ticks)).toFixed(2), legal: +(st.legal / Math.max(1, st.ticks)).toFixed(4), eps: st.episodes, term: st.terminal, inc: st.incidents ?? 0, rear: st.rearEnds ?? 0, ttc: +(st.ttc ?? 0).toFixed(2), rub: +(st.rub ?? 0).toFixed(2), clear: +(st.clear ?? 0).toFixed(2), passes: st.passes ?? 0, dirty: st.dirty ?? 0, lostP: st.lostP ?? 0, closes: st.closes ?? 0, stuckS: +(st.stuckS ?? 0).toFixed(1), ticks: st.ticks, ledger: Object.fromEntries(Object.entries(st.ledger ?? {}).map(([k, v]) => [k, +v.toFixed(3)])), why: st.why, laps: st.laps, wrecks: st.wrecks, lapEv: st.lapEv, endEv: st.endEv }) + '\n');
+      speed: +(st.speed / Math.max(1, st.ticks)).toFixed(2), legal: +(st.legal / Math.max(1, st.ticks)).toFixed(4), eps: st.episodes, term: st.terminal, inc: st.incidents ?? 0, rear: st.rearEnds ?? 0, ttc: +(st.ttc ?? 0).toFixed(2), rub: +(st.rub ?? 0).toFixed(2), clear: +(st.clear ?? 0).toFixed(2), passes: st.passes ?? 0, dirty: st.dirty ?? 0, lostP: st.lostP ?? 0, closes: st.closes ?? 0, stuckS: +(st.stuckS ?? 0).toFixed(1), leadS: +(st.leadS ?? 0).toFixed(1), followS: +(st.followS ?? 0).toFixed(1), closeS: +(st.closeS ?? 0).toFixed(1), relV: +(st.relV ?? 0).toFixed(1), ticks: st.ticks, ledger: Object.fromEntries(Object.entries(st.ledger ?? {}).map(([k, v]) => [k, +v.toFixed(3)])), why: st.why, laps: st.laps, wrecks: st.wrecks, lapEv: st.lapEv, endEv: st.endEv }) + '\n');
     st = stats(); busy = 0; tStats = now;
   }
 }

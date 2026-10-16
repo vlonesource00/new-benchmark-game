@@ -466,7 +466,7 @@ def main():
             agg['ttc'].append(s.get('ttc', 0))
             agg['rub'].append(s.get('rub', 0))
             agg['clear'].append(s.get('clear', 0))
-            for k in ('passes', 'dirty', 'lostP', 'stuckS', 'closes'):
+            for k in ('passes', 'dirty', 'lostP', 'stuckS', 'closes', 'leadS', 'followS', 'closeS', 'relV'):
                 agg[k].append(s.get(k, 0))
             for w, c in s['why'].items():
                 agg['why:' + w].append(c)

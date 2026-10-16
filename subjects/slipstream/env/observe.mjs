@@ -105,7 +105,12 @@ export function observe(o, ctx) {
   for (const p of near) {
     const r = p[2], dx = r.x - c.x, dz = r.z - c.z, f = fwd(dx, dz), l = lat(dx, dz);
     const hl = hlC + (r.spec?.halfLength ?? 2.3), hw = hwC + (r.spec?.halfWidth ?? 0.99);
-    if (f > hl && f - hl < CORR_AHEAD && Math.abs(l) < hw + 0.6) { if (!ahead || f < ahead.f) ahead = { r, f, l, hl }; }
+    // Ahead: in the corridor (within 0.6 m of lateral body overlap) beyond touching distance, or with the bodies
+    // overlapping laterally and the rival's centre ahead of ours: a car we are touching or overlapping from behind
+    // stays the car ahead (clearance <= 0, time to contact 0). Lateral clearance 0-0.6 m with the bodies
+    // overlapping along the track is alongside, not ahead.
+    const inLane = f > hl ? Math.abs(l) < hw + 0.6 : f > 0 && Math.abs(l) < hw;
+    if (inLane && f - hl < CORR_AHEAD) { if (!ahead || f < ahead.f) ahead = { r, f, l, hl }; }
     else if (Math.abs(f) <= hl + 1) {
       const side = { r, f, gap: Math.abs(l) - hw };
       if (l < 0) { if (!left || side.gap < left.gap) left = side; } else if (!right || side.gap < right.gap) right = side;
@@ -113,8 +118,8 @@ export function observe(o, ctx) {
   }
   if (ahead) {
     const { r, f, l, hl } = ahead, clear = f - hl, closing = -fwd(r.vx - c.vx, r.vz - c.vz);
-    put(1); put(clamp(clear / 30, 0, 4)); put(clamp(closing / 10, -3, 3)); put(clamp(((r.ax ?? 0) - (c.ax ?? 0)) / 10, -3, 3));
-    put(closing > 0.5 ? clamp(clear / closing, 0, 6) / 6 : 1); put(clamp(l / 2, -2, 2)); put(clamp(r.controls?.brake ?? 0, 0, 1));
+    put(1); put(clamp(clear / 30, -0.2, 4)); put(clamp(closing / 10, -3, 3)); put(clamp(((r.ax ?? 0) - (c.ax ?? 0)) / 10, -3, 3));
+    put(clear <= 0 ? 0 : closing > 0.5 ? clamp(clear / closing, 0, 6) / 6 : 1); put(clamp(l / 2, -2, 2)); put(clamp(r.controls?.brake ?? 0, 0, 1));
   } else { put(0); put(4); put(0); put(0); put(1); put(0); put(0); }
   for (const sd of [left, right]) {
     if (sd) { put(1); put(clamp(sd.gap / 2, -1, 2)); put(clamp(sd.f / 5, -2, 2)); } else { put(0); put(2); put(0); }

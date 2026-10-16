@@ -48,6 +48,14 @@ const inLine = at(15, 0, 15), right = at(2, 3, 20), left = at(-1, -3, 20), wide 
 const near = (x, y, e) => Math.abs(x - y) < e;
 check('corridor-ahead', inLine[0] === 1 && near(inLine[1] * 30, 15 - 4.6, 0.6) && near(inLine[2] * 10, 5, 0.6) && inLine[7] === 0 && inLine[10] === 0, `[${inLine}]`);
 check('corridor-sides', right[10] === 1 && right[7] === 0 && near(right[12] * 5, 2, 0.6) && left[7] === 1 && left[10] === 0 && right[0] === 0 && left[0] === 0, `right=[${right}] left=[${left}]`);
+// 8. Contact edge: the car ahead stays in the ahead channel at 1 cm clearance, 1 cm and 0.5 m of overlap (closing
+// 10 m/s): present, clearance ~0 / negative, time to contact 0 once touching. Bodies overlapping along the track
+// with 0.3 m of lateral clearance is alongside (right), not ahead.
+const HL = (a.car.spec?.halfLength ?? 2.3) + (b.car.spec?.halfLength ?? 2.3), HW = (a.car.spec?.halfWidth ?? 0.99) + (b.car.spec?.halfWidth ?? 0.99);
+const touch = at(HL + 0.01, 0, 15, 25), lap1 = at(HL - 0.01, 0, 15, 25), lap50 = at(HL - 0.5, 0, 15, 25), beside = at(1, HW + 0.3, 20);
+const edge = (v, m) => v[0] === 1 && near(v[1] * 30, m, 0.1) && near(v[2] * 10, 10, 0.6) && v[4] < 0.01 && v[7] === 0 && v[10] === 0;
+check('corridor-touch', edge(touch, 0.01) && edge(lap1, -0.01) && edge(lap50, -0.5), `touch=[${touch}] lap1=[${lap1}] lap50=[${lap50}]`);
+check('corridor-beside', beside[0] === 0 && beside[10] === 1 && near(beside[11] * 2, 0.3, 0.1), `[${beside}]`);
 check('corridor-empty', wide[0] === 0 && wide[7] === 0 && wide[10] === 0 && behind[0] === 0 && behind[7] === 0 && behind[10] === 0, `wide=[${wide}] behind=[${behind}]`);
 
 for (const r of results) console.log(`${r.ok ? 'PASS' : 'FAIL'} ${r.name} ${r.detail}`);

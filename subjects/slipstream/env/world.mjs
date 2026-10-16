@@ -371,6 +371,28 @@ export class World {
       }
       if (worst > 0) { add('ttc', -R.ttc * dt * worst); stats.ttc = (stats.ttc ?? 0) + dt; }
     }
+    // follow: per second at a useful headway behind the nearest car ahead on the lap (any line). Time gap tg = bumper
+    // gap / own speed; tg in followT [lo, hi] s pays reward.follow, tapering to 0 at 2 hi; nothing under lo (closer is
+    // priced by ttc and the contact costs) or on a decision with contact or off track. Progress plus contact costs
+    // alone leave sitting far back or breaking into clear air as good as following; this makes the gap itself the
+    // task. Metrics in every world: leadS s with a car ahead within 150 m, followS s inside [lo, hi], closeS s under
+    // lo, relV sum of (own - leader speed) * dt (mean pace relative to the leader = relV / leadS).
+    {
+      let lead = null, lgap = 150;
+      for (const r of this.env.race.cars) {
+        if (r === c) continue;
+        const gap = wrapPi(((r.s - c.s) / L) * TAU) * L / TAU;
+        if (gap > 0 && gap < lgap) { lgap = gap; lead = r; }
+      }
+      if (lead) {
+        const [lo, hi] = R.followT ?? [0.3, 1.0], tg = Math.max(0, lgap - 4.6) / Math.max(c.speed, 10);
+        stats.leadS = (stats.leadS ?? 0) + dt; stats.relV = (stats.relV ?? 0) + (c.speed - lead.speed) * dt;
+        if (tg < lo) stats.closeS = (stats.closeS ?? 0) + dt;
+        const wgt = tg < lo ? 0 : tg <= hi ? 1 : Math.max(0, 1 - (tg - hi) / hi);
+        if (wgt === 1) stats.followS = (stats.followS ?? 0) + dt;
+        if (R.follow && wgt > 0 && legal && !(this.rub[a.ci] > 0)) add('follow', R.follow * dt * wgt);
+      }
+    }
     // rub: per second in contact with any car (closing speed and side irrelevant): leaning on cars to get past is not
     // free. clear: per second alongside a car (within 5 m along the lap) with the centre-to-centre lateral gap under
     // clearM, growing from 0 at clearM to 1 at a car's width, so passes are made with room (using the track's width).
