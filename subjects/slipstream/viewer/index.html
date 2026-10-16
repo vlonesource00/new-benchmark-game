@@ -46,11 +46,14 @@
   .cardrow { display:flex; flex-wrap:wrap; gap:6px 18px; font-variant-numeric:tabular-nums; margin-bottom:8px; }
   #trainInfo { flex-direction:column; gap:4px; } .trow { display:flex; flex-wrap:wrap; gap:6px 18px; }
   .cardrow span { color:var(--dim); } .cardrow b { color:var(--text); font-weight:600; }
-  #arch { width:100%; max-width:980px; display:block; }
-  #arch .blk rect { fill:#1d232b; stroke:#3a434f; } #arch .blk.io rect { fill:#14171c; stroke:#2c323b; stroke-dasharray:3 3; }
-  #arch .blk.mem rect { stroke:var(--accent); } #arch .blk.out rect { stroke:var(--good); }
-  #arch text { fill:var(--text); font:12px system-ui, sans-serif; } #arch text.d { fill:var(--dim); font-size:11px; }
-  #arch path { stroke:#4a5462; fill:none; marker-end:url(#arw); }
+  #arch, #moe { width:100%; max-width:980px; display:block; margin-bottom:14px; }
+  :is(#arch, #moe) .blk rect { fill:#1d232b; stroke:#3a434f; } :is(#arch, #moe) .blk.io rect { fill:#14171c; stroke:#2c323b; stroke-dasharray:3 3; }
+  :is(#arch, #moe) .blk.mem rect { stroke:var(--accent); } :is(#arch, #moe) .blk.out rect { stroke:var(--good); } :is(#arch, #moe) .blk.plan rect { stroke:#7a6a3a; }
+  :is(#arch, #moe) text { fill:var(--text); font:12px system-ui, sans-serif; } :is(#arch, #moe) text.d { fill:var(--dim); font-size:11px; }
+  :is(#arch, #moe) path { stroke:#4a5462; fill:none; marker-end:url(#arw); } :is(#arch, #moe) path.dash { stroke-dasharray:4 4; }
+  .netcards { display:flex; flex-wrap:wrap; gap:10px; margin-bottom:14px; }
+  .netc { flex:1 1 260px; border:1px solid #2c323b; border-left:3px solid var(--good); border-radius:6px; padding:8px 12px; display:flex; flex-direction:column; gap:3px; font-variant-numeric:tabular-nums; }
+  .netc.test { border-left-color:#7a6a3a; } .netc .r { color:var(--dim); font-size:12px; } .netc span { color:var(--dim); font-size:12px; }
   .jobs { display:grid; grid-template-columns:auto 1fr 120px auto; gap:6px 12px; align-items:center; max-width:980px; }
   .jobs .st { font-size:11px; text-transform:uppercase; letter-spacing:.06em; }
   .st.running { color:var(--accent); } .st.done { color:var(--good); } .st.queued { color:var(--dim); }
@@ -150,7 +153,11 @@
       <div class="scroll"><table class="grid" id="rel"></table></div><button id="relMore" class="more"></button>
     </section>
     <section data-tab="netw" hidden>
-      <h2>Main network in the game</h2><div class="cardrow" id="netInfo"></div><svg id="arch" viewBox="0 0 980 300"></svg>
+      <h2>Which network drives where</h2><div class="netcards" id="netInfo"></div>
+      <h2>Pace actor</h2><p class="ev" id="archNote"></p><svg id="arch" viewBox="0 0 980 330"></svg>
+      <div id="moeWrap" hidden><h2>Combat network (in test)</h2>
+        <p class="ev">A residual mixture of experts: the frozen pace expert drives, and the combat expert adds a correction scaled by the router's g where racing needs it. Combat training cannot erode the driving: with g = 0 it drives exactly as the pace specialist.</p>
+        <svg id="moe" viewBox="0 0 980 360"></svg></div>
     </section>
   </div>
 </div>

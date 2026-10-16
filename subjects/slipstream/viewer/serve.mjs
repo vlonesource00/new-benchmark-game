@@ -27,21 +27,39 @@ const list = () => {
   return out.sort((a, b) => b.mtime - a.mtime);
 };
 
-// Deployed network: the weights the game's SLIPSTREAM bridge loads. Parsed once per file change (4 MB).
-let netCache = null;
-function network() {
-  const p = join(SUBJECT, 'policy', 'slipstream.json');
-  if (!existsSync(p)) return null;
-  const m = statSync(p).mtimeMs;
-  if (netCache?.m === m) return netCache.v;
-  const e = readJson(p), shapes = {}, blocks = {};
-  for (const [k, v] of Object.entries(e.params)) {
-    shapes[k] = v.shape; const b = k.split('.')[0];
-    blocks[b] = (blocks[b] ?? 0) + v.shape.reduce((a, x) => a * x, 1);
+// Networks for the Network tab: the two the game races (the bridge picks by track: game/bridges/slipstream-bridge.js
+// TRACK_WEIGHTS) and the combat network under test (the winners board's combat pick; not in the game). Each export is
+// parsed once per file change (4-8 MB): parameter shapes and counts per block, for a plain actor or both MoE experts.
+const NETS = [
+  { key: 'main', file: 'policy/slipstream.json', role: 'Short tracks and every track without its own network' },
+  { key: 'nurb', file: 'policy/slipstream-nurburgring.json', role: 'Nürburgring' },
+  { key: 'combat', file: 'runs/export/pas1c.json', role: 'Combat network in test (not in the game yet)' },
+];
+const netCache = {};
+function actorInfo(params) {
+  const shapes = {}, blocks = {};
+  for (const [k, v] of Object.entries(params)) { shapes[k] = v.shape; const b = k.split('.')[0]; blocks[b] = (blocks[b] ?? 0) + v.shape.reduce((a, x) => a * x, 1); }
+  return { shapes, blocks, params: Object.values(blocks).reduce((a, x) => a + x, 0) };
+}
+function networks() {
+  const out = {};
+  for (const n of NETS) {
+    const p = join(SUBJECT, n.file);
+    if (!existsSync(p)) continue;
+    const m = statSync(p).mtimeMs;
+    if (netCache[n.key]?.m !== m) {
+      const e = readJson(p), v = { role: n.role, file: n.file, ckpt: e.ckpt, iter: e.iter, layout: e.layout, hidden: e.hidden, updated: m };
+      if (e.moe) {
+        const gate = actorInfo(e.gate);
+        Object.assign(v, { moe: true, residual: Boolean(e.residual), wired: Boolean(e.cmb.wired), base: actorInfo(e.base.params), cmb: actorInfo(e.cmb.params),
+          gate: { shapes: gate.shapes, params: gate.params }, expertHidden: e.base.hidden });
+        v.params = v.base.params + v.cmb.params + gate.params;
+      } else Object.assign(v, actorInfo(e.params));
+      netCache[n.key] = { m, v };
+    }
+    out[n.key] = netCache[n.key].v;
   }
-  const v = { ckpt: e.ckpt, iter: e.iter, layout: e.layout, hidden: e.hidden, shapes, blocks, params: Object.values(blocks).reduce((a, x) => a + x, 0), updated: m };
-  netCache = { m, v };
-  return v;
+  return out;
 }
 
 // Two processes appending to one log (a duplicate launch) interleave their records. Every writer logs each iteration,
@@ -196,7 +214,7 @@ function status() {
   }));
   const strip = ({ curve, result, ...j }) => j;
   return {
-    now: Date.now(), label: q.label, network: network(),
+    now: Date.now(), label: q.label, networks: networks(),
     active: jobs.filter((j) => j.state === 'running' || j.state === 'queued').map(strip),
     counts: Object.fromEntries(['done', 'stopped', 'skipped', 'running', 'queued'].map((k) => [k, jobs.filter((j) => j.state === k).length])),
     current: cur && { title: cur.title, kind: cur.kind, state: cur.state, progress: cur.progress, etaMin: cur.etaMin, detail: cur.detail },

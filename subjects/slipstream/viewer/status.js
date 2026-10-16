@@ -10,33 +10,58 @@
   $('netBtn').onclick = () => setNet(!netOn);
   $('job').onclick = () => setNet(true);
 
+  // Block diagram: B = [id, x, y, w, title, dims, params, class]; links = [from, side, to, side, dashed]; sides l/r/t/b.
+  function diagram(B, links, extra = '') {
+    const pos = Object.fromEntries(B.map((b) => [b[0], b])), h = 62;
+    const at = (id, side) => { const b = pos[id]; return side === 'r' ? [b[1] + b[3], b[2] + h / 2] : side === 'l' ? [b[1], b[2] + h / 2] : side === 'b' ? [b[1] + b[3] / 2, b[2] + h] : [b[1] + b[3] / 2, b[2]]; };
+    const link = ([a, as, b, bs, dash]) => { const [x1, y1] = at(a, as), [x2, y2] = at(b, bs), v = as === 't' || as === 'b'; const c = v ? `${x1},${(y1 + y2) / 2} ${x2},${(y1 + y2) / 2}` : `${(x1 + x2) / 2},${y1} ${(x1 + x2) / 2},${y2}`; return `<path${dash ? ' class="dash"' : ''} d="M${x1},${y1} C${c} ${x2},${y2}"/>`; };
+    let svg = '<defs><marker id="arw" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#4a5462" stroke="none"/></marker></defs>';
+    svg += links.map(link).join('') + extra;
+    for (const [, bx, by, w, t, d, p, cls] of B)
+      svg += `<g class="blk ${cls ?? ''}"><rect x="${bx}" y="${by}" width="${w}" height="${h}" rx="6"/><text x="${bx + 10}" y="${by + 20}">${t}</text><text class="d" x="${bx + 10}" y="${by + 37}">${d}</text>${p ? `<text class="d" x="${bx + 10}" y="${by + 53}">${typeof p === 'number' ? kfmt(p) + ' params' : p}</text>` : ''}</g>`;
+    return svg;
+  }
+
+  // The pace actor (both networks in the game share it). The critic exists only in training.
   function archSvg(n) {
     const L = n.layout, sh = n.shapes, H = n.hidden, P = n.blocks, o = (k) => sh[k]?.[0];
-    const B = [ // id, x, y, w, title, dims, params, class
-      ['in_e', 10, 30, 150, 'Ego state', `${L.ego} features`, null, 'io'],
+    const ctx = L.egoX ? ` + ${L.egoX} race context` : '', rctx = L.rivalX ? ` + ${L.rivalX}` : '';
+    const B = [
+      ['in_e', 10, 30, 150, 'Ego state', `${L.ego}${ctx} features`, null, 'io'],
       ['in_r', 10, 120, 150, 'Road preview', `${L.roadK} points × ${L.roadF}`, null, 'io'],
-      ['in_v', 10, 210, 150, 'Rivals', `${L.rivalN} cars × ${L.rivalF}`, null, 'io'],
-      ['ego', 200, 30, 150, 'Ego MLP', `${L.ego} → ${o('ego.0.weight')} → ${o('ego.2.weight')}`, P.ego],
+      ['in_v', 10, 210, 150, 'Rivals', `${L.rivalN} cars × ${L.rivalF}${rctx}`, null, 'io'],
+      ['ego', 200, 30, 150, 'Ego MLP', `${sh['ego.0.weight']?.[1]} → ${o('ego.0.weight')} → ${o('ego.2.weight')}`, P.ego],
       ['road', 200, 120, 150, 'Road MLP', `${L.roadK * L.roadF} → ${o('road.0.weight')} → ${o('road.2.weight')}`, P.road],
-      ['tok', 200, 210, 150, 'Rival tokens', `${L.rivalF} → ${o('tok.0.weight')} → ${o('tok.2.weight')} + null`, (P.tok ?? 0) + (P.null ?? 0)],
+      ['tok', 200, 210, 150, 'Rival tokens', `${sh['tok.0.weight']?.[1]} → ${o('tok.0.weight')} → ${o('tok.2.weight')} + null`, (P.tok ?? 0) + (P.null ?? 0)],
       ['att', 390, 165, 165, 'Attention', '4 heads · query = ego+road', (P.attn ?? 0) + (P.query ?? 0)],
       ['pre', 390, 65, 165, 'Fuse', `${sh['pre.0.weight']?.[1]} → ${o('pre.0.weight')}`, P.pre],
       ['gru', 595, 65, 160, 'GRU memory', `${H} units · steps on decisions`, P.gru, 'mem'],
       ['pi', 795, 65, 170, 'Policy head', `${sh['pi.0.weight']?.[1]} → ${o('pi.0.weight')} → 2`, P.pi],
       ['out', 795, 185, 170, 'Controls', 'steer · pedal in ±1', null, 'out'],
+      ['crit', 595, 255, 160, 'Critic · training only', 'task value + risk value', `${sh['pi.0.weight']?.[1]} → 256 → 1, twice`, 'io'],
     ];
-    const pos = Object.fromEntries(B.map((b) => [b[0], b])), h = 62;
-    const at = (id, side) => { const b = pos[id]; return side === 'r' ? [b[1] + b[3], b[2] + h / 2] : side === 'l' ? [b[1], b[2] + h / 2] : side === 'b' ? [b[1] + b[3] / 2, b[2] + h] : [b[1] + b[3] / 2, b[2]]; };
-    const link = (a, as, b, bs) => { const [x1, y1] = at(a, as), [x2, y2] = at(b, bs), v = as === 't' || as === 'b'; const c = v ? `${x1},${(y1 + y2) / 2} ${x2},${(y1 + y2) / 2}` : `${(x1 + x2) / 2},${y1} ${(x1 + x2) / 2},${y2}`; return `<path d="M${x1},${y1} C${c} ${x2},${y2}"/>`; };
-    let svg = '<defs><marker id="arw" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#4a5462" stroke="none"/></marker></defs>';
-    svg += link('in_e', 'r', 'ego', 'l') + link('in_r', 'r', 'road', 'l') + link('in_v', 'r', 'tok', 'l') + link('ego', 'r', 'pre', 'l') + link('road', 'r', 'pre', 'l')
-      + link('road', 'r', 'att', 'l') + link('tok', 'r', 'att', 'l') + link('att', 't', 'pre', 'b') + link('pre', 'r', 'gru', 'l') + link('gru', 'r', 'pi', 'l') + link('pi', 'b', 'out', 't');
-    const sx = pos.pre[1] + 120, ex = pos.pi[1] + 40;
-    svg += `<path d="M${sx},${pos.pre[2]} C${sx},14 ${ex},14 ${ex},${pos.pi[2]}"/><text class="d" x="${pos.gru[1] + 8}" y="22">skip: fused features also feed the head</text>`;
-    for (const [, bx, by, w, t, d, p, cls] of B)
-      svg += `<g class="blk ${cls ?? ''}"><rect x="${bx}" y="${by}" width="${w}" height="${h}" rx="6"/><text x="${bx + 10}" y="${by + 20}">${t}</text><text class="d" x="${bx + 10}" y="${by + 37}">${d}</text>${p ? `<text class="d" x="${bx + 10}" y="${by + 53}">${kfmt(p)} params</text>` : ''}</g>`;
-    svg += `<text class="d" x="595" y="285">The value head (critic) exists only in training; the game runs this actor.</text>`;
-    return svg;
+    const links = [['in_e', 'r', 'ego', 'l'], ['in_r', 'r', 'road', 'l'], ['in_v', 'r', 'tok', 'l'], ['ego', 'r', 'pre', 'l'], ['road', 'r', 'pre', 'l'],
+      ['road', 'r', 'att', 'l'], ['tok', 'r', 'att', 'l'], ['att', 't', 'pre', 'b'], ['pre', 'r', 'gru', 'l'], ['gru', 'r', 'pi', 'l'], ['pi', 'b', 'out', 't'], ['gru', 'b', 'crit', 't', true]];
+    const sx = 390 + 120, ex = 795 + 40;
+    return diagram(B, links, `<path d="M${sx},65 C${sx},14 ${ex},14 ${ex},65"/><text class="d" x="603" y="22">skip: fused features also feed the head</text>`);
+  }
+
+  // The combat network: a residual mixture of experts around a frozen pace expert.
+  function moeSvg(n) {
+    const L = n.layout, gs = n.gate.shapes, obs = L.ego + L.roadK * L.roadF + L.rivalN * L.rivalF + (L.egoX ?? 0) + L.rivalN * (L.rivalX ?? 0);
+    const B = [
+      ['in', 10, 110, 175, 'Observation', `${obs} values`, L.egoX ? `race context: ego +${L.egoX}, rivals +${L.rivalX}` : null, 'io'],
+      ['base', 225, 30, 215, 'Pace expert · frozen', 'the pace actor, own normaliser', n.base.params],
+      ['cmb', 225, 190, 215, 'Combat expert · trained', `same shape, own ${n.expertHidden}-unit memory`, n.cmb.params, 'mem'],
+      ['gate', 480, 190, 170, 'Router', `${gs['0.weight']?.[1]} → ${gs['0.weight']?.[0]} → 1 · sigmoid g`, n.gate.params],
+      ['mix', 690, 110, 150, n.residual ? 'Residual mix' : 'Blend', n.residual ? 'pace + g × correction' : '(1 − g) pace + g combat', 'g in [0, 1]'],
+      ['out', 870, 110, 100, 'Controls', 'steer · pedal', null, 'out'],
+      ['crit', 480, 290, 170, 'Critic · training only', 'reads the combat expert', 'task + risk value', 'io'],
+      ['intent', 10, 290, 175, 'Maneuver intent · planned', 'picks a maneuver ~5 times/s', 'conditions the combat expert', 'io plan'],
+    ];
+    const links = [['in', 'r', 'base', 'l'], ['in', 'r', 'cmb', 'l'], ['base', 'r', 'mix', 'l'], ['cmb', 'r', 'gate', 'l'], ['gate', 't', 'mix', 'b'],
+      ['mix', 'r', 'out', 'l'], ['cmb', 'b', 'crit', 'l', true], ['intent', 'r', 'cmb', 'b', true]];
+    return diagram(B, links, '<path d="M440,205 C580,205 600,160 690,160"/><text class="d" x="452" y="180">correction (its policy head)</text>');
   }
 
   // Series share both axes: x is samples collected (s.x), so parallel arms line up by practice, not wall time.
@@ -205,11 +230,17 @@
   }
 
   function draw() {
-    const s = ST, n = s.network;
+    const s = ST, N = s.networks ?? {};
     $('jobsLabel').textContent = s.label ?? '';
-    if (tab === 'netw' && n) {
-      $('netInfo').innerHTML = `<span>checkpoint <b>${n.ckpt}</b></span><span>iteration <b>${n.iter}</b></span><span>parameters <b>${kfmt(n.params)}</b></span><span>decides <b>up to 30 / s</b></span><span>deployed <b>${new Date(n.updated).toLocaleString()}</b></span>`;
-      $('arch').innerHTML = archSvg(n);
+    if (tab === 'netw' && N.main) {
+      const card = (n, game) => `<div class="netc${game ? '' : ' test'}"><div class="r">${n.role}</div><b>${n.ckpt.replace(/^runs\//, '').replace(/\.pt$/, '')}</b>`
+        + `<span>iteration ${n.iter} · ${kfmt(n.params)} params${n.moe ? ' (two experts + router)' : ''}</span><span>${game ? 'in the game since' : 'exported'} ${new Date(n.updated).toLocaleString()}</span></div>`;
+      $('netInfo').innerHTML = card(N.main, true) + (N.nurb ? card(N.nurb, true) : '') + (N.combat ? card(N.combat, false) : '');
+      const same = N.nurb && JSON.stringify(N.nurb.layout) === JSON.stringify(N.main.layout) && N.nurb.params === N.main.params;
+      $('archNote').textContent = `Decides up to 30 times a second; between decisions the last controls are held and the memory does not step.${same ? ' Both networks in the game have this shape, with different weights.' : ''}`;
+      $('arch').innerHTML = archSvg(N.main);
+      $('moeWrap').hidden = !N.combat?.moe;
+      if (N.combat?.moe) $('moe').innerHTML = moeSvg(N.combat);
     }
     if (tab === 'over') drawOverview(s);
     if (tab === 'live') drawLive(s);
