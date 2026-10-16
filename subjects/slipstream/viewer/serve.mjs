@@ -66,7 +66,11 @@ function trainStatus(job) {
   const dir = join(RUNS, job.run), log = join(dir, 'log.jsonl');
   if (!existsSync(log)) return { state: 'queued', progress: 0 };
   const ls = lines(log), head = JSON.parse(ls[0]), recs = oneWriter(ls.slice(1).flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } }).filter((r) => r.it != null));
-  const budget = head.args?.minutes || 0, last = recs.at(-1) ?? { min: 0 };
+  const last = recs.at(-1) ?? { min: 0 }, target = head.args?.iters, first = recs[0];
+  // A time budget, or an iteration target (resumed runs train to an absolute iteration): the time it will take is
+  // projected from the iterations done so far.
+  const frac = !head.args?.minutes && target && target < 100000 && first && last.it != null ? (last.it - first.it + 1) / Math.max(1, target - first.it + 1) : null;
+  const budget = head.args?.minutes || (frac ? +(last.min / Math.max(frac, 1e-3)).toFixed(1) : 0);
   // done: final.pt written. stopped: ended early, marked in the queue or its log quiet for 3 min with no final
   // checkpoint (the process is gone). Only 'running' runs are live.
   const quiet = Date.now() - statSync(log).mtimeMs > 180000;
@@ -143,11 +147,12 @@ function activity(jobsQ, label) {
       const log = join(RUNS, j.name ?? '', 'log.jsonl');
       Object.assign(a, { name: j.name, title: title(j.name) });
       if (j.name && existsSync(log)) {
-        const ls = lines(log), head = tryJson0(ls[0]), first = tryJson0(ls[1]), last = tryJson0(ls.at(-1));
+        const ls = lines(log), head = tryJson0(ls[0]), first = tryJson0(ls.slice(1, 4).find((l) => l.startsWith('{"it"'))), last = tryJson0(ls.at(-1));
         const iters = head?.args?.iters, minutes = head?.args?.minutes;
         if (last?.it != null) {
           a.detail = `iteration ${last.it}${iters && iters < 100000 ? ` of ${iters}` : ''} · ${Math.round(last.sps ?? 0)} samples/s`;
-          a.progress = minutes ? last.min / minutes : iters && iters < 100000 && first?.it != null ? (last.it - first.it) / Math.max(1, iters - first.it) : null;
+          a.progress = minutes ? last.min / minutes : iters && iters < 100000 && first?.it != null ? (last.it - first.it + 1) / Math.max(1, iters - first.it + 1) : null;
+          if (a.progress) a.etaMin = minutes ? Math.max(0, minutes - last.min) : last.min * (1 - a.progress) / a.progress;
         }
       }
     } else if (j.kind === 'lap') {

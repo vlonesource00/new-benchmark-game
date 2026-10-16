@@ -89,7 +89,7 @@
     const ACT = s.activity ?? { items: [] }, Q = (s.active ?? []).filter((j) => j.state === 'queued').slice(0, 4);
     const groups = ACT.items.reduce((m, a) => { const g = ACT_GROUP[a.kind] ?? ACT_GROUP.other; (m[g] ??= []).push(a); return m; }, {});
     const row = (a) => `<div class="act"><div class="an"><b>${esc(a.name ?? a.kind)}</b>${a.title ? `<span class="ev"> ${what({ run: a.name, title: a.title })}</span>` : ''}${a.detail ? `<div class="ev">${esc(a.detail)}</div>` : ''}</div>`
-      + `${a.progress != null ? `<div class="bar"><i style="width:${pct(Math.min(1, a.progress))}"></i></div><span class="x">${pct(Math.min(1, a.progress))}</span>` : '<span></span><span></span>'}<span class="x">running ${fmtMin(a.elapsedMin)}</span></div>`;
+      + `${a.progress != null ? `<div class="bar"><i style="width:${pct(Math.min(1, a.progress))}"></i></div><span class="x">${pct(Math.min(1, a.progress))}</span>` : '<span></span><span></span>'}<span class="x">running ${fmtMin(a.elapsedMin)}${a.etaMin != null ? ` · ${fmtMin(a.etaMin)} left` : ''}</span></div>`;
     const body = Object.values(ACT_GROUP).filter((g, k, all) => all.indexOf(g) === k && groups[g]).map((g) => `<h4>${g}</h4>${groups[g].map(row).join('')}`).join('');
     const empty = ACT.ok === false ? 'Scanning processes…' : 'Nothing running.';
     $('overNow').innerHTML = `${BOARD?.now ? `<p>${esc(BOARD.now)}</p>` : ''}${body || `<p class="ev">${empty}</p>`}`
@@ -224,7 +224,8 @@
       // Header: what is running now (process scan), the first job with a progress bar; else the queue's current job.
       const acts = (ST.activity?.items ?? []).filter((a) => a.kind !== 'pipeline'), lead = acts.find((a) => a.progress != null);
       const c = acts.length ? null : ST.current;
-      $('jobT').textContent = acts.length ? acts.map((a) => `${ACT_NOUN[a.kind] ?? ''} ${a.name ?? ''}`.trim()).join(' · ')
+      const eta = Math.max(-1, ...acts.map((a) => a.etaMin ?? -1));
+      $('jobT').textContent = acts.length ? acts.map((a) => `${ACT_NOUN[a.kind] ?? ''} ${a.name ?? ''}`.trim()).join(' · ') + (eta >= 0 ? ` · ${fmtMin(eta)} left` : '')
         : c ? `${c.state === 'queued' ? 'Next: ' : ''}${c.title}${c.etaMin ? ` · ${fmtMin(c.etaMin)} left` : ''}` : 'Nothing running';
       const p = lead ? Math.min(1, lead.progress) : c?.state === 'running' ? c.progress : null;
       $('jobBar').className = 'bar' + (p == null ? ' q' : '');
