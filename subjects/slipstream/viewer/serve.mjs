@@ -5,6 +5,7 @@ import { createServer } from 'node:http';
 import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { watchActivity } from './activity.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SUBJECT = join(HERE, '..');
@@ -131,6 +132,45 @@ function benchmarks() {
   return existsSync(p) ? lines(p).flatMap((l) => { try { const { key, ...r } = JSON.parse(l); return [r]; } catch { return []; } }) : [];
 }
 
+// Everything running now (activity.mjs process scan), with progress from each job's own files: training logs,
+// lap-test progress files, finished race files. The queue titles name the trainings it knows.
+const ACT = watchActivity();
+function activity(jobsQ, label) {
+  const title = (run) => jobsQ.find((j) => j.kind === 'train' && j.run === run)?.title;
+  const items = ACT.jobs.map((j) => {
+    const a = { kind: j.kind, start: j.start, elapsedMin: (Date.now() - j.start) / 60000 };
+    if (j.kind === 'train') {
+      const log = join(RUNS, j.name ?? '', 'log.jsonl');
+      Object.assign(a, { name: j.name, title: title(j.name) });
+      if (j.name && existsSync(log)) {
+        const ls = lines(log), head = tryJson0(ls[0]), first = tryJson0(ls[1]), last = tryJson0(ls.at(-1));
+        const iters = head?.args?.iters, minutes = head?.args?.minutes;
+        if (last?.it != null) {
+          a.detail = `iteration ${last.it}${iters && iters < 100000 ? ` of ${iters}` : ''} · ${Math.round(last.sps ?? 0)} samples/s`;
+          a.progress = minutes ? last.min / minutes : iters && iters < 100000 && first?.it != null ? (last.it - first.it) / Math.max(1, iters - first.it) : null;
+        }
+      }
+    } else if (j.kind === 'lap') {
+      const p = tryJson(join(RUNS, 'completion', `${j.name}.progress.json`));
+      Object.assign(a, { name: j.name, detail: `${j.laps}-lap clean-lap test${j.seed ? ` · seed ${j.seed}` : ''}${j.tracks ? ` · ${j.tracks.split(',').length} tracks` : ''}${p ? ` · ${p.done}/${p.total} attempts, ${p.complete} clean` : ''}`, progress: p ? p.done / p.total : null });
+    } else if (j.kind === 'bench') {
+      const dir = join(RUNS, 'racebench', j.label ?? ''), total = j.tracks.length * j.seeds.length;
+      const files = existsSync(dir) ? readdirSync(dir).filter((f) => f.startsWith(j.mode + '-') && !f.includes('summary')) : [], done = files.length;
+      // The scan is up to 10 s old: a race whose result file has landed is no longer on track.
+      const racing = (j.racing ?? []).filter((r) => !files.some((f) => f.startsWith(`${j.mode}-${r.replace(' s', '-s')}`)));
+      Object.assign(a, { name: j.label, detail: `${j.mode} races${j.field ? ` · ${j.field} field` : ''}${j.startType ? ` · ${j.startType} start` : ''} · ${Math.min(done, total)}/${total} finished${racing.length ? ` · on track: ${racing.join(', ')}` : ''}`, progress: total ? Math.min(1, done / total) : null });
+    } else if (j.kind === 'drill' || j.kind === 'follow') {
+      Object.assign(a, { name: j.name, detail: `${j.kind === 'drill' ? 'passing drill, 360 scenes' : 'following test, 120 scenes'}${j.seed ? ` · seed ${j.seed}` : ''}` });
+    } else Object.assign(a, { name: j.name });
+    return a;
+  });
+  // The newest pipeline is the one the queue label describes.
+  const pipe = items.filter((a) => a.kind === 'pipeline').at(-1);
+  if (pipe && label) pipe.detail = label;
+  return { at: ACT.at, ok: ACT.ok, items };
+}
+const tryJson0 = (l) => { try { return JSON.parse(l); } catch { return null; } };
+
 function status() {
   const q = existsSync(join(RUNS, 'queue.json')) ? readJson(join(RUNS, 'queue.json')) : { jobs: [] };
   const jobs = q.jobs.map((j) => ({ ...j, ...(j.kind === 'train' ? trainStatus(j) : evalStatus(j)) }));
@@ -155,7 +195,7 @@ function status() {
     active: jobs.filter((j) => j.state === 'running' || j.state === 'queued').map(strip),
     counts: Object.fromEntries(['done', 'stopped', 'skipped', 'running', 'queued'].map((k) => [k, jobs.filter((j) => j.state === k).length])),
     current: cur && { title: cur.title, kind: cur.kind, state: cur.state, progress: cur.progress, etaMin: cur.etaMin, detail: cur.detail },
-    trainings, live: running.length > 0, experiments, reliability: rel, benchmarks: bench
+    trainings, live: running.length > 0, experiments, reliability: rel, benchmarks: bench, activity: activity(jobs, q.label)
   };
 }
 

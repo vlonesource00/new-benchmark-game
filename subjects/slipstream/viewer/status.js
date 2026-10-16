@@ -82,11 +82,18 @@
   // ---- overview: winners board (the JSON block in index.html) + what is running now ------------------
   const BOARD = (() => { try { return JSON.parse($('board').textContent); } catch { return null; } })();
   const BADGE = { game: ['game', 'In the game'], test: ['test', 'Best in tests · not in the game'], wait: ['wait', 'Waiting for results'] };
+  const ACT_NOUN = { train: 'Training', lap: 'Lap test', bench: 'Races', drill: 'Drill', follow: 'Following test', other: '' };
+  const ACT_GROUP = { pipeline: 'Pipelines', train: 'Training', lap: 'Lap tests', bench: 'Race benchmarks', drill: 'Combat drills', follow: 'Combat drills', other: 'Other jobs' };
   function drawOverview(s) {
-    const A = (s.active ?? []).filter((j) => j.state === 'running').concat((s.active ?? []).filter((j) => j.state === 'queued')).slice(0, 4);
-    const jobs = A.map((j) => `<span class="st ${j.state}">${j.state}</span><span class="jt">${esc(j.title)}</span><div class="bar ${j.state === 'queued' ? 'q' : ''}"><i style="width:${pct(j.progress)}"></i></div>`
-      + `<span class="x">${j.kind === 'train' && j.state === 'running' ? `${fmtMin(j.etaMin)} left` : j.detail ? `${j.detail.done}/${j.detail.total}` : ''}</span>`).join('');
-    $('overNow').innerHTML = `${BOARD?.now ? `<p>${esc(BOARD.now)}</p>` : ''}<div class="jobs">${jobs || '<span class="ev" style="grid-column:1/-1">No training or lap test running. Race benchmarks run outside this list.</span>'}</div>`;
+    // Everything running now, grouped by type (server process scan), then the next queued jobs.
+    const ACT = s.activity ?? { items: [] }, Q = (s.active ?? []).filter((j) => j.state === 'queued').slice(0, 4);
+    const groups = ACT.items.reduce((m, a) => { const g = ACT_GROUP[a.kind] ?? ACT_GROUP.other; (m[g] ??= []).push(a); return m; }, {});
+    const row = (a) => `<div class="act"><div class="an"><b>${esc(a.name ?? a.kind)}</b>${a.title ? `<span class="ev"> ${what({ run: a.name, title: a.title })}</span>` : ''}${a.detail ? `<div class="ev">${esc(a.detail)}</div>` : ''}</div>`
+      + `${a.progress != null ? `<div class="bar"><i style="width:${pct(Math.min(1, a.progress))}"></i></div><span class="x">${pct(Math.min(1, a.progress))}</span>` : '<span></span><span></span>'}<span class="x">running ${fmtMin(a.elapsedMin)}</span></div>`;
+    const body = Object.values(ACT_GROUP).filter((g, k, all) => all.indexOf(g) === k && groups[g]).map((g) => `<h4>${g}</h4>${groups[g].map(row).join('')}`).join('');
+    const empty = ACT.ok === false ? 'Scanning processes…' : 'Nothing running.';
+    $('overNow').innerHTML = `${BOARD?.now ? `<p>${esc(BOARD.now)}</p>` : ''}${body || `<p class="ev">${empty}</p>`}`
+      + (Q.length ? `<h4>Queued next</h4>${Q.map((j) => `<div class="act"><div class="an"><span class="ev">${esc(j.title)}</span></div><span></span><span></span><span></span></div>`).join('')}` : '');
     if (!BOARD) { $('overWins').innerHTML = '<p class="ev">No winners board in index.html.</p>'; return; }
     $('overAsOf').textContent = `as of ${BOARD.asOf}`;
     $('overWins').innerHTML = BOARD.winners.map((w) => { const [cls, label] = BADGE[w.badge] ?? ['', w.badge];
@@ -214,11 +221,15 @@
   async function poll() {
     try {
       ST = await (await fetch('/api/status', { cache: 'no-store' })).json();
-      const c = ST.current;
-      $('jobT').textContent = c ? `${c.title}${c.etaMin ? ` · ${fmtMin(c.etaMin)} left` : ''}` : 'No jobs running';
-      $('jobBar').className = 'bar' + (c ? '' : ' done');
-      $('jobBar').firstElementChild.style.width = pct(c ? c.progress : 1);
-      $('jobP').textContent = c ? pct(c.progress) : '';
+      // Header: what is running now (process scan), the first job with a progress bar; else the queue's current job.
+      const acts = (ST.activity?.items ?? []).filter((a) => a.kind !== 'pipeline'), lead = acts.find((a) => a.progress != null);
+      const c = acts.length ? null : ST.current;
+      $('jobT').textContent = acts.length ? acts.map((a) => `${ACT_NOUN[a.kind] ?? ''} ${a.name ?? ''}`.trim()).join(' · ')
+        : c ? `${c.state === 'queued' ? 'Next: ' : ''}${c.title}${c.etaMin ? ` · ${fmtMin(c.etaMin)} left` : ''}` : 'Nothing running';
+      const p = lead ? Math.min(1, lead.progress) : c?.state === 'running' ? c.progress : null;
+      $('jobBar').className = 'bar' + (p == null ? ' q' : '');
+      $('jobBar').firstElementChild.style.width = pct(p ?? 0);
+      $('jobP').textContent = p == null ? '' : pct(p);
       if (netOn) draw();
     } catch { $('jobT').textContent = 'status unavailable'; }
   }

@@ -93,6 +93,10 @@
   /* overview: current winners per category */
   .now { border:1px solid var(--line); border-radius:6px; background:#14171c; padding:10px 12px; margin-bottom:6px; max-width:1180px; }
   .now p { margin:0 0 8px; } .now .jobs { max-width:none; }
+  .now h4 { margin:10px 0 4px; font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:var(--dim); font-weight:600; }
+  .act { display:grid; grid-template-columns:1fr 140px 4ch 110px; gap:4px 12px; align-items:center; padding:5px 0; border-top:1px solid var(--line); font-variant-numeric:tabular-nums; }
+  .act .bar { width:140px; } .act .x { color:var(--dim); font-size:12px; text-align:right; white-space:nowrap; } .act .an { min-width:0; }
+  @media (max-width: 760px) { .act { grid-template-columns:1fr auto; } .act .bar, .act .x:nth-of-type(1) { display:none; } }
   .wins { display:grid; grid-template-columns:repeat(auto-fill, minmax(300px, 1fr)); gap:10px; max-width:1180px; }
   .win { border:1px solid var(--line); border-radius:6px; background:#14171c; padding:10px 12px; display:flex; flex-direction:column; gap:6px; }
   .win .cat { font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:var(--dim); }
@@ -364,6 +368,7 @@ const tlc = $('tlc'), tg = tlc.getContext('2d');
 let tlBase = null;
 function drawTimeline() {
   const w = tlc.width, h = tlc.height, n = R.frames.length;
+  if (!w || !h) { tlBase = null; return; } // hidden behind the training panel
   tg.fillStyle = '#14171c'; tg.fillRect(0, 0, w, h);
   // selected-car speed profile as a background band
   tg.fillStyle = '#2a4258';
