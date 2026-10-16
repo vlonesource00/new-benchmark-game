@@ -6,7 +6,8 @@
 //          pit-lane autopilot as in the browser, start compound by the strategist.
 // Both SLIPSTREAM cars drive the bridge (game/bridges/slipstream-bridge.js) with the candidate's export (or the deployed
 // weights for '-'). Per SLIPSTREAM car: grid, place, gained, points, best lap vs the field's best, legality, combat
-// scorecard (env/scorecard.mjs). Per car of the field: place, best lap, incidents, damage, stops.
+// scorecard (env/scorecard.mjs), passes by maneuver kind (env/maneuvers.mjs). Per car of the field: place, best lap,
+// incidents, damage, stops.
 //   node --import ./scripts/json-loader.mjs subjects/slipstream/env/racebench.mjs --label <name> [--policy export.json | -]
 //        [--mode short|full] [--tracks harbor-ring,solenne,alpine,desert] [--seeds 1,2,3,4,5] [--laps N] [--start rolling|standing]
 //        [--field standard|pool|<ai,ai,...>] [--weather clear] [--jobs 3]
@@ -17,6 +18,7 @@ import { fileURLToPath } from 'node:url';
 import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import os from 'node:os';
+import { KINDS } from './maneuvers.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIELDS = {
@@ -36,6 +38,7 @@ async function work([track, mode, seedArg, start, policy, fieldArg, weather, lap
   const { AI_DRIVERS } = await import('../../../game/core/teams.js');
   const { useWeights } = await import('../../../game/bridges/slipstream-bridge.js');
   const { scorecards } = await import('./scorecard.mjs');
+  const { maneuvers } = await import('./maneuvers.mjs');
   if (policy && policy !== '-') useWeights(JSON.parse(readFileSync(policy, 'utf8')));
   const seed = +seedArg, trk = new Track(track), full = mode === 'full';
   const ais = FIELDS[fieldArg] ?? fieldArg.split(','), last = ais.includes('apex') ? 'apex' : null, front = ais.filter((a) => a !== last);
@@ -59,18 +62,18 @@ async function work([track, mode, seedArg, start, policy, fieldArg, weather, lap
   race.entries.forEach((e, i) => { const d = e.bridges[0]?.driver; if (d && ids[i] === 'next-racer' && d.o) d.o.planBudgetMs = Infinity; });
   await new Promise((r) => setTimeout(r, 1500)); // bridge weights load asynchronously
   const mine = ids.map((id, i) => (id === 'slipstream' ? i : -1)).filter((i) => i >= 0);
-  const sc = scorecards(race, mine, trk);
+  const sc = scorecards(race, mine, trk), mv = maneuvers(race, mine, trk);
   const cap = (full ? 150 : 140) * laps * Math.max(1, trk.length / 3000) + 300, t0 = performance.now();
   while (race.phase !== 'finished' && race.time < cap) {
     for (let k = 0; k < 4; k++) race.step(FIXED_DT);
-    sc.update();
+    sc.update(); mv.update();
   }
   const ord = race.order(), fieldBest = Math.min(...race.cars.map((c) => c.race.bestLap ?? Infinity));
   const rows = race.cars.map((c, i) => { const st = race.stewards.of(race.entries[i]); return { ai: ids[i], grid: i + 1, place: ord.indexOf(c) + 1,
     best: c.race.bestLap && +c.race.bestLap.toFixed(3), inc: st.inc, pen: (st.penalties ?? []).length, dq: Boolean(st.dq), dmg: +(c.damage * 100).toFixed(1),
     stops: race.entries[i].strategist.stops, finished: c.race.finishTime !== null, time: c.race.finishTime && +c.race.finishTime.toFixed(2), lapsDone: c.race.lap - 1 }; });
   const sls = mine.map((i) => ({ ...rows[i], gained: rows[i].grid - rows[i].place, points: POINTS[rows[i].place - 1] ?? 0,
-    bestGapPct: rows[i].best && Number.isFinite(fieldBest) ? +((rows[i].best / fieldBest - 1) * 100).toFixed(3) : null, ...sc.result(i) }));
+    bestGapPct: rows[i].best && Number.isFinite(fieldBest) ? +((rows[i].best / fieldBest - 1) * 100).toFixed(3) : null, ...sc.result(i), ...mv.result(i) }));
   console.log(JSON.stringify({ track, mode, seed, start, weather, field: fieldArg, laps, order, finished: race.phase === 'finished', wallS: +((performance.now() - t0) / 1000).toFixed(0),
     fieldBest: Number.isFinite(fieldBest) ? +fieldBest.toFixed(3) : null, contacts: race.contacts, rows, sls }));
 }
@@ -103,7 +106,9 @@ const sumUp = (cars) => ({ cars: cars.length, place: mean(cars, (c) => c.place),
   passes: mean(cars, (c) => c.passes), cleanPasses: mean(cars, (c) => c.cleanPasses), passedBy: mean(cars, (c) => c.passedBy),
   traffic: mean(cars, (c) => c.traffic), lappedByContact: mean(cars, (c) => c.lappedByContact), rubS: mean(cars, (c) => c.rubS), noseS: mean(cars, (c) => c.rubKinds.nose),
   offS: mean(cars, (c) => c.offS), invalidLaps: mean(cars, (c) => c.invalidLaps), inc: mean(cars, (c) => c.inc), pen: mean(cars, (c) => c.pen), dmg: mean(cars, (c) => c.dmg),
-  dnf: cars.filter((c) => !c.finished || c.dq).length });
+  dnf: cars.filter((c) => !c.finished || c.dq).length,
+  // maneuver passes (races run before the detector have none: null)
+  ...(cars.length && cars.every((c) => c.mvKinds) ? { mvPasses: mean(cars, (c) => c.mvPasses), mvKinds: Object.fromEntries(KINDS.map((k) => [k, mean(cars, (c) => c.mvKinds[k])])) } : { mvPasses: null }) });
 const all = ok.flatMap((r) => r.sls.map((c) => ({ ...c, track: r.track })));
 const per = Object.fromEntries(tracks.map((t) => [t, sumUp(all.filter((c) => c.track === t))]));
 const ai = {}; for (const r of ok) for (const w of r.rows) { const a = (ai[w.ai] ??= []); a.push(w.place); }
@@ -112,5 +117,6 @@ const summary = { label, policy, mode, start, field, weather, races: ok.length, 
 writeFileSync(join(out, `${mode}-summary${start === 'rolling' ? '' : '-' + start}${field === 'standard' ? '' : '-' + field}.json`), JSON.stringify(summary, null, 1));
 const s = summary.sls;
 console.log(`racebench ${label} ${mode} ${field} ${start}: races ${ok.length} | place ${s.place} gained ${s.gained} pts ${s.points} wins ${s.wins} | best +${s.bestGapPct}% | passes ${s.passes} clean ${s.cleanPasses} lost ${s.passedBy} traffic ${s.traffic} | rub ${s.rubS} nose ${s.noseS} off ${s.offS} inv ${s.invalidLaps} inc ${s.inc} pen ${s.pen} dmg ${s.dmg} dnf ${s.dnf}`);
-for (const [t, x] of Object.entries(per)) console.log(`  ${t.padEnd(12)} place ${x.place} gained ${x.gained} best +${x.bestGapPct}% passes ${x.passes}/${x.cleanPasses} lost ${x.passedBy} rub ${x.rubS} inv ${x.invalidLaps} inc ${x.inc}`);
+if (s.mvPasses != null) console.log(`  maneuver passes ${s.mvPasses} per car: ` + Object.entries(s.mvKinds).map(([k, v]) => `${k} ${v}`).join(' '));
+for (const [t, x] of Object.entries(per)) console.log(`  ${t.padEnd(12)} place ${x.place} gained ${x.gained} best +${x.bestGapPct}% passes ${x.passes}/${x.cleanPasses}${x.mvPasses != null ? ` mv ${x.mvPasses}` : ''} lost ${x.passedBy} rub ${x.rubS} inv ${x.invalidLaps} inc ${x.inc}`);
 console.log('  AI mean place: ' + Object.entries(summary.aiPlace).map(([k, v]) => `${k} ${v}`).join(' | '));
