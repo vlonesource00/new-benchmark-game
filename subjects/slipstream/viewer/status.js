@@ -6,7 +6,7 @@
   const kfmt = (n) => n == null ? '–' : n >= 1e6 ? (n / 1e6).toFixed(2) + ' M' : n >= 1e3 ? (n / 1e3).toFixed(1) + ' k' : String(n);
   let netOn = false, ST = null;
 
-  function setNet(on) { netOn = on; $('net').classList.toggle('on', on); $('netBtn').classList.toggle('on', on); $('netBtn').blur(); if (on && ST) draw(); }
+  function setNet(on) { netOn = on; store.set('net', on ? '1' : '0'); $('net').classList.toggle('on', on); $('netBtn').classList.toggle('on', on); document.body.classList.toggle('panel', on); $('netBtn').textContent = on ? 'Replay viewer' : 'Training & tests'; dispatchEvent(new Event('resize')); $('netBtn').blur(); if (on && ST) draw(); }
   $('netBtn').onclick = () => setNet(!netOn);
   $('job').onclick = () => setNet(true);
 
@@ -64,7 +64,7 @@
   const snapName = (s) => s === 'final' ? 'final' : s == null ? '' : `@${s}`;
 
   // ---- tabs ------------------------------------------------------------------------------------
-  let tab = store.get('tab', 'live');
+  let tab = store.get('tab', 'over');
   const UI = { expAll: false, relAll: false, open: new Set() };
   function setTab(t) {
     tab = t; store.set('tab', t);
@@ -78,6 +78,23 @@
   $('relMore').onclick = () => { UI.relAll = !UI.relAll; draw(); };
   $('exp').onclick = (ev) => { const r = ev.target.closest('tr[data-run]'); if (!r) return; const k = r.dataset.run; UI.open.has(k) ? UI.open.delete(k) : UI.open.add(k); draw(); };
   setTab(tab);
+
+  // ---- overview: winners board (the JSON block in index.html) + what is running now ------------------
+  const BOARD = (() => { try { return JSON.parse($('board').textContent); } catch { return null; } })();
+  const BADGE = { game: ['game', 'In the game'], test: ['test', 'Best in tests · not in the game'], wait: ['wait', 'Waiting for results'] };
+  function drawOverview(s) {
+    const A = (s.active ?? []).filter((j) => j.state === 'running').concat((s.active ?? []).filter((j) => j.state === 'queued')).slice(0, 4);
+    const jobs = A.map((j) => `<span class="st ${j.state}">${j.state}</span><span class="jt">${esc(j.title)}</span><div class="bar ${j.state === 'queued' ? 'q' : ''}"><i style="width:${pct(j.progress)}"></i></div>`
+      + `<span class="x">${j.kind === 'train' && j.state === 'running' ? `${fmtMin(j.etaMin)} left` : j.detail ? `${j.detail.done}/${j.detail.total}` : ''}</span>`).join('');
+    $('overNow').innerHTML = `${BOARD?.now ? `<p>${esc(BOARD.now)}</p>` : ''}<div class="jobs">${jobs || '<span class="ev" style="grid-column:1/-1">No training or lap test running. Race benchmarks run outside this list.</span>'}</div>`;
+    if (!BOARD) { $('overWins').innerHTML = '<p class="ev">No winners board in index.html.</p>'; return; }
+    $('overAsOf').textContent = `as of ${BOARD.asOf}`;
+    $('overWins').innerHTML = BOARD.winners.map((w) => { const [cls, label] = BADGE[w.badge] ?? ['', w.badge];
+      return `<div class="win"><span class="cat">${esc(w.cat)}</span><span class="who">${esc(w.who)}<span class="code">${esc(w.code)}</span></span><span class="badge ${cls}">${esc(label)}</span>`
+        + `<ul>${w.facts.map((f) => `<li>${esc(f)}</li>`).join('')}</ul><span class="why">${esc(w.why)}</span></div>`; }).join('');
+    $('overNext').innerHTML = BOARD.next.map((n) => `<li>${esc(n)}</li>`).join('');
+    $('overGloss').innerHTML = BOARD.glossary.map(([k, v]) => `<b>${esc(k)}</b><span>${esc(v)}</span>`).join('');
+  }
 
   // ---- live training -----------------------------------------------------------------------------
   function drawLive(s) {
@@ -185,6 +202,7 @@
       $('netInfo').innerHTML = `<span>checkpoint <b>${n.ckpt}</b></span><span>iteration <b>${n.iter}</b></span><span>parameters <b>${kfmt(n.params)}</b></span><span>decides <b>up to 30 / s</b></span><span>deployed <b>${new Date(n.updated).toLocaleString()}</b></span>`;
       $('arch').innerHTML = archSvg(n);
     }
+    if (tab === 'over') drawOverview(s);
     if (tab === 'live') drawLive(s);
     if (tab === 'exp') drawExp(s);
     if (tab === 'bench') drawBench(s);
@@ -202,6 +220,8 @@
       if (netOn) draw();
     } catch { $('jobT').textContent = 'status unavailable'; }
   }
+  // The page reopens where it was left: the overview by default, the replay once the panel is closed.
+  if (store.get('net', '1') === '1') setNet(true);
   poll(); setInterval(poll, 5000);
   addEventListener('resize', () => { if (netOn && ST) draw(); });
 })();

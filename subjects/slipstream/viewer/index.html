@@ -39,6 +39,8 @@
   #job .bar { width:160px; } #job .p { font-variant-numeric:tabular-nums; font-size:12px; font-weight:600; min-width:3ch; }
   #net { position:absolute; inset:0; overflow-y:auto; background:var(--bg); padding:14px 16px 24px; display:none; }
   #net.on { display:block; }
+  /* the training panel takes the whole page: the replay's picker, side panel and timeline hide behind it */
+  body.panel aside, body.panel footer, body.panel #pick, body.panel #meta { display:none; } body.panel #wrap { grid-column:1/-1; grid-row:2/-1; }
   #net h2 { font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:var(--dim); margin:20px 0 8px; font-weight:600; }
   #net h2:first-child { margin-top:0; }
   .cardrow { display:flex; flex-wrap:wrap; gap:6px 18px; font-variant-numeric:tabular-nums; margin-bottom:8px; }
@@ -88,6 +90,19 @@
   .tag { font-size:11px; border:1px solid var(--line); border-radius:10px; padding:1px 7px; color:var(--dim); }
   .tag.good { color:var(--good); border-color:var(--good); } .tag.base { color:var(--text); }
   button.more { margin-top:8px; }
+  /* overview: current winners per category */
+  .now { border:1px solid var(--line); border-radius:6px; background:#14171c; padding:10px 12px; margin-bottom:6px; max-width:1180px; }
+  .now p { margin:0 0 8px; } .now .jobs { max-width:none; }
+  .wins { display:grid; grid-template-columns:repeat(auto-fill, minmax(300px, 1fr)); gap:10px; max-width:1180px; }
+  .win { border:1px solid var(--line); border-radius:6px; background:#14171c; padding:10px 12px; display:flex; flex-direction:column; gap:6px; }
+  .win .cat { font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:var(--dim); }
+  .win .who { font-size:16px; font-weight:600; } .win .code { color:var(--dim); font-size:11px; font-weight:400; margin-left:6px; }
+  .win ul { margin:0; padding-left:16px; font-variant-numeric:tabular-nums; } .win li { margin:2px 0; }
+  .win .why { color:var(--dim); font-size:12px; }
+  .badge { align-self:flex-start; font-size:11px; border-radius:10px; padding:1px 8px; border:1px solid var(--line); color:var(--dim); }
+  .badge.game { color:var(--good); border-color:var(--good); } .badge.test { color:#8ab4ff; border-color:#8ab4ff; } .badge.wait { color:var(--warn); border-color:var(--warn); }
+  .gloss { display:grid; grid-template-columns:auto 1fr; gap:3px 14px; max-width:1180px; font-size:12px; } .gloss b { font-family:ui-monospace, monospace; font-weight:500; }
+  .next { margin:0; padding-left:18px; max-width:1180px; } .next li { margin:3px 0; }
   @media (max-width: 760px) {
     #job .bar { width:80px; } #job .t { max-width:34vw; }
     .jobs { grid-template-columns:auto 1fr; } .jobs .bar { width:100%; }
@@ -109,8 +124,14 @@
 </header>
 <div id="wrap"><canvas id="map"></canvas><div id="hud"></div>
   <div id="net">
-    <nav id="tabs"><button data-tab="live">Live training</button><button data-tab="exp">Experiments</button><button data-tab="bench">Combat benchmarks</button><button data-tab="rel">Reliability</button><button data-tab="netw">Network</button><span class="ev" id="jobsLabel"></span></nav>
-    <section data-tab="live">
+    <nav id="tabs"><button data-tab="over">Overview</button><button data-tab="live">Live training</button><button data-tab="exp">Experiments</button><button data-tab="bench">Combat benchmarks</button><button data-tab="rel">Reliability</button><button data-tab="netw">Network</button><span class="ev" id="jobsLabel"></span></nav>
+    <section data-tab="over">
+      <h2>Right now</h2><div class="now" id="overNow"></div>
+      <h2>Current winners <span class="ev" id="overAsOf"></span></h2><div class="wins" id="overWins"></div>
+      <h2>Up next</h2><ol class="next" id="overNext"></ol>
+      <h2>What the code names mean</h2><div class="gloss" id="overGloss"></div>
+    </section>
+    <section data-tab="live" hidden>
       <h2>Running &amp; queued <span class="ev" id="liveCounts"></span></h2><div class="jobs" id="liveJobs"></div>
       <h2>Training <span class="ev" id="liveTitle"></span></h2><div id="liveInfo"></div><div class="curves" id="curves"></div>
     </section>
@@ -405,6 +426,54 @@ function loop(now) {
   last = now; requestAnimationFrame(loop);
 }
 resize(); loadList(); requestAnimationFrame(loop);
+</script>
+<!-- Overview board: the current winner per category, in plain words. Edit after each decision (badge: game = in the
+     game, test = best in tests but not in the game, wait = no result yet). Numbers come from runs/completion,
+     runs/benchmarks.jsonl and runs/ab-fol2 (paired bootstrap, 90% CI). -->
+<script type="application/json" id="board">
+{
+  "asOf": "2026-10-16 16:00",
+  "now": "Short tracks, stage 1. First a race baseline: the current short-track driver in 20 real 12-car races. Then two versions train side by side from the same start: the old practice worlds against new race-like worlds (rolling starts, full AI teams, pit exits, faster-class traffic). Then lap tests and races for both. Full answer this evening.",
+  "winners": [
+    { "cat": "Short tracks · lap pace", "who": "Short-track driver", "code": "d6", "badge": "game",
+      "facts": ["Solenne +0.6% · Harbor +1.4% off the fastest AI", "Desert +2.4% · Alpine +3.3% off the fastest AI", "Clean finishes 79 / 80 test laps"],
+      "why": "One network for all four short tracks. Alpine and desert have the largest gaps." },
+    { "cat": "Nürburgring · lap pace", "who": "Nürburgring specialist", "code": "sn4", "badge": "game",
+      "facts": ["As fast as the fastest AI (−0.05%)", "Clean single laps 16 / 20", "Clean two-lap runs only 19 / 40"],
+      "why": "Fastest on the Nürburgring, but cuts kerbs on the second lap." },
+    { "cat": "Nürburgring · clean laps", "who": "Clean-lap specialist", "code": "sn6a", "badge": "test",
+      "facts": ["Clean two-lap runs 20 / 20 (fresh seeds)", "But 2.0% slower than the fastest AI"],
+      "why": "Not in the game: too slow. Runner-up sn5d: 30 / 40 clean at +1.5%." },
+    { "cat": "Wheel-to-wheel races (Nürburgring)", "who": "Combat mix", "code": "moe6c @30", "badge": "test",
+      "facts": ["+35 places in 24 races (same as sn4)", "Rubbing 28 s vs 74 s · damage 1.7 vs 3.3", "Heavy hits 21 vs 36"],
+      "why": "Pace driver plus a combat expert. Gains as many places as sn4 with far less contact. Research only." },
+    { "cat": "Following & passing drills", "who": "Passing curriculum", "code": "pas1c", "badge": "test",
+      "facts": ["Following time +136 s / +103 s (2 seeds)", "Dirty passes −14 on both seeds", "Contact no worse · off-track time slightly up"],
+      "why": "Compared with the previous best (fol2a). Its recipe carries over to the short tracks." },
+    { "cat": "Short-track races", "who": "No result yet", "code": "racebench", "badge": "wait",
+      "facts": ["First baseline running now: d6 in 20 races of 5 laps"],
+      "why": "Standard field: two-car teams of INTERCEPT, CLAUDE REV, SOLSTICE, SPEARHEAD and APEX." }
+  ],
+  "next": [
+    "Race baseline of d6 on the four short tracks (running).",
+    "s1a vs s1b training (about 2.5 h), then lap tests and races: pick the new short-track driver.",
+    "Combat expert for the short tracks on top of that driver: passing curriculum (pas1c recipe) plus new defend scenes."
+  ],
+  "glossary": [
+    ["d6", "6th short-track driver: one network for harbor, solenne, alpine and desert"],
+    ["sn4 · sn5d · sn6a", "Nürburgring specialists (4th, 5th variant d, 6th variant a)"],
+    ["moe…", "combat mix: a frozen pace driver plus a combat expert that steers around rivals; a router decides when the expert acts"],
+    ["fol…", "training to follow closely without hitting the car ahead"],
+    ["pas…", "passing curriculum: easy passes on worn-tyre rivals first, then harder ones"],
+    ["s1a · s1b", "short-track stage 1 test: same start, old practice worlds (a) vs race-like worlds (b)"],
+    ["@20 · snap20 · final", "saved copy after 20 minutes of training · end of training"],
+    ["ema · avg", "averaged weights, the only kind we judge"],
+    ["s101 · s202 · s303 · s404", "test seeds (different random start points); 303 / 404 are kept fresh for confirmation"],
+    ["duel3", "24 two-lap Nürburgring races against 3 AIs, SLIPSTREAM starting behind"],
+    ["drill", "360 short passing scenes; a clean pass has no contact"],
+    ["racebench", "real 12-car races on the short tracks (new)"]
+  ]
+}
 </script>
 <script src="/status.js"></script>
 </body>
