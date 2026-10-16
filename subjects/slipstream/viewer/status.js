@@ -1,4 +1,4 @@
-// SLIPSTREAM viewer: header job bar and the "Training & tests" view (tabs: live training, experiments, combat benchmarks, reliability, network), fed by /api/status every 5 s.
+// SLIPSTREAM viewer: header job bar and the "Training & tests" view (tabs: overview, training now, races, models, lap tests, network), fed by /api/status every 5 s.
 (() => {
   const $ = (id) => document.getElementById(id);
   const fmtMin = (m) => m == null ? '' : m >= 60 ? `${Math.floor(m / 60)} h ${String(Math.round(m % 60)).padStart(2, '0')} min` : `${Math.round(m)} min`;
@@ -164,34 +164,23 @@
     curve(rest[2], 'Samples / s', ser(6), (v) => kfmt(Math.round(v)));
   }
 
-  // ---- combat benchmarks -----------------------------------------------------------------------------
-  // Columns: key, label, better direction (+1 higher is better, -1 lower), format.
-  const BCOLS = [['gained', 'places gained', 1], ['passes', 'passes', 1], ['lost', 'places lost', -1], ['rubS', 'rubbing s', -1], ['heavy', 'heavy contacts', -1],
-    ['dmg', 'damage', -1], ['meanPos', 'mean finish', -1], ['stuckS', 'stuck s', -1]];
-  const BENCH_INFO = {
-    duel3: 'Mid-race combat: 24 races, 2 laps on the Nürburgring. SLIPSTREAM is held on the grid 3–13 s, then must fight back through 3 AIs (INTERCEPT / RAZOR). Deployment gate: at least the specialist\'s places gained with less rubbing and damage.',
-    duel2: 'Earlier, smaller combat benchmark (8 races). Superseded by duel3.'
-  };
-  const verdict = (r, base) => {
-    if (!base || r === base) return r === base ? '<span class="tag base">baseline</span>' : '';
-    const m = r.metrics, b = base.metrics, ok = m.gained >= b.gained && m.rubS < b.rubS && m.dmg < b.dmg;
-    return ok ? '<span class="tag good">passes gate</span>' : '<span class="tag">below gate</span>';
-  };
-  function benchTable(rows, base) {
-    const cell = (r, [k, , dir]) => {
-      const v = r.metrics[k]; if (v == null) return '<td></td>';
-      const b = base?.metrics[k], cls = base && r !== base && b != null && v !== b ? ((v - b) * dir > 0 ? 'better' : 'worse') : '';
-      return `<td class="${cls}">${typeof v === 'number' ? +v.toFixed(2) : esc(v)}</td>`;
+  // ---- races: the scoreboard (env/racebench.mjs short, seeds 1-5) -------------------------------------
+  // Columns: value, label, better direction (+1 higher is better, -1 lower), format. Compared with the first row (d6, in the game).
+  const TRACKS = ['harbor-ring', 'solenne', 'alpine', 'desert'];
+  const RCOLS = [[(r) => r.sls.place, 'avg place', -1, (v) => v.toFixed(2)], [(r) => r.sls.wins, 'wins', 1, String],
+    [(r) => r.sls.mvPasses, 'real maneuver passes', 1, (v) => v.toFixed(2)], [(r) => r.sls.passes, 'all passes', 1, (v) => v.toFixed(2)],
+    [(r) => r.sls.passedBy, 'passed by others', -1, (v) => v.toFixed(2)], [(r) => r.sls.inc, 'incident pts', -1, (v) => v.toFixed(1)],
+    [(r) => r.sls.dmg, 'damage %', -1, (v) => v.toFixed(1)], [(r) => r.sls.offS, 'off-track s', -1, (v) => v.toFixed(1)],
+    ...TRACKS.map((t) => [(r) => r.perTrack?.[t], `place ${t.replace('-ring', '')}`, -1, (v) => v.toFixed(1)])];
+  function drawRaces(s) {
+    const R = s.races ?? [], base = R.find((r) => r.state === 'done');
+    const cell = (r, [f, , dir, fmt]) => {
+      const v = r.state === 'done' ? f(r) : null; if (v == null) return '<td class="dim">–</td>';
+      const b = base && r !== base ? f(base) : null, cls = b != null && v !== b ? ((v - b) * dir > 0 ? 'better' : 'worse') : '';
+      return `<td class="${cls}">${fmt(v)}</td>`;
     };
-    return `<table class="grid"><tr><th>model</th><th>checkpoint</th>${BCOLS.map((c) => `<th>${c[1]}</th>`).join('')}<th></th></tr>` + rows.map((r) =>
-      `<tr class="${r === base ? 'baserow' : ''}"><td><b>${esc(r.model)}</b></td><td class="dim">${r.run ? esc(r.run) + ' ' + snapName(r.snap) : ''}${r.note ? ` <span class="ev">${esc(r.note)}</span>` : ''}</td>${BCOLS.map((c) => cell(r, c)).join('')}<td>${verdict(r, base)}</td></tr>`).join('') + '</table>';
-  }
-  function drawBench(s) {
-    const B = s.benchmarks ?? [], names = [...new Set(B.map((b) => b.bench))].sort().reverse();
-    $('benchBody').innerHTML = names.length ? names.map((n) => {
-      const rows = B.filter((b) => b.bench === n), base = [...rows].reverse().find((r) => r.model === 'spec');
-      return `<h3>${n}</h3><p class="ev">${BENCH_INFO[n] ?? ''} Green / red: better / worse than the baseline.</p><div class="scroll">${benchTable(rows, base)}</div>`;
-    }).join('') : '<p class="ev">No benchmark recorded yet.</p>';
+    $('raceBody').innerHTML = `<table class="grid"><tr><th>driver</th><th>what it is</th>${RCOLS.map((c) => `<th>${c[1]}</th>`).join('')}</tr>` + R.map((r) =>
+      `<tr class="${r === base ? 'baserow' : ''}"><td><b>${esc(r.who)}</b></td><td class="dim">${esc(r.what)}${r.state === 'done' ? '' : ' <span class="ev">· not raced yet</span>'}</td>${RCOLS.map((c) => cell(r, c)).join('')}</tr>`).join('') + '</table>';
   }
 
   // ---- reliability -------------------------------------------------------------------------------------
@@ -216,13 +205,13 @@
     let E = (s.experiments ?? []).filter((e) => !f || `${e.run} ${e.title}`.toLowerCase().includes(f));
     const n = E.length; if (!UI.expAll && !f) E = E.slice(0, 12);
     const best = (e) => { const g = [...e.reliability].filter((x) => x.of).sort((a, b) => b.total / b.of - a.total / a.of)[0]; return g ? `<span class="${rcls(g.total, g.of)}">${g.total}/${g.of}</span> <span class="ev">${snapName(g.snap)}</span>` : '<span class="ev">–</span>'; };
-    const combat = (e) => { const d = e.bench.filter((b) => b.bench === 'duel3'); if (!d.length) return '<span class="ev">–</span>'; const b = [...d].sort((x, y) => y.metrics.gained - x.metrics.gained)[0]; return `+${b.metrics.gained} places · rub ${b.metrics.rubS}s <span class="ev">${snapName(b.snap)}</span>`; };
-    $('exp').innerHTML = '<tr><th>run</th><th>status</th><th>length</th><th>what it tested</th><th>best reliability</th><th>best combat (duel3)</th></tr>' + E.map((e) => {
+    const combat = (e) => { const r = e.races?.at(-1); return r ? `place ${r.sls.place.toFixed(2)} · ${r.sls.wins} wins` : '<span class="ev">–</span>'; };
+    $('exp').innerHTML = '<tr><th>run</th><th>status</th><th>length</th><th>what it tested</th><th>best lap test</th><th>races</th></tr>' + E.map((e) => {
       const open = UI.open.has(e.run);
       const detail = open ? `<tr class="detail"><td colspan="6">
         <div class="trow"><span>from <b>${esc(e.resume ?? 'scratch')}</b></span><span>config <b>${esc(e.config ?? '')}</b></span><span>samples <b>${kfmt(e.samples)}</b></span><span>final reward <b>${e.rew?.toFixed(4) ?? '–'}</b></span>${e.moe ? '<span><b>mixture of experts</b></span>' : ''}</div>
         ${e.reliability.length ? `<div class="chips">${e.reliability.map((g) => `<span class="chip ${rcls(g.total, g.of)}">${snapName(g.snap)} ${g.total}/${g.of} <span class="ev">(${Object.entries(g.seeds).map(([k, v]) => `s${k} ${v[0]}`).join(' · ')}) ${g.laps}-lap${g.ai ? ' · ai' : ''}</span></span>`).join('')}</div>` : '<p class="ev">No reliability results.</p>'}
-        ${e.bench.length ? benchTable(e.bench, null) : ''}</td></tr>` : '';
+        </td></tr>` : '';
       return `<tr data-run="${esc(e.run)}" class="exprow ${open ? 'open' : ''}"><td><b>${esc(e.run)}</b></td><td><span class="st ${e.state}">${e.state}</span></td><td class="dim">${e.state === 'queued' ? '' : `${fmtMin(e.elapsed)}${e.minutes && e.state !== 'done' ? ' / ' + fmtMin(e.minutes) : ''}`}</td>
         <td class="what">${what(e)}</td><td>${best(e)}</td><td>${combat(e)}</td></tr>${detail}`;
     }).join('');
@@ -245,7 +234,7 @@
     if (tab === 'over') drawOverview(s);
     if (tab === 'live') drawLive(s);
     if (tab === 'exp') drawExp(s);
-    if (tab === 'bench') drawBench(s);
+    if (tab === 'bench') drawRaces(s);
     if (tab === 'rel') drawRel(s);
   }
 

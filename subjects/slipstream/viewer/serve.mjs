@@ -36,6 +36,44 @@ const NETS = [
   { key: 'combat', file: 'runs/export/pas1c.json', role: 'Combat network in test (not in the game yet)' },
 ];
 const netCache = {};
+
+// What the viewer shows: the networks in the game and their current challengers. Older experiments stay on disk (runs/,
+// runs/queue.json, runs/completion) and out of the page; add a run here to show it again.
+const CURRENT = ['tt-d6', 'tt-sn4', 'tt-s1a', 'tt-s1b', 'tt-sc1a', 'tt-sc1b', 'tt-sc1c'];
+// Plain descriptions (the queue titles carry the full training recipe), and the one snapshot per run that counts:
+// the copy in the game for d6 and sn4, the end of training for the rest.
+const PLAIN = {
+  'tt-d6': 'Short-track pace driver (in the game)',
+  'tt-sn4': 'Nürburgring pace driver (in the game)',
+  'tt-s1a': 'Pace challenger: d6 trained further on its own practice scenes',
+  'tt-s1b': 'Pace challenger: d6 trained further on race-like scenes (full fields, rolling starts, pit exits)',
+  'tt-sc1a': 'Combat add-on A on top of d6, started from the Nürburgring combat add-on; our tyres a little fresher in practice',
+  'tt-sc1b': 'Combat add-on B: as A with equal tyres in practice, so a pass needs a real move',
+  'tt-sc1c': 'Combat add-on C: as A but started fresh',
+};
+const SNAP = { 'tt-d6': 20, 'tt-sn4': 20 };
+const isCurrent = (name) => CURRENT.some((r) => name === r || name.startsWith(r + '-'));
+// The race scoreboard (env/racebench.mjs, short tracks, seeds 1-5): one row per label, in this order; the first is the
+// baseline (the network in the game). Labels not raced yet show as waiting.
+const RACES = [
+  { label: 'd6-20', run: 'tt-d6', who: 'd6', what: 'In the game: short-track pace driver' },
+  { label: 's1a', run: 'tt-s1a', who: 's1a', what: 'Pace challenger: d6 trained on, same practice' },
+  { label: 's1b', run: 'tt-s1b', who: 's1b', what: 'Pace challenger: d6 trained on, race-like practice' },
+  { label: 'd6-mv', run: 'tt-d6', who: 'd6', what: 'd6 again, counting real maneuver passes' },
+  { label: 'sc1a', run: 'tt-sc1a', who: 'd6 + sc1a', what: 'Combat add-on A (from the Nürburgring one)' },
+  { label: 'sc1b', run: 'tt-sc1b', who: 'd6 + sc1b', what: 'Combat add-on B (A, no tyre advantage in practice)' },
+  { label: 'sc1c', run: 'tt-sc1c', who: 'd6 + sc1c', what: 'Combat add-on C (A, started fresh)' },
+];
+const raceCache = new Map();
+function races() {
+  return RACES.map((r) => {
+    const p = join(RUNS, 'racebench', r.label, 'short-summary.json');
+    if (!existsSync(p)) return { ...r, state: 'waiting' };
+    const m = statSync(p).mtimeMs, hit = raceCache.get(r.label);
+    if (hit?.m !== m) { const j = tryJson(p); if (!j) return { ...r, state: 'waiting' }; raceCache.set(r.label, { m, v: { races: j.races, sls: j.sls, perTrack: Object.fromEntries(Object.entries(j.perTrack ?? {}).map(([t, v]) => [t, v.place])) } }); }
+    return { ...r, state: 'done', when: m, ...raceCache.get(r.label).v };
+  });
+}
 function actorInfo(params) {
   const shapes = {}, blocks = {};
   for (const [k, v] of Object.entries(params)) { shapes[k] = v.shape; const b = k.split('.')[0]; blocks[b] = (blocks[b] ?? 0) + v.shape.reduce((a, x) => a * x, 1); }
@@ -148,12 +186,6 @@ function reliability(res) {
     .sort((a, b) => b.mtime - a.mtime);
 }
 
-// Benchmarks recorded by viewer/bench-add.mjs (runs/benchmarks.jsonl), oldest first.
-function benchmarks() {
-  const p = join(RUNS, 'benchmarks.jsonl');
-  return existsSync(p) ? lines(p).flatMap((l) => { try { const { key, ...r } = JSON.parse(l); return [r]; } catch { return []; } }) : [];
-}
-
 // Everything running now (activity.mjs process scan), with progress from each job's own files: training logs,
 // lap-test progress files, finished race files. The queue titles name the trainings it knows.
 const ACT = watchActivity();
@@ -196,7 +228,7 @@ const tryJson0 = (l) => { try { return JSON.parse(l); } catch { return null; } }
 
 function status() {
   const q = existsSync(join(RUNS, 'queue.json')) ? readJson(join(RUNS, 'queue.json')) : { jobs: [] };
-  const jobs = q.jobs.map((j) => ({ ...j, ...(j.kind === 'train' ? trainStatus(j) : evalStatus(j)) }));
+  const jobs = q.jobs.filter((j) => isCurrent(j.kind === 'train' ? j.run : j.name)).map((j) => ({ ...j, ...(PLAIN[j.run] ? { title: `Train ${j.run} — ${PLAIN[j.run]}` } : {}), ...(j.kind === 'train' ? trainStatus(j) : evalStatus(j)) }));
   // A test still 'queued' while a later job has finished was dropped from its pipeline: skipped, not pending.
   let laterDone = false;
   for (let i = jobs.length - 1; i >= 0; i--) { if (jobs[i].state === 'queued' && laterDone) jobs[i].state = 'skipped'; if (['done', 'stopped'].includes(jobs[i].state)) laterDone = true; }
@@ -205,11 +237,11 @@ function status() {
   const running = jobs.filter((j) => j.kind === 'train' && j.state === 'running');
   const last = [...jobs].reverse().find((j) => j.kind === 'train' && j.state !== 'queued');
   const trainings = running.length ? running : last ? [last] : [];
-  const rel = reliability(results()), bench = benchmarks();
+  const rel = reliability(results()).filter((g) => CURRENT.includes(g.run) && g.snap === (SNAP[g.run] ?? 'final') && ['', '2lap-rng2'].includes(g.variant)), race = races();
   // Experiments: one row per training run, newest first, with its tests attached.
   const experiments = jobs.filter((j) => j.kind === 'train').reverse().map((j) => ({
     run: j.run, title: j.title, state: j.state, minutes: j.minutes, elapsed: j.elapsed, resume: j.resume, config: j.config, moe: j.moe,
-    rew: j.latest?.rew, samples: j.latest?.steps, reliability: rel.filter((g) => g.run === j.run), bench: bench.filter((b) => b.run === j.run),
+    rew: j.latest?.rew, samples: j.latest?.steps, reliability: rel.filter((g) => g.run === j.run), races: race.filter((r) => r.run === j.run && r.state === 'done'),
     tests: jobs.filter((e) => e.kind === 'eval' && e.name.startsWith(j.run + '-')).map((e) => ({ name: e.name, state: e.state }))
   }));
   const strip = ({ curve, result, ...j }) => j;
@@ -218,7 +250,7 @@ function status() {
     active: jobs.filter((j) => j.state === 'running' || j.state === 'queued').map(strip),
     counts: Object.fromEntries(['done', 'stopped', 'skipped', 'running', 'queued'].map((k) => [k, jobs.filter((j) => j.state === k).length])),
     current: cur && { title: cur.title, kind: cur.kind, state: cur.state, progress: cur.progress, etaMin: cur.etaMin, detail: cur.detail },
-    trainings, live: running.length > 0, experiments, reliability: rel, benchmarks: bench, activity: activity(jobs, q.label)
+    trainings, live: running.length > 0, experiments, reliability: rel, races: race, activity: activity(jobs, q.label)
   };
 }
 
