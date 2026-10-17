@@ -12,6 +12,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', 'results', 'str
 const label = process.argv[2], verbose = process.argv.includes('--verbose');
 if (!label) { console.error('usage: shadow-check.mjs <label> [--verbose]'); process.exit(1); }
 
+const byLeft = {}, byH = {};
 let stopN = 0, stopHit = 0, stopNear = 0, placeN = 0, placeHit = 0, placeNear = 0, errors = 0, ms = [];
 const near = (n) => n <= 1;
 for (const f of readdirSync(join(ROOT, label)).filter((x) => x.endsWith('.json'))) {
@@ -29,7 +30,14 @@ for (const f of readdirSync(join(ROOT, label)).filter((x) => x.endsWith('.json')
       if (p === a) stopHit++; else miss.push(`L${S.lap} car${i} ${R.result[i].ai}: pred ${p} real ${a}`);
       if (p === a || (p != null && a != null && near(Math.abs(p - a)))) stopNear++;
     });
-    S.order.forEach((car, k) => { placeN++; const d = Math.abs(k + 1 - finalPlace[car]); if (d === 0) placeHit++; if (near(d)) placeNear++; });
+    const left = R.laps - S.lap, bucket = left <= 3 ? 'last 0-3' : left <= 7 ? 'left 4-7' : 'left 8+';
+    S.order.forEach((car, k) => { placeN++; const d = Math.abs(k + 1 - finalPlace[car]); if (d === 0) placeHit++; if (near(d)) placeNear++;
+      const b = (byLeft[bucket] ??= [0, 0]); b[0]++; if (near(d)) b[1]++; });
+    // Line-crossing time error by horizon (laps ahead of the prediction).
+    S.crossings.forEach((cr, i) => {
+      const rows = R.laps_.filter((r) => r.car === i), first = rows.find((r) => r.t > S.t); if (!first) return;
+      cr.forEach((tp, j) => { const row = rows.find((r) => r.lap === first.lap + j); if (row) (byH[j] ??= []).push(Math.abs(tp - row.t)); });
+    });
   }
   const me = R.shadow[0]?.car;
   console.log(`${f}: ${R.shadow.length} predictions, intercept car ${me} finished P${finalPlace[me]}; pred P at each decision: ${R.shadow.map((S) => (S.order ? S.order.indexOf(S.car) + 1 : 'x')).join(' ')}`);
@@ -37,4 +45,6 @@ for (const f of readdirSync(join(ROOT, label)).filter((x) => x.endsWith('.json')
 }
 const pct = (a, b) => (b ? ((100 * a) / b).toFixed(1) + '%' : '-');
 ms.sort((a, b) => a - b);
+console.log('finish place +-1 by laps left:', Object.entries(byLeft).sort().map(([k, [n, h]]) => `${k} ${pct(h, n)} (${n})`).join(', '));
+console.log('crossing |error| s by horizon (median/p90):', Object.entries(byH).map(([h, e]) => { e.sort((a, b) => a - b); return `h${h} ${e[e.length >> 1].toFixed(1)}/${e[Math.floor(e.length * 0.9)].toFixed(1)}`; }).join('  '));
 console.log(`next stop lap exact ${pct(stopHit, stopN)} (+-1 ${pct(stopNear, stopN)}) of ${stopN}; finish place exact ${pct(placeHit, placeN)} (+-1 ${pct(placeNear, placeN)}); errors ${errors}; projection ms median ${ms[ms.length >> 1] ?? '-'} max ${ms.at(-1) ?? '-'}`);

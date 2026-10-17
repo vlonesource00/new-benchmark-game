@@ -25,6 +25,7 @@ async function work([track, formatId, seedArg, weather, caution, fieldArg, icp])
   const { AI_DRIVERS } = await import('../../../game/core/teams.js');
   const { classProfile } = await import('../../../game/core/classes.js');
   const { setInterceptStrategy } = await import('../src/strategy.js');
+  if (icp === 'v2') await import('../src/strategy2.js');
   setInterceptStrategy(icp);
   const seed = +seedArg, trk = new Track(track), format = FORMATS[formatId], laps = format.laps;
   const ais = FIELDS[fieldArg] ?? fieldArg.split(','), last = ais.includes('apex') ? 'apex' : null, front = ais.filter((a) => a !== last);
@@ -79,10 +80,10 @@ async function work([track, formatId, seedArg, weather, caution, fieldArg, icp])
       const s = e.strategist, logged = s.decide;
       s.decide = (car, lapsLeft, ai, cau) => {
         const plan = logged(car, lapsLeft, ai, cau), w0 = performance.now();
-        let p = null; try { p = model.project(); } catch (err) { p = { error: String(err.stack ?? err).slice(0, 400) }; }
+        let p = null, choice = null; try { p = model.project(); if (cau) choice = model.cautionChoice(i); } catch (err) { p = { error: String(err.stack ?? err).slice(0, 400) }; }
         shadow.push({ car: i, t: r3(race.time), lap: car.race.lap, ms: r3(performance.now() - w0), error: p.error,
           stops: p.cars?.map((k) => k.stops?.map((x) => [x.lap, x.compound, r3(x.litres), x.swap]) ?? []),
-          order: p.order, crossings: p.cars?.map((k) => k.crossings?.map(r3) ?? []) });
+          order: p.order, crossings: p.cars?.map((k) => k.crossings?.map(r3) ?? []), ...(choice ? { choice } : {}) });
         return plan;
       };
     });
@@ -115,7 +116,7 @@ async function work([track, formatId, seedArg, weather, caution, fieldArg, icp])
   const ord = race.order();
   const result = race.cars.map((c, i) => ({ car: i, ai: ids[i], grid: i + 1, place: ord.indexOf(c) + 1, finished: c.race.finishTime !== null, time: r3(c.race.finishTime),
     laps: c.race.finishLaps ?? c.race.lap - 1, best: r3(c.race.bestLap), stops: race.entries[i].strategist.stops, swaps: race.entries[i].strategist.swaps,
-    dq: Boolean(c.race.dq), strategist: race.entries[i].strategist.constructor.name }));
+    dq: Boolean(c.race.dq), strategist: race.entries[i].strategist.constructor.name, ...(race.entries[i].strategist.cautionCalls?.length ? { cautionCalls: race.entries[i].strategist.cautionCalls } : {}) }));
   console.log(JSON.stringify({ track, format: formatId, laps, seed, weather, caution, field: fieldArg, icp, order, finished: race.phase === 'finished',
     wallS: Math.round((performance.now() - t0) / 1000), simS: r3(race.time), result, laps_: lapRows, decisions, stops, ...(shadow.length ? { shadow } : {}) }));
 }

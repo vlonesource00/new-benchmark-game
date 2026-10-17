@@ -4,9 +4,11 @@
 // strategists are only ever queried on copies, the shared road outlook's cache is never touched, nothing on the
 // race or its cars is written.
 import { RoadOutlook } from '../../../game/core/road-outlook.js';
+import { wrap } from '../../../game/engine/sim/math.js';
 import { serviceTime, TANK_LITRES, WEAR_CLIFF, WET_COMPOUNDS } from '../../../game/core/rules.js';
 import { maxWear, wetPace } from '../../../game/core/strategy.js';
 import { classProfile } from '../../../game/core/classes.js';
+import { CAUTION } from '../../../game/core/caution.js';
 
 const STEP = 5;                       // s per extended forecast step (the outlook's own step)
 const wearLoss = (w) => 0.10 * w + 1.2 * Math.max(0, w - WEAR_CLIFF) ** 2;   // the tyre model's grip loss (core/strategy.js)
@@ -23,7 +25,8 @@ export function cloneStrategist(s, env) {
     else if (v instanceof Map) c[k] = new Map(v);
     else if (v && typeof v === 'object' && Object.getPrototypeOf(v) === Object.prototype) c[k] = { ...v };
   }
-  delete c.__tracked; c.memo = null;
+  // __projected: the copy runs inside a projection (a planning strategist must not project again from there).
+  delete c.__tracked; c.memo = null; c.__projected = true;
   if (env) c.env = env;
   return c;
 }
@@ -105,9 +108,10 @@ export class PaceModel {
   constructor(race, tracker) {
     this.race = race; this.tracker = tracker;
     this.ref = race.cal.refLap ?? race.track.length / 50;
-    // A car's lap before it has run a clean one: the class's measured reference lap on this circuit (the game's
+    // A car's lap before it has run a clean one: the class's reference lap on this circuit, scaled to the early race laps
+    // (median 0.95 of it over laps 2-4 in the ds1/shadow-d races; the game's
     // calibration guess, length / 50, is ~15 % fast).
-    this.classLap = (id) => (classProfile(race.track, id)?.lap ?? this.ref) * 1.03;
+    this.classLap = (id) => (classProfile(race.track, id)?.lap ?? this.ref) * 0.955;
     this.fuelK = 0.03;               // s per litre (re-fitted from the logs; STRATEGY-PLAN.md P1)
     this.offset = { soft: -0.016, medium: 0, hard: 0.022 };
   }
@@ -145,6 +149,43 @@ export class FieldModel {
   constructor(race) {
     this.race = race; this.tracker = new FieldTracker(race); this.pace = new PaceModel(race, this.tracker);
     this.laneLoss = null;            // s: lane transit over a racing lap at the same spot (measured from stops)
+    // Where the lap's time goes: the class's speed trace on this circuit, as cumulative time from s = 0.
+    const P = classProfile(race.track, race.classId) ?? classProfile(race.track, 'gt');
+    if (P) { const n = P.v.length, cum = new Float64Array(n + 1); for (let q = 0; q < n; q++) cum[q + 1] = cum[q] + P.bin / Math.max(5, P.v[q]); this.prof = { n, cum }; }
+    const lane = race.lane, line = race.track.finishS ?? 0;
+    // Share of a lap's time from the line to the race's strategy call (Race: 120 m before the pit approach).
+    this.decShare = lane ? this.share(line, wrap(lane.approach - 120, race.track.length)) : 0.88;
+  }
+  /** Share of a racing lap's time from track position a forward to b (0..1). */
+  share(a, b) {
+    const L = this.race.track.length, P = this.prof;
+    if (!P) return wrap(b - a, L) / L;
+    const at = (x) => { const u = (wrap(x, L) / L) * P.n, q = Math.min(P.n - 1, Math.floor(u)); return P.cum[q] + (u - q) * (P.cum[q + 1] - P.cum[q]); };
+    const d = at(b) - at(a), T = P.cum[P.n];
+    return (d < 0 ? d + T : d) / T;
+  }
+  /**
+   * A car with a stop under way or called for this lap: time to its next line crossing along the path it will drive
+   * (track to the entry, lane at the limit, the service, lane to the exit, the brake/launch loss), and the part of
+   * the stop's loss that falls after that crossing (the line sits inside the lane on Harbor Ring).
+   */
+  pitPath(e, c, plan, lapT) {
+    const race = this.race, lane = race.lane, L = race.track.length, line = race.track.finishS ?? 0, p = e.pit, phase = p?.phase ?? 'approach';
+    const dist = (a, b) => wrap(b - a, L), s = wrap(c.s, L), lim = lane.limit, half = 1.65;
+    const repair = plan.repair ?? ((c.damage ?? 0) >= 0.05 ? c.damage : 0);
+    const svc = plan.penalty ? 0 : phase === 'service' ? (p.serviced ? 0.5 : Math.max(0, p.serviceLeft)) : phase === 'release' ? 0.5 : serviceTime(race.cal, plan) + repair * 30;
+    // Segments by forward distance from s: [from, to, timeAtFrom, timeAtTo].
+    const seg = []; let d = 0, t = 0;
+    const go = (to, kind) => { const len = dist(wrap(s + d, L), to); const dt = kind === 'race' ? lapT * this.share(wrap(s + d, L), to) : len / lim; seg.push([d, d + len, t, t + dt]); d += len; t += dt; };
+    if (phase === 'approach') { go(lane.entry, 'race'); t += half; }
+    if (phase === 'approach' || phase === 'lane') go(e.box, 'lane');
+    if (phase !== 'release') t += svc;
+    go(lane.exit, 'lane'); t += half;
+    const dExit = d, tExit = t, dLine = dist(s, line);
+    if (dLine >= dExit) return { toLine: tExit + lapT * this.share(lane.exit, line), carry: 0 };
+    const g = seg.find(([a, b]) => dLine >= a && dLine <= b) ?? seg.at(-1);
+    const toLine = g[2] + (g[3] - g[2]) * (g[1] > g[0] ? (dLine - g[0]) / (g[1] - g[0]) : 1);
+    return { toLine, carry: Math.max(0, tExit - toLine - lapT * this.share(line, lane.exit)) };
   }
   /** Lane transit loss: INTERCEPT's per-track estimate until measured. */
   lane() {
@@ -160,7 +201,7 @@ export class FieldModel {
   stopCost(plan, damage = 0) { return this.lane() + 3.3 + serviceTime(this.race.cal, plan) + (plan.repair ?? (damage >= 0.05 ? damage : 0)) * 30; }
 
   /** Snapshot of every car at its next line crossing, the starting state for a projection. */
-  start() {
+  start(fresh = -1) {
     const race = this.race, now = race.time, until = now + (race.laps + 2) * this.pace.ref * 1.3;
     const weather = new WeatherView(race, until);
     const cars = race.cars.map((c, i) => {
@@ -168,63 +209,228 @@ export class FieldModel {
       const done = r.finishTime !== null || e.retired;
       const comp = c.wheels[0].tyre.compound, wear = maxWear(c);
       const lapT = this.pace.lapTime(fit, comp, wear, c.fuel, weather.wet(now));
-      const frac = Math.min(0.999, Math.max(0, (r.progress - (r.lap - 1) * race.track.length) / race.track.length));
-      const pitNow = e.pit ? (e.pit.phase === 'approach' ? e.pitPlan : null) : e.pitPlan;
-      return { i, done, finish: r.finishTime, lap: r.lap, t: now + (1 - frac) * lapT, compound: comp, wear, fuel: c.fuel, stint: e.strategist.stintLaps,
+      // Where the car is in its lap (share of a racing lap's time from the line) and its next crossing.
+      const line = race.track.finishS ?? 0, held = r.progress <= 0 ? 0 : this.share(line, c.s);
+      // `fresh`: the car whose call is being made right now (its decidedLap is already set).
+      let plan = e.pit || (e.pitPlan && r.finishTime === null && i !== fresh) ? e.pitPlan : null, toLine = lapT * (1 - held);
+      if (r.progress <= 0) toLine = lapT * this.share(c.s, line) + lapT;
+      if (plan) { const P = this.pitPath(e, c, plan, lapT); toLine = P.toLine; plan = { ...plan, carry: P.carry, applied: Boolean(e.pit?.serviced) }; }
+      return { i, done, finish: r.finishTime, lap: r.lap, frac: held, decided: e.decidedLap === r.lap && i !== fresh, t: now + toLine, compound: comp, wear, fuel: c.fuel, stint: e.strategist.stintLaps,
         stops: e.strategist.stops, swaps: e.strategist.swaps, fit, fuelPerLap: T.fuelPerLap ?? e.strategist.fuelPerLap,
-        wearRate: (id) => T.wearPerLap[id] ?? e.strategist.wearPerLap?.[id] ?? 0.05, pitNow, inPit: Boolean(e.pit && e.pit.phase !== 'approach'),
+        wearRate: (id) => T.wearPerLap[id] ?? e.strategist.wearPerLap?.[id] ?? 0.05, pitNow: plan,
         strat: cloneStrategist(e.strategist), damage: c.damage ?? 0, crossings: [], stopsAt: [] };
     });
     return { now, weather, cars };
   }
 
-  project(override = () => undefined) {
-    const race = this.race, N = race.laps, S = this.start(), cars = S.cars;
-    // Each car's crossings to its last lap; the flag falls when the first car completes lap N.
+  project(override = () => undefined, { fresh = -1 } = {}) {
+    const race = this.race, N = race.laps, S = this.start(fresh), cars = S.cars, fd = this.decShare;
+    const C = this.cautionState(S.now);
+    if (C) this.seedCaution(S, C, override);
+    // Each car lap by lap to lap N: the call at its decision point (on the state it will have there), the line
+    // crossing, then the stop (in-lap + out-lap loss) and the next lap on the state after it.
     for (const k of cars) {
       if (k.done) continue;
-      let t = k.t;
-      for (let lap = k.lap; lap <= N + 1; lap++) {
-        // the stop at the end of this lap: decided already (this lap), or asked for
-        let plan;
-        if (lap === k.lap && (k.pitNow || k.inPit)) plan = k.pitNow ?? { litres: 0, tyres: false, swap: false, compound: k.compound, inProgress: true };
-        else if (lap < N) {
-          const o = override(k.i, lap, k);
+      let t = k.seeded ? k.crossings.at(-1) : k.t, pending = null, stopLap = false;
+      // The copy learns from each projected lap as the real one does (Race.lapComplete -> observeLap): pace,
+      // fade, wear and fuel rates and the stint mark. A seeded car only resets its mark (caution laps teach nothing).
+      const learn = (lap, lapT, clean) => { try { k.strat.observeLap(this.stub(race.cars[k.i], k, lap, lapT), clean); } catch { /* copy state only */ } };
+      if (k.seeded) learn(k.lapNext - 1, null, false);
+      for (let lap = k.seeded ? k.lapNext : k.lap; lap <= N; lap++) {
+        const cur = !k.seeded && lap === k.lap, rate = k.wearRate(k.compound);
+        if (!cur) {
+          let add = 0;
+          if (pending) {
+            const plan = pending;
+            // A stop already under way has its loss up to the line in that crossing: only the carry is left.
+            add = plan.carry ?? this.stopCost(plan, k.damage); k.damage = 0;
+            if (!plan.applied && !plan.penalty) {
+              if (plan.tyres) { k.compound = plan.compound; k.wear = 0; }
+              k.fuel = Math.min(TANK_LITRES, k.fuel + (plan.litres ?? 0)); k.stops += 1; if (plan.swap) k.swaps += 1; k.stint = 0;
+              k.strat.stopDone?.(plan);
+            }
+            k.stopsAt.push({ lap: lap - 1, compound: plan.tyres ? plan.compound : null, litres: plan.litres ?? 0, swap: Boolean(plan.swap) });
+            pending = null; stopLap = true;
+          }
+          const r2 = k.wearRate(k.compound), wet = S.weather.wet(t, t + this.pace.ref);
+          t += this.pace.lapTime(k.fit, k.compound, k.wear + r2 / 2, Math.max(0, k.fuel - k.fuelPerLap / 2), wet) + add;
+        }
+        // The call for the end of this lap.
+        let plan = null;
+        if (cur && (k.pitNow || k.decided)) plan = k.pitNow;
+        else {
+          const held = cur ? k.frac : 0, ahead = Math.max(0, fd - held), lapT = cur ? k.t - S.now : t - k.crossings.at(-1);
+          const at = { ...k, wear: Math.min(1, k.wear + k.wearRate(k.compound) * ahead), fuel: Math.max(0, k.fuel - k.fuelPerLap * ahead) };
+          const o = override(k.i, lap, at);
           if (o !== undefined) plan = o;
           else {
-            const env = S.weather.envAt(t - 5), car = this.stub(race.cars[k.i], k, lap);
-            k.strat.env = env;
+            const tD = cur ? S.now + (k.t - S.now) * ahead / Math.max(1e-3, 1 - held) : t - lapT * (1 - fd);
+            const car = this.stub(race.cars[k.i], at, lap);
+            k.strat.env = S.weather.envAt(tD); k.strat.stintLaps = k.stint;
             try {
               plan = k.strat.decide(car, N - lap + 1, true, false);
               // The race re-plans the service at the box (Race.beginService): that plan is what the car gets.
-              if (plan && !plan.penalty) plan = { ...plan, ...k.strat.servicePlan(car, Math.max(0, N - lap)) };
+              if (plan && !plan.penalty && lap < N) plan = { ...plan, ...k.strat.servicePlan(car, Math.max(0, N - lap)) };
+              if (lap >= N) plan = null;
             } catch { plan = null; }
           }
         }
+        // To the line: the rest of this lap's wear and fuel.
+        const rest = cur ? 1 - k.frac : 1;
+        k.wear = Math.min(1, k.wear + rate * rest); k.fuel = Math.max(0, k.fuel - k.fuelPerLap * rest); k.stint += 1;
+        const prevT = k.crossings.at(-1) ?? (cur ? race.cars[k.i].race.lapStart : null);
         k.crossings.push(t);
-        if (lap >= N) break;
-        // the next lap: stop loss (in- and out-lap together), then the lap itself on the state after the stop
-        let add = 0;
-        if (plan) {
-          add += plan.inProgress ? 0 : this.stopCost(plan, k.damage); k.damage = 0;
-          if (plan.tyres) { k.compound = plan.compound; k.wear = 0; k.stint = 0; }
-          k.fuel = Math.min(TANK_LITRES, k.fuel + (plan.litres ?? 0)); k.stops += 1; if (plan.swap) k.swaps += 1;
-          k.stopsAt.push({ lap, compound: plan.tyres ? plan.compound : null, litres: plan.litres ?? 0, swap: Boolean(plan.swap) });
-          if (!plan.inProgress) { k.strat.stopDone?.(plan); }
-        }
-        const wet = S.weather.wet(t, t + this.pace.ref);
-        const lapT = this.pace.lapTime(k.fit, k.compound, k.wear + k.wearRate(k.compound) / 2, Math.max(0, k.fuel - k.fuelPerLap / 2), wet);
-        k.wear = Math.min(1, k.wear + k.wearRate(k.compound)); k.fuel = Math.max(0, k.fuel - k.fuelPerLap); k.stint += 1;
-        k.strat.stintLaps = k.stint;
-        t += lapT + add;
+        learn(lap, prevT == null ? null : t - prevT, !stopLap && !(cur && k.pitNow?.applied) && !plan);
+        pending = plan; stopLap = false;
       }
     }
+    this.traffic(S);
     return this.classify(S);
   }
+  /**
+   * The caution in force now, if any: when racing resumes (race control's own rules, core/caution.js), the field's
+   * pace until then, and whether it is a safety car (the field queues up) or a full course yellow (gaps hold).
+   */
+  cautionState(now) {
+    const race = this.race, rc = race.caution; if (!rc?.active || race.formation) return null;
+    const L = race.track.length, lane = race.lane, line = race.track.finishS ?? 0, t = now - rc.since;
+    const sc = rc.phase === 'sc' || rc.phase === 'in' || Boolean(rc.escalate);
+    // Field pace: the safety car's lap (Harbor's lap 2 under SC: ~100 s = 27 m/s); FCY at the 80 km/h limit, bends below it.
+    const v = sc ? 27 : 20;
+    let tGreen;
+    if (rc.phase === 'ending') tGreen = now + Math.max(0, CAUTION.ending - t);
+    else if (!sc) tGreen = now + Math.max(0, CAUTION.fcyMin - t) + CAUTION.clearFor + CAUTION.ending + 2;
+    else if (rc.phase === 'in' && rc.released) {
+      const front = Math.max(...(rc.queue ?? []).map((id) => race.cars[id].race.progress), -Infinity);
+      tGreen = now + (Number.isFinite(front) ? Math.max(0, rc.restartAt - front) : 0) / v;
+    } else {
+      // SC in once the queue has formed (at least 25 s out), then the leader runs to the restart point behind it.
+      const restartS = lane.d(lane.entry, line) <= 700 ? line : wrap(lane.entry + 400, L), leader = race.order()[0];
+      const tIn = now + (rc.phase === 'in' ? 0 : Math.max(rc.phase === 'sc' ? 25 - t : 25, rc.formed ? 0 : 30, 0) + (rc.phase === 'fcy' ? 10 : 0));
+      let d = lane.d(wrap(leader.s + v * (tIn - now), L), restartS); if (d < 150) d += L;
+      tGreen = tIn + d / v;
+    }
+    return { sc, v, tGreen, open: rc.pitsOpen, kind: sc ? 'sc' : 'fcy' };
+  }
+  /**
+   * Every running car through the caution to its first crossing after the green flag: its strategy call at the next
+   * decision point before the green (asked with the caution flag, as the race asks), a stop's cost at caution pace
+   * (lane at the limit against the field's pace, plus service), and the restart order. Under a safety car the field
+   * closes up 12 m apart behind the leader in order of progress, stopped cars rejoining where their loss puts them;
+   * under a yellow, gaps hold. Wear runs at 0.3x and fuel at 0.9x at caution pace (Harbor s1 SC laps).
+   */
+  seedCaution(S, C, override) {
+    const race = this.race, L = race.track.length, lane = race.lane, line = race.track.finishS ?? 0, N = race.laps;
+    const now = S.now, span = Math.max(0, C.tGreen - now), winS = wrap(lane.approach - 120, L), run = [];
+    for (const k of S.cars) {
+      if (k.done) continue;
+      const c = race.cars[k.i], P = c.race.progress; if (P <= 0) continue;
+      const rate = k.wearRate(k.compound);
+      let loss = 0, plan = null;
+      if (k.pitNow) { plan = k.pitNow; loss = plan.applied ? 0 : serviceTime(race.cal, plan) + (plan.repair ?? (k.damage >= 0.05 ? k.damage : 0)) * 30 + 3.3; }
+      else {
+        // The next call: this lap's window unless already asked (pits open) or passed; then next lap's.
+        const dW = lane.d(wrap(c.s, L), winS), winLap = k.decided || k.frac >= this.decShare ? k.lap + 1 : k.lap;
+        const dist = k.decided && dW < L / 2 ? dW + L : dW, tW = now + dist / C.v;
+        if (tW < C.tGreen && winLap < N && (C.open || tW - now > CAUTION.scPits)) {
+          const at = { ...k, wear: Math.min(1, k.wear + rate * 0.3 * dist / L), fuel: Math.max(0, k.fuel - k.fuelPerLap * 0.9 * dist / L) };
+          const o = override(k.i, winLap, at, C);
+          if (o !== undefined) plan = o;
+          else {
+            const car = this.stub(c, at, winLap);
+            k.strat.env = S.weather.envAt(tW); k.strat.stintLaps = k.stint;
+            try {
+              plan = k.strat.decide(car, N - winLap + 1, true, C.kind);
+              if (plan && !plan.penalty) plan = { ...plan, ...k.strat.servicePlan(car, Math.max(0, N - winLap)) };
+            } catch { plan = null; }
+          }
+          if (plan) {
+            loss = serviceTime(race.cal, plan) + (plan.repair ?? (k.damage >= 0.05 ? k.damage : 0)) * 30 + 3.3 + Math.max(0, lane.length / lane.limit - lane.length / C.v);
+            k.stopsAt.push({ lap: winLap, compound: plan.tyres ? plan.compound : null, litres: plan.litres ?? 0, swap: Boolean(plan.swap), caution: C.kind });
+          }
+        }
+      }
+      if (plan && !plan.applied && !plan.penalty) {
+        if (plan.tyres) { k.compound = plan.compound; k.wear = 0; }
+        k.fuel = Math.min(TANK_LITRES, k.fuel + (plan.litres ?? 0)); k.stops += 1; if (plan.swap) k.swaps += 1; k.stint = 0;
+        k.strat.stopDone?.(plan); k.damage = 0;
+      }
+      run.push({ k, P, V: P + C.v * span - C.v * loss });
+    }
+    // Progress at the green flag.
+    if (C.sc) {
+      run.sort((a, b) => b.V - a.V);
+      const head = run[0]?.V ?? 0;
+      run.forEach((x, r) => { const down = Math.floor((head - x.V) / L); x.G = Math.min(head - r * 12 - down * L, x.V + 11 * span); });
+    } else run.forEach((x) => { x.G = x.V; });
+    for (const x of run) {
+      const k = x.k, rate = k.wearRate(k.compound), G = Math.max(x.P, x.G);
+      for (let m = Math.floor(x.P / L) + 1; m * L <= G; m++) { k.crossings.push(now + (span * (m * L - x.P)) / Math.max(1e-6, G - x.P)); k.stint += 1; }
+      const lapT = this.pace.lapTime(k.fit, k.compound, k.wear, k.fuel, S.weather.wet(C.tGreen)), sG = wrap(line + G, L);
+      k.crossings.push(C.tGreen + lapT * this.share(sG, line)); k.stint += 1;
+      const done = (G - x.P) / L, rest = (Math.floor(G / L) + 1) - G / L;
+      k.wear = Math.min(1, k.wear + rate * (0.3 * done + rest)); k.fuel = Math.max(0, k.fuel - k.fuelPerLap * (0.9 * done + rest));
+      k.seeded = true; k.lapNext = k.lap + k.crossings.length; k.yellowN = k.crossings.length;
+    }
+  }
+  /**
+   * Pit now under the caution, or stay out? Projects the race both ways for car i (its next call before the green:
+   * a stop with its own strategist's service plan on fresh tyres, against no stop) and compares the finishing place,
+   * then the time. Null when there is no caution or no call left before the green.
+   */
+  cautionChoice(i) {
+    const C = this.cautionState(this.race.time); if (!C) return null;
+    let asked = false;
+    const as = (pit) => this.project((j, lap, at, c) => {
+      if (j !== i || !c) return undefined;
+      asked = true; if (!pit) return null;
+      const car = this.stub(this.race.cars[i], at, lap), svc = at.strat.servicePlan(car, Math.max(0, this.race.laps - lap));
+      return { ...svc, tyres: true, compound: svc.tyres ? svc.compound : at.compound };
+    }, { fresh: i });
+    const a = as(true), b = as(false); if (!asked) return null;
+    const pa = a.cars[i], pb = b.cars[i], gain = pb.place - pa.place, dt = pb.laps === pa.laps ? pb.time - pa.time : 0;
+    return { kind: C.kind, tGreen: C.tGreen, pit: { place: pa.place, time: pa.time }, stay: { place: pb.place, time: pb.time }, gain, dt, worth: gain > 0 || (gain === 0 && dt > 1) };
+  }
   /** Car-shaped view of a projected state for a strategist copy's decide(). */
-  stub(car, k, lap) {
-    const wheels = car.wheels.map((w) => Object.assign(Object.create(w), { tyre: Object.assign(Object.create(w.tyre), { compound: k.compound, wear: k.wear }) }));
-    return Object.assign(Object.create(car), { fuel: k.fuel, wheels, race: Object.assign(Object.create(car.race), { lap }) });
+  stub(car, k, lap, lastLap) {
+    // Each wheel keeps the car's real wear balance, scaled to the projected worst tyre (per-wheel learners difference it).
+    const top = maxWear(car);
+    const wheels = car.wheels.map((w) => Object.assign(Object.create(w), { tyre: Object.assign(Object.create(w.tyre), { compound: k.compound, wear: top > 0.01 ? k.wear * w.tyre.wear / top : k.wear }) }));
+    const race = Object.assign(Object.create(car.race), { lap }); if (lastLap !== undefined) race.lastLap = lastLap;
+    return Object.assign(Object.create(car), { fuel: k.fuel, wheels, race });
+  }
+  /**
+   * Traffic: the projection runs each car alone, so a faster car would drive through the field. Lap by lap, in the
+   * order at the previous line, a car that closes to within GAP of the car ahead passes only with a lap-pace edge of
+   * PASS_EDGE (and pays PASS_COST per pass); otherwise it is held GAP behind. Time lost stays lost. Laps under the
+   * caution (already queued) and the in/out laps of a stop (the pit lane bypasses the queue) are left alone.
+   */
+  traffic(S) {
+    const GAP = 0.4, PASS_EDGE = 0.6, PASS_COST = 0.5;
+    const live = S.cars.filter((k) => !k.done && k.crossings.length > 1);
+    const raw = new Map(live.map((k) => [k, [...k.crossings]]));
+    const free = new Map(live.map((k) => [k, new Set([...k.stopsAt.flatMap((s) => [s.lap, s.lap + 1]), ...Array.from({ length: (k.yellowN ?? 0) + 1 }, (_, j) => k.lap + j)])]));
+    const N = this.race.laps, first = Math.min(...live.map((k) => k.lap));
+    for (let L = first + 1; L <= N; L++) {
+      const at = live.filter((k) => L - k.lap >= 1 && L - k.lap < k.crossings.length)
+        .sort((a, b) => a.crossings[L - 1 - a.lap] - b.crossings[L - 1 - b.lap]);
+      const placed = [];
+      for (const k of at) {
+        const j = L - k.lap, R = raw.get(k), lapT = R[j] - R[j - 1];
+        let t = k.crossings[j - 1] + lapT;
+        const off = free.get(k).has(L);
+        if (!off) {
+          for (let p = placed.length - 1; p >= 0; p--) {
+            const A = placed[p];
+            if (A.off) continue;              // in the pit lane (or the caution queue): passed for free
+            if (t >= A.t + GAP) break;
+            if (A.lapT - lapT >= PASS_EDGE) { t = Math.max(t, A.t - GAP) + PASS_COST; continue; }
+            t = A.t + GAP; break;
+          }
+        }
+        k.crossings[j] = t; placed.push({ t, lapT, off }); placed.sort((a, b) => a.t - b.t);
+      }
+    }
   }
   /** Finishing order: the flag falls at the first projected completion of lap N; each car finishes at its next crossing. */
   classify(S) {
