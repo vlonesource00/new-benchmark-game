@@ -5,6 +5,7 @@ import { InterceptStrategist, registerInterceptStrategy } from './strategy.js';
 import { FieldModel } from './race-model.js';
 
 const models = new WeakMap();
+const MARGIN = 2;                    // places a caution call must gain to overrule v1
 /** One projector per race, shared by every v2 car in it (built on the first call). */
 export function fieldModel(race) {
   let m = models.get(race);
@@ -34,8 +35,12 @@ export class InterceptStrategist2 extends InterceptStrategist {
     let choice = null;
     try { choice = fieldModel(this.race).cautionChoice(this.index); } catch { choice = null; }
     if (!choice) return base;
-    this.cautionCalls.push({ lap: car.race.lap, base: Boolean(base), ...choice });
-    const tag = `${choice.kind.toUpperCase()} ${choice.worth ? 'PIT' : 'STAY'} P${choice.pit.place}/P${choice.stay.place}`;
+    // Overrule v1 only on a clear margin: finishing places projected from here are within one place well under
+    // nine times in ten (shadow-check), so a one-place edge is noise. Agreeing with v1 needs no margin.
+    const pit = Boolean(base) === choice.worth ? choice.worth : choice.worth ? choice.gain >= MARGIN : -choice.gain >= MARGIN ? false : Boolean(base);
+    this.cautionCalls.push({ lap: car.race.lap, base: Boolean(base), ...choice, pit_: pit });
+    const tag = `${choice.kind.toUpperCase()} ${pit ? 'PIT' : 'STAY'}${pit !== choice.worth ? ' (HOLD)' : ''} P${choice.pit.place}/P${choice.stay.place}`;
+    if (pit !== choice.worth) { this.reason = base ? `${this.reason} · ${tag}` : tag; return base; }
     if (choice.worth) {
       const plan = base ?? { ...this.servicePlan(car, Math.max(0, lapsLeft - 1)), tyres: true };
       if (!plan.compound) plan.compound = car.wheels[0].tyre.compound;
