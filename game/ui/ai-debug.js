@@ -8,6 +8,10 @@ import { lensModel, toneColor } from './lens-model.js';
 import { AI_DRIVERS } from '../core/teams.js';
 
 const W = 300, H = 452, TRACE = 12; // seconds of speed trace
+// One docked panel, one view at a time (B opens it, V or a click picks the tab): the car's telemetry, the AI's
+// mind (intent, options, controller), its radar and its event log. Tabs an AI has nothing for are hidden.
+const TABS = [['car', 'CAR'], ['mind', 'MIND'], ['radar', 'RADAR'], ['log', 'LOG']];
+const TAB_KEY = 'aidebug.tab';
 const kmh = (v) => Math.round(v * 3.6);
 const clamp01 = (x) => Math.max(0, Math.min(1, x || 0));
 
@@ -21,24 +25,48 @@ export class AiDebugPanel {
     this.el = document.createElement('div');
     this.el.className = 'aidebug';
     this.el.hidden = true;
-    this.el.innerHTML = '<div class="dh"></div><canvas></canvas><div class="dchips"></div><div class="dfoot">B close · Tab next car</div>';
-    [this.head, this.canvas, this.chips] = this.el.children;
+    this.el.innerHTML = '<div class="dh"></div><div class="dtabs"></div>'
+      + '<div class="dpane" data-tab="car"><canvas></canvas><div class="dchips"></div></div>'
+      + '<div class="dpane aimind" data-tab="mind"><div class="mh"></div><canvas></canvas><div class="mb"></div></div>'
+      + '<div class="dpane aimind" data-tab="radar"><div class="mh"></div><canvas class="radar"></canvas></div>'
+      + '<div class="dpane aimind" data-tab="log"><div class="mh"></div><div class="mb"></div></div>'
+      + '<div class="dfoot">B close · V next tab · Tab next car</div>';
+    const q = (sel) => this.el.querySelector(sel);
+    this.head = q('.dh'); this.tabBar = q('.dtabs');
+    this.panes = Object.fromEntries([...this.el.querySelectorAll('.dpane')].map((x) => [x.dataset.tab, x]));
+    this.canvas = q('[data-tab=car] canvas'); this.chips = q('.dchips');
     this.canvas.width = W * 2; this.canvas.height = H * 2;
     this.ctx = this.canvas.getContext('2d'); this.ctx.scale(2, 2);
     this.trace = []; this.gg = []; this.focus = null;
-    parent.append(this.el);
-    // Architecture panel: what this AI says it is thinking, in its own terms.
-    this.mind = document.createElement('div');
-    this.mind.className = 'aimind'; this.mind.hidden = true;
-    this.mind.innerHTML = '<div class="mh"></div><canvas></canvas><canvas class="radar" hidden></canvas><div class="mb"></div>';
-    [this.mindHead, this.timeline, this.radarCv, this.mindBody] = this.mind.children;
+    // What this AI says it is thinking, in its own terms (mind, radar and log tabs).
+    this.mind = this.panes.mind;
+    this.mindHead = q('[data-tab=mind] .mh'); this.timeline = q('[data-tab=mind] canvas'); this.mindBody = q('[data-tab=mind] .mb');
+    this.radarHead = q('[data-tab=radar] .mh'); this.radarCv = q('[data-tab=radar] canvas');
+    this.logHead = q('[data-tab=log] .mh'); this.logBody = q('[data-tab=log] .mb');
     this.radarCv.width = 560; this.radarCv.height = 420;
     this.timeline.width = 560; this.timeline.height = 64;
     this.intents = []; this.model = null; this.tagName = ''; this.mindAt = 0;
-    parent.append(this.mind);
+    this.tab = 'car'; try { this.tab = localStorage.getItem(TAB_KEY) || 'car'; } catch { /* no storage */ }
+    this.avail = ['car'];
+    this.tabBar.addEventListener('pointerdown', (ev) => { const b = ev.target.closest('[data-tab]'); if (b) { ev.preventDefault(); this.setTab(b.dataset.tab); } });
+    parent.append(this.el);
+    this.showTabs();
   }
   get open() { return !this.el.hidden; }
-  toggle(on = !this.open) { this.el.hidden = !on; if (!on) this.mind.hidden = true; return on; }
+  toggle(on = !this.open) { this.el.hidden = !on; return on; }
+  /** Next tab (V), or a named one; remembered for the next race. */
+  setTab(id = null) {
+    const a = this.avail;
+    this.tab = id ?? a[(a.indexOf(this.shown) + 1) % a.length];
+    try { localStorage.setItem(TAB_KEY, this.tab); } catch { /* no storage */ }
+    this.showTabs();
+  }
+  showTabs() {
+    const shown = this.avail.includes(this.tab) ? this.tab : 'car';
+    this.tabBar.innerHTML = TABS.filter(([id]) => this.avail.includes(id)).map(([id, name]) => `<button data-tab="${id}" class="${id === shown ? 'on' : ''}">${name}</button>`).join('');
+    for (const [id, pane] of Object.entries(this.panes)) pane.hidden = id !== shown;
+    this.shown = shown;
+  }
 
   update(race, focusId, teamsById) {
     if (!this.open || !race) return;
@@ -89,7 +117,8 @@ export class AiDebugPanel {
       const now = performance.now();
       if (now - this.mindAt > 100) { this.mindAt = now; this.drawMind(race, m, t); }
     }
-    this.mind.hidden = !this.model;
+    const avail = ['car', ...(this.model ? ['mind'] : []), ...(this.model?.radar ? ['radar'] : []), ...(this.model?.log?.length ? ['log'] : [])];
+    if (avail.join() !== this.avail.join()) { this.avail = avail; this.showTabs(); }
   }
 
   drawMind(race, m, t) {
@@ -99,7 +128,9 @@ export class AiDebugPanel {
     const f = m.focus, fe = f && f.index >= 0 ? race.entries[f.index] : null;
     const fwd = fe ? (race.cars[f.index].race?.progress ?? 0) - (race.cars[this.focus].race?.progress ?? 0) : 0;
     const word = { attack: 'ATTACKING', follow: 'CHASING', defend: 'COVERING', alongside: 'SIDE BY SIDE WITH' }[f?.kind] ?? 'WATCHING';
-    this.mindHead.innerHTML = `<small>AI MIND · ${esc(this.tagName)}</small><p>${esc(m.theme?.mind ?? '')}</p>`
+    const small = (what) => `<small>${what} · ${esc(this.tagName)}</small>`;
+    this.radarHead.innerHTML = small('RADAR'); this.logHead.innerHTML = small('RECENT EVENTS');
+    this.mindHead.innerHTML = `${small('AI MIND')}<p>${esc(m.theme?.mind ?? '')}</p>`
       + `<div class="mi"><b>${esc(String(m.intent ?? '—').toUpperCase())}</b>${m.sub ? `<span>${esc(m.sub)}</span>` : ''}</div>`
       + (fe ? `<div class="mf${f.declared ? '' : ' inf'}" style="--fc:${toneColor(f.kind)}">${word} <b>${esc(fe.team.short)}</b> ${fwd >= 0 ? '+' : ''}${fwd.toFixed(0)} m${f.declared ? '' : ' · inferred'}${m.side ? ` · side ${m.side > 0 ? '+' : '−'}` : ''}</div>` : '<div class="mf inf">FREE AIR</div>')
       + (m.tags?.length ? `<div class="mt">${m.tags.map((x) => `<i>${esc(x)}</i>`).join('')}</div>` : '');
@@ -128,9 +159,9 @@ export class AiDebugPanel {
       }).join('')}</div>`);
     }
     if (m.gauges?.length) parts.push(`<h6>INSIDE THE CONTROLLER</h6><div class="mg">${m.gauges.map((x) => `<div><span>${esc(x.label)}</span><i><b style="width:${(x.value * 100).toFixed(0)}%;${x.color ? `background:${x.color}` : ''}"></b></i><em>${esc(x.text ?? '')}</em></div>`).join('')}</div>`);
-    if (m.log?.length) parts.push(`<h6>RECENT EVENTS</h6><div class="ml">${m.log.map((x) => `<div>${esc(x)}</div>`).join('')}</div>`);
     if (m.counters?.length) parts.push(`<div class="mn">${m.counters.map((x) => `<span><small>${esc(x.label)}</small>${esc(String(x.value))}</span>`).join('')}</div>`);
     this.mindBody.innerHTML = parts.join('');
+    this.logBody.innerHTML = m.log?.length ? `<div class="ml">${m.log.map((x) => `<div>${esc(x)}</div>`).join('')}</div>` : '';
   }
 
   /**
@@ -140,7 +171,6 @@ export class AiDebugPanel {
    */
   drawRadar(race, m) {
     const cv = this.radarCv, r = m.radar;
-    cv.hidden = !r;
     if (!r) return;
     const ahead = (r.rivals ?? []).reduce((m, v) => Math.max(m, v.d), 0), behind = (r.rivals ?? []).reduce((m, v) => Math.min(m, v.d), 0);
     const dMax = Math.max(35, Math.min(90, ahead * 1.3 + 12)), dMin = -Math.max(12, Math.min(30, -behind * 1.2 + 6));

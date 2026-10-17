@@ -577,6 +577,7 @@ input.on((action) => {
     const next = MODE_ORDER[(MODE_ORDER.indexOf(car.hybrid.playerMode ?? 'balanced') + 1) % MODE_ORDER.length];
     car.hybrid.playerMode = next; toast(`Hybrid deploy · ${DEPLOY_MODES[next].label}`, 1400); return;
   }
+  if (action === 'aiDebugTab') { if (aiDebug.open) aiDebug.setTab(); return; }
   if (action === 'aiDebug') { const on = aiDebug.toggle(); if (seats) seats.wantDebug = on; aiDebug.update(race, focusId, teamsById); return; }
   if (action === 'mute') { toast(audio.toggle() ? 'Sound on' : 'Sound muted', 1200); return; }
   // Race director: Y sends the safety car out (FCY where the race runs FCY only), U a full course yellow.

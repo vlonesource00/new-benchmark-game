@@ -357,7 +357,7 @@ body.replaying #replay-bug { display: flex; animation: fade-in .3s ease both; }
 @keyframes rp-blink { 50% { opacity: .2; } }
 
 /* AI debugger (B) */
-.aidebug { position: absolute; right: 18px; top: 200px; width: 324px; background: var(--glass-hi); border-left: 3px solid var(--team, var(--accent)); padding: 10px 12px; font-size: 12px; pointer-events: none; }
+.aidebug { position: absolute; right: 18px; top: 200px; width: 324px; background: rgba(9, 11, 15, .94); backdrop-filter: blur(8px); z-index: 5; border-left: 3px solid var(--team, var(--accent)); padding: 10px 12px; font-size: 12px; pointer-events: none; }
 .aidebug .dh { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 2px 8px; }
 .aidebug .dh b { font-size: 16px; font-weight: 900; font-style: italic; }
 .aidebug .dh span { color: var(--dim); letter-spacing: .12em; }
@@ -370,7 +370,13 @@ body.replaying #replay-bug { display: flex; animation: fade-in .3s ease both; }
 .aidebug .dchips small { color: var(--faint); margin-right: 5px; font-family: inherit; letter-spacing: .08em; text-transform: uppercase; font-size: 9px; }
 .aidebug .dchips .hi { color: #ffd166; } .aidebug .dchips .warn { color: #ffb02e; } .aidebug .dchips .bad { color: var(--bad); }
 /* AI MIND: the architecture's own view, beside the debugger */
-.aimind { position: absolute; right: 360px; top: 200px; width: 300px; background: var(--glass-hi); border-left: 3px solid var(--arch, var(--accent)); padding: 10px 12px; font-size: 12px; pointer-events: none; }
+.aidebug .dtabs { display: flex; gap: 2px; margin-top: 8px; border-bottom: 1px solid var(--line); pointer-events: auto; }
+.aidebug .dtabs button { all: unset; cursor: pointer; padding: 4px 10px 3px; font-size: 10px; font-weight: 800; letter-spacing: .16em; color: var(--faint); border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.aidebug .dtabs button:hover { color: var(--dim); }
+.aidebug .dtabs button.on { color: #fff; border-bottom-color: var(--team, var(--accent)); }
+.aidebug .dpane[hidden] { display: none; }
+.aimind { padding-top: 8px; }
+.aimind .ml { max-height: 420px; overflow: hidden; }
 .aimind .mh small { display: block; color: var(--arch); letter-spacing: .16em; font-weight: 800; font-size: 10px; }
 .aimind .mh p { margin: 2px 0 6px; color: var(--dim); font-size: 11px; line-height: 1.35; }
 .aimind .mi b { display: block; font-size: 24px; font-weight: 900; font-style: italic; color: var(--tone); line-height: 1.05; }
@@ -381,7 +387,7 @@ body.replaying #replay-bug { display: flex; animation: fade-in .3s ease both; }
 .aimind .mt { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 5px; }
 .aimind .mt i { font-style: normal; font-size: 10px; letter-spacing: .1em; padding: 1px 6px; border: 1px solid var(--tone); color: var(--tone); text-transform: uppercase; }
 .aimind canvas { display: block; width: 280px; height: 32px; margin-top: 8px; }
-.aimind canvas.radar { height: 210px; }
+.aimind canvas.radar { width: 300px; height: 225px; }
 .aimind .ml > div { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--dim); line-height: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .aimind h6 { margin: 8px 0 3px; font-size: 9px; letter-spacing: .16em; color: var(--faint); font-weight: 700; }
 .aimind .mc > div, .aimind .mg > div { display: grid; grid-template-columns: 82px 1fr auto; align-items: center; gap: 6px; font-family: 'JetBrains Mono', monospace; font-size: 10px; height: 15px; color: var(--dim); }
