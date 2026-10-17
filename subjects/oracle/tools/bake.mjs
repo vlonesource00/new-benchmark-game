@@ -17,7 +17,10 @@ import { bench, jsonArg } from './bench.mjs';
 const DT = 1 / 120;
 
 export async function bake({ cls = 'gt', trackName = 'harbor-ring', o = {} }) {
-  const track = new Track(trackName), env = envelope(cls), base = o.from ? JSON.parse(readFileSync(o.from, 'utf8'))[`${track.id}:${cls}`] : lineData(track.id, cls);
+  const track = new Track(trackName), env = envelope(cls), base0 = o.from ? JSON.parse(readFileSync(o.from, 'utf8'))[`${track.id}:${cls}`] : lineData(track.id, cls);
+  // A new edge margin (o.edge, metres inside the tarmac the car centre keeps; negative is onto the kerb) measures the
+  // bounds afresh; the offsets carry over.
+  const base = base0 && o.edge != null ? { ...base0, lo: null, hi: null, fine: false } : base0;
   // Start from a baked line, or from the model's own minimum-time solve when there is none (o.solve iterations).
   const line = new Line(track, carSpecFor(cls), env, base && !o.solve ? { ...base, latScale: o.latScale ?? base.latScale, grip: o.flat ? new Array(base.n).fill(1) : base.grip } : null, o);
   if (o.solve || !base) { const r = line.solve(o.solve ?? 150000, o.seed ?? 1); console.log(`solved model ${r.time.toFixed(2)} (start ${r.start})`); }

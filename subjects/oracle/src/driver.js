@@ -91,18 +91,34 @@ export class OracleDriver {
     let throttle = 0, brake = 0;
     // Share of the tyre the corner is using here: braking and drive get only what the ellipse leaves.
     // laneCurv: on a lane off the line the car turns on that lane's radius (R + y on the outside of the turn), not the line's.
-    const ks = line.sample(line.k, loc.i, loc.f, v * 0.1), k = o.laneCurv ? Math.abs(ks / Math.max(0.5, 1 + ks * this.lateral)) : Math.abs(ks), latCap = at(this.env.lat, v) * line.latScale * line.sample(line.grip, loc.i, loc.f) * grip * grip;
+    // kWin: the corner share is read off the curvature averaged over this many seconds ahead, not one station (a
+    // station-to-station wobble in k swung the share, and the brake takeover with it, between frames).
+    const kw = o.kWin ?? 0.4, ks = kw ? [0.1, 0.3, 0.5, 0.7, 0.9].reduce((a, u) => a + line.sample(line.k, loc.i, loc.f, v * kw * u), 0) / 5 : line.sample(line.k, loc.i, loc.f, v * 0.1), k = o.laneCurv ? Math.abs(ks / Math.max(0.5, 1 + ks * this.lateral)) : Math.abs(ks), latCap = at(this.env.lat, v) * line.latScale * line.sample(line.grip, loc.i, loc.f) * grip * grip;
     const used = clamp(v * v * k / Math.max(1, latCap), 0, 1), cp = o.combExp ?? 2, rest = Math.max(o.restFloor ?? Math.sqrt(0.12), (1 - used ** cp) ** (1 / cp));
     const avail = at(this.env.brake, v) * line.brakeGain * grip * grip * rest;
-    if (need < -(o.brakeOn ?? 0.7) * avail) want = Math.min(want, need);
-    if (want < -0.4 || v > vNow * 1.02 + 0.5) {
+    // needHys: a braking point once taken is held until the need falls this share of the grip below the trigger.
+    this.taking = need < -((o.brakeOn ?? 0.7) - (this.taking ? o.needHys ?? 0 : 0)) * avail;
+    if (this.taking) want = Math.min(want, need);
+    // brakeHys: once on the brakes the car stays on them until the plan really asks for drive again, so a want hovering
+    // at the threshold does not swap pedals every frame.
+    const hys = o.brakeHys ?? 0, onBrake = (this.brk ?? 0) > 0.02;
+    if (want < -0.4 + (onBrake ? hys : 0) || v > vNow * 1.02 + 0.5 - (onBrake ? hys : 0)) {
+      this.driving = false;
       brake = clamp((-want - drag) / Math.max(4, at(this.env.brake, v)) * (o.brakeGain ?? 1.3) + (v - vNow) * 0.05, 0, 1) * Math.min(1, rest * (o.trail ?? 1.15));
     } else {
       throttle = clamp((want + drag + 0.6) / (at(this.env.accel, v) + drag + 0.6) + Math.max(0, vNow - v) * (o.holdGain ?? 0), 0, 1);
       // Drive gets what the tyres have left now: the measured lateral load, not the line's curvature (a car a metre
       // wide of the line, or past the apex, has grip to spare that the plan does not know about).
       const restNow = o.measUse ? Math.sqrt(Math.max(0.12, 1 - clamp(Math.abs(car.ay) / Math.max(1, latCap), 0, 1) ** 2)) : rest;
-      if (want > 0.4) throttle = Math.max(o.restMax ? throttle : 0, Math.min(1, restNow * (o.restThr ?? 1.6)));
+      // thrBlend: drive rises from the speed hold to all the grip leaves over this much want (m/s²), instead of a step at
+      // 0.4 (a want hovering there pumped the pedal between a quarter and full throttle).
+      const full = Math.min(1, restNow * (o.restThr ?? 1.6));
+      // thrHys: full drive comes on at a want of 0.4 and stays until the want falls this far below it, so a want
+      // hovering at the threshold no longer pumps the pedal between the speed hold and full drive.
+      const hy = o.thrHys ?? 0; this.driving = want > 0.4 || (this.driving && hy > 0 && want > 0.4 - hy);
+      const tb = o.thrBlend ?? 0;
+      if (tb) { if (full > throttle) throttle += (full - throttle) * clamp((want - 0.4) / tb, 0, 1); }
+      else if (this.driving) throttle = Math.max(o.restMax ? throttle : 0, full);
     }
 
     // Steering: pure pursuit in the velocity frame, plus the body slip so the front wheels point where the car goes.
