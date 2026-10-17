@@ -47,7 +47,7 @@ button { font-family: var(--display); color: inherit; cursor: pointer; }
 
 /* ---------- shared panel screens ---------- */
 /* Front-end panels scroll; the fixed setup footer is cleared by .panel-wrap padding. */
-#screen-setup, #screen-drivers, #screen-settings { overflow-y: auto; overscroll-behavior: contain; }
+#screen-setup, #screen-drivers, #screen-settings, #screen-duel { overflow-y: auto; overscroll-behavior: contain; }
 .panel-screen { background: linear-gradient(180deg, rgba(5,6,9,.86), rgba(5,6,9,.94)); overflow-y: auto; }
 .panel-wrap { max-width: 1280px; margin: 0 auto; padding: 38px 32px 120px; }
 .panel-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; border-bottom: 1px solid var(--line); padding-bottom: 16px; margin-bottom: 26px; }
@@ -77,6 +77,9 @@ button { font-family: var(--display); color: inherit; cursor: pointer; }
 .seg button { border: 0; background: transparent; padding: 7px 12px; font-size: 15px; font-weight: 700; letter-spacing: .08em; color: var(--dim); text-transform: uppercase; }
 .seg button + button { border-left: 1px solid var(--line); }
 .seg button.on { background: var(--ink); color: #0a0a0c; }
+.row.stack { flex-direction: column; align-items: stretch; gap: 10px; }
+.seg.wrap { display: grid; grid-template-columns: repeat(auto-fill, minmax(62px, 1fr)); border-width: 1px 0 0 1px; }
+.seg.wrap button, .seg.wrap button + button { border: 0; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 .stepper { display: inline-flex; align-items: center; gap: 0; border: 1px solid var(--line); }
 .stepper button { width: 34px; height: 34px; border: 0; background: transparent; font-size: 20px; color: var(--dim); }
 .stepper button:hover { color: var(--ink); background: rgba(255,255,255,.06); }

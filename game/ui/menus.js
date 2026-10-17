@@ -105,8 +105,8 @@ function aiHint(s) {
   const d = difficultyById(s.difficulty), p = PACE_PROFILES[s.trackId];
   return p ? `${d.blurb} Fastest rivals ≈ ${fmtLap(p.lap / d.k)} a lap.` : d.blurb;
 }
-function seg(name, options, value) {
-  return `<div class="seg" data-seg="${name}">${options.map(([v, label]) => `<button data-v="${esc(v)}" class="${String(v) === String(value) ? 'on' : ''}">${esc(label)}</button>`).join('')}</div>`;
+function seg(name, options, value, cls = '') {
+  return `<div class="seg ${cls}" data-seg="${name}">${options.map(([v, label]) => `<button data-v="${esc(v)}" class="${String(v) === String(value) ? 'on' : ''}">${esc(label)}</button>`).join('')}</div>`;
 }
 // No race-length cap beyond keeping the number sane; strategy and fuel calibrate to any length.
 const MAX_LAPS = 999, clampLaps = (n) => Math.max(1, Math.min(MAX_LAPS, Math.round(n)));
@@ -225,7 +225,8 @@ export function renderDuel(el, d, outlines, act) {
   const ai = (id) => AI_DRIVERS.find((x) => x.id === id) ?? AI_DRIVERS[0];
   const a = ai(d.a), b = ai(d.b), cls = RACE_CLASSES[d.raceClass] ?? RACE_CLASSES.gtp;
   const untuned = cls.ai ? [...new Set([a, b])].filter((x) => !cls.ai.includes(x.id)) : [];
-  const pick = (key, x) => `<div class="row"><label>Driver ${key.toUpperCase()}<span class="hint">${esc(x.name)} · ${esc(x.arch)}</span></label>${seg(key, AI_DRIVERS.map((r) => [r.id, r.short]), x.id)}</div>`;
+  // Label above a wrapping grid: the roster outgrew a single row of buttons.
+  const pick = (key, x) => `<div class="row stack"><label>Driver ${key.toUpperCase()}<span class="hint">${esc(x.name)} · ${esc(x.arch)}</span></label>${seg(key, AI_DRIVERS.map((r) => [r.id, r.short]), x.id, 'wrap')}</div>`;
   el.innerHTML = `
     <div class="panel-wrap">
       <div class="panel-head"><div><div class="kicker">AI test bench</div><h2>AI Duel</h2></div><button class="back" data-back>← Back</button></div>
