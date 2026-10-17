@@ -45,7 +45,8 @@ export class AsyncSeats {
   /** `makeBridge` for EnduranceRace. */
   factory() {
     return (driver, index, race) => {
-      if (driver.kind === 'human') return createSeatBridge(driver, index, race);
+      // Human and ORACLE seats run on the main thread: ORACLE drives at physics rate on the live field.
+      if (driver.kind === 'human' || driver.id === 'oracle') return createSeatBridge(driver, index, race);
       if (driver.id === 'next-racer') installNativeStrategy(race,race.cars[index]);
       if (driver.id === 'apex') installApexStrategy(race, race.cars[index]);
       if (driver.id === 'razor') installRazorStrategy(race, race.cars[index]);

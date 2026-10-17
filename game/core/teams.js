@@ -1,6 +1,7 @@
 // Driver pool, team liveries and the random teammate draw.
 
 export const AI_DRIVERS = Object.freeze([
+  { id: 'oracle', name: 'ORACLE', short: 'ORC', arch: 'Measured physics envelope · min-time line · main-thread physics-rate combat', anyTrack: true, manage: false, governor: false },
   { id: 'vanguard', name: 'VANGUARD', short: 'VGD', arch: 'Split-horizon 120 Hz force control · S-thread traffic & fast hazard evasion · live stint strategy', anyTrack: true, manage: false, governor: false },
   { id: 'intercept', name: 'INTERCEPT', short: 'ICP', arch: 'Physics-rate control · committed gap attacks · live stint strategy', anyTrack: true, manage: false, governor: false },
   { id: 'astra',             name: 'ASTRA',        short: 'AST', arch: 'Tactical planner · chassis rollouts',   anyTrack: true },
