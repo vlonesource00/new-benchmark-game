@@ -19,6 +19,11 @@ GT slide into the barrier while preserving the existing passing regressions.
 Closed-loop tactical previews are available for experiments, but remain disabled
 because their encounter results did not justify replacing the original planner.
 
+The [passing follow-up and racer comparison](COMBAT-ATTACKS-2026-10-17.md)
+adds a retained GT overtake against a worn-tyre rival. It lets a safe setup
+develop beyond one short forecast while it keeps gaining ground, and records
+the contact, shifted-start and normal-race limits alongside the comparison.
+
 ## How it drives
 
 - **The host controller runs every physics substep.** It steers and allocates throttle/brake from current vehicle and rival state, while a slower worker chooses routes. A late worker reply does not freeze local feedback.

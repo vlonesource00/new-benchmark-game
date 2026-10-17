@@ -68,6 +68,10 @@ The production build passes. Its existing large-chunk warning remains; no unrela
 
 ## Boundaries of this continuation
 
+The [passing follow-up](COMBAT-ATTACKS-2026-10-17.md) raises the matched accepted
+pass count from 5/12 to 6/12. It includes a fresh five-driver comparison and
+separates gentle-rubbing passes from zero-contact wins and normal race results.
+
 The [close-start recovery update](COMBAT-RECOVERY-2026-10-17.md) fixes the known
 GT barrier crash while preserving the existing encounter scores. It also records
 the rejected closed-loop planner experiments, which remain disabled; it does not

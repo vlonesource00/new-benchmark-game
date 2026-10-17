@@ -46,4 +46,14 @@ assert.equal(recovered.ego.offtrack, 0);
 assert(!recovered.ego.retired && !recovered.ego.teleported && !recovered.ego.errors);
 assert(recovered.ego.progress > sliding.ego.progress && recovered.score.progressRatio > 0.97,
   'recovery must keep driving rather than merely stop before the wall');
-console.log('VANGUARD retained-pass, braking and close-start recovery regressions passed.');
+const slower = { id: 'harbor-worn-traffic', track: 'harbor-ring', s: 250,
+  kind: 'traffic', rival: 'intercept', duration: 40 };
+const stuck = run(slower, { progressiveAttacks: false }), converted = run(slower, {});
+assert(stuck.score.clean && !stuck.score.racingPass, 'the control safely follows without converting the opportunity');
+assert(converted.score.racingPass, 'a gradual setup survives the corner and retains the new pass');
+assert(converted.clearSeconds >= 4 && converted.finalGap < -5);
+assert(converted.ego.damage <= 0.01 && converted.rival.damage <= 0.01);
+assert.equal(converted.ego.offtrack, 0); assert.equal(converted.rival.offtrack, 0);
+assert.equal(converted.contactKinds.rubs, converted.contacts, 'only gentle side rubbing is accepted');
+assert.equal(converted.severe, 0);
+console.log('VANGUARD retained-pass, setup-pass, braking and close-start recovery regressions passed.');

@@ -5,6 +5,7 @@ import { allocate } from './axles.js';
 import { bodyContact } from './body.js';
 import { deployment } from './strategy.js';
 import { TrajectoryRollout, tacticalHorizon } from './trajectory.js';
+import { liveGrip } from '../../apex/src/model.js';
 
 /** Closed-loop rollout evaluation on compiled corridor demand with exact 2D body contact and hybrid co-state. */
 export function evaluate(path, car, course, observer, target, horizon = target?.hazard ? 3.4 : (course.options.combatHorizon ?? 3.4)) {
@@ -126,6 +127,21 @@ export function selectCandidate(best, candidate, riskLimit) {
   return !best || candidate.score > best.score ? candidate : best;
 }
 
+/** Building a pass may take longer than one rollout. Admit a safe pull-out
+ * only when both measured closure and the paired forecast show an advantage,
+ * with time to finish the C2 entry before the front bumper gap closes. */
+export function canBuildAttack(candidate, current, car, target, closing, gripAdvantage = 0) {
+  if (!candidate?.fits || candidate.hardImpact || candidate.trackable === false ||
+    !(candidate.risk < 0.08) || !(gripAdvantage > 0.03) || !target?.eligible || target.hazard || target.kind !== 'race' ||
+    (target.car.controls?.brake ?? 0) > 0.35 || (target.deceleration ?? 0) > 12) return false;
+  const entryTime = candidate.path.entryLength / Math.max(12, car.speed),
+    room = target.ds - HALF_LENGTH - target.along - 0.65;
+  return closing > 0.3 && room / closing > entryTime + 0.35 &&
+    candidate.relativeGain > 1.5 && candidate.exitAdvantage > 0.4 &&
+    candidate.progress > current.progress + 0.3 && candidate.exit > current.exit &&
+    candidate.score > current.score + 0.5;
+}
+
 /** A defended apex can be attacked over-under: outside entry, then a smooth
  * late crossing behind the rival. Its second transition obeys the jerk budget. */
 export function switchbackPlan(base, car, target, options) {
@@ -174,12 +190,15 @@ export class Battle {
     this.candidates = [];
     this.sequence = 0;
     this.moveKind = null;
+    this.building = false;
+    this.holding = null;
   }
   wire() {
     return {
       state: this.state, target: this.target, targetWasHazard: this.targetWasHazard,
       side: this.side, since: this.since, clearAt: this.clearAt,
-      returnReason: this.returnReason, returnTarget: this.returnTarget, moveKind: this.moveKind
+      returnReason: this.returnReason, returnTarget: this.returnTarget, moveKind: this.moveKind,
+      building: this.building
     };
   }
   adopt(b) {
@@ -243,6 +262,7 @@ export class Battle {
     this.sequence++;
     course.beginRoutes(this.path, this.returnPath, this.returnGuard?.path);
     course.compareReturns = false;
+    this.holding = null;
 
     if (this.state === 'RETURN') {
       const c = base.closest(car.x, car.z);
@@ -268,6 +288,7 @@ export class Battle {
         const trafficChain = next.kind === 'traffic' && car.speed - next.v > 3 && (next.ds - 5) / Math.max(0.2, car.speed - next.v) < 4;
         if (lane.trackable !== false && (!this.options.physicalRollouts || !lane.hardImpact) && lane.risk < 0.4 && (trafficChain || (lane.progress > direct.progress - 2 && lane.exit > direct.exit - 1))) {
           this.target = next.id;
+          this.building = false;
           this.targetWasHazard = Boolean(next.hazard);
           this.state = next.hazard ? 'EVADE' : 'ATTACK';
           this.since = now;
@@ -293,6 +314,7 @@ export class Battle {
             corridorFits(altPath, base, car, next, -this.side) &&
             (trafficChain || altLane.progress > direct.progress - 2)) {
             this.target = next.id;
+            this.building = false;
             this.targetWasHazard = Boolean(next.hazard);
             this.side = -this.side;
             this.state = 'ATTACK';
@@ -376,6 +398,7 @@ export class Battle {
       // lateral hit after a braking/return sequence.
       if (!adaptive || (held.risk < 0.5 && !held.hardImpact && held.trackable !== false)) {
         this.target = beside.id;
+        this.building = false;
         this.targetWasHazard = false;
         this.side = side;
         this.state = beside.ds >= 0 ? 'ALONGSIDE' : 'DEFEND';
@@ -486,7 +509,12 @@ export class Battle {
       }
       return space;
     };
-    if (committed && this.path && (now - this.since < 7.5 || ownedLane)) {
+    // Only a newly admitted setup move uses this patience. Established
+    // attacks retain their calibrated rules; a setup must keep gaining at
+    // least half a metre within 2.5 s and still pass every held-lane check.
+    const gaining = this.options.progressiveAttacks === true && this.building && !hazard && this.state !== 'DEFEND' &&
+      this.progressMark?.id === target.id && now - this.progressMark.time < 2.5;
+    if (committed && this.path && (now - this.since < 7.5 || ownedLane || gaining)) {
       const held = evaluate(this.path, car, course, observer, target);
       const space = clearanceForSide(this.side);
       const wantedOffset = (target.offset ?? target.d) + this.side * space;
@@ -496,8 +524,12 @@ export class Battle {
       const remaining = gap(this.path.holdEndS ?? observer.me.s, observer.me.s, course.track.length);
       const losing = adaptive && target.eligible && target.ds > HALF_LENGTH + target.along &&
         (!this.options.physicalRollouts || closing < 0.5) &&
+        !gaining &&
         held.progress < current.progress - 2 && held.exit < current.exit - 1;
-      if (held.risk < 0.5 && held.trackable !== false && (!held.plant || !held.hardImpact) && !moved && !losing && remaining > Math.max(45, car.speed * 0.8)) {
+      this.holding = { risk: held.risk, moved, losing, gaining, remaining, closing,
+        targetOffset: target.offset, pathOffset: this.path.targetOffset,
+        progressGain: held.progress - current.progress, exitGain: held.exit - current.exit };
+      if (held.risk < 0.5 && held.trackable !== false && (!(held.plant || gaining) || !held.hardImpact) && !moved && !losing && remaining > Math.max(45, car.speed * 0.8)) {
         this.candidates.push({ ...held, side: this.side, kind: 'held' });
         return this.path;
       }
@@ -597,11 +629,19 @@ export class Battle {
     const pairedGain = chosen && chosen.plant && chosen.progress > current.progress + 2 &&
       chosen.exit > current.exit - 1 && chosen.trackable;
     const attackGap = chosen?.entryGap ?? chosen?.finalGap;
-    const reachable = chosen && (pairedGain || chosen.preparation || attackGap < 5 || (target.ds < 18 && closing > 1 && attackGap < target.ds + 2));
+    const legacyReachable = chosen && (pairedGain || chosen.preparation || attackGap < 5 ||
+      (target.ds < 18 && closing > 1 && attackGap < target.ds + 2));
+    const gripAdvantage = adaptive && this.options.progressiveAttacks === true && !committed && !legacyReachable &&
+      target.kind === 'race' ? liveGrip(car).grip - liveGrip(target.car).grip : 0;
+    const setup = adaptive && this.options.progressiveAttacks === true && !committed && !legacyReachable &&
+      canBuildAttack(chosen, current, car, target, closing, gripAdvantage);
+    if (chosen) chosen.setup = setup;
+    const reachable = setup || legacyReachable;
     const useful = chosen && ((chosen.cleared && chosen.finalGap < 5) || chosen.score > current.score + 0.5);
     const actionable = chosen && (hazard || committed || (reachable && useful));
     if (actionable && chosen.risk < riskLimit) {
       if (!committed) {
+        this.building = Boolean(setup);
         this.target = target.id;
         this.targetWasHazard = Boolean(hazard);
         this.side = chosen.side;

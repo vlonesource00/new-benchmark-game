@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { selectCandidate, ownsRacingLane } from '../src/battle.js';
+import { selectCandidate, ownsRacingLane, canBuildAttack } from '../src/battle.js';
 import { noseConstraint } from '../src/controller.js';
 
 const clean = { fits: true, risk: 0, score: 105, exit: 52, finalGap: 8 };
@@ -15,6 +15,25 @@ const better = { ...clean, score: 108 };
 assert.equal(selectCandidate(clean, better, 0.8), better, 'admissible alternatives still compete on progress and exit speed');
 assert.equal(selectCandidate(better, clean, 0.8), better, 'the safer ranking preserves the best admissible lane');
 assert.equal(selectCandidate(null, { ...clean, risk: 0.8 }, 0.8), null, 'the original strict collision limit is preserved');
+const setupTarget = { eligible: true, hazard: false, kind: 'race', ds: 14, along: 2.28,
+  car: { controls: { brake: 0 } } }, setupCar = { speed: 50 },
+  setupBase = { progress: 180, exit: 56, score: 224.8 },
+  setupLane = { fits: true, risk: 0, hardImpact: false, path: { entryLength: 80 },
+    progress: 182, exit: 57, score: 227.6, relativeGain: 4, exitAdvantage: 1 };
+assert(canBuildAttack(setupLane, setupBase, setupCar, setupTarget, 0.7, 0.07),
+  'a gaining lane can prepare a pass that takes longer than the short forecast');
+assert(!canBuildAttack({ ...setupLane, fits: false }, setupBase, setupCar, setupTarget, 0.7, 0.07));
+assert(!canBuildAttack({ ...setupLane, hardImpact: true }, setupBase, setupCar, setupTarget, 0.7, 0.07));
+assert(!canBuildAttack({ ...setupLane, risk: 0.1 }, setupBase, setupCar, setupTarget, 0.7, 0.07));
+assert(!canBuildAttack(setupLane, setupBase, setupCar, setupTarget, -0.1, 0.07), 'a faster rival is not an opening');
+assert(!canBuildAttack(setupLane, setupBase, setupCar, { ...setupTarget, ds: 6 }, 4, 0.07),
+  'a closing bumper gap must not start an entry that cannot finish in time');
+assert(!canBuildAttack(setupLane, setupBase, setupCar,
+  { ...setupTarget, car: { controls: { brake: 0.8 } } }, 0.7, 0.07));
+assert(!canBuildAttack({ ...setupLane, exitAdvantage: -1 }, setupBase, setupCar, setupTarget, 0.7, 0.07),
+  'a short progress gain without exit advantage is insufficient');
+assert(!canBuildAttack(setupLane, setupBase, setupCar, setupTarget, 0.7, 0),
+  'equal-grip cars retain the calibrated attack entry rather than adding speculative moves');
 const ego = { x: 0, z: 0, yaw: 0 }, rival = {
   eligible: true, hazard: false, car: { x: 2.1, z: 2, yaw: 0 }
 };
