@@ -6,11 +6,12 @@
 import { esc } from './format.js';
 import { lensModel, toneColor } from './lens-model.js';
 import { AI_DRIVERS } from '../core/teams.js';
+import { TANK_LITRES, WEAR_CLIFF } from '../core/rules.js';
 
 const W = 300, H = 452, TRACE = 12; // seconds of speed trace
 // One docked panel, one view at a time (B opens it, V or a click picks the tab): the car's telemetry, the AI's
 // mind (intent, options, controller), its radar and its event log. Tabs an AI has nothing for are hidden.
-const TABS = [['car', 'CAR'], ['mind', 'MIND'], ['radar', 'RADAR'], ['log', 'LOG']];
+const TABS = [['car', 'CAR'], ['mind', 'MIND'], ['radar', 'RADAR'], ['strat', 'STRATEGY'], ['log', 'LOG']];
 const TAB_KEY = 'aidebug.tab';
 const kmh = (v) => Math.round(v * 3.6);
 const clamp01 = (x) => Math.max(0, Math.min(1, x || 0));
@@ -29,6 +30,7 @@ export class AiDebugPanel {
       + '<div class="dpane" data-tab="car"><canvas></canvas><div class="dchips"></div></div>'
       + '<div class="dpane aimind" data-tab="mind"><div class="mh"></div><canvas></canvas><div class="mb"></div></div>'
       + '<div class="dpane aimind" data-tab="radar"><div class="mh"></div><canvas class="radar"></canvas></div>'
+      + '<div class="dpane aimind" data-tab="strat"><div class="mh"></div><div class="mb"></div></div>'
       + '<div class="dpane aimind" data-tab="log"><div class="mh"></div><div class="mb"></div></div>'
       + '<div class="dfoot">B close · V next tab · Tab next car</div>';
     const q = (sel) => this.el.querySelector(sel);
@@ -43,6 +45,8 @@ export class AiDebugPanel {
     this.mindHead = q('[data-tab=mind] .mh'); this.timeline = q('[data-tab=mind] canvas'); this.mindBody = q('[data-tab=mind] .mb');
     this.radarHead = q('[data-tab=radar] .mh'); this.radarCv = q('[data-tab=radar] canvas');
     this.logHead = q('[data-tab=log] .mh'); this.logBody = q('[data-tab=log] .mb');
+    this.stratHead = q('[data-tab=strat] .mh'); this.stratBody = q('[data-tab=strat] .mb');
+    this.calls = []; this.stratAt = 0;
     this.radarCv.width = 560; this.radarCv.height = 420;
     this.timeline.width = 560; this.timeline.height = 64;
     this.intents = []; this.model = null; this.tagName = ''; this.mindAt = 0;
@@ -78,7 +82,7 @@ export class AiDebugPanel {
     const c = car.controls ?? {};
     const line = race.lineFor(car), plan = line.at(car.s);
     const target = Number.isFinite(dbg.targetSpeed) ? dbg.targetSpeed : null;
-    if (this.focus !== focusId) { this.focus = focusId; this.trace = []; this.gg = []; this.intents = []; }
+    if (this.focus !== focusId) { this.focus = focusId; this.trace = []; this.gg = []; this.intents = []; this.calls = []; }
     let vis = null;
     try { vis = bridge?.visualDebug?.() ?? null; } catch { vis = null; }
     const ai = AI_DRIVERS.find((d) => d.id === driver?.id);
@@ -117,8 +121,51 @@ export class AiDebugPanel {
       const now = performance.now();
       if (now - this.mindAt > 100) { this.mindAt = now; this.drawMind(race, m, t); }
     }
-    const avail = ['car', ...(this.model ? ['mind'] : []), ...(this.model?.radar ? ['radar'] : []), ...(this.model?.log?.length ? ['log'] : [])];
+    if (e.strategist) this.strategy(race, e, car, t);
+    const avail = ['car', ...(this.model ? ['mind'] : []), ...(this.model?.radar ? ['radar'] : []), ...(e.strategist ? ['strat'] : []), ...(this.model?.log?.length ? ['log'] : [])];
     if (avail.join() !== this.avail.join()) { this.avail = avail; this.showTabs(); }
+  }
+
+  /**
+   * Strategy tab: the focused car's pit-wall view, read from its own strategist on the main thread. The call it
+   * holds for this lap and why, what the stop would contain, the fuel and tyre runway behind it, the team's style,
+   * the calls it made lap by lap (and INTERCEPT v2's projected pit-or-stay places under a caution).
+   */
+  strategy(race, e, car, t) {
+    const S = e.strategist, lap = car.race?.lap ?? 0, left = race.lapsLeft?.(car) ?? null;
+    const plan = e.pitPlan ?? (S.boxThisLap ? S.plan : null), reason = S.reason || '';
+    // Call history: one row per lap, updated while the lap's call changes.
+    const last = this.calls.at(-1), row = { lap, box: Boolean(plan), reason, pit: Boolean(e.pit) };
+    if (last && lap < last.lap) this.calls = [];
+    if (!last || last.lap !== lap) this.calls.push(row); else Object.assign(last, row);
+    while (this.calls.length > 10) this.calls.shift();
+    const now = performance.now();
+    if (now - this.stratAt < 200 || this.shown !== 'strat') return;
+    this.stratAt = now;
+    const id = car.wheels[0].tyre.compound, wear = Math.max(...car.wheels.map((w) => w.tyre.wear));
+    const wpl = S.wearPerLap?.[id], fpl = S.fuelPerLap, fuelLaps = fpl ? car.fuel / fpl : null;
+    const cliff = wpl ? Math.max(0, (WEAR_CLIFF - wear) / wpl) : null;
+    const owed = Math.max(0, (S.format?.mandatoryStops ?? 0) - (S.stops ?? 0));
+    const f1 = (x, d = 1) => (x == null || !Number.isFinite(x) ? '—' : x.toFixed(d));
+    const stat = (label, value, warn = false) => `<span class="${warn ? 'w' : ''}"><small>${esc(label)}</small>${esc(String(value))}</span>`;
+    const call = e.pit ? 'IN THE PITS' : plan ? 'BOX THIS LAP' : 'STAY OUT';
+    const what = plan ? [plan.litres > 0.5 ? `+${plan.litres.toFixed(0)} L` : 'no fuel', plan.tyres ? `${String(plan.compound ?? id).toUpperCase()} tyres` : 'keep tyres',
+      plan.swap ? 'driver swap' : null, plan.repair ? 'repair' : null, plan.penalty ? `serve ${plan.penalty}` : null].filter(Boolean).join(' · ') : '';
+    const st = S.style ?? {};
+    const parts = [
+      `<div class="mi" style="--tone:${plan || e.pit ? '#ffb02e' : '#3ddc84'}"><b>${call}</b><span>${esc(reason || (left != null && left <= 1 ? 'FINAL LAP' : 'no reason to stop'))}</span></div>`,
+      what ? `<div class="mf" style="--fc:#ffb02e">${esc(what)}</div>` : '',
+      S.request ? `<div class="mf" style="--fc:#4fd1e8">PIT WALL REQUEST · ${esc([S.request.compound, S.request.fuel != null ? `${S.request.fuel} L` : null, S.request.swap ? 'swap' : null].filter(Boolean).join(' · ') || 'box')}</div>` : '',
+      `<h6>RACE</h6><div class="mn">${stat('laps left', left ?? '—')}${stat('stops', `${S.stops ?? 0}${owed ? ` · ${owed} owed` : ''}`, owed > 0 && left != null && left - 1 <= owed)}${stat('stint', `${S.stintLaps ?? 0} laps`)}${stat('swaps', S.swaps ?? 0)}</div>`,
+      `<h6>FUEL</h6><div class="mn">${stat('tank', `${f1(car.fuel)} / ${TANK_LITRES} L`)}${stat('per lap', `${f1(fpl, 2)} L`)}${stat('range', `${f1(fuelLaps)} laps`, fuelLaps != null && left != null && fuelLaps < Math.min(left, 1.5))}${left != null && fpl ? stat('to the flag', `${f1(left * fpl - car.fuel, 1)} L`) : ''}</div>`,
+      `<h6>TYRES · ${esc(String(id).toUpperCase())}</h6><div class="mn">${stat('worst wear', `${f1(wear * 100, 0)}%`, wear > WEAR_CLIFF - 0.08)}${stat('per lap', `${f1((wpl ?? 0) * 100, 1)}%`)}${stat('to the cliff', `${f1(cliff)} laps`, cliff != null && cliff < 1.5)}${S.fade?.[id] != null ? stat('fade', `×${f1(S.fade[id], 2)}`) : ''}</div>`,
+      `<h6>MODEL</h6><div class="mn">${stat('lap ref', `${f1(S.lapRef)} s`)}${stat('stop loss', `${f1(S.stopLoss)} s`)}${S.paceLoss ? stat('pace loss', `${f1(S.paceLoss(), 2)} s`) : ''}${st.aggression != null ? stat('style', `agg ${f1(st.aggression, 2)} · undercut ${f1(st.undercut, 1)} · patience ${f1(st.patience, 2)}`) : ''}</div>`
+    ];
+    const cc = S.cautionCalls?.slice(-4) ?? [];
+    if (cc.length) parts.push(`<h6>CAUTION CALLS · PROJECTED PIT / STAY</h6><div class="ml">${cc.map((c) => `<div>L${c.lap} ${String(c.kind).toUpperCase()} · ${(c.pit_ ?? c.worth) ? 'PIT' : 'STAY'}${c.pit_ != null && c.pit_ !== c.worth ? ' (held)' : ''} · P${c.pit.place} / P${c.stay.place}</div>`).join('')}</div>`);
+    parts.push(`<h6>CALLS BY LAP</h6><div class="ml">${[...this.calls].reverse().map((c) => `<div>L${c.lap} · ${c.pit ? 'PITTING' : c.box ? 'BOX' : 'stay'}${c.reason ? ` · ${esc(c.reason)}` : ''}</div>`).join('')}</div>`);
+    this.stratHead.innerHTML = `<small>STRATEGY · ${esc(this.tagName || e.team.short)}</small><p>${esc(S.constructor?.name ?? 'Strategist')}</p>`;
+    this.stratBody.innerHTML = parts.join('');
   }
 
   drawMind(race, m, t) {

@@ -400,6 +400,7 @@ body.replaying #replay-bug { display: flex; animation: fade-in .3s ease both; }
 .aimind em { font-style: normal; color: rgba(255,255,255,.7); max-width: 120px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .aimind .mn { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
 .aimind .mn span { background: rgba(255,255,255,.06); padding: 2px 6px; font-family: 'JetBrains Mono', monospace; font-size: 11px; }
+.aimind .mn span.w { color: #ffb02e; }
 .aimind .mn small { color: var(--faint); margin-right: 5px; letter-spacing: .08em; text-transform: uppercase; font-size: 9px; }
 .aidebug .dfoot { margin-top: 6px; color: var(--faint); letter-spacing: .1em; font-size: 10px; }
 
