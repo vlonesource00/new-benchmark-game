@@ -8,6 +8,12 @@ GT3 uses closer passing routes and an improved public-state rival forecast;
 prototypes retain their verified corridor widths and forecast calibration.
 Damage affects the physical pace model, and wet/worn tyres retain braking reserve.
 
+The subsequent [GT passing update](COMBAT-PASSING-2026-10-17.md) replans a losing
+attack and preserves an established side lane instead of treating it as a new
+pull-out. It keeps the existing physics, risk limits and damage budget;
+prototypes retain their tested calibration. The report separates its targeted
+passing gain from the unresolved full-race and close-start limitations.
+
 ## How it drives
 
 - **The host controller runs every physics substep.** It steers and allocates throttle/brake from current vehicle and rival state, while a slower worker chooses routes. A late worker reply does not freeze local feedback.
@@ -39,6 +45,7 @@ node --import ./scripts/json-loader.mjs subjects/vanguard/tools/combat-metrics-c
 node --import ./scripts/json-loader.mjs subjects/vanguard/tools/rollout-check.mjs
 node --import ./scripts/json-loader.mjs subjects/vanguard/tools/defence-check.mjs
 node --import ./scripts/json-loader.mjs subjects/vanguard/tools/racecraft-check.mjs
+node --import ./scripts/json-loader.mjs subjects/vanguard/tools/passing-check.mjs
 ```
 
 For short combat comparisons against INTERCEPT, RAZOR, APEX and TEMPEST, run

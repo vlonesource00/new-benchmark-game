@@ -20,6 +20,11 @@ Argon's 24 source/integration files were preserved before editing in the workspa
 
 ## Performance work still open
 
+The [GT passing update](COMBAT-PASSING-2026-10-17.md) converts one additional
+40-second approach while preserving the established passing gates. Shifted
+starts and full races do not yet show a general overtaking gain; close-start
+route feasibility and robust initiation remain priorities.
+
 The [racecraft upgrade](UPGRADE-2026-10-17.md) supersedes the earlier zero-contact
 objective: mild side rubbing is permitted within 20% accumulated damage over
 20 laps. The deployed GT settings improve the alongside attack tests; shifted

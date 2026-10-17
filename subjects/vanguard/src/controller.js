@@ -46,7 +46,7 @@ export function longitudinalDemand(path, c, v, model, { cap = Infinity, cap2 = c
 }
 
 /** Physical body-ray & active-route frontal guard. Strictly ignores pit cars (`r.pit`). */
-export function noseConstraint(car, observer, model, { lateralEscape = false, path = null, cursor = null, brakingTube = false, racecraft = null } = {}) {
+export function noseConstraint(car, observer, model, { lateralEscape = false, path = null, cursor = null, brakingTube = false, racecraft = null, adaptiveAttacks = false } = {}) {
   let cap = Infinity, brake = 0, blocker = null, details = null;
   const sy = Math.sin(car.yaw), cy = Math.cos(car.yaw), v = Math.max(0, car.speed);
   for (const r of observer.list) {
@@ -55,7 +55,10 @@ export function noseConstraint(car, observer, model, { lateralEscape = false, pa
     if (forward < 0.08 || forward > Math.max(28, v * 0.9)) continue;
     const delta = angle(r.car.yaw - car.yaw), halfAcross = Math.abs(Math.cos(delta)) * HALF_WIDTH + Math.abs(Math.sin(delta)) * HALF_LENGTH;
     const lateralClosing = (r.car.vx - car.vx) * cy - (r.car.vz - car.vz) * sy;
-    const predicted = across + lateralClosing * 0.16;
+    // When following a slower car, a fast lateral merge needs braking before
+    // it enters the short body ray. Keep the short horizon on passing lanes.
+    const mergeTime = adaptiveAttacks && !path?.attackSide && r.eligible && v - r.v > 4 && across * lateralClosing < 0 ? 0.45 : 0.16;
+    const predicted = across + lateralClosing * mergeTime;
     if (Math.abs(across) > HALF_WIDTH + halfAcross + 0.12 && Math.abs(predicted) > HALF_WIDTH + halfAcross + 0.12) continue;
     const halfAlong = Math.abs(Math.cos(delta)) * HALF_LENGTH + Math.abs(Math.sin(delta)) * HALF_WIDTH;
     const sideRoom = Math.abs(across) - HALF_WIDTH - halfAcross,
@@ -94,9 +97,10 @@ export function noseConstraint(car, observer, model, { lateralEscape = false, pa
   if (path && cursor) {
     for (const r of observer.list) {
       const braking = r.ax < -2 || (r.car.controls?.brake ?? 0) > 0.15;
-      const slowTrafficOnLine = !path.attackSide && r.kind === 'traffic' && v - r.v > 4 && r.ds < 24;
-      if (!r.physical || (!r.hazard && !braking && !slowTrafficOnLine) || r.pit || r.ds < 5 || r.ds > v * 1.5 + 25 || (v - r.v < 4 && !braking)) continue;
-      for (const time of [0.35, 0.7, 1.05]) {
+      const closingCarOnLine = !path.attackSide && (adaptiveAttacks ? r.eligible : r.kind === 'traffic') && v - r.v > 4 && r.ds < 24;
+      if (!r.physical || (!r.hazard && !braking && !closingCarOnLine) || r.pit ||
+        r.ds < (adaptiveAttacks && closingCarOnLine ? 0.08 : 5) || r.ds > v * 1.5 + 25 || (v - r.v < 4 && !braking)) continue;
+      for (const time of adaptiveAttacks && closingCarOnLine ? [0.15, 0.35, 0.7, 1.05] : [0.35, 0.7, 1.05]) {
         const p = observer.at(r, time), c = advance(path, cursor.i, cursor.f, v * time), h = path.heading(c.i, c.f),
           dx = p.x - path.sample(path.px, c.i, c.f), dz = p.z - path.sample(path.pz, c.i, c.f),
           front = dx * Math.sin(h) + dz * Math.cos(h), side = dx * Math.cos(h) - dz * Math.sin(h), delta = angle(p.h - h),
@@ -187,6 +191,7 @@ export class Controller {
     }
     nose ??= noseConstraint(car, observer, model, {
       path, cursor: c, brakingTube, racecraft: course.racecraft,
+      adaptiveAttacks: o.adaptiveAttacks === true && course.racecraft?.enabled,
       lateralEscape: o.noseEscape && path !== course.line && path.attackSide && Math.abs(c.e) < 0.65 && ax.reserve > 0.75
     });
     const demand = longitudinalDemand(path, c, v, model, { cap: nose.cap, pit, wake: car.aero?.wake ?? 0 });

@@ -1,4 +1,4 @@
-import { clamp, gap, roadSample } from './math.js';
+import { clamp, gap, roadSample, angle } from './math.js';
 import { HALF_LENGTH, HALF_WIDTH } from './observer.js';
 import { longitudinalDemand } from './controller.js';
 import { allocate } from './axles.js';
@@ -73,7 +73,7 @@ export function evaluate(path, car, course, observer, target, horizon = target?.
   const finalGap = rival ? gap(rival.s, road, t.length) : 0;
   if (rubbingDamage > (course.racecraft?.moveBudget ?? Infinity)) risk += 5;
   return { path, progress, exit: v, risk, threat, blocked, cleared, finalGap, initialGap, rubbingDamage, hardImpact,
-    relativeGain: initialGap - finalGap, exitAdvantage: rival ? v - rival.v : 0,
+    relativeGain: initialGap - finalGap, exitAdvantage: rival ? v - rival.v : 0, routeTax: path.timeTax ?? 0,
     score: progress + v * 0.8 - risk * 5 };
 }
 
@@ -84,6 +84,21 @@ export function corridorFits(path, base, car, target, side) {
     z = path.sample(path.pz, c.i, c.f, path.entryLength);
   const section = base.closest(x, z);
   return side * (section.e - (target.offset ?? 0)) > HALF_WIDTH + (target.courseAcross ?? target.across) + 0.02;
+}
+
+/** Lane ownership is a body-space fact, not a future pull-out waypoint. */
+export function ownsRacingLane(car, target, side) {
+  if (!side || !target.eligible || target.hazard) return false;
+  const other = target.car, delta = angle(other.yaw - car.yaw);
+  if (Math.abs(delta) >= 0.18) return false;
+  const dx = car.x - other.x, dz = car.z - other.z, sy = Math.sin(car.yaw), cy = Math.cos(car.yaw),
+    across = dx * cy - dz * sy, along = dx * sy + dz * cy,
+    otherAcross = Math.abs(Math.cos(delta)) * HALF_WIDTH + Math.abs(Math.sin(delta)) * HALF_LENGTH,
+    otherAlong = Math.abs(Math.cos(delta)) * HALF_LENGTH + Math.abs(Math.sin(delta)) * HALF_WIDTH,
+    room = side * across - HALF_WIDTH - otherAcross,
+    closing = side * (((other.vx ?? 0) - (car.vx ?? 0)) * cy - ((other.vz ?? 0) - (car.vz ?? 0)) * sy);
+  return Math.abs(along) < HALF_LENGTH + otherAlong + 0.5 && room > -0.12 &&
+    closing < 1.5 && room - Math.max(0, closing) * 0.30 > -0.18;
 }
 
 /** A rejected high-score lane must not hide another lane inside the same
@@ -315,25 +330,35 @@ export class Battle {
       return (this.path = this.returnPath);
     }
 
+    const adaptive = this.options.adaptiveAttacks === true && course.racecraft?.enabled;
     const beside = !this.side && observer.list.find(q =>
-      q.eligible && Math.abs(q.ds) < HALF_LENGTH + q.along + 0.4 && Math.abs(q.d - observer.me.d) < 4.5
+      q.eligible && Math.abs(q.ds) < HALF_LENGTH + q.along + 0.4 && Math.abs(q.d - observer.me.d) < 4.5 &&
+      (!adaptive || ownsRacingLane(car, q, Math.sign((observer.me.offset ?? observer.me.d) - (q.offset ?? q.d))))
     );
     if (beside) {
-      const lateral = (observer.me.offset ?? observer.me.d) - (beside.offset ?? beside.d);
-      this.target = beside.id;
-      this.targetWasHazard = false;
-      this.side = Math.sign(lateral) || (car.id < beside.id ? -1 : 1);
-      this.state = beside.ds >= 0 ? 'ALONGSIDE' : 'DEFEND';
-      this.since = now;
-      if (beside.ds >= 0) this.outcomes.declare(beside, observer, now, this.side);
-      const owned = Math.max(this.separation(true), this.side * lateral);
-      this.path = course.corridor(car, beside, this.side, 1, {
+      const lateral = (observer.me.offset ?? observer.me.d) - (beside.offset ?? beside.d),
+        side = Math.sign(lateral) || (car.id < beside.id ? -1 : 1), owned = Math.max(this.separation(true), side * lateral);
+      const path = course.corridor(car, beside, side, 1, {
         entry: Math.max(35, car.speed * 0.9),
         hold: Math.max(150, car.speed * 4),
         returnLength: 100,
         clearance: owned
       });
-      return this.path;
+      const held = adaptive ? evaluate(path, car, course, observer, beside) : null;
+      // Starting beside a car is not permission to use an unchecked route.
+      // The old branch bypassed all rollout checks and could create a fast
+      // lateral hit after a braking/return sequence.
+      if (!adaptive || (held.risk < 0.5 && !held.hardImpact)) {
+        this.target = beside.id;
+        this.targetWasHazard = false;
+        this.side = side;
+        this.state = beside.ds >= 0 ? 'ALONGSIDE' : 'DEFEND';
+        this.since = now;
+        if (beside.ds >= 0) this.outcomes.declare(beside, observer, now, side);
+        if (held) this.candidates = [{ ...held, side, kind: 'owned-lane', fits: true }];
+        return (this.path = path);
+      }
+      course.reserved?.delete(path);
     }
 
     // Early hazard horizon (`car.speed * 1.65`) avoids noseConstraint braking before evasive corridor starts.
@@ -378,6 +403,8 @@ export class Battle {
       hazard = target.hazard;
     if (hazard) this.targetWasHazard = true;
     const committed = this.side !== 0 && this.target === target.id;
+    const ownedLane = adaptive && committed && course.racecraft?.rubbing &&
+      ownsRacingLane(car, target, this.side);
     if (committed && !hazard && target.ds > HALF_LENGTH + target.along + 0.35) {
       if (this.progressMark?.id !== target.id || target.ds < this.progressMark.gap - 0.5) {
         this.progressMark = { id: target.id, gap: target.ds, time: now };
@@ -412,7 +439,7 @@ export class Battle {
       }
       return space;
     };
-    if (committed && this.path && now - this.since < 7.5) {
+    if (committed && this.path && (now - this.since < 7.5 || ownedLane)) {
       const held = evaluate(this.path, car, course, observer, target);
       const space = clearanceForSide(this.side);
       const wantedOffset = (target.offset ?? target.d) + this.side * space;
@@ -420,7 +447,9 @@ export class Battle {
         ? Math.abs(wantedOffset - (this.path.corridorOffset ?? wantedOffset)) > 0.4 || space > (this.path.clearance ?? 0) + 0.35
         : Math.abs((target.offset ?? target.d) - (this.path.targetOffset ?? target.offset ?? target.d)) > 0.4;
       const remaining = gap(this.path.holdEndS ?? observer.me.s, observer.me.s, course.track.length);
-      if (held.risk < 0.5 && !moved && remaining > Math.max(45, car.speed * 0.8)) {
+      const losing = adaptive && target.eligible && target.ds > HALF_LENGTH + target.along &&
+        held.progress < current.progress - 2 && held.exit < current.exit - 1;
+      if (held.risk < 0.5 && !moved && !losing && remaining > Math.max(45, car.speed * 0.8)) {
         this.candidates.push({ ...held, side: this.side, kind: 'held' });
         return this.path;
       }
@@ -467,7 +496,11 @@ export class Battle {
       const near = path.closest(car.x, car.z);
       candidate.side = side;
       candidate.kind = hazard ? 'evade' : Math.sign(base.ks[near.i]) === side ? 'inside' : 'outside';
-      candidate.fits = corridorFits(path, base, car, target, side);
+      // Entering a lane and retaining a lane already occupied alongside are
+      // different contracts. Requiring a new full-width pull-out at a future
+      // entry station makes a legal overlap abort just before the corner.
+      candidate.fits = corridorFits(path, base, car, target, side) ||
+        (ownedLane && side === this.side && candidate.risk < 0.12 && !candidate.hardImpact);
       candidate.score += (committed ? 6 : 0) + (candidate.cleared ? 8 : 0);
       this.candidates.push(candidate);
       chosen = selectCandidate(chosen, candidate, riskLimit);

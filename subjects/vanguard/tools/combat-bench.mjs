@@ -69,7 +69,7 @@ async function runCase({ driver, scene, seed, options, trace, solo = false }) {
     // The rival-only control must start at exactly the same pose and speed.
     course.prepare(race.cars[0]);
     const defending = scene.kind === 'defend' || scene.kind === 'doors-defend',
-      separation = scene.doors ? (defending ? -1 : 1) : defending ? -10 : scene.kind === 'brake' ? 16 : 14;
+      separation = scene.doors ? (defending ? -1 : 1) : defending ? -10 : scene.kind === 'brake' ? 16 : scene.attackGap ?? 14;
     // Include both stations in the speed calculation even for the rival-only
     // control, so its initial speed exactly matches the paired encounter.
     const roads = [scene.s + separation, scene.s], cursors = roads.map(s => {
@@ -174,9 +174,12 @@ if (args[0] === '--run') {
   const drivers = flag('drivers', 'vanguard,intercept,razor,apex,tempest').split(',');
   const seeds = flag('seeds', '7').split(',').map(Number), only = flag('only', '').split(',').filter(Boolean);
   const stationOffset = +flag('station-offset', 0);
+  const attackGap = +flag('attack-gap', 14);
   if (!Number.isFinite(stationOffset) || Math.abs(stationOffset) > 30) throw Error('Station offset must be within 30 m');
+  if (!Number.isFinite(attackGap) || attackGap < 6 || attackGap > 30) throw Error('Attack gap must be within 6..30 m');
   const scenes = (only.length ? combatCases.filter(c => only.includes(c.id)) : combatCases)
     .map(c => ({ ...c, s: c.s + stationOffset,
+      ...(!c.doors && ['equal', 'momentum', 'traffic'].includes(c.kind) ? { attackGap } : {}),
       ...(args.includes('--seconds') ? { duration: +flag('seconds', 25) } : {}) }));
   if (only.some(id => !combatCases.some(c => c.id === id))) throw Error('Unknown scene in --only');
   const tag = flag('tag', 'combat-baseline');
@@ -199,7 +202,7 @@ if (args[0] === '--run') {
     'subjects/vanguard/tools/combat-bench.mjs', 'subjects/vanguard/tools/combat-metrics.mjs']) {
     try { hashes[f] = createHash('sha256').update(readFileSync(root + f)).digest('hex'); } catch {}
   }
-  const report = { version: 4, scoreContract: 'racing-rub-1pct-per-encounter-v1', defaultClassId: 'gt', drivers, seeds, scenes, stationOffset, options, sourceHashes: hashes,
+  const report = { version: 5, scoreContract: 'racing-rub-1pct-per-encounter-v1', defaultClassId: 'gt', drivers, seeds, scenes, stationOffset, attackGap, options, sourceHashes: hashes,
     benchmarkHash: createHash('sha256').update(readFileSync(new URL(import.meta.url)))
       .update(readFileSync(new URL('./combat-metrics.mjs', import.meta.url))).digest('hex'),
     revision: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim(),

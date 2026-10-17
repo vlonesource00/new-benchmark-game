@@ -68,6 +68,11 @@ The production build passes. Its existing large-chunk warning remains; no unrela
 
 ## Boundaries of this continuation
 
+The subsequent [GT passing update](COMBAT-PASSING-2026-10-17.md) records 5/12
+retained passes against 4/12 in matched 40-second encounters, with the prior
+short-test score unchanged. It also records the unchanged full-race placing
+and the pre-existing 6 m start failure, rather than claiming broad dominance.
+
 The subsequent [racecraft upgrade](UPGRADE-2026-10-17.md) implements the user's
 new rubbing/damage-budget objective, records controlled passing gains and
 adds 20-lap live-strategy validation. Its contact-tolerant racing scores are
