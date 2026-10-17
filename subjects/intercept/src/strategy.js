@@ -85,6 +85,13 @@ export class InterceptStrategist extends TeamStrategist {
     this.nextTyreLap=plan.tyres?null:prior;}
 }
 
+// Which strategist INTERCEPT teams get: 'v1' = InterceptStrategist, 'v2' = the full-information race planner
+// (STRATEGY-PLAN.md). Set by tools before the race is built.
+const STRATEGISTS={v1:(prev,race,car)=>new InterceptStrategist(prev,race.track.id,car.classId,race.lane)};
+let strategyKind='v1';
+export function setInterceptStrategy(kind='v1'){if(!STRATEGISTS[kind])throw Error(`unknown INTERCEPT strategist ${kind}`);strategyKind=kind;}
+export function registerInterceptStrategy(kind,make){STRATEGISTS[kind]=make;}
+
 /** Installation is per entry, including human + INTERCEPT pairings; manual requests retain priority. */
 export function installInterceptStrategy(race,car){
   if(!race?.entries||race.session!=='race')return false;
@@ -93,7 +100,7 @@ export function installInterceptStrategy(race,car){
   // Never replace another architecture's explicit team planner in a mixed AI pairing.
   if(e.team.drivers.some(d=>d.kind==='ai'&&d.id!=='intercept'))return false;
   if(e.strategist.stops>0||e.strategist.stintLaps>0)return false;
-  e.strategist=new InterceptStrategist(e.strategist,race.track.id,car.classId,race.lane);return true;
+  e.strategist=STRATEGISTS[strategyKind](e.strategist,race,car);return true;
 }
 
 export class Resources {
