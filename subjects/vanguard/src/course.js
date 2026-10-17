@@ -6,6 +6,7 @@ import ownCourses from '../../intercept/data/courses.json' with { type: 'json' }
 import { tyreWet } from '../../../game/engine/sim/water.js';
 import { clamp, angle, join, ease, gap } from './math.js';
 import { HeldPredictor } from './predict.js';
+import { tacticalHorizon } from './trajectory.js';
 
 /** Three bounded box passes approximate a Gaussian smoothing kernel in O(n) time. */
 function softenOffsets(values, radius) {
@@ -203,6 +204,12 @@ export class Course {
       offset2 = secondTarget ? (secondTarget.offset ?? secondTarget.d - base.lat[idx2]) + secondSide * cl2 : secondSide * cl2;
     }
     entry = Math.max(entry, joinSpeed * Math.cbrt(60 * Math.max(0.1, Math.abs(offset - d0)) / Math.max(20, jerk)) * 1.08);
+    // Passing and merging are separate decisions. A tactical preview must not
+    // assume an automatic return to the base line while the rival is still
+    // alongside; Battle explicitly plans that return after clearance is safe.
+    if (this.options.physicalRollouts && target?.eligible && side && secondSide === 0) {
+      hold = Math.max(hold, joinSpeed * (tacticalHorizon(base, car) + 0.5));
+    }
     const reach = entry + hold + returnLength, n = Math.min(base.N - 22, Math.ceil(reach / base.ds));
     const shift = new Float64Array(n + 1), bound = this.track.halfWidth + (this.options.routeEdge ?? -1.12);
     const offsets = new Float64Array(n + 1);

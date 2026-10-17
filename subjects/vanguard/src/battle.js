@@ -1,18 +1,28 @@
 import { clamp, gap, roadSample, angle } from './math.js';
 import { HALF_LENGTH, HALF_WIDTH } from './observer.js';
-import { longitudinalDemand } from './controller.js';
+import { longitudinalDemand, noseConstraint } from './controller.js';
 import { allocate } from './axles.js';
 import { bodyContact } from './body.js';
 import { deployment } from './strategy.js';
+import { TrajectoryRollout, tacticalHorizon } from './trajectory.js';
 
 /** Closed-loop rollout evaluation on compiled corridor demand with exact 2D body contact and hybrid co-state. */
 export function evaluate(path, car, course, observer, target, horizon = target?.hazard ? 3.4 : (course.options.combatHorizon ?? 3.4)) {
+  if ((course.options.physicalRollouts === true || course.compareReturns) && !course.options.executor && course.controller && !target?.hazard &&
+    (target?.eligible || (!target && observer.list.some(r => r.physical && r.eligible && !r.pit)))) {
+    course.rollout ??= new TrajectoryRollout(course);
+    return course.rollout.evaluate(path, car, observer, target, course.compareReturns ? 3.4 : tacticalHorizon(course.line, car));
+  }
+  return nominal(path, car, course, observer, target, horizon);
+}
+
+function nominal(path, car, course, observer, target, horizon) {
   const model = course.model, t = course.track, c = path.closest(car.x, car.z);
   let i = c.i, f = c.f, v = Math.max(2, car.speed), time = 0, arc = 0, risk = 0, blocked = 0, cleared = false, threat = null, peakRisk = 0;
   const startS = observer.me.s, initialGap = target?.ds ?? 0;
   let energy = car.hybrid?.energy ?? 0;
   let gear = car.gear;
-  let rubbingDamage = 0;
+  let rubbingDamage = 0, clearSeconds = 0, everCleared = false, alongsideSeconds = 0;
   let hardImpact = false;
   const rubPeaks = new Map();
   while (time < horizon) {
@@ -44,7 +54,12 @@ export function evaluate(path, car, course, observer, target, horizon = target?.
         cap = Math.min(cap, Math.sqrt(p.v * p.v + 2 * model.brake(v) * 0.75 * Math.max(0, room)));
         blocked += h;
       }
-      if (r.id === target?.id && ds < -(HALF_LENGTH + r.along + 0.2)) cleared = true;
+      if (r.id === target?.id) {
+        if (Math.abs(ds) < HALF_LENGTH + r.along + 2 && across > 1.8) alongsideSeconds += h;
+        const clear = ds < -(HALF_LENGTH + r.along + 0.2);
+        clearSeconds = clear ? clearSeconds + h : 0;
+        everCleared ||= clear;
+      }
     }
     const demand = longitudinalDemand(path, { i, f }, v, model, { cap, wake });
     const pedals = allocate(demand.acceleration, v, model, { share: Math.sqrt(Math.max(0, 1 - use ** 3)), reserve: 1, spin: 0 }, course.options);
@@ -71,8 +86,10 @@ export function evaluate(path, car, course, observer, target, horizon = target?.
   const road = roadSample(path, i, f, t.length), progress = gap(road, startS, t.length),
     rival = target ? observer.at(target, time) : null;
   const finalGap = rival ? gap(rival.s, road, t.length) : 0;
+  const retained = clearSeconds >= 0.75 && finalGap < -(HALF_LENGTH + (target?.along ?? HALF_LENGTH) + 0.2);
+  cleared = course.options.physicalRollouts ? retained : everCleared;
   if (rubbingDamage > (course.racecraft?.moveBudget ?? Infinity)) risk += 5;
-  return { path, progress, exit: v, risk, threat, blocked, cleared, finalGap, initialGap, rubbingDamage, hardImpact,
+  return { path, progress, exit: v, risk, threat, blocked, cleared, retained, clearSeconds, everCleared, alongsideSeconds, finalGap, initialGap, rubbingDamage, hardImpact,
     relativeGain: initialGap - finalGap, exitAdvantage: rival ? v - rival.v : 0, routeTax: path.timeTax ?? 0,
     score: progress + v * 0.8 - risk * 5 };
 }
@@ -104,7 +121,8 @@ export function ownsRacingLane(car, target, side) {
 /** A rejected high-score lane must not hide another lane inside the same
  * collision budget. Rank admissible corridors, then decide whether to commit. */
 export function selectCandidate(best, candidate, riskLimit) {
-  if (!candidate.fits || candidate.hardImpact || candidate.risk >= riskLimit) return best;
+  if (!candidate.fits || candidate.trackable === false || candidate.hardImpact ||
+    !Number.isFinite(candidate.score) || !Number.isFinite(candidate.risk) || candidate.risk >= riskLimit) return best;
   return !best || candidate.score > best.score ? candidate : best;
 }
 
@@ -119,7 +137,8 @@ export function switchbackPlan(base, car, target, options) {
     if (Math.abs(k) > Math.abs(curvature)) { curvature = k; apex = distance; }
   }
   const inside = Math.sign(curvature), apexSpeed = base.sample(base.vbrk, c.i, c.f, apex);
-  if (Math.abs(curvature) < 0.002 || car.speed - apexSpeed < 6 || inside * (target.offset ?? 0) < 0.5) return null;
+  if (Math.abs(curvature) < 0.002 || car.speed - apexSpeed < 6 ||
+    (!options.physicalRollouts && inside * (target.offset ?? 0) < 0.5)) return null;
   const clearance = options.separation, entry = Math.max(35, car.speed * 0.65),
     switchStart = Math.max(entry + 6, apex + 8),
     switchLength = Math.max(40, Math.max(apexSpeed + 6, 18) * Math.cbrt(120 * clearance / Math.max(20, options.steerJerk)) * 1.08);
@@ -207,7 +226,10 @@ export class Battle {
     }
     // Fast post-hazard recovery: stationary/spun hazards return after 0.08 s; moving traffic holds the straight passing lane for 1.1 s.
     const clearHold = (r.hazard || this.targetWasHazard) ? 0.08 : 1.1;
-    if (this.clearAt !== null && now - this.clearAt > clearHold) {
+    const rearRoom = -r.ds - HALF_LENGTH - r.along;
+    const mergeRoom = ownSpeed * (this.options.brakingHeadway ?? 0) + Math.max(0, r.v - ownSpeed) * 0.8;
+    const mergeSafe = !this.options.physicalRollouts || r.hazard || this.targetWasHazard || rearRoom > Math.max(1.2, mergeRoom);
+    if (this.clearAt !== null && now - this.clearAt > clearHold && mergeSafe) {
       this.state = 'RETURN';
       this.returnReason = 'clear';
     }
@@ -220,6 +242,7 @@ export class Battle {
     this.at = now;
     this.sequence++;
     course.beginRoutes(this.path, this.returnPath, this.returnGuard?.path);
+    course.compareReturns = false;
 
     if (this.state === 'RETURN') {
       const c = base.closest(car.x, car.z);
@@ -243,7 +266,7 @@ export class Battle {
         this.candidates = [{ ...lane, kind: 'continue', side: this.side }];
         const direct = evaluate(base, car, course, observer, next);
         const trafficChain = next.kind === 'traffic' && car.speed - next.v > 3 && (next.ds - 5) / Math.max(0.2, car.speed - next.v) < 4;
-        if (lane.risk < 0.4 && (trafficChain || (lane.progress > direct.progress - 2 && lane.exit > direct.exit - 1))) {
+        if (lane.trackable !== false && (!this.options.physicalRollouts || !lane.hardImpact) && lane.risk < 0.4 && (trafficChain || (lane.progress > direct.progress - 2 && lane.exit > direct.exit - 1))) {
           this.target = next.id;
           this.targetWasHazard = Boolean(next.hazard);
           this.state = next.hazard ? 'EVADE' : 'ATTACK';
@@ -266,7 +289,9 @@ export class Battle {
           });
           const altLane = evaluate(altPath, car, course, observer, next);
           this.candidates.push({ ...altLane, kind: 's-chain', side: -this.side });
-          if (altLane.risk < 0.35 && corridorFits(altPath, base, car, next, -this.side) && (trafficChain || altLane.progress > direct.progress - 2)) {
+          if (altLane.trackable !== false && (!this.options.physicalRollouts || !altLane.hardImpact) && altLane.risk < 0.35 &&
+            corridorFits(altPath, base, car, next, -this.side) &&
+            (trafficChain || altLane.progress > direct.progress - 2)) {
             this.target = next.id;
             this.targetWasHazard = Boolean(next.hazard);
             this.side = -this.side;
@@ -294,7 +319,8 @@ export class Battle {
         neighbor = observer.list.find(q =>
           q.id === merge.threat && q.physical && !q.pit &&
           q.ds > -(HALF_LENGTH + q.along) && q.ds < Math.max(25, car.speed * 0.7) &&
-          (q.ds >= 0 || q.hazard || (q.kind === 'traffic' && car.speed - q.v > 3))
+          (q.ds >= 0 || q.hazard || (q.kind === 'traffic' && car.speed - q.v > 3) ||
+            (this.options.physicalRollouts && q.eligible && q.v > car.speed - 0.7))
         );
       if (neighbor && merge.risk > 0.3) {
         const stillHeld = this.returnGuard?.id === neighbor.id &&
@@ -348,7 +374,7 @@ export class Battle {
       // Starting beside a car is not permission to use an unchecked route.
       // The old branch bypassed all rollout checks and could create a fast
       // lateral hit after a braking/return sequence.
-      if (!adaptive || (held.risk < 0.5 && !held.hardImpact)) {
+      if (!adaptive || (held.risk < 0.5 && !held.hardImpact && held.trackable !== false)) {
         this.target = beside.id;
         this.targetWasHazard = false;
         this.side = side;
@@ -367,7 +393,28 @@ export class Battle {
       q.ds < (q.hazard ? Math.max(68, car.speed * 1.65) : Math.max(45, car.speed * 1.25)) &&
       (q.eligible || (q.hazard && (Math.abs(q.d - observer.me.d) < 3.8 || Math.abs(q.offset ?? 0) < 3.5)))
     );
-    const current = evaluate(base, car, course, observer, target);
+    if (this.options.brakingHeadway > 0 && !this.side && target?.eligible &&
+      ((target.car.controls?.brake ?? 0) > 0.35 || target.deceleration > 10)) {
+      const frontal = noseConstraint(car, observer, course.model, { brakingHeadway: this.options.brakingHeadway });
+      if (frontal.blocker?.id === target.id && frontal.details?.escapeTime < 1.1) {
+        // A new C2 entry cannot clear the leader before this braking gap
+        // closes. Brake first; an already established outside lane is retained.
+        this.state = 'FOLLOW'; this.candidates = [];
+        return (this.path = base);
+      }
+    }
+    let current = evaluate(base, car, course, observer, target);
+    if (this.options.returnPreview && !this.options.executor && this.side && target?.eligible &&
+      Math.abs(base.closest(car.x, car.z).e) > 0.65) {
+      const joining = course.corridor(car, null, 0, 0, {
+        entry: Math.max(90, car.speed * 1.8), hold: 16, returnLength: 60, clearance: 0
+      });
+      course.rollout ??= new TrajectoryRollout(course);
+      // Compare with the return that the controller would actually execute,
+      // starting from its live position and steering, not a snap to base.
+      current = { ...course.rollout.evaluate(joining, car, observer, target, 3.4), path: base, returnChecked: true };
+      course.compareReturns = true;
+    }
     this.candidates = [{ ...current, kind: 'course', side: 0 }];
     if (!target) {
       const rear = observer.list.find(q =>
@@ -380,7 +427,7 @@ export class Battle {
             entry: Math.max(60, car.speed * 1.1), hold: 120, returnLength: 100, clearance: 1.1
           });
           const cover = evaluate(path, car, course, observer, rear);
-          if (cover.risk < 0.35 && cover.progress > current.progress - 1.5 && cover.exit > current.exit - 1) {
+          if (cover.trackable !== false && (!this.options.physicalRollouts || !cover.hardImpact) && cover.risk < 0.35 && cover.progress > current.progress - 1.5 && cover.exit > current.exit - 1) {
             this.target = rear.id;
             this.targetWasHazard = false;
             this.side = side;
@@ -448,8 +495,9 @@ export class Battle {
         : Math.abs((target.offset ?? target.d) - (this.path.targetOffset ?? target.offset ?? target.d)) > 0.4;
       const remaining = gap(this.path.holdEndS ?? observer.me.s, observer.me.s, course.track.length);
       const losing = adaptive && target.eligible && target.ds > HALF_LENGTH + target.along &&
+        (!this.options.physicalRollouts || closing < 0.5) &&
         held.progress < current.progress - 2 && held.exit < current.exit - 1;
-      if (held.risk < 0.5 && !moved && !losing && remaining > Math.max(45, car.speed * 0.8)) {
+      if (held.risk < 0.5 && held.trackable !== false && (!held.plant || !held.hardImpact) && !moved && !losing && remaining > Math.max(45, car.speed * 0.8)) {
         this.candidates.push({ ...held, side: this.side, kind: 'held' });
         return this.path;
       }
@@ -484,7 +532,7 @@ export class Battle {
       (q.hazard || (q.eligible && car.speed - q.v > 2.5))
     );
     let chosen = null;
-    const riskLimit = Math.max(0.8, current.risk + 0.2);
+    const riskLimit = current.returnChecked ? 0.8 : Math.max(0.8, current.risk + 0.2);
     for (const side of sides) {
       const space = clearanceForSide(side);
       const offset = target.offset ?? 0;
@@ -504,6 +552,7 @@ export class Battle {
       candidate.score += (committed ? 6 : 0) + (candidate.cleared ? 8 : 0);
       this.candidates.push(candidate);
       chosen = selectCandidate(chosen, candidate, riskLimit);
+
 
       // S-thread candidate if `nextTraffic` blocks `side` past `target`
       if (nextTraffic && this.candidates.length < (this.options.maxCandidates ?? 8) - 1) {
@@ -542,10 +591,16 @@ export class Battle {
       this.candidates.push(candidate);
       if (candidate.risk === 0) chosen = selectCandidate(chosen, candidate, riskLimit);
     }
-    const reachable = chosen && (chosen.preparation || chosen.finalGap < 5 || (target.ds < 18 && closing > 1 && chosen.finalGap < target.ds + 2));
+    // A paired gain survives common rival-forecast error. Requiring an absolute
+    // pass within the lookahead rejects a faster, trackable corner exit simply
+    // because both forecasts overestimate the rival's future pace.
+    const pairedGain = chosen && chosen.plant && chosen.progress > current.progress + 2 &&
+      chosen.exit > current.exit - 1 && chosen.trackable;
+    const attackGap = chosen?.entryGap ?? chosen?.finalGap;
+    const reachable = chosen && (pairedGain || chosen.preparation || attackGap < 5 || (target.ds < 18 && closing > 1 && attackGap < target.ds + 2));
     const useful = chosen && ((chosen.cleared && chosen.finalGap < 5) || chosen.score > current.score + 0.5);
     const actionable = chosen && (hazard || committed || (reachable && useful));
-    if (actionable && chosen.risk < Math.max(0.8, current.risk + 0.2)) {
+    if (actionable && chosen.risk < riskLimit) {
       if (!committed) {
         this.target = target.id;
         this.targetWasHazard = Boolean(hazard);

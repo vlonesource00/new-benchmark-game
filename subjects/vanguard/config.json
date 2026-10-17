@@ -22,8 +22,12 @@
   "raceDamageBudget": 0.20,
   "observedMotion": true,
   "adaptiveAttacks": true,
+  "trackingRecovery": true,
+  "brakingHeadway": 0,
+  "physicalRollouts": false,
+  "returnPreview": false,
   "perClass": {
-    "lmdh": { "yawGain": 0.65, "evadeYawGain": 2, "observedMotion": false, "adaptiveAttacks": false,
+    "lmdh": { "yawGain": 0.65, "evadeYawGain": 2, "observedMotion": false, "adaptiveAttacks": false, "trackingRecovery": false, "brakingHeadway": 0, "physicalRollouts": false, "returnPreview": false,
       "racingSeparation": 2.65, "racingHoldSeparation": 2.35 },
     "gt": { "routeMargin": 0.96, "reducedGripBrakeExp": 1.4 }
   },

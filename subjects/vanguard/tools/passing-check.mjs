@@ -35,4 +35,15 @@ for (const [track, s, rival] of [['harbor-ring', 250, 'intercept'], ['solenne', 
     kind: 'brake', rival, duration: 40 }, {});
   assert(braking.score.racingFollowing, `${track}: the stronger attack must not break following a braking leader`);
 }
-console.log('VANGUARD retained-pass and braking regressions passed.');
+const closeStart = { id: 'harbor-close-start', track: 'harbor-ring', s: 250,
+  kind: 'equal', rival: 'intercept', attackGap: 6, duration: 40 };
+const sliding = run(closeStart, { trackingRecovery: false }), recovered = run(closeStart, {});
+assert(sliding.ego.damage > 0.05 && sliding.ego.offtrack > 1,
+  'the control reproduces the close-start slide and barrier damage');
+assert.equal(recovered.contacts, 0, 'recovery must not depend on a collision to turn the car');
+assert.equal(recovered.ego.damage, 0);
+assert.equal(recovered.ego.offtrack, 0);
+assert(!recovered.ego.retired && !recovered.ego.teleported && !recovered.ego.errors);
+assert(recovered.ego.progress > sliding.ego.progress && recovered.score.progressRatio > 0.97,
+  'recovery must keep driving rather than merely stop before the wall');
+console.log('VANGUARD retained-pass, braking and close-start recovery regressions passed.');

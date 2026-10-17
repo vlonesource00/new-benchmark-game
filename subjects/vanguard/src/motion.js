@@ -30,8 +30,9 @@ export class RivalMotion {
     }
     return this.guides.get(cls);
   }
-  of(r) {
-    if (r.motion) return r.motion;
+  of(r, horizon = 0) {
+    const count = Math.max(36, Math.ceil(Math.min(8, Math.max(horizon, this.course.options.combatHorizon ?? 3.4)) / STEP) + 2);
+    if (r.motion?.length >= count) return r.motion;
     const track = this.course.track, line = this.guide(r.cls);
     let model = this.models.get(r.cls);
     if (!model) { model = new CarModel(r.cls); this.models.set(r.cls, model); }
@@ -52,7 +53,6 @@ export class RivalMotion {
     const observed = this.course.options.observedMotion === true;
     let previousRoad = roadSample(line, i, f, track.length), shiftTimer = r.car.shiftTimer ?? 0;
     const rows = [];
-    const count = Math.max(36, Math.ceil(Math.min(8, this.course.options.combatHorizon ?? 3.4) / STEP) + 2);
     for (let n = 0; n < count; n++) {
       const t = n * STEP, s = roadSample(line, i, f, track.length);
       if (n) road += gap(s, observed ? previousRoad : road, track.length);

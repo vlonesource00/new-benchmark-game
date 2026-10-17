@@ -68,6 +68,11 @@ The production build passes. Its existing large-chunk warning remains; no unrela
 
 ## Boundaries of this continuation
 
+The [close-start recovery update](COMBAT-RECOVERY-2026-10-17.md) fixes the known
+GT barrier crash while preserving the existing encounter scores. It also records
+the rejected closed-loop planner experiments, which remain disabled; it does not
+claim a new passing gain.
+
 The subsequent [GT passing update](COMBAT-PASSING-2026-10-17.md) records 5/12
 retained passes against 4/12 in matched 40-second encounters, with the prior
 short-test score unchanged. It also records the unchanged full-race placing

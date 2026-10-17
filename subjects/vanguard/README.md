@@ -14,6 +14,11 @@ pull-out. It keeps the existing physics, risk limits and damage budget;
 prototypes retain their tested calibration. The report separates its targeted
 passing gain from the unresolved full-race and close-start limitations.
 
+The [close-start recovery update](COMBAT-RECOVERY-2026-10-17.md) fixes the known
+GT slide into the barrier while preserving the existing passing regressions.
+Closed-loop tactical previews are available for experiments, but remain disabled
+because their encounter results did not justify replacing the original planner.
+
 ## How it drives
 
 - **The host controller runs every physics substep.** It steers and allocates throttle/brake from current vehicle and rival state, while a slower worker chooses routes. A late worker reply does not freeze local feedback.
@@ -46,6 +51,7 @@ node --import ./scripts/json-loader.mjs subjects/vanguard/tools/rollout-check.mj
 node --import ./scripts/json-loader.mjs subjects/vanguard/tools/defence-check.mjs
 node --import ./scripts/json-loader.mjs subjects/vanguard/tools/racecraft-check.mjs
 node --import ./scripts/json-loader.mjs subjects/vanguard/tools/passing-check.mjs
+node --import ./scripts/json-loader.mjs subjects/vanguard/tools/trajectory-check.mjs
 ```
 
 For short combat comparisons against INTERCEPT, RAZOR, APEX and TEMPEST, run

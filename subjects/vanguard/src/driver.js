@@ -32,6 +32,7 @@ export class VanguardDriver {
     this.observer.reference = this.course.line;
     if (this.options.motionForecast !== false) this.observer.motion = new RivalMotion(this.course, this.observer);
     this.controller = new Controller(this.options);
+    this.course.controller = this.controller;
     this.learning = new PaceLearning(this.course, this.options);
     this.outcomes = new Outcomes();
     this.battle = new Battle(this.course, this.options, this.outcomes);
@@ -89,6 +90,7 @@ export class VanguardDriver {
       !this.observer.list.some(r => r.physical && !r.pit && Math.abs(r.ds) < 85);
     this.course.tick(car, dt, allowance);
     this.course.setDelay(car, context.controlDelay, context.feedbackPeriod, this.path);
+    this.course.controlMemory = state.controlMemory;
     const pit = Boolean(car.race?.boxThisLap || state.pitPlan) && (!state.pit || state.pit === 'approach'),
       toPit = pit ? this.pitGuide.toEntry(this.observer.me.s) : Infinity;
     let path = this.course.line, pitCap = Infinity;
@@ -184,6 +186,9 @@ export class VanguardDriver {
         rubbingDamage: q.rubbingDamage,
         hardImpact: q.hardImpact, preparation: q.preparation,
         relativeGain: q.relativeGain, exitAdvantage: q.exitAdvantage,
+        plant: q.plant, trackable: q.trackable, maxError: q.maxError, offtrack: q.offtrack,
+        horizon: q.horizon, clearSeconds: q.clearSeconds, validForecast: q.validForecast,
+        returnChecked: q.returnChecked,
         routeTax: q.routeTax, profileFloor: q.path?.profileFloor, clear: q.cleared,
         finalGap: q.finalGap, fits: q.fits, chosen: q.path === this.path
       })),

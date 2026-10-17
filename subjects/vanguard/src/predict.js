@@ -26,7 +26,8 @@ function copyState(target, source) {
  * Wake is held at its observed value; this is not a forecast of future contacts. */
 export class HeldPredictor {
   constructor(track) { this.track = track; this.surface = Object.create(track); }
-  predict(car, seconds, step = 1 / 120) {
+  /** Reset a private plant for either held-control or closed-loop previews. */
+  begin(car) {
     if (!this.car || this.car.classId !== car.classId) this.car = new Vehicle(car.id, car.name, car.color, car.classId);
     const predicted = copyState(this.car, car), source = this.track, surface = this.surface;
     if (!Object.hasOwn(surface, 'rubber')) surface.rubber = new Float32Array(source.rubber.length);
@@ -40,6 +41,10 @@ export class HeldPredictor {
       this.water.depth.set(source.water.depth);
       surface.water = this.water;
     } else surface.water = null;
+    return predicted;
+  }
+  predict(car, seconds, step = 1 / 120) {
+    const predicted = this.begin(car), surface = this.surface;
     let remaining = Number.isFinite(seconds) ? Math.max(0, Math.min(0.2, seconds)) : 0;
     const quantum = Number.isFinite(step) && step > 0 ? Math.min(step, 1 / 120) : 1 / 120;
     const wake = car.aero?.wake ?? 0;
