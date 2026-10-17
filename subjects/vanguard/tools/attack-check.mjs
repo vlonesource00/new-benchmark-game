@@ -8,6 +8,7 @@ chosen = selectCandidate(chosen, clean, 0.8);
 assert.equal(chosen, clean, 'an unsafe high-score lane cannot mask an admissible passing lane');
 assert.equal(selectCandidate(clean, risky, 0.8), clean, 'candidate order does not bypass the collision budget');
 assert.equal(selectCandidate(null, { ...clean, fits: false }, 0.8), null, 'road width still constrains commitment');
+assert.equal(selectCandidate(null, { ...clean, hardImpact: true }, 20), null, 'a permissive current-route risk cannot authorise a predicted heavy impact');
 
 const better = { ...clean, score: 108 };
 assert.equal(selectCandidate(clean, better, 0.8), better, 'admissible alternatives still compete on progress and exit speed');

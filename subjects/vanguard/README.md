@@ -2,6 +2,12 @@
 
 VANGUARD continues Argon's driver. It keeps the original force controller, asynchronous worker planner, spatial C2 corridor contracts, connected traffic routes, hazard forecasts and resource strategist. It is selectable as `VANGUARD` in the game's driver roster.
 
+The current [racecraft upgrade](UPGRADE-2026-10-17.md) permits light side rubbing
+under a 20%-damage budget for 20 laps, counted across repairs and service resets.
+GT3 uses closer passing routes and an improved public-state rival forecast;
+prototypes retain their verified corridor widths and forecast calibration.
+Damage affects the physical pace model, and wet/worn tyres retain braking reserve.
+
 ## How it drives
 
 - **The host controller runs every physics substep.** It steers and allocates throttle/brake from current vehicle and rival state, while a slower worker chooses routes. A late worker reply does not freeze local feedback.
@@ -32,6 +38,7 @@ node --import ./scripts/json-loader.mjs subjects/vanguard/tools/setup-check.mjs
 node --import ./scripts/json-loader.mjs subjects/vanguard/tools/combat-metrics-check.mjs
 node --import ./scripts/json-loader.mjs subjects/vanguard/tools/rollout-check.mjs
 node --import ./scripts/json-loader.mjs subjects/vanguard/tools/defence-check.mjs
+node --import ./scripts/json-loader.mjs subjects/vanguard/tools/racecraft-check.mjs
 ```
 
 For short combat comparisons against INTERCEPT, RAZOR, APEX and TEMPEST, run
@@ -43,6 +50,10 @@ same-class passing, backmarkers, defence and braking. `--drivers vanguard`,
 only as an experiment: the longer tactical horizon has not demonstrated a passing gain.
 `tools/forecast-audit.mjs <trace.json>` compares rival forecasts with the actual
 later trajectory in a two-car VANGUARD trace, using exact-time interpolation.
+The current score distinguishes clean passes from budget-compliant rubbing
+passes; heavy/front impacts and illegal track use do not become rubbing wins.
+Short encounters allow at most 1% damage; full 20-lap tests enforce the race
+budget using accumulated damage, not merely the repaired car's final condition.
 
 Run the game-scored solo matrix, including both car classes and all five tracks:
 

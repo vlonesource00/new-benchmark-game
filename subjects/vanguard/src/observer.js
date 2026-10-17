@@ -58,12 +58,16 @@ export class Observer {
       const eligible = !pit && !approaching && !retired && !done && !off && v >= 7 && Math.abs(psi) < 0.65;
       const r = {
         id: other.id, car: other, cls: other.classId, s: q.s, d: q.lateral, ds, v, vd, ax, deceleration,
+        accelerationValid: elapsed > 0.008 && elapsed < 0.5,
         psi,
         along: Math.abs(Math.cos(psi)) * HALF_LENGTH + Math.abs(Math.sin(psi)) * HALF_WIDTH,
         across: Math.abs(Math.cos(psi)) * HALF_WIDTH + Math.abs(Math.sin(psi)) * HALF_LENGTH,
         physical, eligible, retired: Boolean(retired), pit, approaching, done, off, reenter,
         moving: v >= 7 && Math.abs(psi) < 0.65 && !pit && !approaching && !retired && !done,
-        hazard: !pit && (done || Math.abs(psi) > 0.65 || v < 7 || (!eligible && physical)),
+        // A normal pit call removes overtaking eligibility, not the car's
+        // predictable forward motion. Keep it physical for nose protection
+        // without treating the call alone as a sudden obstacle to swerve past.
+        hazard: !pit && (done || retired || off || Math.abs(psi) > 0.65 || v < 7 || (!eligible && physical && !approaching)),
         kind: pit ? 'pit' : eligible ? (other.classId === car.classId ? 'race' : 'traffic') : 'hazard'
       };
       if (this.reference) {
@@ -84,7 +88,7 @@ export class Observer {
         if (!pit && Math.abs(r.coursePsi) < 0.65 && r.referenceSpeed >= 7) {
           r.moving = !pit && !approaching && !retired && !done;
           r.eligible = r.moving && !off;
-          r.hazard = !pit && !r.eligible && physical;
+          r.hazard = !pit && physical && (off || retired || done || (!r.eligible && !approaching));
           r.kind = r.eligible ? (other.classId === car.classId ? 'race' : 'traffic') : 'hazard';
         }
       }
@@ -97,6 +101,9 @@ export class Observer {
   /** Near-term body tube; uses 2D inertial scrub for spun/sideways hazards so stationary/sideways cars don't drift down-track. */
   at(r, time) {
     if (this.motion && r.moving && r.reference && r.car?.spec) return this.motion.at(r, time);
+    return this.inertialAt(r, time);
+  }
+  inertialAt(r, time) {
     const h = Math.min(3.5, Math.max(0, time));
     if (r.hazard && (Math.abs(r.psi) > 0.55 || r.v < 5)) {
       const speed0 = Math.hypot(r.car.vx ?? 0, r.car.vz ?? 0), decel = 9.0;

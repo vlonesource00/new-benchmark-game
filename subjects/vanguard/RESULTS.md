@@ -68,6 +68,11 @@ The production build passes. Its existing large-chunk warning remains; no unrela
 
 ## Boundaries of this continuation
 
+The subsequent [racecraft upgrade](UPGRADE-2026-10-17.md) implements the user's
+new rubbing/damage-budget objective, records controlled passing gains and
+adds 20-lap live-strategy validation. Its contact-tolerant racing scores are
+kept separate from the original zero-contact results above.
+
 For the subsequent five-driver combat screen, CPU regression fixes and rejected
 experiments, see [COMBAT-REVIEW-2026-10-17.md](COMBAT-REVIEW-2026-10-17.md).
 Its results are separate from the earlier solo matrix and do not establish an

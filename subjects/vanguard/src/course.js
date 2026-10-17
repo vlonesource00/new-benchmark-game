@@ -1,5 +1,6 @@
 import { PaceLine, surfaceProfile, wetLineGen } from './surface.js';
-import { CarModel, liveGrip } from '../../apex/src/model.js';
+import { liveGrip } from '../../apex/src/model.js';
+import { VanguardModel as CarModel } from './model.js';
 import lines from '../../apex/data/lines.json' with { type: 'json' };
 import ownCourses from '../../intercept/data/courses.json' with { type: 'json' };
 import { tyreWet } from '../../../game/engine/sim/water.js';
@@ -65,15 +66,18 @@ export class Course {
   }
   refresh(car, force = false, allowance = 1) {
     const g = this.grip(car), m = this.options.margin * allowance;
+    const damage = car.damage ?? 0, damageChanged = Math.abs(damage - (this.profileDamage ?? 0)) > 0.002;
+    this.model.setDamage(damage);
     const brakeExp = this.brakeExponent(car);
     const wet = this.track.water?.live ? this.track.wetness : 0;
     const wetChanged = Math.abs(wet - (this.surfaceWetness ?? 0)) > 0.004 ||
       (wet > 0.015) !== Boolean(this.surface?.active) || ((wet > 0.015 || this.wetMorphing) && this.surfaceAge >= 1);
-    if (!force && !this.profileDirty && !wetChanged && brakeExp === this.profileBrakeExp && Math.abs(g - this.model.grip) < 0.007 && Math.abs(m - this.model.margin) < 0.004) return;
+    if (!force && !this.profileDirty && !damageChanged && !wetChanged && brakeExp === this.profileBrakeExp && Math.abs(g - this.model.grip) < 0.007 && Math.abs(m - this.model.margin) < 0.004) return;
     this.model.grip = g;
     this.model.margin = m;
     const o = { mass: car.spec.mass + car.fuel * 0.75, brakeExp };
     if (force) {
+      this.profileDamage = damage;
       this.profileBrakeExp = brakeExp;
       this.profileDirty = false;
       this.surface = surfaceProfile(this.line, this.track, car, this.options);
@@ -82,6 +86,7 @@ export class Course {
       this.estimate = this.line.speeds(this.model, o); return;
     }
     if (this.rebuild) return;
+    this.profileDamage = damage;
     this.profileBrakeExp = brakeExp;
     this.profileDirty = false;
     const shadow = Object.create(this.line);
@@ -255,7 +260,8 @@ export class Course {
     }
     path.holdEndS = path.st[base.idx(i0 + Math.min(n, Math.ceil((entry + hold) / base.ds)))];
     const routeModel = Object.create(this.model);
-    routeModel.margin *= this.options.routeMargin ?? 1;
+    routeModel.margin *= this.racecraft?.routeMargin(this.options.routeMargin ?? 1, car,
+      this.model.grip, Boolean(this.surface?.active)) ?? (this.options.routeMargin ?? 1);
     path.speedsWindow(routeModel, i0, n, 95, base.vbrk[base.idx(i0 + n)], {
       mass: car.spec.mass + car.fuel * 0.75,
       brakeExp: this.brakeExponent(car),

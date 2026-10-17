@@ -18,8 +18,12 @@
   "holdSeparation": 2.35,
   "maxCandidates": 8,
   "strategy": true,
+  "racecraft": true,
+  "raceDamageBudget": 0.20,
+  "observedMotion": true,
   "perClass": {
-    "lmdh": { "yawGain": 0.65, "evadeYawGain": 2 },
+    "lmdh": { "yawGain": 0.65, "evadeYawGain": 2, "observedMotion": false,
+      "racingSeparation": 2.65, "racingHoldSeparation": 2.35 },
     "gt": { "routeMargin": 0.96, "reducedGripBrakeExp": 1.4 }
   },
   "tracks": {

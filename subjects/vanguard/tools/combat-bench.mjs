@@ -5,7 +5,7 @@ import { readFileSync, readdirSync, writeFileSync, mkdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import os from 'node:os';
-import { bodyClearance, scoreCombat } from './combat-metrics.mjs';
+import { bodyClearance, scoreCombat, classifyContact } from './combat-metrics.mjs';
 
 const args = process.argv.slice(2), flag = (k, d) => {
   const i = args.indexOf('--' + k); return i < 0 ? d : args[i + 1];
@@ -24,6 +24,10 @@ export const combatCases = [
   { id: 'solenne-worn-traffic', track: 'solenne', s: 2300, kind: 'traffic', rival: 'razor' },
   { id: 'harbor-backmarker', track: 'harbor-ring', s: 250, kind: 'backmarker', rival: 'intercept', egoClass: 'lmdh' },
   { id: 'solenne-backmarker', track: 'solenne', s: 2300, kind: 'backmarker', rival: 'razor', egoClass: 'lmdh' },
+  { id: 'harbor-doors-attack', track: 'harbor-ring', s: 250, kind: 'doors-attack', rival: 'razor', doors: true, duration: 35 },
+  { id: 'solenne-doors-attack', track: 'solenne', s: 2300, kind: 'doors-attack', rival: 'intercept', doors: true, duration: 35 },
+  { id: 'harbor-doors-defend', track: 'harbor-ring', s: 250, kind: 'doors-defend', rival: 'razor', doors: true, duration: 35 },
+  { id: 'solenne-doors-defend', track: 'solenne', s: 1100, kind: 'doors-defend', rival: 'intercept', doors: true, duration: 35 },
   { id: 'harbor-defend', track: 'harbor-ring', s: 250, kind: 'defend', rival: 'razor' },
   { id: 'solenne-defend', track: 'solenne', s: 1100, kind: 'defend', rival: 'intercept' },
   { id: 'harbor-brake', track: 'harbor-ring', s: 250, kind: 'brake', rival: 'intercept' },
@@ -64,7 +68,8 @@ async function runCase({ driver, scene, seed, options, trace, solo = false }) {
     // One GT reference sets both fixtures, including an LMDh ego's control.
     // The rival-only control must start at exactly the same pose and speed.
     course.prepare(race.cars[0]);
-    const defending = scene.kind === 'defend', separation = defending ? -10 : scene.kind === 'brake' ? 16 : 14;
+    const defending = scene.kind === 'defend' || scene.kind === 'doors-defend',
+      separation = scene.doors ? (defending ? -1 : 1) : defending ? -10 : scene.kind === 'brake' ? 16 : 14;
     // Include both stations in the speed calculation even for the rival-only
     // control, so its initial speed exactly matches the paired encounter.
     const roads = [scene.s + separation, scene.s], cursors = roads.map(s => {
@@ -78,8 +83,10 @@ async function runCase({ driver, scene, seed, options, trace, solo = false }) {
     const initial = [];
     for (const [i, car] of race.cars.entries()) {
       const state = car.race, c = cursors[i];
-      const velocity = speed + (!solo && scene.kind === 'momentum' && i === egoIndex ? 2 : defending && i === 0 ? 2 : 0);
-      car.place(track, roads[i], course.line.lat[c], velocity);
+      const velocity = speed + (!solo && ['momentum', 'doors-attack'].includes(scene.kind) && i === egoIndex ? 2 : defending && i === 0 ? 2 : 0);
+      const lateral = course.line.lat[c] + (!solo && scene.doors && i === egoIndex ?
+        (course.line.lat[c] >= 0 ? -2.08 : 2.08) : 0);
+      car.place(track, roads[i], lateral, velocity);
       car.race = { ...state, lap: 1, progress: roads[i], previousS: roads[i], lapStart: race.time, valid: true, offtrack: 0 };
       car.fuel = 60;
       let model = course.model;
@@ -92,12 +99,12 @@ async function runCase({ driver, scene, seed, options, trace, solo = false }) {
       race.fitTyres(car, 'soft', true);
       for (const w of car.wheels) w.tyre.wear = scene.kind === 'traffic' && i === 0 ? 0.7 : 0;
       race.entries[i].strategist.decide = () => null;
-      initial.push({ id: ids[i], classId: car.classId, s: roads[i], speed: velocity, fuel: car.fuel,
+      initial.push({ id: ids[i], classId: car.classId, s: roads[i], lateral, speed: velocity, fuel: car.fuel,
         tyres: car.wheels.map(w => ({ compound: w.tyre.compound, wear: w.tyre.wear, core: w.tyre.core })) });
     }
     // Both cars must be in their final fixture state before either worker is reset.
     for (const entry of race.entries) for (const bridge of entry.bridges) bridge.reset?.({ cars: race.cars, track });
-    if (!solo && bodyClearance(race.cars[0], race.cars[1]) < 0.2) throw Error('Fixture begins with overlapping bodies');
+    if (!solo && bodyClearance(race.cars[0], race.cars[1]) < (scene.doors ? 0.005 : 0.2)) throw Error('Fixture begins with overlapping bodies');
     if (scene.kind === 'brake') for (const bridge of race.entries[0].bridges) {
       const update = bridge.update.bind(bridge), brakeAt = race.time + 1.5;
       bridge.update = (car, ...rest) => { update(car, ...rest);
@@ -109,6 +116,19 @@ async function runCase({ driver, scene, seed, options, trace, solo = false }) {
     const summaries = race.cars.map(() => ({ damage: 0, offtrack: 0, teleported: false, errors: 0, retired: false, progress: 0 }));
     const origin = race.cars.map(c => c.race.progress), last = race.cars.map(c => ({ x: c.x, z: c.z, damage: c.damage }));
     const rows = []; let clearSeconds = 0, touchSeconds = 0, contactSeconds = 0, lastTrace = -Infinity, minClearance = Infinity;
+    const contactKinds = { rubs: 0, nose: 0, rear: 0, other: 0, severe: 0, peakClosing: 0 }, contactEvents = [];
+    const pairs = race.collisionStats.pairs;
+    pairs.push = function(...events) {
+      for (const [a, b, closing] of events) {
+        if (solo || (a !== egoIndex && b !== egoIndex)) continue;
+        const type = classifyContact(race.cars[egoIndex], race.cars[a === egoIndex ? b : a], closing);
+        if (contactEvents.length < 64) contactEvents.push({ t: race.time - started, a, b, ...type });
+        contactKinds.rubs += Number(type.rub); contactKinds.nose += Number(type.nose);
+        contactKinds.rear += Number(type.rear); contactKinds.other += Number(!type.rub && !type.nose && !type.rear);
+        contactKinds.severe += Number(type.severe); contactKinds.peakClosing = Math.max(contactKinds.peakClosing, closing);
+      }
+      return Array.prototype.push.apply(this, events);
+    };
     while (race.time < started + duration) {
       const contacts = race.contacts;
       race.step(FIXED_DT); shim.step();
@@ -140,6 +160,7 @@ async function runCase({ driver, scene, seed, options, trace, solo = false }) {
       mode: defending ? 'defend' : scene.kind === 'brake' ? 'brake' : 'attack', seed, options, initial,
       seconds: race.time - started, ego: summaries[egoIndex], rival: summaries[0], contacts: race.contacts - startedContacts,
       severe: race.collisionStats.severeContacts - startedSevere, touchSeconds, contactSeconds, minClearance, clearSeconds,
+      contactKinds, contactEvents, damageCap: 0.01,
       finalGap: race.cars[0].race.progress - race.cars[egoIndex].race.progress };
     return { ...result, score: scoreCombat(result), trace: trace ? rows : undefined };
   } finally { seats.dispose(); }
@@ -178,7 +199,7 @@ if (args[0] === '--run') {
     'subjects/vanguard/tools/combat-bench.mjs', 'subjects/vanguard/tools/combat-metrics.mjs']) {
     try { hashes[f] = createHash('sha256').update(readFileSync(root + f)).digest('hex'); } catch {}
   }
-  const report = { version: 2, defaultClassId: 'gt', drivers, seeds, scenes, stationOffset, options, sourceHashes: hashes,
+  const report = { version: 4, scoreContract: 'racing-rub-1pct-per-encounter-v1', defaultClassId: 'gt', drivers, seeds, scenes, stationOffset, options, sourceHashes: hashes,
     benchmarkHash: createHash('sha256').update(readFileSync(new URL(import.meta.url)))
       .update(readFileSync(new URL('./combat-metrics.mjs', import.meta.url))).digest('hex'),
     revision: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim(),

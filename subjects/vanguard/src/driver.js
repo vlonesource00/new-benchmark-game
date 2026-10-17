@@ -6,6 +6,7 @@ import { Outcomes } from './outcomes.js';
 import { Resources } from './strategy.js';
 import { RivalMotion } from './motion.js';
 import { PaceLearning } from './learning.js';
+import { Racecraft, damageSpent } from './racecraft.js';
 import { PitGuide } from '../../apex/src/pit.js';
 
 /** VANGUARD driver: 120 Hz four-wheel force controller, S-thread traffic & fast hazard navigator, and co-state strategist. */
@@ -20,11 +21,13 @@ export class VanguardDriver {
     this.lastPlan = -99;
   }
   prepare(car) {
+    damageSpent(car);
     if (this.prepared && this.classId === car.classId) return;
     this.classId = car.classId;
     this.options = { ...this.settings, ...this.settings.classes?.[car.classId], ...this.settings.perClass?.[car.classId] };
     this.course = new Course(this.track, this.options);
     this.course.prepare(car);
+    this.racecraft = this.course.racecraft = new Racecraft(this.options);
     this.observer = new Observer(this.track);
     this.observer.reference = this.course.line;
     if (this.options.motionForecast !== false) this.observer.motion = new RivalMotion(this.course, this.observer);
@@ -40,7 +43,9 @@ export class VanguardDriver {
     this.epoch++;
     this.controller?.reset();
     this.observer?.reset();
+    const book = this.lastCar?.race === this.raceRecord ? this.outcomes?.book : null;
     this.outcomes?.reset();
+    if (book) this.outcomes.book = book;
     this.battle?.reset();
     this.pitGuide?.reset();
     this.learning?.reset();
@@ -75,6 +80,9 @@ export class VanguardDriver {
     this.prepare(car);
     const now = context.time ?? 0,
       state = (this.state = { ...(context.state ?? {}), time: now, totalLaps: context.state?.totalLaps ?? context.totalLaps });
+    if (Number.isFinite(this.lastTime) && now < this.lastTime - 0.5) this.outcomes.reset();
+    this.raceRecord = car.race;
+    this.racecraft.observe(car, state);
     this.observer.update(car, cars, state, now);
     const allowance = this.resources.update(car, state, this.observer, dt);
     this.course.cleanAir = this.battle.state === 'PACE' && !state.formation &&
@@ -85,7 +93,9 @@ export class VanguardDriver {
       toPit = pit ? this.pitGuide.toEntry(this.observer.me.s) : Infinity;
     let path = this.course.line, pitCap = Infinity;
     if (toPit < 600 && toPit > 0.3) {
-      path = this.pitGuide.path ?? this.pitGuide.build(this.course.line, this.course.model, { mass: car.spec.mass + car.fuel * 0.75 });
+      path = this.pitGuide.path ?? this.pitGuide.build(this.course.line, this.course.model, {
+        mass: car.spec.mass + car.fuel * 0.75, brakeExp: this.course.brakeExponent(car)
+      });
       pitCap = this.pitGuide.cap(toPit);
       this.battle.state = 'PIT';
     } else {
@@ -148,6 +158,7 @@ export class VanguardDriver {
       planAge: this.remote ? Math.max(0, this.lastTime - this.remote.contract.time) : 0,
       trace: c?.trace,
       resources: this.resources?.trace,
+      racecraft: this.racecraft?.trace,
       paceLearning: this.learning?.debug(),
       surface: this.course?.surface,
       wetLine: this.course?.surfaceChoice,
@@ -170,6 +181,9 @@ export class VanguardDriver {
       cands: this.battle?.candidates.map(q => ({
         kind: q.kind, key: q.path?.key ?? 'course', side: q.side, score: q.score,
         progress: q.progress, exit: q.exit, risk: q.risk, blocked: q.blocked,
+        rubbingDamage: q.rubbingDamage,
+        hardImpact: q.hardImpact, preparation: q.preparation,
+        relativeGain: q.relativeGain, exitAdvantage: q.exitAdvantage,
         routeTax: q.routeTax, profileFloor: q.path?.profileFloor, clear: q.cleared,
         finalGap: q.finalGap, fits: q.fits, chosen: q.path === this.path
       })),

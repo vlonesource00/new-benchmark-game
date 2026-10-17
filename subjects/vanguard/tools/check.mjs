@@ -13,6 +13,7 @@ import { noseConstraint, brakingPose } from '../src/controller.js';
 import { bodyContact } from '../src/body.js';
 import { Outcomes } from '../src/outcomes.js';
 import { VanguardStrategist, installVanguardStrategy, deployment } from '../src/strategy.js';
+import { classifyContact } from './combat-metrics.mjs';
 
 const track = new Track('harbor-ring');
 assert(RACE_CLASSES.gtp.ai.includes('vanguard'), 'VANGUARD is available in prototype team seats');
@@ -148,25 +149,54 @@ assert(burst.deploy > 0.95, 'committed pass exit gets full motor power');
 assert.equal(blockedBurst.burst, false, 'blocked nose withholds pass burst');
 
 // 11. Lockstep Worker + 120 Hz Executor Multi-Class Race Smoke Verification
-const shim = installWorkerShim({ frameSteps: 2, seed: 7 });
-const seats = new AsyncSeats('harbor-ring');
 const roster = [
   { id: 'vgd', name: 'VGD', short: 'VGD', color: '#00f5d4', index: 0, grid: 0, starter: 0, classId: 'lmdh', drivers: [{ id: 'vanguard', kind: 'ai', name: 'VGD', short: 'VGD' }] },
   { id: 'icp', name: 'ICP', short: 'ICP', color: '#f7cf46', index: 1, grid: 1, starter: 0, classId: 'lmdh', drivers: [{ id: 'intercept', kind: 'ai', name: 'ICP', short: 'ICP' }] },
   { id: 'gt', name: 'GT', short: 'GT', color: '#09f', index: 2, grid: 2, starter: 0, classId: 'gt', drivers: [{ id: 'vanguard', kind: 'ai', name: 'VGD', short: 'VGD' }] }
 ];
-const race = new EnduranceRace({
-  track: new Track('harbor-ring'), teams: roster,
-  format: { ...FORMATS.custom, mandatoryStops: 0, mandatorySwap: false },
-  laps: 3, startCompound: 'soft', startType: 'rolling', seed: 7, makeBridge: seats.factory()
-});
-const ready = seats.start(race); await shim.settle(); await ready;
-race.start();
-for (let i = 0; i < 120 * 25; i++) { race.step(FIXED_DT); shim.step(); }
-assert.equal(race.contacts, 0, 'returning alongside a defending car must remain body-clear');
-for (const e of race.entries) {
-  assert(e.bridges.every(b => b.errors === 0), `zero bridge errors for ${e.team.id}`);
-  assert.equal(e.car.damage, 0, `clean start for ${e.team.id}`);
+const smokeShim = installWorkerShim({ frameSteps: 2, seed: 7 });
+async function mixedGrid(conservative) {
+  const originalPrepare = VanguardDriver.prototype.prepare;
+  VanguardDriver.prototype.prepare = function(car) {
+    originalPrepare.call(this, car);
+    if (conservative) Object.assign(this.options, { racecraft: false, observedMotion: false });
+  };
+  const seats = new AsyncSeats('harbor-ring');
+  try {
+    const race = new EnduranceRace({
+      track: new Track('harbor-ring'), teams: roster,
+      format: { ...FORMATS.custom, mandatoryStops: 0, mandatorySwap: false },
+      laps: 3, startCompound: 'soft', startType: 'rolling', seed: 7, makeBridge: seats.factory()
+    });
+    const ready = seats.start(race); await smokeShim.settle(); await ready;
+    race.start();
+    const contactKinds = { rubs: 0, nose: 0, other: 0, severe: 0 }, damage = roster.map(() => 0), previous = roster.map(() => 0);
+    race.collisionStats.pairs.push = function(...events) {
+      for (const [a, b, closing] of events) {
+        const type = classifyContact(race.cars[a], race.cars[b], closing);
+        contactKinds.rubs += Number(type.rub); contactKinds.nose += Number(type.nose);
+        contactKinds.other += Number(!type.rub && !type.nose); contactKinds.severe += Number(type.severe);
+      }
+      return Array.prototype.push.apply(this, events);
+    };
+    for (let i = 0; i < 120 * 25; i++) {
+      race.step(FIXED_DT); smokeShim.step();
+      race.cars.forEach((c, j) => { damage[j] += Math.max(0, c.damage - previous[j]); previous[j] = c.damage; });
+    }
+    if (conservative) assert.equal(race.contacts, 0, 'conservative mode preserves the original body-clear return regression');
+    else assert.equal(contactKinds.rubs, race.contacts, 'only gentle side rubbing is accepted in racing mode');
+    assert.equal(contactKinds.nose, 0, 'no rear-end hits');
+    assert.equal(contactKinds.severe, 0, 'no severe impacts');
+    for (const [i, e] of race.entries.entries()) {
+      assert(e.bridges.every(b => b.errors === 0), `zero bridge errors for ${e.team.id}`);
+      assert(damage[i] <= (conservative ? 0 : 0.03), 'three-lap damage allowance is 3%, including repaired damage');
+      assert.equal(e.car.race.offtrack, 0, 'contact tolerance does not permit illegal track use');
+    }
+    console.log(JSON.stringify({ mixedGrid: conservative ? 'conservative' : 'racing', contacts: race.contacts, contactKinds, damage }));
+  } finally {
+    seats.dispose(); VanguardDriver.prototype.prepare = originalPrepare;
+  }
 }
-seats.dispose();
+await mixedGrid(true);
+await mixedGrid(false);
 console.log('VANGUARD checks passed.');

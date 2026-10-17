@@ -46,7 +46,7 @@ export function longitudinalDemand(path, c, v, model, { cap = Infinity, cap2 = c
 }
 
 /** Physical body-ray & active-route frontal guard. Strictly ignores pit cars (`r.pit`). */
-export function noseConstraint(car, observer, model, { lateralEscape = false, path = null, cursor = null, brakingTube = false } = {}) {
+export function noseConstraint(car, observer, model, { lateralEscape = false, path = null, cursor = null, brakingTube = false, racecraft = null } = {}) {
   let cap = Infinity, brake = 0, blocker = null, details = null;
   const sy = Math.sin(car.yaw), cy = Math.cos(car.yaw), v = Math.max(0, car.speed);
   for (const r of observer.list) {
@@ -58,6 +58,10 @@ export function noseConstraint(car, observer, model, { lateralEscape = false, pa
     const predicted = across + lateralClosing * 0.16;
     if (Math.abs(across) > HALF_WIDTH + halfAcross + 0.12 && Math.abs(predicted) > HALF_WIDTH + halfAcross + 0.12) continue;
     const halfAlong = Math.abs(Math.cos(delta)) * HALF_LENGTH + Math.abs(Math.sin(delta)) * HALF_WIDTH;
+    const sideRoom = Math.abs(across) - HALF_WIDTH - halfAcross,
+      sideClosing = -Math.sign(across) * lateralClosing;
+    if (forward < HALF_LENGTH + halfAlong - 0.6 && sideRoom > -0.12 &&
+      racecraft?.canHold(car, r, sideRoom, sideClosing)) continue;
     const otherV = r.car.vx * sy + r.car.vz * cy, closing = Math.max(0, v - otherV), room = forward - HALF_LENGTH - halfAlong - 0.65;
     // If an active evasive corridor is already turning us clear of a distant hazard, do not brake on the straight body ray.
     if (r.hazard && path && cursor && path.attackSide && room > Math.max(14, closing * 0.28)) {
@@ -174,13 +178,15 @@ export class Controller {
         ownAcross = Math.abs(Math.cos(psiBody)) * HALF_WIDTH + Math.abs(Math.sin(psiBody)) * HALF_LENGTH;
       const dir = Math.sign(r.d - observer.me.d), room = Math.abs(r.d - observer.me.d) - ownAcross - r.across;
       const drift = dir * (car.vx * Math.cos(observer.me.h) - car.vz * Math.sin(observer.me.h) - r.vd);
-      if (returning && r.ds >= -1 && room - Math.max(0, drift) * 0.65 < 0.35 && drift > -0.15) this.sideYield ??= r.id;
+      const hold = course.racecraft?.canHold(car, r, room, drift);
+      if (hold && this.sideYield === r.id) this.sideYield = null;
+      if (returning && !hold && r.ds >= -1 && room - Math.max(0, drift) * 0.65 < 0.35 && drift > -0.15) this.sideYield ??= r.id;
       if (room < 0.25 && drift > 0.35 && Math.abs(observer.me.d - dir * 0.5) < course.track.halfWidth - 1.1) {
         steer -= dir * clamp((drift - 0.35) * 0.045, 0, 0.18);
       }
     }
     nose ??= noseConstraint(car, observer, model, {
-      path, cursor: c, brakingTube,
+      path, cursor: c, brakingTube, racecraft: course.racecraft,
       lateralEscape: o.noseEscape && path !== course.line && path.attackSide && Math.abs(c.e) < 0.65 && ax.reserve > 0.75
     });
     const demand = longitudinalDemand(path, c, v, model, { cap: nose.cap, pit, wake: car.aero?.wake ?? 0 });

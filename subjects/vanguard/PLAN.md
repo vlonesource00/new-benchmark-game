@@ -20,7 +20,12 @@ Argon's 24 source/integration files were preserved before editing in the workspa
 
 ## Performance work still open
 
-The [17 October combat review](COMBAT-REVIEW-2026-10-17.md) is the current combat assessment.
+The [racecraft upgrade](UPGRADE-2026-10-17.md) supersedes the earlier zero-contact
+objective: mild side rubbing is permitted within 20% accumulated damage over
+20 laps. The deployed GT settings improve the alongside attack tests; shifted
+defence and initiation from a following position remain performance work.
+
+The [17 October combat review](COMBAT-REVIEW-2026-10-17.md) records the earlier conservative combat baseline.
 The independent short-encounter scoreboard separates backmarker passes from
 same-class passes. Gearbox rollout history and the defensive clearance timer
 are corrected, but the same-class passing bottleneck remains. Broader defensive

@@ -12,6 +12,9 @@ export function evaluate(path, car, course, observer, target, horizon = target?.
   const startS = observer.me.s, initialGap = target?.ds ?? 0;
   let energy = car.hybrid?.energy ?? 0;
   let gear = car.gear;
+  let rubbingDamage = 0;
+  let hardImpact = false;
+  const rubPeaks = new Map();
   while (time < horizon) {
     const h = 0.10, k = path.sample(path.ks, i, f), d = path.sample(path.lat, i, f), heading = path.heading(i, f),
       body = { x: path.sample(path.px, i, f), z: path.sample(path.pz, i, f), h: heading, vx: Math.sin(heading) * v, vz: Math.cos(heading) * v };
@@ -27,11 +30,15 @@ export function evaluate(path, car, course, observer, target, horizon = target?.
         const contact = bodyContact(body, p, path.contactMargin ?? 0.08);
         if (contact) {
           const { depth, closing, longitudinal } = contact;
-          const cost = h * (Math.max(0, depth - 0.12) * 1.2 + Math.max(0, closing - 1.5) ** 2 * (longitudinal > 0.65 ? 0.6 : 0.16) + (r.hazard || closing > 6 ? 20 : 0));
+          if (depth > 0.16 && (closing > 6 || (longitudinal > 0.65 && closing > 3.5))) hardImpact = true;
+          const rub = course.racecraft?.contactRisk(body, p, contact, r.hazard, h, rubPeaks.get(r.id) ?? 0);
+          if (rub) { rubbingDamage += rub.damage; rubPeaks.set(r.id, Math.max(rubPeaks.get(r.id) ?? 0, closing)); }
+          else rubPeaks.delete(r.id);
+          const cost = rub?.risk ?? h * (Math.max(0, depth - 0.12) * 1.2 + Math.max(0, closing - 1.5) ** 2 * (longitudinal > 0.65 ? 0.6 : 0.16) + (r.hazard || closing > 6 ? 20 : 0));
           risk += cost;
           if (cost > peakRisk) { peakRisk = cost; threat = r.id; }
-        }
-      }
+        } else rubPeaks.delete(r.id);
+      } else rubPeaks.delete(r.id);
       if (ds > HALF_LENGTH + r.along && ds < 35 && across < HALF_WIDTH + r.across + 0.18) {
         const room = ds - HALF_LENGTH - r.along - 0.6;
         cap = Math.min(cap, Math.sqrt(p.v * p.v + 2 * model.brake(v) * 0.75 * Math.max(0, room)));
@@ -64,7 +71,10 @@ export function evaluate(path, car, course, observer, target, horizon = target?.
   const road = roadSample(path, i, f, t.length), progress = gap(road, startS, t.length),
     rival = target ? observer.at(target, time) : null;
   const finalGap = rival ? gap(rival.s, road, t.length) : 0;
-  return { path, progress, exit: v, risk, threat, blocked, cleared, finalGap, initialGap, score: progress + v * 0.8 - risk * 5 };
+  if (rubbingDamage > (course.racecraft?.moveBudget ?? Infinity)) risk += 5;
+  return { path, progress, exit: v, risk, threat, blocked, cleared, finalGap, initialGap, rubbingDamage, hardImpact,
+    relativeGain: initialGap - finalGap, exitAdvantage: rival ? v - rival.v : 0,
+    score: progress + v * 0.8 - risk * 5 };
 }
 
 /** Verify lateral clearance in the future road section where entry completes. */
@@ -79,7 +89,7 @@ export function corridorFits(path, base, car, target, side) {
 /** A rejected high-score lane must not hide another lane inside the same
  * collision budget. Rank admissible corridors, then decide whether to commit. */
 export function selectCandidate(best, candidate, riskLimit) {
-  if (!candidate.fits || candidate.risk >= riskLimit) return best;
+  if (!candidate.fits || candidate.hardImpact || candidate.risk >= riskLimit) return best;
   return !best || candidate.score > best.score ? candidate : best;
 }
 
@@ -108,6 +118,10 @@ export class Battle {
     this.options = options;
     this.outcomes = outcomes;
     this.reset();
+  }
+  separation(held = false) {
+    const normal = held ? this.options.holdSeparation : this.options.separation;
+    return this.course.racecraft?.clearance(normal, held) ?? normal;
   }
   reset() {
     this.state = 'PACE';
@@ -202,8 +216,8 @@ export class Battle {
         const clearance = next.hazard
           ? HALF_WIDTH + next.across + 0.55
           : next.kind === 'traffic'
-            ? Math.max(3.3, this.options.separation)
-            : this.options.separation;
+            ? Math.max(3.3, this.separation())
+            : this.separation();
         const path = course.corridor(car, next, this.side, 4, {
           entry: Math.max(40, car.speed * 0.8),
           hold: Math.max(150, car.speed * 4),
@@ -275,7 +289,7 @@ export class Battle {
           const h = course.track.at(course.track.nearest((car.x + neighbor.car.x) * 0.5, (car.z + neighbor.car.z) * 0.5).s).heading,
             lateral = (car.x - neighbor.car.x) * Math.cos(h) - (car.z - neighbor.car.z) * Math.sin(h),
             side = Math.sign(lateral) || this.side || 1,
-            clearance = Math.max(Math.abs(lateral), neighbor.kind === 'traffic' ? 3.3 : this.options.holdSeparation),
+            clearance = Math.max(Math.abs(lateral), neighbor.kind === 'traffic' ? 3.3 : this.separation(true)),
             path = course.corridor(car, neighbor, side, 2, {
               entry: Math.max(40, car.speed * 0.8),
               hold: Math.max(120, car.speed * 2.4),
@@ -312,7 +326,7 @@ export class Battle {
       this.state = beside.ds >= 0 ? 'ALONGSIDE' : 'DEFEND';
       this.since = now;
       if (beside.ds >= 0) this.outcomes.declare(beside, observer, now, this.side);
-      const owned = Math.max(this.options.holdSeparation, this.side * lateral);
+      const owned = Math.max(this.separation(true), this.side * lateral);
       this.path = course.corridor(car, beside, this.side, 1, {
         entry: Math.max(35, car.speed * 0.9),
         hold: Math.max(150, car.speed * 4),
@@ -381,10 +395,10 @@ export class Battle {
       clearance = hazard
         ? HALF_WIDTH + target.across + 0.55
         : ['ALONGSIDE', 'DEFEND'].includes(this.state)
-          ? Math.max(this.options.holdSeparation, this.side * ((observer.me.offset ?? observer.me.d) - (target.offset ?? target.d)))
+          ? Math.max(this.separation(true), this.side * ((observer.me.offset ?? observer.me.d) - (target.offset ?? target.d)))
           : target.kind === 'traffic'
-            ? Math.max(3.3, this.options.separation)
-            : this.options.separation;
+            ? Math.max(3.3, this.separation())
+            : this.separation();
     const clearanceForSide = side => {
       let space = clearance;
       const offset = target.offset ?? 0;
@@ -481,7 +495,7 @@ export class Battle {
     }
 
     const switchback = this.options.switchbacks !== false && !committed && this.candidates.length < (this.options.maxCandidates ?? 8) - 1
-      ? switchbackPlan(base, car, target, this.options) : null;
+      ? switchbackPlan(base, car, target, { ...this.options, separation: this.separation() }) : null;
     if (switchback) {
       const path = course.corridor(car, target, switchback.side, 1 + this.candidates.length, {
         ...switchback, secondTarget: target, secondSide: switchback.inside,
