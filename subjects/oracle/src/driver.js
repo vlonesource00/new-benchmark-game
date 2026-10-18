@@ -14,8 +14,12 @@ import { cloneCar, cloneDriver, shadowTrack } from './shadow.js';
 // Traffic (2026-10-18): a slower car is passed on the straight when the forecast has ORACLE a car's length clear by the
 // brake (earlyPass), on a tight or a wide side lane (wideGap) that only ever steps away from the rival (besideLane), all
 // judged on one overlap rule (markRule), and the follow cap allows for out-braking a slower car (capClose).
+// Side by side (2026-10-18): a rival's forecast pace follows what its car can do out of a corner (rivalPhys), a pass
+// still closing when the horizon ends is judged at the braking point (markExtrap), the lane keeps clear air beside a
+// car it overlaps (sideGap), and a car ORACLE is already beside no longer holds it to its speed (capSide).
 export const RACECRAFT = { moves: true, diveApex: true, capArrive: true, capWide: 0.6, laneAhead: true, laneSmooth: 12,
-  capClose: true, earlyPass: true, earlyNeed: -1, wideGap: 1.6, besideLane: true, markRule: true };
+  capClose: true, earlyPass: true, earlyNeed: -1, wideGap: 1.6, besideLane: true, markRule: true,
+  rivalPhys: true, markExtrap: true, sideGap: 0.6, capSide: true };
 
 export class OracleDriver {
   constructor(track, options = {}) { this.track = track; this.options = { ...RACECRAFT, ...options }; this.classId = null; this.hint = -1; this.steer = 0; this.mode = 'INIT'; }
@@ -103,6 +107,7 @@ export class OracleDriver {
     }
     const drag = 0.5 * 1.225 * car.spec.area * car.spec.cd * v * v / (car.spec.mass + car.fuel * 0.75);
     let throttle = 0, brake = 0;
+    if (o.pedalTrace) this.pd = { vNow, vAhead, want, need, lane, laneL: laneD(look), lfL: laneAt(look) };
     // Share of the tyre the corner is using here: braking and drive get only what the ellipse leaves.
     // laneCurv: on a lane off the line the car turns on that lane's radius (R + y on the outside of the turn), not the line's.
     // kWin: the corner share is read off the curvature averaged over this many seconds ahead, not one station (a
