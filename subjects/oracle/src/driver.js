@@ -326,16 +326,77 @@ export class OracleDriver {
     return bad;
   }
 
+  /** What the debugger shows: the committed move and why, the options it judged, the controller's limits. */
   debug() {
-    const t = this.trace, c = this.combat;
-    return { architecture: 'ORACLE', intent: this.mode, targetSpeed: t?.vAhead, lineSpeed: t?.vNow, e: t?.e, focus: c?.target?.id ?? null, focusGap: c?.target?.gap ?? null, side: Math.sign(this.lateral || 0),
-      sub: c?.target ? `${this.mode.toLowerCase()} #${c.target.id} ${c.target.gap.toFixed(1)} m` : this.mode.toLowerCase() };
+    const t = this.trace, c = this.combat, v = c?.vis, st = c?.mv, fin = (x) => (Number.isFinite(x) ? x : null);
+    const lbl = (q) => `${q.side === v.inside ? 'inside' : 'outside'} #${q.r.car.id}`;
+    return {
+      architecture: 'ORACLE', intent: this.mode, focus: c?.target?.id ?? null, focusGap: c?.target?.gap ?? null, side: Math.sign(this.lateral || 0),
+      sub: c?.target ? `${this.mode.toLowerCase()} #${c.target.id} ${c.target.gap.toFixed(1)} m` : this.mode.toLowerCase(),
+      targetSpeed: t?.vAhead, lineSpeed: t?.vNow, e: t?.e, lateral: this.lateral, grip: t?.grip, cap: fin(t?.cap), latCap: t?.latCap, beta: t?.beta,
+      wake: this.wakeSm ?? 0, pace: this.gp ?? 1, catching: Boolean(this.catching), veto: this.veto != null,
+      move: st ? { kind: st.kind, id: st.id, dive: Boolean(st.dive), bad: st.bad, cool: st.cool, side: v ? (st.side === v.inside ? 'inside' : 'outside') : null, whyNot: v?.whyNot ?? null,
+        db: fin(v?.db), tb: fin(v?.tb), tA: fin(v?.tA), inside: v?.inside ?? 0, free: v?.free ?? c?.free, capBy: c.capBy ? { id: c.capBy.r.car.id, lateral: c.capBy.lateral, gap: c.capBy.r.gap } : null } : null,
+      counts: st?.n ?? null, log: c?.log ?? [],
+      cands: v ? [{ label: 'line', gain: 0, ok: true, feasible: v.base.feasible, chosen: !v.held, rel: null },
+        ...v.cands.map((q) => ({ label: lbl(q) + (q.preview ? ' ?' : ''), gain: q.gain, ok: q.ok, feasible: q.p.feasible, rel: q.rel, preview: q.preview, chosen: q.chosen }))] : []
+    };
   }
+  /**
+   * Geometry for the debugger (world x/z, and road coordinates for the radar): the path the car will drive, every option
+   * judged with its forecast, each rival's forecast, the braking point and apex a move is judged at, the follow cap.
+   * Calling it turns on the forecast trails for the next 0.6 s (they never change a decision).
+   */
   visualDebug() {
-    if (!this.loc) return null;
-    const pts = [];
-    for (let d = 0; d < 160; d += 8) { const p = this.line.point(this.loc.i, this.loc.f, d, this.lateral); pts.push({ x: p.x, z: p.z, v: this.line.sample(this.line.v, this.loc.i, this.loc.f, d) }); }
-    return { trackingPoint: pts[2], selectedTrajectory: { points: pts, mode: this.mode, color: '#7cf2ff' } };
+    const loc = this.loc, line = this.line, c = this.combat;
+    if (!loc) return null;
+    if (c) c.recAt = performance.now();
+    const n = line.n, L = n * line.ds, r2 = (x) => +x.toFixed(2);
+    const W = (s, e) => {
+      const u = wrap(loc.s + s, L) / line.ds, a = Math.floor(u) % n, b = (a + 1) % n, t = u - Math.floor(u), m = (A) => A[a] * (1 - t) + A[b] * t;
+      return { x: m(line.x) + m(line.nx) * e, z: m(line.z) + m(line.nz) * e, l: m(line.w) + e };
+    };
+    const v = c?.vis;
+    if (!v) {
+      const pts = [];
+      for (let d = 0; d < 160; d += 8) { const p = line.point(loc.i, loc.f, d, this.lateral); pts.push({ x: p.x, z: p.z, v: line.sample(line.v, loc.i, loc.f, d) }); }
+      return { trackingPoint: pts[2], selectedTrajectory: { points: pts, mode: this.mode, color: '#7cf2ff' }, extras: { half: this.track.halfWidth, me: { l: r2(W(0, loc.e).l), v: r2(this.trace?.v ?? 0) }, rivals: [], lanes: [], contact: null, cap: null, oracle: null } };
+    }
+    const held = v.cands.find((q) => q.chosen), plan = held?.p ?? v.base;
+    const pts = (tr) => tr.filter((_, k) => k % 2 === 0 || k === tr.length - 1).map(([s, e, u, wk]) => { const p = W(s, e); return { x: r2(p.x), z: r2(p.z), v: u != null ? r2(u) : undefined, wake: wk ? r2(wk) : undefined }; });
+    const rp = (tr) => tr.filter((_, k) => k % 3 === 0 || k === tr.length - 1).map(([s, e]) => [r2(s), r2(W(s, e).l)]);
+    const path = pts(plan.trail), tone = { ATTACK: '#ff4d6d', BATTLE: '#ff8f3d', FOLLOW: '#ffb02e', DEFEND: '#4f8cff' }[this.mode] ?? '#7cf2ff';
+    const lbl = (q) => `${q.side === v.inside ? 'inside' : 'outside'} #${q.r.car.id}${q.preview ? ' ?' : ''}`;
+    const options = [{ kind: 'line', score: 0, chosen: !held, ok: true, p: v.base }, ...v.cands.map((q) => ({ kind: lbl(q), score: q.gain, chosen: q.chosen, ok: q.ok, preview: q.preview, p: q.p }))];
+    const focusId = c.target?.id ?? null, rivals = [];
+    for (const [r, tr] of plan.rtr ?? []) {
+      if (Math.abs(r.gap) > 90) continue;
+      const here = W(r.gap, r.e), cone = [];
+      // The wake as ORACLE's forecast sees it: a cone 2.4 m + 5% of the distance behind the car, fading over 55 m.
+      if (r.gap > 2 && r.gap < 110) for (let b = 0; b <= 60; b += 6) { const h = 2.4 + b * 0.05, p = W(r.gap - b, r.e - h), q = W(r.gap - b, r.e + h); cone.push([r2(p.x), r2(p.z), r2(q.x), r2(q.z), r2(Math.exp(-b / 55))]); }
+      rivals.push({ id: r.car.id, kind: Math.abs(r.gap) < 6 ? 'alongside' : r.gap > 0 ? 'ahead' : 'behind', d: r2(r.gap), l: r2(here.l), v: r2(r.car.speed), x: r2(r.car.x), z: r2(r.car.z), yaw: r2(r.car.yaw ?? 0),
+        pts: pts(tr), rp: rp(tr), focus: r.car.id === focusId, cap: c.capBy?.r === r, cone });
+    }
+    rivals.sort((a, b) => Math.abs(a.d) - Math.abs(b.d)); rivals.length = Math.min(rivals.length, 7);
+    const k = plan.contact, kp = k ? W(k.s, k.e) : null, gate = (d) => { if (!Number.isFinite(d)) return null; const p = W(d, 0), q = W(d, 1); return { d: r2(d), x: r2(p.x), z: r2(p.z), nx: r2(q.x - p.x), nz: r2(q.z - p.z) }; };
+    const at = (t) => { const tr = plan.trail, j = Math.min(tr.length - 1, Math.max(0, Math.round(t / 0.1))), p = W(tr[j][0], tr[j][1]); return Number.isFinite(t) ? { x: r2(p.x), z: r2(p.z), t: r2(t) } : null; };
+    return {
+      trackingPoint: path[Math.min(3, path.length - 1)],
+      selectedTrajectory: { points: path, mode: this.mode, color: tone },
+      candidates: options.map((q) => ({ kind: q.kind, score: q.score, chosen: q.chosen, points: pts(q.p.trail) })),
+      extras: {
+        half: this.track.halfWidth, me: { l: r2(W(0, loc.e).l), v: r2(this.trace?.v ?? 0) }, rivals,
+        lanes: options.map((q) => ({ kind: q.kind, chosen: q.chosen, score: r2(q.score), rp: rp(q.p.trail) })),
+        contact: k ? { d: r2(k.s), l: r2(kp.l), x: r2(kp.x), z: r2(kp.z), t: k.t, id: k.r.car.id, closing: k.closing } : null,
+        cap: Number.isFinite(v.cap) ? r2(v.cap) : null,
+        oracle: {
+          options: options.map((q) => ({ kind: q.kind, score: r2(q.score), chosen: q.chosen, ok: q.ok, preview: Boolean(q.preview), feasible: q.p.feasible, pts: pts(q.p.trail) })),
+          brake: gate(v.db), apex: Number.isFinite(v.db) ? gate(v.da) : null, inside: v.inside, atBrake: at(v.tb), atApex: v.tA !== v.tb ? at(v.tA) : null,
+          capBy: c.capBy ? { id: c.capBy.r.car.id, lateral: r2(c.capBy.lateral), v: Number.isFinite(v.cap) ? r2(v.cap) : null } : null,
+          wide: Boolean(v.wide), free: v.free, kind: v.kind, mode: this.mode
+        }
+      }
+    };
   }
 }
 

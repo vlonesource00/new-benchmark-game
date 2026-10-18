@@ -48,6 +48,7 @@ const THEMES = {
   apex: { color: '#00e0b8', mind: 'Identified g-g-v limit line; shadow lanes rolled out against predicted rivals' },
   razor: { color: '#ff6238', mind: 'Fast line to the wake; committed open-space attacks with smooth joins' },
   tempest: { color: '#3ad6ff', mind: 'Rolls every lane forward against forecast rivals, their wake and the water; commits only when it beats the held line' },
+  oracle: { color: '#7cf2ff', mind: 'Min-time line on the measured envelope; tows, then commits to one simple move (pull-out or dive) when its 4.5 s forecast puts it alongside by the braking point' },
   slipstream: { color: '#7cf29c', mind: 'Learned direct control: a pace network drives; near rivals a router hands part of the wheel to a combat add-on' }
 };
 
@@ -251,6 +252,43 @@ PROFILES.slipstream = (d, v) => {
     log: (d.events ?? []).slice().reverse().map((e) => `${e.t.toFixed(0)} s  ${e.kind === 'pass' ? '▲ PASS' : '▼ PASSED BY'} #${e.id}  add-on ${Math.round(e.g * 100)}%`),
     radar: x ? { half: x.half, me: x.me, rivals: x.rivals ?? [], lanes: x.lanes ?? [], contact: null, cap: null } : null,
     extras: x
+  };
+};
+
+// ORACLE: one committed move at a time. The options are the line and the sides of the car ahead, scored in metres
+// gained over staying in line and checked for an overlap by the braking point (a "?" option is shown for reading
+// only: no move was being weighed). The reasons a move was not started are summed in seconds while within 15 m.
+const ORACLE_WHY = { far: 'too far back', early: 'too early for the brake', corner: 'mid-corner', infeasible: 'no room', noOverlap: 'no overlap by the brake', noGain: 'no gain over the tow' };
+PROFILES.oracle = (d, v) => {
+  const mv = d.move ?? {}, n = d.counts ?? {}, x = v?.extras ?? null, intent = d.intent ?? 'INIT';
+  const kind = { ATTACK: 'attack', BATTLE: 'alongside', FOLLOW: 'follow', DEFEND: 'defend' }[intent] ?? null;
+  const sub = mv.kind === 'MOVE' ? `${mv.dive ? 'dive' : 'pull-out'} ${mv.side ?? ''} on #${mv.id}${mv.bad > 0 ? ` · failing ${mv.bad.toFixed(2)} s` : ''}`
+    : `${mv.capBy ? `tow #${mv.capBy.id}` : 'racing line'}${mv.whyNot ? ` · ${ORACLE_WHY[mv.whyNot] ?? mv.whyNot}` : ''}${mv.cool > 0 ? ` · cooling ${mv.cool.toFixed(1)} s` : ''}`;
+  const brake = num(mv.db) == null ? 'no brake in 400 m' : `${mv.db.toFixed(0)} m · ${mv.tb.toFixed(1)} s${mv.tA != null && mv.tA !== mv.tb ? ` · apex ${mv.tA.toFixed(1)} s` : ''}`;
+  const why = Object.entries(ORACLE_WHY).map(([k, w]) => counter(w, num(n[k]) ? `${n[k].toFixed(1)} s` : null)).filter(Boolean);
+  return {
+    intent, sub, tagText: sub, suppressInference: true,
+    focus: d.focus != null && kind ? { id: d.focus, kind } : null, side: mv.kind === 'MOVE' ? d.side ?? 0 : 0,
+    cands: (d.cands ?? []).map((q) => ({ label: q.label, score: q.gain, chosen: q.chosen, note: q.label === 'line' ? 'held' : `${q.gain >= 0 ? '+' : ''}${q.gain.toFixed(1)} m · ${!q.feasible ? 'no room' : q.ok ? 'overlaps' : `${num(q.rel) == null ? '—' : q.rel.toFixed(1) + ' m short'}`}` })),
+    candNote: 'metres gained over the tow · overlap by the brake',
+    gauges: [
+      gauge('speed vs line', num(d.targetSpeed) && num(d.lineSpeed) ? d.targetSpeed / Math.max(1, d.lineSpeed) : null, num(d.lineSpeed) ? `${Math.round(d.targetSpeed * 3.6)} / ${Math.round(d.lineSpeed * 3.6)} km/h` : ''),
+      gauge('follow cap', num(d.cap) && num(d.lineSpeed) ? Math.min(1, d.cap / Math.max(1, d.lineSpeed)) : 0, num(d.cap) ? `${Math.round(d.cap * 3.6)} km/h${mv.capBy ? ` · #${mv.capBy.id} ${mv.capBy.gap.toFixed(1)} m` : ''}` : 'free', '#ffb02e'),
+      gauge('brake point', num(mv.tb) == null ? 0 : clamp01(1 - mv.tb / 4.5), brake, '#ff4d4d'),
+      gauge('move failing', mv.kind === 'MOVE' ? clamp01((mv.bad ?? 0) / 0.3) : 0, mv.kind === 'MOVE' ? `${((mv.bad ?? 0) * 1000).toFixed(0)} / 300 ms` : 'no move', '#ff8f3d'),
+      gauge('tyre grip', num(d.grip) == null ? null : clamp01((d.grip - 0.8) / 0.4), num(d.grip) == null ? '' : `×${d.grip.toFixed(3)}`, '#4fd1e8'),
+      gauge('dirty air', num(d.wake), pct(clamp01(d.wake)), '#9aa4b2'),
+      gauge('governor', num(d.pace) == null ? null : clamp01((d.pace - 0.85) / 0.15), num(d.pace) == null ? '' : `${pct(d.pace)} pace${d.veto ? ' · lane veto' : ''}`, d.pace < 0.995 ? '#ff8f3d' : '#3ddc84'),
+      gauge('sideslip β', num(d.beta) == null ? null : Math.abs(d.beta) / 0.2, num(d.beta) == null ? '' : `${(d.beta * 57.3).toFixed(1)}°`, Math.abs(d.beta ?? 0) > 0.105 ? '#ff4d4d' : '#4fd1e8')
+    ],
+    counters: [counter('moves', n.start), counter('passes', n.done), counter('dropped', n.drop), counter('lost', n.lost), ...why],
+    tags: [mv.dive && 'dive', mv.kind === 'MOVE' && `${mv.side} line`, x?.oracle?.wide && 'turn-in: wide corridor', mv.free === false && 'mid-corner', d.catching && 'catching a slide', d.veto && 'governor lane veto', d.wake > 0.3 && 'in the wake', x?.contact && `contact forecast #${x.contact.id}`].filter(Boolean),
+    log: (d.log ?? []).slice().reverse().map((e) => `${e.t.toFixed(0)} s  ${e.text}`),
+    radar: x ? { half: x.half, me: x.me, rivals: x.rivals ?? [], lanes: x.lanes ?? [], contact: x.contact ?? null, cap: x.cap ?? null } : null,
+    extras: x, scope: x?.oracle ?? null,
+    // The move ladder (where the car is in tow → pull-out / dive → alongside) and the clock the move is judged on.
+    flow: { stage: intent === 'BATTLE' ? 'side' : mv.kind === 'MOVE' ? (mv.dive ? 'dive' : 'pull') : mv.capBy ? 'tow' : 'line', tb: num(mv.tb), tA: num(mv.tA), H: 4.5,
+      short: (d.cands ?? []).filter((q) => q.label !== 'line' && num(q.rel) != null).map((q) => ({ label: q.label, rel: q.rel, ok: q.ok, chosen: q.chosen })) }
   };
 };
 

@@ -5,13 +5,14 @@
 // AsyncSeats.wantDebug), the car's own state and the class racing line.
 import { esc } from './format.js';
 import { lensModel, toneColor } from './lens-model.js';
+import { AiScope } from './ai-scope.js';
 import { AI_DRIVERS } from '../core/teams.js';
 import { TANK_LITRES, WEAR_CLIFF } from '../core/rules.js';
 
 const W = 300, H = 452, TRACE = 12; // seconds of speed trace
 // One docked panel, one view at a time (B opens it, V or a click picks the tab): the car's telemetry, the AI's
 // mind (intent, options, controller), its radar and its event log. Tabs an AI has nothing for are hidden.
-const TABS = [['car', 'CAR'], ['mind', 'MIND'], ['radar', 'RADAR'], ['strat', 'STRATEGY'], ['log', 'LOG']];
+const TABS = [['car', 'CAR'], ['mind', 'MIND'], ['scope', '3D'], ['radar', 'RADAR'], ['strat', 'STRATEGY'], ['log', 'LOG']];
 const TAB_KEY = 'aidebug.tab';
 const kmh = (v) => Math.round(v * 3.6);
 const clamp01 = (x) => Math.max(0, Math.min(1, x || 0));
@@ -29,6 +30,7 @@ export class AiDebugPanel {
     this.el.innerHTML = '<div class="dh"></div><div class="dtabs"></div>'
       + '<div class="dpane" data-tab="car"><canvas></canvas><div class="dchips"></div></div>'
       + '<div class="dpane aimind" data-tab="mind"><div class="mh"></div><canvas></canvas><div class="mb"></div></div>'
+      + '<div class="dpane" data-tab="scope"></div>'
       + '<div class="dpane aimind" data-tab="radar"><div class="mh"></div><canvas class="radar"></canvas></div>'
       + '<div class="dpane aimind" data-tab="strat"><div class="mh"></div><div class="mb"></div></div>'
       + '<div class="dpane aimind" data-tab="log"><div class="mh"></div><div class="mb"></div></div>'
@@ -48,6 +50,7 @@ export class AiDebugPanel {
     this.stratHead = q('[data-tab=strat] .mh'); this.stratBody = q('[data-tab=strat] .mb');
     this.calls = []; this.stratAt = 0;
     this.radarCv.width = 560; this.radarCv.height = 420;
+    this.scope = new AiScope(this.panes.scope);
     this.timeline.width = 560; this.timeline.height = 64;
     this.intents = []; this.model = null; this.tagName = ''; this.mindAt = 0;
     this.tab = 'car'; try { this.tab = localStorage.getItem(TAB_KEY) || 'car'; } catch { /* no storage */ }
@@ -57,7 +60,7 @@ export class AiDebugPanel {
     this.showTabs();
   }
   get open() { return !this.el.hidden; }
-  toggle(on = !this.open) { this.el.hidden = !on; return on; }
+  toggle(on = !this.open) { this.el.hidden = !on; this.scope.show(on && this.shown === 'scope'); return on; }
   /** Next tab (V), or a named one; remembered for the next race. */
   setTab(id = null) {
     const a = this.avail;
@@ -70,6 +73,9 @@ export class AiDebugPanel {
     this.tabBar.innerHTML = TABS.filter(([id]) => this.avail.includes(id)).map(([id, name]) => `<button data-tab="${id}" class="${id === shown ? 'on' : ''}">${name}</button>`).join('');
     for (const [id, pane] of Object.entries(this.panes)) pane.hidden = id !== shown;
     this.shown = shown;
+    // The 3D view gets a wider panel, and renders only while it is the tab on screen.
+    this.el.classList.toggle('wide', shown === 'scope');
+    this.scope?.show(this.open && shown === 'scope');
   }
 
   update(race, focusId, teamsById) {
@@ -122,7 +128,8 @@ export class AiDebugPanel {
       if (now - this.mindAt > 100) { this.mindAt = now; this.drawMind(race, m, t); }
     }
     if (e.strategist) this.strategy(race, e, car, t);
-    const avail = ['car', ...(this.model ? ['mind'] : []), ...(this.model?.radar ? ['radar'] : []), ...(e.strategist ? ['strat'] : []), ...(this.model?.log?.length ? ['log'] : [])];
+    this.scope.update(race, focusId, this.model, color, teamsById);
+    const avail = ['car', ...(this.model ? ['mind'] : []), ...(this.model?.path ? ['scope'] : []), ...(this.model?.radar ? ['radar'] : []), ...(e.strategist ? ['strat'] : []), ...(this.model?.log?.length ? ['log'] : [])];
     if (avail.join() !== this.avail.join()) { this.avail = avail; this.showTabs(); }
   }
 
@@ -197,6 +204,7 @@ export class AiDebugPanel {
     this.drawRadar(race, m);
     // Options, controller internals and counters.
     const parts = [];
+    if (m.flow) parts.push(this.flowHtml(m));
     const cands = (m.cands ?? []).filter((c) => Number.isFinite(c.score));
     if (cands.length) {
       const sc = cands.map((c) => c.score), lo = Math.min(...sc), hi = Math.max(...sc);
@@ -209,6 +217,20 @@ export class AiDebugPanel {
     if (m.counters?.length) parts.push(`<div class="mn">${m.counters.map((x) => `<span><small>${esc(x.label)}</small>${esc(String(x.value))}</span>`).join('')}</div>`);
     this.mindBody.innerHTML = parts.join('');
     this.logBody.innerHTML = m.log?.length ? `<div class="ml">${m.log.map((x) => `<div>${esc(x)}</div>`).join('')}</div>` : '';
+  }
+
+  /**
+   * ORACLE's move ladder: where the car is (racing line, in a tow, pulling out, diving, alongside), and the clock a move
+   * is judged on: now → braking point → apex across the 4.5 s forecast, with how far short of an overlap each side is.
+   */
+  flowHtml(m) {
+    const f = m.flow, steps = [['line', 'LINE'], ['tow', 'TOW'], ['pull', 'PULL-OUT'], ['dive', 'DIVE'], ['side', 'ALONGSIDE']];
+    const X = (t) => `${(100 * Math.max(0, Math.min(1, t / f.H))).toFixed(1)}%`;
+    const marks = [f.tb != null && `<b style="left:${X(f.tb)}"></b><em style="left:${X(f.tb)}">BRAKE ${f.tb.toFixed(1)} s</em>`,
+      f.tA != null && f.tA !== f.tb && `<b class="ap" style="left:${X(f.tA)}"></b><em class="lo" style="left:${X(f.tA)}">APEX ${f.tA.toFixed(1)} s</em>`].filter(Boolean).join('');
+    const short = f.short.map((q) => `<div class="${q.chosen ? 'on' : ''}"><span>${esc(q.label)}</span><em>${q.ok ? 'overlaps' : `${q.rel.toFixed(1)} m short`}</em></div>`).join('');
+    return `<h6>MOVE</h6><div class="mflow">${steps.map(([id, t]) => `<i class="${id === f.stage ? 'on' : ''}">${t}</i>`).join('<u>›</u>')}</div>`
+      + `<div class="mclock"><span>now</span>${marks}<span class="end">${f.H} s</span></div>${short ? `<div class="mshort">${short}</div>` : ''}`;
   }
 
   /**

@@ -21,7 +21,10 @@ export class Combat {
     this.line = line; this.o = options; this.rivals = new Map(); this.target = null;
     this.lane = 0; this.commit = 0; this.frame = 0; this.plan = null;
   }
-  reset() { this.rivals.clear(); this.target = null; this.lane = 0; this.commit = 0; this.plan = null; }
+  reset() { this.rivals.clear(); this.target = null; this.lane = 0; this.commit = 0; this.plan = null; this.vis = null; this.log = []; this.clock = 0; }
+  /** The debugger is reading (visualDebug in the last 0.6 s): forecasts keep their trails. Never changes a decision. */
+  get recording() { return this.recAt != null && performance.now() - this.recAt < 600; }
+  note(text) { (this.log ??= []).push({ t: this.clock ?? 0, text }); if (this.log.length > 14) this.log.shift(); }
 
   /** One rival on ORACLE's line: where it is, its lateral drift, and its pace against ORACLE's profile. */
   observe(o, me, dt) {
@@ -147,6 +150,9 @@ export class Combat {
     const rs = near.map((r) => ({ r, s: r.gap, e: r.e, u: r.car.speed, dev: r.e - prior(r, r.hint), close: Math.abs(r.gap), lat: Infinity }));
     // mark: a time (s) at which every rival's place relative to ORACLE is written down (the braking point of a move).
     const atMark = mark != null ? new Map() : null, H = this.o.horizon ?? HORIZON, tMark = mark != null ? Math.max(STEP, Math.min(mark, H)) : Infinity;
+    // Debugger trails: ORACLE's own forecast [s, e, u, wake] and every rival's [s, e], plus the first forecast overlap.
+    const trail = this.recording ? [[0, e, u, 0]] : null; let contact = null;
+    if (trail) for (const x of rs) x.tr = [[x.s, x.e]];
     for (let t = STEP; t <= H + 1e-9; t += STEP) {
       const [i, f] = at2(line, loc.s + s);
       const rate = 3.4 * (this.o.laneV0 !== 0 ? Math.min(1, (this.o.laneV0 ?? 40) / Math.max(1, u)) : 1);
@@ -196,6 +202,13 @@ export class Combat {
       }
       s = next;
       if (atMark && !atMark.size && t >= tMark - 1e-9) for (const x of rs) atMark.set(x.r, { rel: x.s - s, de: x.e - e });
+      if (trail) {
+        trail.push([s, e, u, wake]);
+        for (const x of rs) {
+          x.tr.push([x.s, x.e]);
+          if (!contact && Math.abs(x.s - s) < NOSE && Math.abs(x.e - e) < SIDE - 0.25) contact = { t: +t.toFixed(1), s, e, r: x.r, closing: +Math.abs(u - x.u).toFixed(1) };
+        }
+      }
     }
     score = s - Math.abs(e) * 0.4;
     // Position terms, decided at the end of the horizon.
@@ -228,7 +241,7 @@ export class Combat {
     }
     if (blocked && mode === 'PACE') { mode = 'FOLLOW'; focus = blocked; }
     if (!feasible) score -= 1000;
-    return { lane, score, mode, focus, blocked, blockedT, atMark, feasible, closest: new Map(rs.map((x) => [x.r, x.close])), squeeze: new Map(rs.map((x) => [x.r, x.lat])) };
+    return { lane, score, mode, focus, blocked, blockedT, atMark, feasible, trail, contact, rtr: trail ? new Map(rs.map((x) => [x.r, x.tr])) : null, closest: new Map(rs.map((x) => [x.r, x.close])), squeeze: new Map(rs.map((x) => [x.r, x.lat])) };
   }
 
   /**
@@ -245,7 +258,8 @@ export class Combat {
   moves(car, near, loc, v, grip, dt, free) {
     const o = this.o, line = this.line, max = o.maxLane ?? 7, myTop = envelope(car.classId).top;
     const st = (this.mv ??= { kind: 'LINE', side: 0, id: null, bad: 0, cool: 0, covered: null, n: { start: 0, done: 0, drop: 0, lost: 0 } });
-    st.cool = Math.max(0, st.cool - dt);
+    st.cool = Math.max(0, st.cool - dt); this.clock = (this.clock ?? 0) + dt;
+    const J = this.recording ? [] : null;
     // The next braking point on the line, and which way the turn after it goes (k > 0 turns left; + is right).
     let db = Infinity;
     for (let d = 0; d < 400; d += 5) if (line.sample(line.vb, loc.i, loc.f, d) < v - 3) { db = d; break; }
@@ -264,11 +278,14 @@ export class Combat {
     const judge = (r, side, need, mark = tb) => {
       const p = this.drive(car, near, loc, v, grip, sideLane(r, side), mark), m = p.atMark?.get(r);
       const passed = mark > (o.horizon ?? HORIZON) && r.gap > 0 && p.focus === r && p.mode === 'ATTACK';
-      return { p, gain: p.score - Math.max(base.score, p.score - 50), ok: p.feasible && (passed || (m != null && m.rel < NOSE * need)) };
+      const j = { p, gain: p.score - Math.max(base.score, p.score - 50), ok: p.feasible && (passed || (m != null && m.rel < NOSE * need)) };
+      if (J) J.push({ r, side, need, mark, rel: m?.rel ?? null, ...j });
+      return j;
     };
     let T = st.id != null ? near.find((r) => r.car.id === st.id) : null;
-    if (st.kind === 'MOVE' && (!T || T.gap < -(NOSE + 2) || T.gap > 80)) { if (o.mvLog) st.ev.push(`END ${T && T.gap < 0 ? 'done' : 'lost'} s${loc.s.toFixed(0)}`); st.n[T && T.gap < 0 ? 'done' : 'lost']++; st.kind = 'LINE'; st.id = null; T = null; }
+    if (st.kind === 'MOVE' && (!T || T.gap < -(NOSE + 2) || T.gap > 80)) { this.note(`${T && T.gap < 0 ? '▲ PASS done' : '▼ move lost'} #${st.id}`); if (o.mvLog) st.ev.push(`END ${T && T.gap < 0 ? 'done' : 'lost'} s${loc.s.toFixed(0)}`); st.n[T && T.gap < 0 ? 'done' : 'lost']++; st.kind = 'LINE'; st.id = null; T = null; }
     const alongside = (r) => Math.abs(r.gap) < NOSE + 1;
+    this.whyNot = null; this.prospect = null;
     if (st.kind === 'LINE' && !st.cool) {
       // The car ahead, close enough for a move and not already alongside.
       const r = near.filter((x) => x.gap > NOSE * 0.6 && x.gap < 40 && x.env.top <= myTop + 3).sort((a, b) => a.gap - b.gap)[0];
@@ -285,7 +302,8 @@ export class Combat {
           why ??= !j.p.feasible ? 'infeasible' : !j.ok ? 'noOverlap' : j.gain <= (o.startGain ?? 2) ? 'noGain' : null;
         }
         if (!best && why && r.gap < 15) st.n[why] = +((st.n[why] ?? 0) + dt).toFixed(2);
-        if (best) { if (o.mvLog) (st.ev ??= []).push(`START ${st.n.start} s${loc.s.toFixed(0)} gap${r.gap.toFixed(1)} v${v.toFixed(1)}/${r.car.speed.toFixed(1)} tb${tb.toFixed(2)} side${best.side} in${inside} gain${best.gain.toFixed(1)} rel${best.p.atMark?.get(r)?.rel.toFixed(1)} free${free}`); st.n.start++; st.kind = 'MOVE'; st.dive = dive; st.side = best.side; st.id = r.car.id; st.bad = 0; T = r; }
+        this.whyNot = best ? null : why; this.prospect = r;
+        if (best) { if (o.mvLog) (st.ev ??= []).push(`START ${st.n.start} s${loc.s.toFixed(0)} gap${r.gap.toFixed(1)} v${v.toFixed(1)}/${r.car.speed.toFixed(1)} tb${tb.toFixed(2)} side${best.side} in${inside} gain${best.gain.toFixed(1)} rel${best.p.atMark?.get(r)?.rel.toFixed(1)} free${free}`); st.n.start++; this.note(`${dive ? 'DIVE' : 'PULL-OUT'} ${best.side === inside ? 'inside' : 'outside'} on #${r.car.id} · gap ${r.gap.toFixed(1)} m · +${best.gain.toFixed(1)} m`); st.kind = 'MOVE'; st.dive = dive; st.side = best.side; st.id = r.car.id; st.bad = 0; T = r; }
       }
     }
     let lane = 0, mode = 'PACE', focus = null;
@@ -295,7 +313,7 @@ export class Combat {
       // Alongside, the move is held: the car beside is given its room (lateral discipline) and leaned on if it squeezes,
       // never backed out of mid-overlap.
       st.bad = !alongside(T) && T.gap > 0 && (!j.p.feasible || !j.ok || j.gain < -(o.abortGain ?? 3)) ? st.bad + dt : 0;
-      if (st.bad > (o.abortT ?? 0.3)) { if (o.mvLog) st.ev.push(`DROP s${loc.s.toFixed(0)} gap${T.gap.toFixed(1)} v${v.toFixed(1)}/${T.car.speed.toFixed(1)} tb${tb.toFixed(2)} feas${j.p.feasible} ok${j.ok} gain${j.gain.toFixed(1)} rel${j.p.atMark?.get(T)?.rel.toFixed(1)} e${loc.e.toFixed(1)} re${T.e.toFixed(1)}`); st.n.drop++; st.kind = 'LINE'; st.id = null; st.cool = o.cool ?? 1; }
+      if (st.bad > (o.abortT ?? 0.3)) { if (o.mvLog) st.ev.push(`DROP s${loc.s.toFixed(0)} gap${T.gap.toFixed(1)} v${v.toFixed(1)}/${T.car.speed.toFixed(1)} tb${tb.toFixed(2)} feas${j.p.feasible} ok${j.ok} gain${j.gain.toFixed(1)} rel${j.p.atMark?.get(T)?.rel.toFixed(1)} e${loc.e.toFixed(1)} re${T.e.toFixed(1)}`); st.n.drop++; this.note(`✕ DROP on #${T.car.id} · ${!j.p.feasible ? 'no room' : !j.ok ? 'no overlap' : 'costs time'}`); st.kind = 'LINE'; st.id = null; st.cool = o.cool ?? 1; }
       else { lane = sideLane(T, st.side); mode = alongside(T) ? 'BATTLE' : 'ATTACK'; focus = T; }
     }
     // Cover: one move to the inside before the braking zone against a car closing from behind.
@@ -316,6 +334,14 @@ export class Combat {
     this.lane = lane;
     const cap = this.follow(car, near, loc.e, v, { lane, blocked: null, blockedT: Infinity });
     if (mode === 'PACE' && this.capBy && cap < v + 2) { mode = 'FOLLOW'; focus = this.capBy.r; }
+    if (J) {
+      // Preview for the debugger: with no move judged this frame, the two sides of the car ahead as a move would see them.
+      const r = this.prospect ?? near.filter((x) => x.gap > NOSE * 0.6 && x.gap < 40).sort((a, b) => a.gap - b.gap)[0];
+      const real = J.length, held = st.kind === 'MOVE' ? J.at(-1) : null;
+      if (!real && r) for (const side of [inside, -inside]) judge(r, side, o.overlap ?? 0.5, tb);
+      this.vis = { db, da, tb, tA, inside, free, base, cands: J.map((q, k) => ({ ...q, preview: k >= real, chosen: q === held })), held: Boolean(held), lane, cap, wide: this.wide,
+        kind: st.kind, side: st.side, id: st.id, dive: Boolean(st.dive), bad: st.bad, cool: st.cool, n: { ...st.n }, whyNot: this.whyNot, mode, focus };
+    } else this.vis = null;
     this.plan = { lane, mode, focus, score: base.score }; this.target = focus ? { id: focus.car.id, gap: focus.gap } : null;
     if (o.debug) this.dbgLine = `${st.kind}${st.side && st.kind === 'MOVE' ? (st.side > 0 ? 'R' : 'L') : ''} db${Number.isFinite(db) ? db : '-'} in${inside > 0 ? 'R' : 'L'} bad${st.bad.toFixed(2)}`;
     return { lateral: lane, cap, mode, laneRate: st.kind === 'MOVE' ? 4.2 : 3.2 };
