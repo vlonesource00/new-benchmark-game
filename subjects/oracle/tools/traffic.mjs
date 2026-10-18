@@ -82,6 +82,7 @@ while (race.phase !== 'finished' && race.time < cap && !subj.every((i) => race.c
   prev = pos;
 }
 const ord = race.order();
+if (opts.fcAudit) subj.forEach((i, k) => { const fa = race.entries[i].bridges[0]?.driver?.combat?.fa; if (fa) for (const [key, b] of Object.entries(fa.k)) console.log(`fa ${ai}${k} ${key} n ${b.n} fc ${(b.fc / b.n).toFixed(2)} hold ${(b.hold / b.n).toFixed(2)} path ${(b.path / b.n).toFixed(2)}`); });
 if (opts.mvLog) subj.forEach((i, k) => { for (const e of race.entries[i].bridges[0]?.driver?.combat?.mv?.ev ?? []) console.log(`ev ${ai}${k} ${e}`); });
 subj.forEach((i, k) => {
   const c = race.cars[i], st = race.stewards.of(race.entries[i]), t = c.race.finishTime;

@@ -17,9 +17,12 @@ import { cloneCar, cloneDriver, shadowTrack } from './shadow.js';
 // Side by side (2026-10-18): a rival's forecast pace follows what its car can do out of a corner (rivalPhys), a pass
 // still closing when the horizon ends is judged at the braking point (markExtrap), the lane keeps clear air beside a
 // car it overlaps (sideGap), and a car ORACLE is already beside no longer holds it to its speed (capSide).
+// Tow and elbows (2026-10-18): the tow is taken right up to the car ahead (towReact 0: the cap's reaction gap held it
+// ten metres back at the leader's speed, throwing the tow away), and side by side the lane sits a car's width off the
+// rival (sideGap 0, rubbing allowed) and follows it back in when it moves over (edgeRelax), rather than leaving a lane.
 export const RACECRAFT = { moves: true, diveApex: true, capArrive: true, capWide: 0.6, laneAhead: true, laneSmooth: 12,
   capClose: true, earlyPass: true, earlyNeed: -1, wideGap: 1.6, besideLane: true, markRule: true,
-  rivalPhys: true, markExtrap: true, sideGap: 0.6, capSide: true };
+  rivalPhys: true, markExtrap: true, sideGap: 0, capSide: true, towReact: 0, edgeRelax: 3 };
 
 export class OracleDriver {
   constructor(track, options = {}) { this.track = track; this.options = { ...RACECRAFT, ...options }; this.classId = null; this.hint = -1; this.steer = 0; this.mode = 'INIT'; }
