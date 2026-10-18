@@ -42,7 +42,8 @@ export async function bake({ cls = 'gt', trackName = 'harbor-ring', o = {} }) {
     } });
     const row = rows[0], fly = row.laps.slice(1).filter((t) => t != null), r = { inc: row.inc };
     const bad = row.inc > 0 || row.red > 0 || !fly.length;
-    lap = bad ? Infinity : fly.reduce((a, x) => a + x, 0) / fly.length;
+    // wearCost: the worst tyre's wear per lap is priced in seconds per unit, so the best pass is the best stint.
+    lap = bad ? Infinity : fly.reduce((a, x) => a + x, 0) / fly.length + (o.wearCost ?? 0) * row.wear / 100 / (o.checkLaps ?? 3);
     return { snaps, lap, laps: fly.map((x) => x.toFixed(2)).join(' '), inc: r.inc };
   }
   // Clock from the snapshot to the end of the window plus the exit run; a slide or an off fails the trial.
@@ -51,13 +52,16 @@ export async function bake({ cls = 'gt', trackName = 'harbor-ring', o = {} }) {
     // Slide and kerb-overrun time are priced (a slide costs tyre and risk the clock does not show); a spin or a car
     // past the stewards' line is a failure.
     let t = 0, slip = 0, wide = 0;
+    // wearCost (s per unit of the worst tyre's wear): a line that saves a hundredth by sliding the tyres pays for it
+    // on every later lap of the stint, so the trial's clock carries that cost.
+    const w0 = c.wheels.map((w) => w.tyre.wear), worn = () => (o.wearCost ? o.wearCost * Math.max(...c.wheels.map((w, k) => w.tyre.wear - w0[k])) : 0);
     while (t < 40) {
       d.update(c, [c], DT, {}); c.step(DT, shadow); t += DT;
       const b = Math.abs(Math.atan2(c.v, Math.max(2, c.u))), lat = Math.abs(track.nearest(c.x, c.z).lateral);
       if (b > (o.slideB ?? 0.3)) slip += DT;
       if (lat > LIMIT) wide += DT;
       if (b > 0.9 || lat > track.halfWidth + track.curbWidth + 0.8) return Infinity;
-      const done = fwd(snap.s0, d.loc.s); if (done >= total && done < total + 60) return t + slip * (o.slipCost ?? 1.5) + wide * (o.wideCost ?? 4);
+      const done = fwd(snap.s0, d.loc.s); if (done >= total && done < total + 60) return t + slip * (o.slipCost ?? 1.5) + wide * (o.wideCost ?? 4) + worn();
     }
     return Infinity;
   }

@@ -323,7 +323,26 @@ export class Line {
     const w = this.w[ia] * (1 - t) + this.w[ib] * t, lo = Math.min(this.lo[ia], this.lo[ib]), hi = Math.max(this.hi[ia], this.hi[ib]);
     if (!lateral) return clamp(w, lo, hi);
     const m = this.options.laneEdge ?? 1.8;
+    if (this.options.laneSmooth) {
+      // A lane runs along the road's edge as a driver does: on the edge smoothed over a few car lengths, so a kink in
+      // the kerb line is cut (a wheel over the kerb, never the car off) instead of traced.
+      const E = this.laneEdges(), llo = E.lo[ia] * (1 - t) + E.lo[ib] * t, lhi = E.hi[ia] * (1 - t) + E.hi[ib] * t;
+      return clamp(w + lateral, Math.min(w, llo + m), Math.max(w, lhi - m));
+    }
     return clamp(w + lateral, Math.min(w, lo + m), Math.max(w, hi - m));
+  }
+  /** The bounds smoothed (Gaussian, laneSmooth metres), never more than laneCut past the real ones. */
+  laneEdges() {
+    if (this.edges) return this.edges;
+    const n = this.n, sig = this.options.laneSmooth / this.ds, R = Math.ceil(sig * 2.5), cut = this.options.laneCut ?? 1;
+    const g = []; let gs = 0; for (let j = -R; j <= R; j++) { g.push(Math.exp(-0.5 * (j / sig) ** 2)); gs += g.at(-1); }
+    const lo = new Float64Array(n), hi = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      let a = 0, b = 0;
+      for (let j = -R; j <= R; j++) { const k = ((i + j) % n + n) % n, q = g[j + R] / gs; a += this.lo[k] * q; b += this.hi[k] * q; }
+      lo[i] = Math.max(a, this.lo[i] - cut); hi[i] = Math.min(b, this.hi[i] + cut);
+    }
+    return (this.edges = { lo, hi });
   }
   /** Cornering limit of a lane `lateral` off the line at d ahead, from the curvature of the lane's own clamped path. */
   laneSpeed(i, f, d, lateral) {

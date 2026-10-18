@@ -8,8 +8,13 @@ import { lineData } from './store.js';
 import { Combat, downforceShare } from './combat.js';
 import { cloneCar, cloneDriver, shadowTrack } from './shadow.js';
 
+// Racecraft defaults (any can be overridden per driver): committed moves (pull-outs and dives judged on the forecast,
+// dives at the apex), the follow cap judged where the car will be when it arrives and wide of its line into a turn,
+// the speed plan read on the lane the car will be in, and lanes along the road's edge smoothed past kinks.
+export const RACECRAFT = { moves: true, diveApex: true, capArrive: true, capWide: 0.6, laneAhead: true, laneSmooth: 12 };
+
 export class OracleDriver {
-  constructor(track, options = {}) { this.track = track; this.options = options; this.classId = null; this.hint = -1; this.steer = 0; this.mode = 'INIT'; }
+  constructor(track, options = {}) { this.track = track; this.options = { ...RACECRAFT, ...options }; this.classId = null; this.hint = -1; this.steer = 0; this.mode = 'INIT'; }
   prepare(car) {
     if (this.classId === car.classId) return;
     this.classId = car.classId; this.spec = car.spec;
@@ -72,8 +77,13 @@ export class OracleDriver {
     const lane = Math.abs(this.lateral) > 0.3 ? this.lateral : 0;
     const lp = lane ? 1 - (o.lanePace ?? 0) * Math.min(1, Math.abs(lane) / 2) : 1;
     // The lane's share of the line speed is smooth over its 24 m chord: taken every 8 m and interpolated.
-    const lf = [], laneAt = (d) => { const q = Math.max(0, d) / 8, a = Math.floor(q), t = q - a; lf[a] ??= line.laneFactor(loc.i, loc.f, a * 8, lane); lf[a + 1] ??= line.laneFactor(loc.i, loc.f, a * 8 + 8, lane); return lf[a] + (lf[a + 1] - lf[a]) * t; };
-    const target = o.forwardPass ? line.v : line.vb, speedAt = (d) => { const p = line.sample(target, loc.i, loc.f, d) * grip * lp; return lane ? p * laneAt(d) : p; };
+    // laneAhead: each point ahead is taken on the lane the car will be in when it gets there (the held lane moving
+    // toward the combat lane at the lane rate), so a braking point is planned for the lane the corner is entered on.
+    const la = o.laneAhead ? (fight.laneRate ?? o.laneRate ?? 3.2) * (o.laneV0 !== 0 ? Math.min(1, (o.laneV0 ?? 40) / Math.max(1, v)) : 1) / Math.max(5, v) : 0;
+    const laneD = (d) => { if (!la) return lane; const l = this.lateral + clamp(fight.lateral - this.lateral, -la * d, la * d); return Math.abs(l) > 0.3 ? l : 0; };
+    const lf = [], lfAt = (a) => (lf[a] ??= laneD(a * 8) ? line.laneFactor(loc.i, loc.f, a * 8, laneD(a * 8)) : 1);
+    const laneAt = (d) => { const q = Math.max(0, d) / 8, a = Math.floor(q), t = q - a; return lfAt(a) + (lfAt(a + 1) - lfAt(a)) * t; };
+    const target = o.forwardPass ? line.v : line.vb, speedAt = (d) => { const p = line.sample(target, loc.i, loc.f, d) * grip * lp; return lane || la ? p * laneAt(d) : p; };
     // capT: a follow cap is a safe speed for the gap now, met over a time headway (a cap 3 m/s under the car at 75 m/s
     // is a lift, not a stab of full brake); the profile itself is met at the look distance as before.
     const capD = Math.max(look, v * (o.capT ?? 0)), vNow = speedAt(0), vAhead = capD > look ? speedAt(look) : Math.min(speedAt(look), fight.cap);

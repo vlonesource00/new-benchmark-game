@@ -7,10 +7,11 @@ import { EnduranceRace, FIXED_DT } from '../../../game/core/race.js';
 import { FORMATS } from '../../../game/core/rules.js';
 import { AI_DRIVERS } from '../../../game/core/teams.js';
 import { OracleDriver } from '../src/driver.js';
+import { jsonArg } from './bench.mjs';
 
 const [trackName = 'harbor-ring', seedArg = '7', lapsArg = '5', aisArg = 'oracle,intercept,razor,apex', cls = 'gt', optsArg = '{}', traceArg = ''] = process.argv.slice(2);
 const [tCar, tFrom, tTo] = traceArg ? traceArg.split(':').map(Number) : [-1, 0, 0];
-const laps = Number(lapsArg), seed = Number(seedArg), track = new Track(trackName), opts = JSON.parse(optsArg);
+const laps = Number(lapsArg), seed = Number(seedArg), track = new Track(trackName), opts = jsonArg(optsArg);
 const ais = aisArg.split(','), last = ais.includes('apex') ? 'apex' : null, front = ais.filter((a) => a !== last);
 const rot = seed % front.length, order = [...front.slice(rot), ...front.slice(0, rot), ...(last ? [last] : [])];
 const ids = order.flatMap((id) => [id, id]), short = (id) => AI_DRIVERS.find((d) => d.id === id)?.short ?? id;
@@ -56,7 +57,7 @@ while (race.phase !== 'finished' && race.time < cap) {
   race.step(FIXED_DT);
   if (mine.has(tCar) && race.time >= tFrom && race.time <= tTo && tick % 6 === 0) {
     const d = mine.get(tCar), t = d.trace ?? {}, c = race.cars[tCar], f = d.combat?.target;
-    console.log(`${race.time.toFixed(2)} s ${d.loc?.s.toFixed(0)} ${d.mode} lane ${d.lateral.toFixed(1)} e ${t.e?.toFixed(1)} v ${t.v?.toFixed(1)} vNow ${t.vNow?.toFixed(1)} vAhead ${t.vAhead?.toFixed(1)} cap ${Number.isFinite(t.cap) ? t.cap.toFixed(1) : '-'} beta ${t.beta?.toFixed(2)} slide ${t.slide?.toFixed(2)} st ${c.controls.steer.toFixed(2)} thr ${c.controls.throttle.toFixed(2)} brk ${c.controls.brake.toFixed(2)} grip ${t.grip?.toFixed(3)}${f ? ` focus ${f.id} ${f.gap.toFixed(1)}` : ''}`);
+    console.log(`${race.time.toFixed(2)} s ${d.loc?.s.toFixed(0)} ${d.mode} lane ${d.lateral.toFixed(1)} e ${t.e?.toFixed(1)} v ${t.v?.toFixed(1)} vNow ${t.vNow?.toFixed(1)} vAhead ${t.vAhead?.toFixed(1)} cap ${Number.isFinite(t.cap) ? t.cap.toFixed(1) : '-'} beta ${t.beta?.toFixed(2)} slide ${t.slide?.toFixed(2)} st ${c.controls.steer.toFixed(2)} thr ${c.controls.throttle.toFixed(2)} brk ${c.controls.brake.toFixed(2)} grip ${t.grip?.toFixed(3)}${f ? ` focus ${f.id} ${f.gap.toFixed(1)}` : ''}${d.combat?.capBy ? ` capBy ${race.cars.indexOf(d.combat.capBy.r.car)} lat ${d.combat.capBy.lateral.toFixed(1)}` : ''} |${[...(d.combat?.rivals?.values() ?? [])].filter((r) => Math.abs(r.gap) < 15).map((r) => ` ${name(race.cars.indexOf(r.car))} g${r.gap.toFixed(1)} e${r.e.toFixed(1)} ed${(r.edot ?? 0).toFixed(1)} v${r.car.speed.toFixed(1)}`).join('')}${d.combat?.dbgLine ? ' | ' + d.combat.dbgLine : ''}`);
   }
   if (race.formation || ++tick % 12) continue;
   const ord = race.order().map((c) => race.cars.indexOf(c)), pos = new Array(ord.length); ord.forEach((ci, p) => { pos[ci] = p; });
