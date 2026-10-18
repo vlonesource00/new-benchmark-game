@@ -13,6 +13,7 @@ import { SafetyCarModel } from './render/safety-car.js';
 import { CarEffects } from './render/effects-pro.js';
 import { VisualFinish } from './render/finish-pro.js';
 import { AudioEngine } from './render/audio-pro.js';
+import { installAudioTuner, openAudioTuner } from './ui/audio-tuner.js';
 import { ExhaustEvents } from './render/exhaust.js';
 import { ReplayRecorder, ReplayDirector } from './render/replay.js';
 import { WeatherEffects } from './engine/render/weather.js';
@@ -83,6 +84,7 @@ document.addEventListener('visibilitychange', syncAudioFocus);
 ['pagehide', 'pageshow'].forEach((t) => addEventListener(t, syncAudioFocus));
 addEventListener('pointerdown', unlockAudio);
 addEventListener('keydown', unlockAudio);
+installAudioTuner(audio, unlockAudio);
 
 // ---------- world (one per circuit, built lazily) ----------
 let track = null, world = null, effects = null, worldTrackId = null;
@@ -268,6 +270,7 @@ const nav = {
     if ('quality' in patch) { finish?.setQuality(settings.quality); world?.setQuality?.(settings.quality); }
     if ('pixelRatio' in patch) { renderer.setPixelRatio(pixelRatio()); resize(); }
   },
+  audioTuner: () => openAudioTuner(),
   // Go racing / Race now: a fresh sky for the event, then the pre-race briefing with its forecast.
   start: () => { mode = 'race'; preraceBack = screen === 'setup' ? 'setup' : 'menu'; weatherSeed = rollSeed(); showPrerace(); }
 };
@@ -660,7 +663,7 @@ function frame(ms, pumped = false) {
       effects.update(cars, paused ? 0 : delta, track, innerHeight);
       const cam = Math.hypot(camera.position.x - car.x, camera.position.y - (car.y ?? 0) - 0.6, camera.position.z - car.z);
       const pit = snap?.cars.find((c) => c.id === car.id)?.pit, pitLane = Boolean(pit) && pit !== 'service';
-      audio.update(car, racing || Boolean(replay && spin), cars, { distance: cam, pitLane });
+      audio.update(car, racing || Boolean(replay && spin), cars, { distance: cam, pitLane, pit, camera, weather: { rain: sky?.rain ?? 0, wet: race.track.wetness ?? 0 } });
       finish.setSpeed?.(car.speed);
       if (replay) replay.director.update(car, delta); else spectator.update(delta);
       hud.frame(car);
@@ -680,7 +683,7 @@ function frame(ms, pumped = false) {
       world.update(menuProbe, now, 0, true);
       camera.position.set(p.x + Math.cos(menuAngle) * 95, 38, p.z + Math.sin(menuAngle) * 95);
       camera.lookAt(p.x, 4, p.z);
-      audio.update(menuProbe, false, []);
+      audio.update(menuProbe, false, [], { menu: true, camera, weather: { rain: menuWeather.rain, wet: menuWeather.wet } });
     }
     // Tight near plane only where the camera sits inside the car; elsewhere it costs
     // depth precision and the flat track layers start fighting in the distance.
