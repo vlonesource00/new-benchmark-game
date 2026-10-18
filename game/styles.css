@@ -390,7 +390,6 @@ body.replaying #replay-bug { display: flex; animation: fade-in .3s ease both; }
 .aimind .mt { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 5px; }
 .aimind .mt i { font-style: normal; font-size: 10px; letter-spacing: .1em; padding: 1px 6px; border: 1px solid var(--tone); color: var(--tone); text-transform: uppercase; }
 .aimind canvas { display: block; width: 280px; height: 32px; margin-top: 8px; }
-.aimind canvas.radar { width: 300px; height: 225px; }
 .aimind .ml > div { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--dim); line-height: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .aimind h6 { margin: 8px 0 3px; font-size: 9px; letter-spacing: .16em; color: var(--faint); font-weight: 700; }
 .aimind .mc > div, .aimind .mg > div { display: grid; grid-template-columns: 82px 1fr auto; align-items: center; gap: 6px; font-family: 'JetBrains Mono', monospace; font-size: 10px; height: 15px; color: var(--dim); }
@@ -404,7 +403,7 @@ body.replaying #replay-bug { display: flex; animation: fade-in .3s ease both; }
 /* 3D tab (ui/ai-scope.js): a wider panel, the view takes the mouse (orbit, zoom) */
 .aidebug.wide { width: 600px; }
 .aidebug .scope { position: relative; margin-top: 8px; pointer-events: auto; }
-.aidebug .scope canvas { width: 576px; height: 420px; margin: 0; cursor: grab; border: 1px solid var(--line); }
+.aidebug .scope canvas { width: 576px; height: 360px; margin: 0; cursor: grab; border: 1px solid var(--line); }
 .aidebug .scope canvas:active { cursor: grabbing; }
 .scope .shud { position: absolute; left: 10px; top: 8px; pointer-events: none; display: flex; flex-direction: column; gap: 1px; text-shadow: 0 1px 3px #000; }
 .scope .shud b { font-size: 20px; font-weight: 900; font-style: italic; line-height: 1.05; }
@@ -414,6 +413,11 @@ body.replaying #replay-bug { display: flex; animation: fade-in .3s ease both; }
 .scope .sview button.on { color: #000; background: var(--team, #fff); }
 .scope .slegend { display: flex; flex-wrap: wrap; gap: 3px 10px; margin-top: 5px; font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--dim); }
 .scope .slegend i { font-style: normal; }
+.aidebug .sdock { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; }
+.aidebug .sdock > div { min-width: 0; }
+.aidebug .sdock .mc > div, .aidebug .sdock .mg > div { grid-template-columns: 70px 1fr auto; }
+.aidebug .sdock em { max-width: 110px; }
+.aidebug .sdock .mn { margin-top: 5px; }
 .scope .slegend i::before { content: ''; display: inline-block; width: 10px; height: 3px; margin-right: 4px; vertical-align: middle; background: var(--c); }
 .aimind .mflow { display: flex; align-items: center; gap: 3px; flex-wrap: wrap; }
 .aimind .mflow i { font-style: normal; font-size: 10px; font-weight: 800; letter-spacing: .1em; padding: 2px 6px; color: var(--faint); border: 1px solid var(--line); }

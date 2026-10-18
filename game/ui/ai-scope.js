@@ -6,6 +6,7 @@
 //  · each rival's forecast as a car-width ribbon ending in a ghost box; the wake cone behind cars ahead
 //  · ORACLE: the braking point and apex its moves are judged at, the ghost of itself at the brake, the follow-cap tether
 //  · a forecast contact as a pulsing red ring
+//  · the pit lane, so a car in the pits (or a fresh driver after a swap) still has a road under it
 // Drag to orbit, wheel to zoom, double-click to reset; CHASE / TOP switch the camera.
 import * as THREE from 'three';
 import { toneColor } from './lens-model.js';
@@ -34,8 +35,8 @@ export class AiScope {
   }
 
   setView(v) {
-    // CHASE sits behind and a little to the right so the speed fence reads as a wall, not a line.
-    this.view = v; this.cam = v === 'top' ? { yaw: 0, pitch: 1.42, dist: 95 } : { yaw: -0.5, pitch: 0.36, dist: 30 };
+    // CHASE sits straight behind the car, high enough that the speed fence and the gates ahead read over its roof.
+    this.view = v; this.cam = v === 'top' ? { yaw: 0, pitch: 1.42, dist: 95 } : { yaw: 0, pitch: 0.34, dist: 28 };
     for (const b of this.wrap.querySelectorAll('.sview button')) b.classList.toggle('on', b.dataset.v === v);
   }
   bindOrbit() {
@@ -76,8 +77,8 @@ export class AiScope {
     this.sprites = new THREE.Group(); this.scene.add(this.sprites);
   }
 
-  /** The road, built once per track: asphalt, kerbs striped red and white every 3 m, white edges. */
-  buildRoad(track) {
+  /** The road, built once per track: asphalt, kerbs striped red and white every 3 m, white edges, and the pit lane. */
+  buildRoad(track, lane) {
     if (this.trackId === track.id && this.road) return;
     if (this.road) { this.scene.remove(this.road); this.road.traverse((o) => o.geometry?.dispose()); }
     this.trackId = track.id; this.road = new THREE.Group();
@@ -101,6 +102,21 @@ export class AiScope {
     for (let k = 0; k <= N; k++) for (const sg of [-1, 1]) { const p = track.at(k * step), q = track.at((k + 1) * step); edge.push(p.x + p.nx * hw * sg, 0.02, p.z + p.nz * hw * sg, q.x + q.nx * hw * sg, 0.02, q.z + q.nz * hw * sg); }
     const eg = new THREE.BufferGeometry(); eg.setAttribute('position', new THREE.Float32BufferAttribute(edge, 3));
     this.road.add(new THREE.LineSegments(eg, new THREE.LineBasicMaterial({ color: '#8b93a3', transparent: true, opacity: 0.6 })));
+    // Pit lane: the corridor from entry to exit (its lateral follows the lane's own curve) and the box section beside it.
+    if (lane) {
+      const band = (from, len, lat, h, y, c) => {
+        const pos = [], cols = [], n = Math.max(1, Math.ceil(len / 2)), P = (s, o) => { const t = track.at(s); return [t.x + t.nx * o, y, t.z + t.nz * o]; };
+        for (let k = 0; k < n; k++) {
+          const s0 = from + len * k / n, s1 = from + len * (k + 1) / n, l0 = lat(s0 % L), l1 = lat(s1 % L);
+          for (const v of [P(s0, l0 - h), P(s0, l0 + h), P(s1, l1 + h), P(s0, l0 - h), P(s1, l1 + h), P(s1, l1 - h)]) { pos.push(...v); cols.push(c.r, c.g, c.b); }
+        }
+        const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('color', new THREE.Float32BufferAttribute(cols, 3));
+        this.road.add(new THREE.Mesh(g, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide })));
+      };
+      const pitc = col('#262c37');
+      band(lane.entry, lane.length, (s) => lane.laneAt(s), 3.4, -0.02, pitc);
+      band((lane.boxStart - 30 + L) % L, lane.d(lane.boxStart, lane.boxEnd) + 60, () => lane.boxLat, 3.2, -0.015, tmp.copy(pitc).offsetHSL(0, 0, 0.02).clone());
+    }
     this.scene.add(this.road);
   }
 
@@ -130,7 +146,7 @@ export class AiScope {
     if (on && !this.raf) { this.init(); const loop = () => { this.raf = this.on ? requestAnimationFrame(loop) : 0; if (this.on) this.frame(); }; this.raf = requestAnimationFrame(loop); }
   }
   /** Data from the panel's update (the lens model and the race); the scene itself is drawn every animation frame. */
-  update(race, focus, model, teamColor, teamsById = {}) { this.race = race; this.focus = focus; this.model = model; this.teamColor = teamColor; this.teamsById = teamsById; }
+  update(race, focus, model, teamColor, teamsById = {}, info = {}) { this.race = race; this.focus = focus; this.model = model; this.teamColor = teamColor; this.teamsById = teamsById; this.info = info; }
 
   frame() {
     const race = this.race, car = race?.cars?.[this.focus];
@@ -138,7 +154,7 @@ export class AiScope {
     const W = this.canvas.clientWidth, H = this.canvas.clientHeight;
     if (!W || !H) return;
     if (this.size !== W + 'x' + H) { this.size = W + 'x' + H; this.renderer.setSize(W, H, false); this.camera.aspect = W / H; this.camera.updateProjectionMatrix(); }
-    this.buildRoad(race.track);
+    this.buildRoad(race.track, race.lane);
     const m = this.model, theme = col(m?.theme?.color ?? '#ffffff'), tone = col(toneColor(m?.tone));
     const T = this.tris.geometry.attributes, Lg = this.lines.geometry.attributes;
     let nt = 0, nl = 0; this.nSprite = 0;
@@ -270,10 +286,17 @@ export class AiScope {
   drawHud(m) {
     const now = performance.now();
     if (now - (this.hudAt ?? 0) < 120) return; this.hudAt = now;
-    if (!m) { this.hud.innerHTML = ''; return; }
-    const sc = m.scope, opt = (sc?.options ?? []).find((o) => o.chosen);
-    this.hud.innerHTML = `<b style="color:${toneColor(m.tone)}">${String(m.intent ?? '—').toUpperCase()}</b><span>${m.sub ?? ''}</span>`
-      + (sc ? `<span>${sc.brake ? `brake in ${sc.brake.d.toFixed(0)} m` : 'no brake ahead'}${sc.atBrake ? ` · ${sc.atBrake.t.toFixed(1)} s` : ''}${opt && opt.kind !== 'line' ? ` · holding ${opt.kind}` : ''}</span>` : '');
+    const info = this.info ?? {};
+    // In the pits the autopilot drives, whatever the seat's AI last said; after a swap the new driver has said nothing yet.
+    if (info.pit) { this.hud.innerHTML = `<b style="color:#ffb02e">PIT LANE</b><span>${info.pit}</span>`; }
+    else if (!m) { this.hud.innerHTML = info.focus ? `<span>${info.focus}</span>` : ''; }
+    else {
+      const sc = m.scope, opt = (sc?.options ?? []).find((o) => o.chosen);
+      this.hud.innerHTML = `<b style="color:${toneColor(m.tone)}">${String(m.intent ?? '—').toUpperCase()}</b><span>${m.sub ?? ''}</span>`
+        + (info.focus ? `<span>${info.focus}</span>` : '')
+        + (sc ? `<span>${sc.brake ? `brake in ${sc.brake.d.toFixed(0)} m` : 'no brake ahead'}${sc.atBrake ? ` · ${sc.atBrake.t.toFixed(1)} s` : ''}${opt && opt.kind !== 'line' ? ` · holding ${opt.kind}` : ''}</span>` : '');
+    }
+    if (!m) { this.legend.innerHTML = ''; return; }
     const leg = [['#3ddc84', 'path · speed fence'], [m.theme?.color ?? '#fff', 'options'], ['#ffb02e', 'rival ahead'], ['#4f8cff', 'behind'], ['#7fb6ff', 'wake'], ['#ff3b3b', 'brake'], ['#c77dff', 'apex']];
     this.legend.innerHTML = leg.map(([c, t]) => `<i style="--c:${c}">${t}</i>`).join('');
   }

@@ -11,9 +11,11 @@ import { TANK_LITRES, WEAR_CLIFF } from '../core/rules.js';
 
 const W = 300, H = 452, TRACE = 12; // seconds of speed trace
 // One docked panel, one view at a time (B opens it, V or a click picks the tab): the car's telemetry, the AI's
-// mind (intent, options, controller), its radar and its event log. Tabs an AI has nothing for are hidden.
-const TABS = [['car', 'CAR'], ['mind', 'MIND'], ['scope', '3D'], ['radar', 'RADAR'], ['strat', 'STRATEGY'], ['log', 'LOG']];
+// mind (intent, options, controller), the 3D view with the essentials of MIND and STRATEGY under it, the pit wall
+// and the event log. Tabs an AI has nothing for are hidden; 3D is always there (it draws the field without an AI).
+const TABS = [['car', 'CAR'], ['mind', 'MIND'], ['scope', '3D'], ['strat', 'STRATEGY'], ['log', 'LOG']];
 const TAB_KEY = 'aidebug.tab';
+const FOCUS_WORD = { attack: 'ATTACKING', follow: 'CHASING', defend: 'COVERING', alongside: 'SIDE BY SIDE WITH' };
 const kmh = (v) => Math.round(v * 3.6);
 const clamp01 = (x) => Math.max(0, Math.min(1, x || 0));
 
@@ -30,8 +32,7 @@ export class AiDebugPanel {
     this.el.innerHTML = '<div class="dh"></div><div class="dtabs"></div>'
       + '<div class="dpane" data-tab="car"><canvas></canvas><div class="dchips"></div></div>'
       + '<div class="dpane aimind" data-tab="mind"><div class="mh"></div><canvas></canvas><div class="mb"></div></div>'
-      + '<div class="dpane" data-tab="scope"></div>'
-      + '<div class="dpane aimind" data-tab="radar"><div class="mh"></div><canvas class="radar"></canvas></div>'
+      + '<div class="dpane aimind" data-tab="scope"></div>'
       + '<div class="dpane aimind" data-tab="strat"><div class="mh"></div><div class="mb"></div></div>'
       + '<div class="dpane aimind" data-tab="log"><div class="mh"></div><div class="mb"></div></div>'
       + '<div class="dfoot">B close · V next tab · Tab next car</div>';
@@ -42,15 +43,14 @@ export class AiDebugPanel {
     this.canvas.width = W * 2; this.canvas.height = H * 2;
     this.ctx = this.canvas.getContext('2d'); this.ctx.scale(2, 2);
     this.trace = []; this.gg = []; this.focus = null;
-    // What this AI says it is thinking, in its own terms (mind, radar and log tabs).
+    // What this AI says it is thinking, in its own terms (mind, 3D and log tabs).
     this.mind = this.panes.mind;
     this.mindHead = q('[data-tab=mind] .mh'); this.timeline = q('[data-tab=mind] canvas'); this.mindBody = q('[data-tab=mind] .mb');
-    this.radarHead = q('[data-tab=radar] .mh'); this.radarCv = q('[data-tab=radar] canvas');
     this.logHead = q('[data-tab=log] .mh'); this.logBody = q('[data-tab=log] .mb');
     this.stratHead = q('[data-tab=strat] .mh'); this.stratBody = q('[data-tab=strat] .mb');
     this.calls = []; this.stratAt = 0;
-    this.radarCv.width = 560; this.radarCv.height = 420;
     this.scope = new AiScope(this.panes.scope);
+    this.dock = document.createElement('div'); this.dock.className = 'sdock'; this.panes.scope.append(this.dock); this.dockAt = 0; this.strat = null;
     this.timeline.width = 560; this.timeline.height = 64;
     this.intents = []; this.model = null; this.tagName = ''; this.mindAt = 0;
     this.tab = 'car'; try { this.tab = localStorage.getItem(TAB_KEY) || 'car'; } catch { /* no storage */ }
@@ -127,9 +127,12 @@ export class AiDebugPanel {
       const now = performance.now();
       if (now - this.mindAt > 100) { this.mindAt = now; this.drawMind(race, m, t); }
     }
-    if (e.strategist) this.strategy(race, e, car, t);
-    this.scope.update(race, focusId, this.model, color, teamsById);
-    const avail = ['car', ...(this.model ? ['mind'] : []), ...(this.model?.path ? ['scope'] : []), ...(this.model?.radar ? ['radar'] : []), ...(e.strategist ? ['strat'] : []), ...(this.model?.log?.length ? ['log'] : [])];
+    if (e.strategist) this.strategy(race, e, car, t); else this.strat = null;
+    const pit = e.pit ? `${e.pit.phase === 'service' ? 'in the box' : e.pit.phase === 'release' ? 'released' : e.pit.phase} · autopilot${e.pitPlan?.swap ? ' · driver swap' : ''}` : null;
+    this.scope.update(race, focusId, this.model, color, teamsById, { pit, focus: this.model ? this.focusText(race, this.model) : '' });
+    if (this.shown === 'scope') this.drawDock(this.model);
+    // 3D stays through pit stops and driver swaps: a fresh driver's AI reports nothing until its first lap step.
+    const avail = ['car', ...(this.model ? ['mind'] : []), 'scope', ...(e.strategist ? ['strat'] : []), ...(this.model?.log?.length ? ['log'] : [])];
     if (avail.join() !== this.avail.join()) { this.avail = avail; this.showTabs(); }
   }
 
@@ -147,7 +150,7 @@ export class AiDebugPanel {
     if (!last || last.lap !== lap) this.calls.push(row); else Object.assign(last, row);
     while (this.calls.length > 10) this.calls.shift();
     const now = performance.now();
-    if (now - this.stratAt < 200 || this.shown !== 'strat') return;
+    if (now - this.stratAt < 200 || (this.shown !== 'strat' && this.shown !== 'scope')) return;
     this.stratAt = now;
     const id = car.wheels[0].tyre.compound, wear = Math.max(...car.wheels.map((w) => w.tyre.wear));
     const wpl = S.wearPerLap?.[id], fpl = S.fuelPerLap, fuelLaps = fpl ? car.fuel / fpl : null;
@@ -158,6 +161,10 @@ export class AiDebugPanel {
     const call = e.pit ? 'IN THE PITS' : plan ? 'BOX THIS LAP' : 'STAY OUT';
     const what = plan ? [plan.litres > 0.5 ? `+${plan.litres.toFixed(0)} L` : 'no fuel', plan.tyres ? `${String(plan.compound ?? id).toUpperCase()} tyres` : 'keep tyres',
       plan.swap ? 'driver swap' : null, plan.repair ? 'repair' : null, plan.penalty ? `serve ${plan.penalty}` : null].filter(Boolean).join(' · ') : '';
+    // The essentials, for the strip under the 3D view.
+    this.strat = { call, reason: reason || (left != null && left <= 1 ? 'FINAL LAP' : 'no reason to stop'), what, hot: Boolean(plan || e.pit), left, stops: S.stops ?? 0, owed,
+      fuelLaps, fuelWarn: fuelLaps != null && left != null && fuelLaps < Math.min(left, 1.5), wear, wearWarn: wear > WEAR_CLIFF - 0.08, cliff, cliffWarn: cliff != null && cliff < 1.5, compound: String(id).toUpperCase() };
+    if (this.shown !== 'strat') return;
     const st = S.style ?? {};
     const parts = [
       `<div class="mi" style="--tone:${plan || e.pit ? '#ffb02e' : '#3ddc84'}"><b>${call}</b><span>${esc(reason || (left != null && left <= 1 ? 'FINAL LAP' : 'no reason to stop'))}</span></div>`,
@@ -181,9 +188,9 @@ export class AiDebugPanel {
     this.mind.style.setProperty('--tone', toneColor(m.tone));
     const f = m.focus, fe = f && f.index >= 0 ? race.entries[f.index] : null;
     const fwd = fe ? (race.cars[f.index].race?.progress ?? 0) - (race.cars[this.focus].race?.progress ?? 0) : 0;
-    const word = { attack: 'ATTACKING', follow: 'CHASING', defend: 'COVERING', alongside: 'SIDE BY SIDE WITH' }[f?.kind] ?? 'WATCHING';
+    const word = FOCUS_WORD[f?.kind] ?? 'WATCHING';
     const small = (what) => `<small>${what} · ${esc(this.tagName)}</small>`;
-    this.radarHead.innerHTML = small('RADAR'); this.logHead.innerHTML = small('RECENT EVENTS');
+    this.logHead.innerHTML = small('RECENT EVENTS');
     this.mindHead.innerHTML = `${small('AI MIND')}<p>${esc(m.theme?.mind ?? '')}</p>`
       + `<div class="mi"><b>${esc(String(m.intent ?? '—').toUpperCase())}</b>${m.sub ? `<span>${esc(m.sub)}</span>` : ''}</div>`
       + (fe ? `<div class="mf${f.declared ? '' : ' inf'}" style="--fc:${toneColor(f.kind)}">${word} <b>${esc(fe.team.short)}</b> ${fwd >= 0 ? '+' : ''}${fwd.toFixed(0)} m${f.declared ? '' : ' · inferred'}${m.side ? ` · side ${m.side > 0 ? '+' : '−'}` : ''}</div>` : '<div class="mf inf">FREE AIR</div>')
@@ -201,7 +208,6 @@ export class AiDebugPanel {
       if (x1 - x0 > 60) { g.fillStyle = '#000'; g.fillText(String(p.intent ?? '').toUpperCase().slice(0, Math.floor((x1 - x0 - 8) / 11)), x0 + 6, 34); }
     });
     g.fillStyle = 'rgba(255,255,255,.45)'; g.fillText(`INTENT · LAST ${TRACE} s`, 0, 8);
-    this.drawRadar(race, m);
     // Options, controller internals and counters.
     const parts = [];
     if (m.flow) parts.push(this.flowHtml(m));
@@ -233,56 +239,45 @@ export class AiDebugPanel {
       + `<div class="mclock"><span>now</span>${marks}<span class="end">${f.H} s</span></div>${short ? `<div class="mshort">${short}</div>` : ''}`;
   }
 
+  /** The rival the AI is working on, as one line for the 3D view's HUD. */
+  focusText(race, m) {
+    const f = m.focus, fe = f && f.index >= 0 ? race.entries[f.index] : null;
+    if (!fe) return 'free air';
+    const fwd = (race.cars[f.index].race?.progress ?? 0) - (race.cars[this.focus].race?.progress ?? 0);
+    return `${(FOCUS_WORD[f.kind] ?? 'WATCHING').toLowerCase()} ${esc(fe.team.short)} ${fwd >= 0 ? '+' : ''}${fwd.toFixed(0)} m${f.declared ? '' : ' · inferred'}${m.side ? ` · side ${m.side > 0 ? '+' : '−'}` : ''}`;
+  }
+
   /**
-   * Top-down radar in road coordinates for architectures that report one (m.radar): the road with the car and its
-   * rivals, where each rival is expected to be, the lanes the planner weighed (chosen one bright) and any contact it
-   * expects. Left on screen is left on the road.
+   * Under the 3D view: what MIND and STRATEGY say that matters lap to lap, so the view rarely needs a tab change.
+   * Left, the move (ladder and clock) and the options with their gains; right, the controller gauges and the pit
+   * wall's call with the fuel and tyre runway behind it.
    */
-  drawRadar(race, m) {
-    const cv = this.radarCv, r = m.radar;
-    if (!r) return;
-    const ahead = (r.rivals ?? []).reduce((m, v) => Math.max(m, v.d), 0), behind = (r.rivals ?? []).reduce((m, v) => Math.min(m, v.d), 0);
-    const dMax = Math.max(35, Math.min(90, ahead * 1.3 + 12)), dMin = -Math.max(12, Math.min(30, -behind * 1.2 + 6));
-    const g = cv.getContext('2d'), W = 560, H = 420, PX = 20, PY = H / (dMax - dMin), yMe = H * dMax / (dMax - dMin), theme = m.theme?.color ?? '#fff', tone = toneColor(m.tone);
-    const X = (lat) => W / 2 - lat * PX, Y = (d) => yMe - d * PY, half = r.half ?? 7.5;
-    g.clearRect(0, 0, W, H);
-    g.fillStyle = 'rgba(8,10,14,.55)'; g.fillRect(0, 0, W, H);
-    g.fillStyle = 'rgba(255,255,255,.07)'; g.fillRect(X(half), 0, 2 * half * PX, H);
-    g.strokeStyle = 'rgba(255,255,255,.5)'; g.lineWidth = 3; g.beginPath(); g.moveTo(X(half), 0); g.lineTo(X(half), H); g.moveTo(X(-half), 0); g.lineTo(X(-half), H); g.stroke();
-    g.font = '600 15px "JetBrains Mono", monospace'; g.textBaseline = 'middle'; g.lineWidth = 1;
-    for (let d = Math.ceil(dMin / 10) * 10; d <= dMax; d += 10) {
-      if (!d) continue;
-      g.strokeStyle = 'rgba(255,255,255,.08)'; g.beginPath(); g.moveTo(0, Y(d)); g.lineTo(W, Y(d)); g.stroke();
-      g.fillStyle = 'rgba(255,255,255,.35)'; g.textAlign = 'left'; g.fillText(`${d > 0 ? '+' : ''}${d}`, 4, Y(d) - 8);
+  drawDock(m) {
+    const now = performance.now();
+    if (now - this.dockAt < 150) return; this.dockAt = now;
+    const pane = this.panes.scope;
+    pane.style.setProperty('--arch', m?.theme?.color ?? '#fff'); pane.style.setProperty('--tone', toneColor(m?.tone));
+    const L = [], R = [];
+    if (m?.flow) L.push(this.flowHtml(m));
+    const cands = (m?.cands ?? []).filter((c) => Number.isFinite(c.score)).slice(0, 5);
+    if (cands.length) {
+      const sc = cands.map((c) => c.score), lo = Math.min(...sc), hi = Math.max(...sc);
+      L.push(`<h6>OPTIONS</h6><div class="mc">${cands.map((c) => {
+        const q = hi > lo ? (c.score - lo) / (hi - lo) : 1;
+        return `<div class="${c.chosen ? 'on' : ''}"><span>${esc(c.label)}</span><i><b style="width:${(6 + 94 * q).toFixed(0)}%"></b></i><em>${esc(c.note || c.score.toFixed(0))}</em></div>`;
+      }).join('')}</div>`);
     }
-    const poly = (pts, col, w, dash = [], a = 1) => {
-      if (pts.length < 2) return;
-      g.globalAlpha = a; g.strokeStyle = col; g.lineWidth = w; g.setLineDash(dash); g.beginPath();
-      pts.forEach(([d, l], k) => (k ? g.lineTo(X(l), Y(d)) : g.moveTo(X(l), Y(d)))); g.stroke(); g.setLineDash([]); g.globalAlpha = 1;
-    };
-    const box = (lat, d, col, a = 1) => { g.globalAlpha = a; g.fillStyle = col; g.fillRect(X(lat) - 1.96 * PX / 2, Y(d) - 4.56 * PY / 2, 1.96 * PX, 4.56 * PY); g.globalAlpha = 1; };
-    // lanes weighed: the chosen one last so it sits on top
-    for (const l of (r.lanes ?? []).filter((q) => !q.chosen)) poly(l.rp, theme, 2, [], .35);
-    for (const l of (r.lanes ?? []).filter((q) => q.chosen)) { poly(l.rp, '#000', 7, [], .5); poly(l.rp, tone, 4); }
-    // rivals: forecast path, body, label
-    for (const v of r.rivals ?? []) {
-      const col = v.kind === 'alongside' ? '#ff8f3d' : v.kind === 'ahead' ? '#ffb02e' : '#4f8cff', k = race.cars.findIndex((c) => c.id === v.id), name = race.entries[k]?.team?.short ?? `#${v.id}`;
-      poly([[v.d, v.l], ...(v.rp ?? []).slice(1)], col, 2, [4, 4], .8);
-      const e = v.rp?.at(-1); if (e) { g.fillStyle = col; g.beginPath(); g.arc(X(e[1]), Y(e[0]), 4, 0, 7); g.fill(); }
-      box(v.l, v.d, col, .9);
-      if (v.focus) { g.strokeStyle = tone; g.lineWidth = 3; g.strokeRect(X(v.l) - 1.96 * PX / 2 - 4, Y(v.d) - 4.56 * PY / 2 - 4, 1.96 * PX + 8, 4.56 * PY + 8); }
-      g.fillStyle = '#fff'; g.textAlign = v.l > 0 ? 'right' : 'left';
-      g.fillText(`${name} ${v.d >= 0 ? '+' : ''}${v.d.toFixed(0)} m`, X(v.l) + (v.l > 0 ? -1 : 1) * (1.96 * PX / 2 + 8), Y(v.d) - 6);
-      g.fillStyle = 'rgba(255,255,255,.6)'; g.fillText(`${v.v - r.me.v >= 0 ? '+' : ''}${(v.v - r.me.v).toFixed(1)} m/s`, X(v.l) + (v.l > 0 ? -1 : 1) * (1.96 * PX / 2 + 8), Y(v.d) + 9);
+    if (m?.tags?.length) L.push(`<div class="mt">${m.tags.map((x) => `<i>${esc(x)}</i>`).join('')}</div>`);
+    if (m?.gauges?.length) R.push(`<h6>CONTROLLER</h6><div class="mg">${m.gauges.slice(0, 6).map((x) => `<div><span>${esc(x.label)}</span><i><b style="width:${(x.value * 100).toFixed(0)}%;${x.color ? `background:${x.color}` : ''}"></b></i><em>${esc(x.text ?? '')}</em></div>`).join('')}</div>`);
+    const s = this.strat;
+    if (s) {
+      const f1 = (x, d = 1) => (x == null || !Number.isFinite(x) ? '—' : x.toFixed(d));
+      const stat = (label, value, warn = false) => `<span class="${warn ? 'w' : ''}"><small>${esc(label)}</small>${esc(String(value))}</span>`;
+      R.push(`<h6>STRATEGY</h6><div class="mf" style="--fc:${s.hot ? '#ffb02e' : '#3ddc84'}"><b>${s.call}</b> · ${esc(s.reason)}${s.what ? ` · ${esc(s.what)}` : ''}</div>`
+        + `<div class="mn">${stat('laps left', s.left ?? '—')}${stat('stops', `${s.stops}${s.owed ? ` · ${s.owed} owed` : ''}`, s.owed > 0 && s.left != null && s.left - 1 <= s.owed)}${stat('fuel', `${f1(s.fuelLaps)} laps`, s.fuelWarn)}`
+        + `${stat(s.compound, `${f1(s.wear * 100, 0)}%`, s.wearWarn)}${stat('cliff', `${f1(s.cliff)} laps`, s.cliffWarn)}</div>`);
     }
-    box(r.me.l, 0, theme, 1);
-    g.strokeStyle = '#fff'; g.lineWidth = 2; g.strokeRect(X(r.me.l) - 1.96 * PX / 2, Y(0) - 4.56 * PY / 2, 1.96 * PX, 4.56 * PY);
-    if (r.contact) {
-      const cx = X(r.contact.l), cy = Y(r.contact.d); g.strokeStyle = '#ff3b3b'; g.lineWidth = 4;
-      g.beginPath(); g.moveTo(cx - 9, cy - 9); g.lineTo(cx + 9, cy + 9); g.moveTo(cx + 9, cy - 9); g.lineTo(cx - 9, cy + 9); g.stroke();
-      g.fillStyle = '#ff3b3b'; g.textAlign = 'left'; g.fillText(`${r.contact.closing} m/s`, cx + 14, cy);
-    }
-    g.fillStyle = 'rgba(255,255,255,.55)'; g.textAlign = 'right'; g.fillText(`RADAR · ${r.cap != null ? `cap ${Math.round(r.cap * 3.6)} km/h` : 'no cap'}`, W - 6, 12);
+    this.dock.innerHTML = `<div>${L.join('')}</div><div>${R.join('')}</div>`;
   }
 
   draw(car, c, plan, target, gov, color) {
