@@ -11,7 +11,11 @@ import { cloneCar, cloneDriver, shadowTrack } from './shadow.js';
 // Racecraft defaults (any can be overridden per driver): committed moves (pull-outs and dives judged on the forecast,
 // dives at the apex), the follow cap judged where the car will be when it arrives and wide of its line into a turn,
 // the speed plan read on the lane the car will be in, and lanes along the road's edge smoothed past kinks.
-export const RACECRAFT = { moves: true, diveApex: true, capArrive: true, capWide: 0.6, laneAhead: true, laneSmooth: 12 };
+// Traffic (2026-10-18): a slower car is passed on the straight when the forecast has ORACLE a car's length clear by the
+// brake (earlyPass), on a tight or a wide side lane (wideGap) that only ever steps away from the rival (besideLane), all
+// judged on one overlap rule (markRule), and the follow cap allows for out-braking a slower car (capClose).
+export const RACECRAFT = { moves: true, diveApex: true, capArrive: true, capWide: 0.6, laneAhead: true, laneSmooth: 12,
+  capClose: true, earlyPass: true, earlyNeed: -1, wideGap: 1.6, besideLane: true, markRule: true };
 
 export class OracleDriver {
   constructor(track, options = {}) { this.track = track; this.options = { ...RACECRAFT, ...options }; this.classId = null; this.hint = -1; this.steer = 0; this.mode = 'INIT'; }
@@ -335,7 +339,7 @@ export class OracleDriver {
       sub: c?.target ? `${this.mode.toLowerCase()} #${c.target.id} ${c.target.gap.toFixed(1)} m` : this.mode.toLowerCase(),
       targetSpeed: t?.vAhead, lineSpeed: t?.vNow, e: t?.e, lateral: this.lateral, grip: t?.grip, cap: fin(t?.cap), latCap: t?.latCap, beta: t?.beta,
       wake: this.wakeSm ?? 0, pace: this.gp ?? 1, catching: Boolean(this.catching), veto: this.veto != null,
-      move: st ? { kind: st.kind, id: st.id, dive: Boolean(st.dive), bad: st.bad, cool: st.cool, side: v ? (st.side === v.inside ? 'inside' : 'outside') : null, whyNot: v?.whyNot ?? null,
+      move: st ? { kind: st.kind, id: st.id, dive: Boolean(st.dive), early: Boolean(st.early), bad: st.bad, cool: st.cool, side: v ? (st.side === v.inside ? 'inside' : 'outside') : null, whyNot: v?.whyNot ?? null,
         db: fin(v?.db), tb: fin(v?.tb), tA: fin(v?.tA), inside: v?.inside ?? 0, free: v?.free ?? c?.free, capBy: c.capBy ? { id: c.capBy.r.car.id, lateral: c.capBy.lateral, gap: c.capBy.r.gap } : null } : null,
       counts: st?.n ?? null, log: c?.log ?? [],
       cands: v ? [{ label: 'line', gain: 0, ok: true, feasible: v.base.feasible, chosen: !v.held, rel: null },

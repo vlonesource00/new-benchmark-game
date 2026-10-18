@@ -140,7 +140,7 @@ export class Combat {
   }
 
   /** Drive one lane for the horizon against every rival's forecast. Score is metres made good, plus position terms. */
-  drive(car, near, loc, v, grip, lane, mark = null) {
+  drive(car, near, loc, v, grip, lane, mark = null, beside = null) {
     const line = this.line, len = line.n * line.ds, env = envelope(car.classId);
     let s = 0, e = loc.e, u = v, score = 0, blocked = null, blockedT = Infinity, mode = 'PACE', feasible = true;
     const pf = this.o.pathForecast ?? true, tau = this.o.devTau ?? 1.2, Y = this.o.yieldOverlap ?? 0;
@@ -153,10 +153,18 @@ export class Combat {
     // Debugger trails: ORACLE's own forecast [s, e, u, wake] and every rival's [s, e], plus the first forecast overlap.
     const trail = this.recording ? [[0, e, u, 0]] : null; let contact = null;
     if (trail) for (const x of rs) x.tr = [[x.s, x.e]];
+    // beside: a move's lane is a side of the rival that only ever steps away from it: a car's width outside the furthest
+    // the rival has come to that side (beside.edge, since the move began) or is forecast to come before ORACLE is clear
+    // of it. The lane never follows the rival back, so a move is one steady line, and a rival drifting across is met
+    // where the forecast saw it coming. The driven move keeps the same edge, so the move judged is the move driven.
+    const bx = beside ? rs.find((x) => x.r === beside.r) : null, maxL = this.o.maxLane ?? 7;
+    let edge = beside?.edge ?? bx?.e ?? 0;
     for (let t = STEP; t <= H + 1e-9; t += STEP) {
       const [i, f] = at2(line, loc.s + s);
       const rate = 3.4 * (this.o.laneV0 !== 0 ? Math.min(1, (this.o.laneV0 ?? 40) / Math.max(1, u)) : 1);
-      e += clamp(line.offset(i, f, 0, lane) - e, -rate * STEP, rate * STEP);
+      if (bx && bx.s - s > -NOSE) edge = beside.side > 0 ? Math.max(edge, bx.e) : Math.min(edge, bx.e);
+      const tl = bx ? clamp(edge + beside.side * (SIDE + beside.gap), -maxL, maxL) : lane;
+      e += clamp(line.offset(i, f, 0, tl) - e, -rate * STEP, rate * STEP);
       // Off the line: the turn's radius changes by the offset (corner speed ∝ √R) and so does the path length.
       const k = line.sample(line.k, i, f), shrink = Math.max(0.35, 1 + k * e);   // k > 0 turns left, e > 0 is right: + is the outside of a left turn
       // The line already spends the road's width on the turn, so leaving it never pays by itself: the inside is a tighter
@@ -199,6 +207,10 @@ export class Combat {
         const ds = x.s - next, de = Math.abs(x.e - e);
         if (de < SIDE && x.s > s && ds < NOSE + u * 0.12) { u = Math.min(u, x.u); next = Math.max(s, Math.min(next, x.s - NOSE)); if (!blocked) { blocked = x.r; blockedT = t; } }
         if (de < SIDE - 0.25 && Math.abs(x.s - next) < NOSE - 0.3 && t < 1.6) feasible = false;
+        // sideRoom: a move is a side of the road with room for the car beside every rival it meets, for the whole
+        // horizon: one that leaves ORACLE closer than the lane discipline's car width plus margin (the road running out
+        // under the side lane, a third car) is a squeeze, not a move.
+        else if (beside && this.o.sideRoom && de < SIDE && Math.abs(x.s - next) < NOSE - 0.3) feasible = false;
       }
       s = next;
       if (atMark && !atMark.size && t >= tMark - 1e-9) for (const x of rs) atMark.set(x.r, { rel: x.s - s, de: x.e - e });
@@ -271,15 +283,20 @@ export class Combat {
     const tA = o.diveApex && Number.isFinite(db) ? tb + (da - db) / Math.max(8, (line.sample(line.vb, loc.i, loc.f, db) + line.sample(line.vb, loc.i, loc.f, da)) / 2) : tb;
     const base = this.drive(car, near, loc, v, grip, 0, tb);
     this.wide = db < (o.wideD ?? 40) || this.inCorner ? { inside } : null;
-    const sideLane = (r, side) => clamp(r.e + side * (SIDE + (o.moveGap ?? 0.4)), -max, max);
+    const sideLane = (r, side, gap = o.moveGap ?? 0.4) => clamp(r.e + side * (SIDE + gap), -max, max);
+    // wideGap: a move is judged on two lanes each side, a car's width plus the tight gap and plus this wider one, so
+    // the road's width is used when it pays (a rival that wanders, a wake to leave, room to brake beside it).
+    const gaps = o.wideGap ? [o.moveGap ?? 0.4, o.wideGap] : [o.moveGap ?? 0.4];
     // A move is good when the forecast has ORACLE overlapping the rival (its nose at least this share of a car up the
     // rival's side) by the braking point: a pass that only comes after the corner is a guess, not a move. With no
     // braking point inside the horizon, a pass by its end counts. Held moves get more slack than new ones.
-    const judge = (r, side, need, mark = tb) => {
-      const p = this.drive(car, near, loc, v, grip, sideLane(r, side), mark), m = p.atMark?.get(r);
-      const passed = mark > (o.horizon ?? HORIZON) && r.gap > 0 && p.focus === r && p.mode === 'ATTACK';
+    const judge = (r, side, need, mark = tb, gap = undefined, edge = r.e) => {
+      const p = this.drive(car, near, loc, v, grip, sideLane(r, side, gap), mark, o.besideLane ? { r, side, gap: gap ?? o.moveGap ?? 0.4, edge } : null), m = p.atMark?.get(r);
+      // markRule: with the braking point beyond the horizon the move is judged where the horizon ends, on the same
+      // overlap test (the rival's place relative to ORACLE then), for starting and for holding alike.
+      const passed = !o.markRule && mark > (o.horizon ?? HORIZON) && r.gap > 0 && p.focus === r && p.mode === 'ATTACK';
       const j = { p, gain: p.score - Math.max(base.score, p.score - 50), ok: p.feasible && (passed || (m != null && m.rel < NOSE * need)) };
-      if (J) J.push({ r, side, need, mark, rel: m?.rel ?? null, ...j });
+      if (J) J.push({ r, side, need, mark, gap, rel: m?.rel ?? null, ...j });
       return j;
     };
     let T = st.id != null ? near.find((r) => r.car.id === st.id) : null;
@@ -292,29 +309,35 @@ export class Combat {
       if (r) {
         const sides = [];
         // Slingshot: out of the tow in the last seconds before the brake (earlier gives the tow away for nothing).
-        let dive = false;
+        let dive = false, early = false;
         if (free && r.gap < (o.pullGap ?? 25) && tb < (o.pullT ?? 3)) sides.push(inside, -inside);
         // Dive: up the inside in the braking zone, close behind.
         else if (db < (o.diveD ?? 30) && r.gap < (o.diveGap ?? 12)) { sides.push(inside); dive = true; }
+        // earlyPass: a car too slow to tow behind is passed on the straight, wherever the straight starts. The forecast
+        // must have ORACLE clear ahead of it by the braking point (or past it by the end of the horizon when the brake is
+        // further off), which a car of equal pace never allows: there the tow and the slingshot stay the move.
+        else if (o.earlyPass && free) { sides.push(inside, -inside); early = true; }
         let best = null, why = !sides.length ? (free ? (r.gap >= (o.pullGap ?? 25) ? 'far' : 'early') : 'corner') : null;
-        for (const side of sides) {
-          const j = judge(r, side, o.overlap ?? 0.5, dive ? tA : tb); if (j.ok && j.gain > (o.startGain ?? 2) && (!best || j.gain > best.gain)) best = { ...j, side };
+        for (const side of sides) for (const gap of gaps) {
+          const j = judge(r, side, early ? o.earlyNeed ?? -0.3 : o.overlap ?? 0.5, dive ? tA : tb, gap); if (j.ok && j.gain > (o.startGain ?? 2) && (!best || j.gain > best.gain)) best = { ...j, side, gap };
           why ??= !j.p.feasible ? 'infeasible' : !j.ok ? 'noOverlap' : j.gain <= (o.startGain ?? 2) ? 'noGain' : null;
         }
+        if (early && !best && why) why = 'slowNo' + why[0].toUpperCase() + why.slice(1);
         if (!best && why && r.gap < 15) st.n[why] = +((st.n[why] ?? 0) + dt).toFixed(2);
         this.whyNot = best ? null : why; this.prospect = r;
-        if (best) { if (o.mvLog) (st.ev ??= []).push(`START ${st.n.start} s${loc.s.toFixed(0)} gap${r.gap.toFixed(1)} v${v.toFixed(1)}/${r.car.speed.toFixed(1)} tb${tb.toFixed(2)} side${best.side} in${inside} gain${best.gain.toFixed(1)} rel${best.p.atMark?.get(r)?.rel.toFixed(1)} free${free}`); st.n.start++; this.note(`${dive ? 'DIVE' : 'PULL-OUT'} ${best.side === inside ? 'inside' : 'outside'} on #${r.car.id} · gap ${r.gap.toFixed(1)} m · +${best.gain.toFixed(1)} m`); st.kind = 'MOVE'; st.dive = dive; st.side = best.side; st.id = r.car.id; st.bad = 0; T = r; }
+        if (best) { if (o.mvLog) (st.ev ??= []).push(`START ${st.n.start} s${loc.s.toFixed(0)} gap${r.gap.toFixed(1)} v${v.toFixed(1)}/${r.car.speed.toFixed(1)} tb${tb.toFixed(2)} side${best.side} in${inside} gain${best.gain.toFixed(1)} rel${best.p.atMark?.get(r)?.rel.toFixed(1)} free${free}`); st.n.start++; this.note(`${dive ? 'DIVE' : early ? 'PASS' : 'PULL-OUT'} ${best.side === inside ? 'inside' : 'outside'}${best.gap > (o.moveGap ?? 0.4) ? ' wide' : ''} on #${r.car.id} · gap ${r.gap.toFixed(1)} m · +${best.gain.toFixed(1)} m`); st.kind = 'MOVE'; st.dive = dive; st.early = early; st.side = best.side; st.gap = best.gap; st.edge = r.e; st.id = r.car.id; st.bad = 0; T = r; }
       }
     }
     let lane = 0, mode = 'PACE', focus = null;
     if (st.kind === 'MOVE') {
-      const j = judge(T, st.side, o.overlapKeep ?? 1, st.dive || (o.diveApex && st.side === inside) ? tA : tb);
+      if (T.gap > -NOSE) st.edge = st.side > 0 ? Math.max(st.edge ?? T.e, T.e) : Math.min(st.edge ?? T.e, T.e);
+      const j = judge(T, st.side, o.overlapKeep ?? 1, st.dive || (o.diveApex && st.side === inside) ? tA : tb, st.gap, st.edge);
       // Dropped only when it has clearly failed for a moment: infeasible, or not getting alongside and costing time.
       // Alongside, the move is held: the car beside is given its room (lateral discipline) and leaned on if it squeezes,
       // never backed out of mid-overlap.
       st.bad = !alongside(T) && T.gap > 0 && (!j.p.feasible || !j.ok || j.gain < -(o.abortGain ?? 3)) ? st.bad + dt : 0;
       if (st.bad > (o.abortT ?? 0.3)) { if (o.mvLog) st.ev.push(`DROP s${loc.s.toFixed(0)} gap${T.gap.toFixed(1)} v${v.toFixed(1)}/${T.car.speed.toFixed(1)} tb${tb.toFixed(2)} feas${j.p.feasible} ok${j.ok} gain${j.gain.toFixed(1)} rel${j.p.atMark?.get(T)?.rel.toFixed(1)} e${loc.e.toFixed(1)} re${T.e.toFixed(1)}`); st.n.drop++; this.note(`✕ DROP on #${T.car.id} · ${!j.p.feasible ? 'no room' : !j.ok ? 'no overlap' : 'costs time'}`); st.kind = 'LINE'; st.id = null; st.cool = o.cool ?? 1; }
-      else { lane = sideLane(T, st.side); mode = alongside(T) ? 'BATTLE' : 'ATTACK'; focus = T; }
+      else { lane = o.besideLane ? clamp(st.edge + st.side * (SIDE + (st.gap ?? o.moveGap ?? 0.4)), -max, max) : sideLane(T, st.side, st.gap); mode = alongside(T) ? 'BATTLE' : 'ATTACK'; focus = T; }
     }
     // Cover: one move to the inside before the braking zone against a car closing from behind.
     if (st.kind === 'LINE' && o.cover) {
@@ -332,13 +355,13 @@ export class Combat {
       lane = side > 0 ? Math.min(lane, limit) : Math.max(lane, limit);
     }
     this.lane = lane;
-    const cap = this.follow(car, near, loc.e, v, { lane, blocked: null, blockedT: Infinity });
+    const cap = this.follow(car, near, loc.e, v, { lane, blocked: null, blockedT: Infinity, loc });
     if (mode === 'PACE' && this.capBy && cap < v + 2) { mode = 'FOLLOW'; focus = this.capBy.r; }
     if (J) {
       // Preview for the debugger: with no move judged this frame, the two sides of the car ahead as a move would see them.
       const r = this.prospect ?? near.filter((x) => x.gap > NOSE * 0.6 && x.gap < 40).sort((a, b) => a.gap - b.gap)[0];
       const real = J.length, held = st.kind === 'MOVE' ? J.at(-1) : null;
-      if (!real && r) for (const side of [inside, -inside]) judge(r, side, o.overlap ?? 0.5, tb);
+      if (!real && r) for (const side of [inside, -inside]) judge(r, side, o.overlap ?? 0.5, tb, gaps[0]);
       this.vis = { db, da, tb, tA, inside, free, base, cands: J.map((q, k) => ({ ...q, preview: k >= real, chosen: q === held })), held: Boolean(held), lane, cap, wide: this.wide,
         kind: st.kind, side: st.side, id: st.id, dive: Boolean(st.dive), bad: st.bad, cool: st.cool, n: { ...st.n }, whyNot: this.whyNot, mode, focus };
     } else this.vis = null;
@@ -353,15 +376,21 @@ export class Combat {
     let cap = Infinity; this.capBy = null;
     for (const r of near) {
       if (r.gap <= 0) continue;
+      // capReach: the lane is where the road lets the car be when it gets to the rival (a side lane past the edge of the
+      // road is driven at the edge), so a move that cannot get clear of the car ahead is still held behind it.
+      const lane = this.o.capReach && plan.loc ? this.line.offset(plan.loc.i, plan.loc.f, Math.max(0, r.gap), plan.lane) : plan.lane;
       // capForecast: a rival forecast to come across into the car within a second (tracking out of a corner) counts as
       // in the corridor now, so the car drops behind before the squeeze rather than meeting it.
-      let lateral = Math.min(Math.abs(r.e - e), Math.abs(r.e - plan.lane), this.o.capForecast ? plan.squeeze?.get(r) ?? Infinity : Infinity);
+      let lateral = Math.min(Math.abs(r.e - e), Math.abs(r.e - lane), this.o.capForecast ? plan.squeeze?.get(r) ?? Infinity : Infinity);
       // capArrive: the corridor that matters is the one the car will be in when it gets to the rival: its lane moving
       // toward the plan's at the lane rate, over the time it takes to close the gap. A car pulling out of the tow is
       // not held to the speed of the car it is leaving, nor a target lane to a car it has not reached.
       if (this.o.capArrive) {
         const tc = Math.max(0, r.gap - NOSE) / Math.max(0.5, v - r.car.speed), rate = this.o.capRate ?? 2.5;
-        const eAt = e + clamp(plan.lane - e, -rate * tc, rate * tc), rAt = r.e + r.edot * Math.min(tc, 0.5);
+        // capClear: the car a move is being made on is followed from where ORACLE is, not from the side lane it is heading
+        // for: the lateral room is earned first, then the gap closed (a move still half behind it never runs into it).
+        const go = this.o.capClear && this.mv?.kind === 'MOVE' && this.mv.id === r.car.id ? 0 : 1;
+        const eAt = e + go * clamp(lane - e, -rate * tc, rate * tc), rAt = r.e + r.edot * Math.min(tc, 0.5);
         lateral = Math.abs(rAt - eAt);
       }
       // A car overlapping alongside is not followed: the lane discipline keeps the gap, and a lift beside it mid-corner
@@ -377,7 +406,13 @@ export class Combat {
       const react = this.o.towReact != null && this.free && (r.car.controls?.brake ?? 0) < 0.05 ? this.o.towReact : this.o.followReact ?? 0.08;
       const theirs = at(r.env.brake, r.car.speed) * (this.o.followTheirs ?? 1), room = r.gap - NOSE - 0.6 - v * react;
       const c = Math.sqrt(Math.max(0, 2 * mine * (room + r.car.speed * r.car.speed / (2 * theirs))));
-      const cr = this.o.capFloor != null && r.car.controls?.brake < 0.05 ? Math.max(c, r.car.speed - this.o.capFloor) : c;
+      let cr = this.o.capFloor != null && r.car.controls?.brake < 0.05 ? Math.max(c, r.car.speed - this.o.capFloor) : c;
+      // capClose: stopping short of where the rival stops is not enough when ORACLE brakes harder than it can (a faster
+      // class, a car held to a slower pace): both braking flat out, ORACLE is still closing until its speed comes down
+      // to the rival's, and that closest approach comes before either has stopped. The speed now is held to what closes
+      // no more than the room in that time.
+      const dm = mine - theirs, vr = r.car.speed;
+      if (this.o.capClose && dm > 0.3 && (cr - vr) / dm < vr / theirs) cr = Math.min(cr, vr + Math.sqrt(2 * dm * Math.max(0, room)));
       if (cr < cap) { cap = cr; this.capBy = { r, lateral }; }
     }
     return cap;

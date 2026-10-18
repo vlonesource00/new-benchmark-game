@@ -258,11 +258,12 @@ PROFILES.slipstream = (d, v) => {
 // ORACLE: one committed move at a time. The options are the line and the sides of the car ahead, scored in metres
 // gained over staying in line and checked for an overlap by the braking point (a "?" option is shown for reading
 // only: no move was being weighed). The reasons a move was not started are summed in seconds while within 15 m.
-const ORACLE_WHY = { far: 'too far back', early: 'too early for the brake', corner: 'mid-corner', infeasible: 'no room', noOverlap: 'no overlap by the brake', noGain: 'no gain over the tow' };
+const ORACLE_WHY = { far: 'too far back', early: 'too early for the brake', corner: 'mid-corner', infeasible: 'no room', noOverlap: 'no overlap by the brake', noGain: 'no gain over the tow',
+  slowNoNoOverlap: 'slow car: not clear by the brake', slowNoInfeasible: 'slow car: no room beside', slowNoNoGain: 'slow car: no gain' };
 PROFILES.oracle = (d, v) => {
   const mv = d.move ?? {}, n = d.counts ?? {}, x = v?.extras ?? null, intent = d.intent ?? 'INIT';
   const kind = { ATTACK: 'attack', BATTLE: 'alongside', FOLLOW: 'follow', DEFEND: 'defend' }[intent] ?? null;
-  const sub = mv.kind === 'MOVE' ? `${mv.dive ? 'dive' : 'pull-out'} ${mv.side ?? ''} on #${mv.id}${mv.bad > 0 ? ` · failing ${mv.bad.toFixed(2)} s` : ''}`
+  const sub = mv.kind === 'MOVE' ? `${mv.dive ? 'dive' : mv.early ? 'pass' : 'pull-out'} ${mv.side ?? ''} on #${mv.id}${mv.bad > 0 ? ` · failing ${mv.bad.toFixed(2)} s` : ''}`
     : `${mv.capBy ? `tow #${mv.capBy.id}` : 'racing line'}${mv.whyNot ? ` · ${ORACLE_WHY[mv.whyNot] ?? mv.whyNot}` : ''}${mv.cool > 0 ? ` · cooling ${mv.cool.toFixed(1)} s` : ''}`;
   const brake = num(mv.db) == null ? 'no brake in 400 m' : `${mv.db.toFixed(0)} m · ${mv.tb.toFixed(1)} s${mv.tA != null && mv.tA !== mv.tb ? ` · apex ${mv.tA.toFixed(1)} s` : ''}`;
   const why = Object.entries(ORACLE_WHY).map(([k, w]) => counter(w, num(n[k]) ? `${n[k].toFixed(1)} s` : null)).filter(Boolean);
