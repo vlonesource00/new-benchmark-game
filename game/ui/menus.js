@@ -4,7 +4,7 @@
 import { TRACKS, trackById } from '../core/tracks.js';
 import { licenseById, meetsLicense, FORMAT_LICENSE, difficultyForRating, licenseText } from '../core/career.js';
 import { FORMATS, TYRES as COMPOUNDS, TYRE_IDS as COMPOUND_IDS } from '../core/rules.js';
-import { AI_DRIVERS, MAX_CARS } from '../core/teams.js';
+import { RACE_AI_DRIVERS as AI_DRIVERS, MAX_CARS } from '../core/teams.js';
 import { DIFFICULTIES, difficultyById } from '../core/difficulty.js';
 import { PACE_PROFILES } from '../core/pace-profiles.js';
 import { esc, fmtLap, fmtClock } from './format.js';

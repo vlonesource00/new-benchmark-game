@@ -5,7 +5,7 @@ import { FORMATS } from '../../../game/core/rules.js';
 import { AsyncSeats } from '../../../game/core/async-seats.js';
 import { installWorkerShim } from '../../../scripts/bench/lockstep-workers.mjs';
 import { VanguardDriver } from '../src/driver.js';
-import { writeFileSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
+import { writeFileSync, mkdirSync, readFileSync, readdirSync, existsSync } from 'node:fs';
 import { classifyContact } from './combat-metrics.mjs';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
@@ -33,6 +33,8 @@ for (const dir of ['game/core', 'game/bridges', 'game/engine/sim',
 for (const f of [...new Set([...ids, 'vanguard', 'apex', 'intercept', 'razor'])].map(id => `subjects/${id}/config.json`)
   .concat(['scripts/json-loader.mjs', 'scripts/bench/lockstep-workers.mjs',
     'subjects/vanguard/tools/probe.mjs', 'subjects/vanguard/tools/combat-metrics.mjs'])) {
+  // Some drivers, including ORACLE, keep defaults in source instead of a config file.
+  if (f.endsWith('/config.json') && !existsSync(root + f)) continue;
   sourceHashes[f] = createHash('sha256').update(readFileSync(root + f)).digest('hex');
 }
 

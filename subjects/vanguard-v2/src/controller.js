@@ -1,0 +1,273 @@
+import { clamp, angle, advance } from './math.js';
+import { axleState, allocate } from './axles.js';
+import { HALF_LENGTH, HALF_WIDTH, ROAD_BRAKE_LIMIT } from './observer.js';
+
+const controlMemories = new WeakMap();
+export const controlMemory = car => controlMemories.get(car) ?? null;
+
+/** Short public-control prediction for a car that is actively braking. */
+export function brakingPose(car, deceleration, time) {
+  const speed = Math.hypot(car.vx, car.vz), t = Math.min(time, speed / Math.max(0.01, deceleration)),
+    distance = Math.max(0, speed * t - 0.5 * deceleration * t * t), turn = clamp(car.yawRate ?? 0, -1.5, 1.5) * t,
+    mid = turn * 0.5, scale = speed > 0 ? distance / speed : 0,
+    dx = (car.vx * Math.cos(mid) + car.vz * Math.sin(mid)) * scale,
+    dz = (car.vz * Math.cos(mid) - car.vx * Math.sin(mid)) * scale,
+    end = Math.max(0, speed - deceleration * time), ratio = speed > 0 ? end / speed : 0;
+  return {
+    x: car.x + dx, z: car.z + dz, h: car.yaw + turn, v: end,
+    vx: (car.vx * Math.cos(turn) + car.vz * Math.sin(turn)) * ratio,
+    vz: (car.vz * Math.cos(turn) - car.vx * Math.sin(turn)) * ratio
+  };
+}
+
+/** Unified speed profile & braking envelope tracker. */
+export function longitudinalDemand(path, c, v, model, { cap = Infinity, cap2 = cap, pit = Infinity, wake = 0 } = {}) {
+  const look = v * 0.1, look2 = Math.max(4, v * 0.25), profile = path.vbrk;
+  let target = path.sample(profile, c.i, c.f, look), next = path.sample(profile, c.i, c.f, look + look2), source = 'profile';
+  const profileTarget = target;
+  if (wake > 0.05) {
+    const brake = model.brake(v) * (1 - 0.16 * Math.min(0.95, wake) * model.dfShare(v));
+    const reach = Math.min(220, v * v / Math.max(4, 2 * brake) + look2);
+    for (let x = path.ds; x <= reach; x += path.ds * 2) {
+      const vc = path.sample(path.vmax, c.i, c.f, x), limit = vc * model.wakeSpeed(vc, wake), dist = Math.max(0, x - look);
+      const env = Math.sqrt(limit * limit + 2 * brake * dist), env2 = Math.sqrt(limit * limit + 2 * brake * Math.max(0, dist - look2));
+      if (env < target) { target = env; source = 'wake-envelope'; }
+      next = Math.min(next, env2);
+    }
+  }
+  const wakeTarget = target;
+  if (cap < target) { target = cap; source = 'nose'; }
+  if (pit < target) { target = pit; source = 'pit'; }
+  next = Math.min(next, cap2, pit);
+  const feed = (next * next - target * target) / (2 * look2), error = target - v;
+  let acceleration = feed + error * 2.7;
+  if (error > 0.65) acceleration = Math.max(acceleration, model.drive(v) * (error > 2 ? 1 : 0.65));
+  if (source !== 'nose' && source !== 'pit' && error > -0.15 && feed > -0.7) acceleration = Math.max(0.4, acceleration);
+  const requestedAcceleration = acceleration;
+  acceleration = clamp(acceleration, -model.brake(v), Math.max(0.5, model.drive(v)));
+  return { target, next, acceleration, requestedAcceleration, source, feed, profileTarget, wakeTarget, cap, pit };
+}
+
+/** Physical body-ray & active-route frontal guard. Strictly ignores pit cars (`r.pit`). */
+export function noseConstraint(car, observer, model, { lateralEscape = false, path = null, cursor = null, brakingTube = false, racecraft = null, adaptiveAttacks = false, brakingHeadway = 0, brakingSoon = true } = {}) {
+  let cap = Infinity, brake = 0, blocker = null, details = null;
+  const sy = Math.sin(car.yaw), cy = Math.cos(car.yaw), v = Math.max(0, car.speed);
+  for (const r of observer.list) {
+    if (!r.physical || r.pit) continue;
+    const dx = r.car.x - car.x, dz = r.car.z - car.z, forward = dx * sy + dz * cy, across = dx * cy - dz * sy;
+    if (forward < 0.08 || forward > Math.max(28, v * 0.9)) continue;
+    const delta = angle(r.car.yaw - car.yaw), halfAcross = Math.abs(Math.cos(delta)) * HALF_WIDTH + Math.abs(Math.sin(delta)) * HALF_LENGTH;
+    const lateralClosing = (r.car.vx - car.vx) * cy - (r.car.vz - car.vz) * sy;
+    // When following a slower car, a fast lateral merge needs braking before
+    // it enters the short body ray. Keep the short horizon on passing lanes.
+    const mergeTime = adaptiveAttacks && !path?.attackSide && r.eligible && v - r.v > 4 && across * lateralClosing < 0 ? 0.45 : 0.16;
+    const predicted = across + lateralClosing * mergeTime;
+    if (Math.abs(across) > HALF_WIDTH + halfAcross + 0.12 && Math.abs(predicted) > HALF_WIDTH + halfAcross + 0.12) continue;
+    const halfAlong = Math.abs(Math.cos(delta)) * HALF_LENGTH + Math.abs(Math.sin(delta)) * HALF_WIDTH;
+    const sideRoom = Math.abs(across) - HALF_WIDTH - halfAcross,
+      sideClosing = -Math.sign(across) * lateralClosing;
+    if (forward < HALF_LENGTH + halfAlong - 0.6 && sideRoom > -0.12 &&
+      racecraft?.canHold(car, r, sideRoom, sideClosing)) continue;
+    const otherV = r.car.vx * sy + r.car.vz * cy, closing = Math.max(0, v - otherV), room = forward - HALF_LENGTH - halfAlong - 0.65;
+    // If an active evasive corridor is already turning us clear of a distant hazard, do not brake on the straight body ray.
+    if (r.hazard && path && cursor && path.attackSide && room > Math.max(14, closing * 0.28)) {
+      const cAt = advance(path, cursor.i, cursor.f, clamp(r.ds, 6, 85));
+      const pathLat = path.sample(path.lat, cAt.i, cAt.f);
+      if (Math.abs(pathLat - r.d) > HALF_WIDTH + r.across + 0.32) continue;
+    }
+    const ownBrake = Math.max(3, model.brake(v) * 0.75);
+    const braking = (r.car.controls?.brake ?? 0) > 0.15;
+    const deceleration = Math.max(0, -(r.ax ?? 0),
+      brakingHeadway > 0 && braking ? (r.deceleration ?? 0) : 0,
+      model.brake(Math.max(5, otherV)) * (r.car.controls?.brake ?? 0) * 0.8);
+    // Preserve a short reaction/braking reserve *behind* a car. An equal-speed
+    // bumper gap is not safe merely because closing speed is currently zero:
+    // the leader can start braking before our delayed controls arrive.
+    const activeHeadway = brakingSoon || braking || deceleration > 6 ? brakingHeadway : 0;
+    const reserve = r.eligible ? Math.max(1.2, v * activeHeadway) : 1.2;
+    if (closing < 0.7 && !r.hazard && room > reserve && deceleration < 2) continue;
+    const escapeTime = Math.min(
+      1.1,
+      deceleration > 2
+        ? (Math.sqrt(closing * closing + 2 * deceleration * Math.max(0, room)) - closing) / deceleration
+        : Math.max(0, room) / Math.max(0.5, closing)
+    );
+    const escapeAcross = across + lateralClosing * escapeTime;
+    if (lateralEscape && !r.hazard && room > Math.max(1.2, closing * 0.45) && Math.abs(lateralClosing) > 1 &&
+      across * escapeAcross > 0 && Math.abs(escapeAcross) > HALF_WIDTH + halfAcross + 0.45) continue;
+    const leadStop = Math.max(0, otherV) ** 2 * (deceleration > 2 ? Math.min(1, ownBrake / deceleration) : 1);
+    const usableRoom = Math.max(0, room - (deceleration > 2 ? closing * 0.15 + 0.5 * deceleration * 0.15 ** 2 : 0));
+    const spacing = activeHeadway > 0 && r.eligible && room < reserve
+      ? Math.max(0, otherV + (room - reserve) * 0.65) : Infinity;
+    const safe = Math.min(spacing, Math.sqrt(leadStop + 2 * ownBrake * usableRoom));
+    if (safe < cap) {
+      cap = safe;
+      blocker = r;
+      details = { forward, across, predictedAcross: predicted, closing, room, safe, deceleration, escapeTime };
+    }
+    if (room < closing * 0.18) brake = Math.max(brake, clamp(closing / Math.max(2, room + 2), 0, 1));
+  }
+  if (path && cursor) {
+    for (const r of observer.list) {
+      const braking = r.ax < -2 || (r.car.controls?.brake ?? 0) > 0.15;
+      const closingCarOnLine = !path.attackSide && (adaptiveAttacks ? r.eligible : r.kind === 'traffic') && v - r.v > 4 && r.ds < 24;
+      if (!r.physical || (!r.hazard && !braking && !closingCarOnLine) || r.pit ||
+        r.ds < (adaptiveAttacks && closingCarOnLine ? 0.08 : 5) || r.ds > v * 1.5 + 25 || (v - r.v < 4 && !braking)) continue;
+      for (const time of adaptiveAttacks && closingCarOnLine ? [0.15, 0.35, 0.7, 1.05] : [0.35, 0.7, 1.05]) {
+        const p = observer.at(r, time), c = advance(path, cursor.i, cursor.f, v * time), h = path.heading(c.i, c.f),
+          dx = p.x - path.sample(path.px, c.i, c.f), dz = p.z - path.sample(path.pz, c.i, c.f),
+          front = dx * Math.sin(h) + dz * Math.cos(h), side = dx * Math.cos(h) - dz * Math.sin(h), delta = angle(p.h - h),
+          across = Math.abs(Math.cos(delta)) * HALF_WIDTH + Math.abs(Math.sin(delta)) * HALF_LENGTH,
+          along = Math.abs(Math.cos(delta)) * HALF_LENGTH + Math.abs(Math.sin(delta)) * HALF_WIDTH;
+        const frontBuffer = r.hazard && path.attackSide ? 2.5 : 12;
+        if (front < -HALF_LENGTH - along || front > HALF_LENGTH + along + frontBuffer || Math.abs(side) > HALF_WIDTH + across + 0.12) continue;
+        const closing = Math.max(0, v - r.v), room = r.ds - HALF_LENGTH - r.along - 1.2, leadV = r.hazard ? r.v : (p.v ?? r.v),
+          ownBrake = Math.max(3, model.brake(v) * 0.75), safe = Math.sqrt(Math.max(0, leadV) ** 2 + 2 * ownBrake * Math.max(0, room - closing * 0.15));
+        if (safe < cap) {
+          cap = safe;
+          blocker = r;
+          details = { forward: r.ds, across: side, closing, room, safe, predictedBlock: true, horizon: time };
+        }
+        break;
+      }
+    }
+  }
+  if (brakingTube && path && cursor) {
+    for (const r of observer.list) {
+      if (!r.physical || r.pit || r.hazard || r.ds < 5 || r.ds > v * 0.9 + 12 ||
+        !((r.car.controls?.brake ?? 0) > 0.15 || r.ax < -2)) continue;
+      if (r.ax > -ROAD_BRAKE_LIMIT + 0.5 || !(r.deceleration > ROAD_BRAKE_LIMIT + 2)) continue;
+      const deceleration = Math.max(0, -(r.ax ?? 0), r.deceleration ?? 0,
+        model.brake(Math.max(5, r.car.speed)) * (r.car.controls?.brake ?? 0) * 0.8);
+      for (const time of [0.2]) {
+        const p = brakingPose(r.car, deceleration, time), c = advance(path, cursor.i, cursor.f, v * time), h = path.heading(c.i, c.f),
+          dx = p.x - path.sample(path.px, c.i, c.f), dz = p.z - path.sample(path.pz, c.i, c.f),
+          front = dx * Math.sin(h) + dz * Math.cos(h), side = dx * Math.cos(h) - dz * Math.sin(h), delta = angle(p.h - h),
+          across = Math.abs(Math.cos(delta)) * HALF_WIDTH + Math.abs(Math.sin(delta)) * HALF_LENGTH,
+          along = Math.abs(Math.cos(delta)) * HALF_LENGTH + Math.abs(Math.sin(delta)) * HALF_WIDTH;
+        if (front < 0 || front > HALF_LENGTH + along + 6 || Math.abs(side) > HALF_WIDTH + across + 0.12) continue;
+        const closing = Math.max(0, v - r.v), room = r.ds - HALF_LENGTH - r.along - 1.2, ownBrake = Math.max(3, model.brake(v) * 0.75),
+          safe = Math.sqrt(p.v * p.v + 2 * ownBrake * Math.max(0, room - closing * 0.15));
+        if (safe < cap) {
+          cap = safe;
+          blocker = r;
+          details = { forward: r.ds, across: side, closing, room, safe, deceleration, brakingTube: true, horizon: time };
+        }
+        break;
+      }
+    }
+  }
+  return { cap, brake, blocker, details };
+}
+
+export class Controller {
+  constructor(options) { this.options = options; this.reset(); }
+  reset() { if (this.lastCar) controlMemories.delete(this.lastCar); this.lastCar = null; this.cursor = -1; this.path = null; this.kc = NaN; this.acceleration = 0; this.sideYield = null; this.trace = {}; }
+  step(car, path, course, observer, dt, { pit = Infinity, nose = null, time = 0, returning = false, brakingTube = this.options.brakingTube } = {}) {
+    const model = course.model, o = this.options, v = Math.max(0.5, car.speed);
+    let c = path.closest(car.x, car.z, path === this.path ? this.cursor : -1);
+    if (c.d2 > 225) c = path.closest(car.x, car.z, -1);
+    this.cursor = c.i;
+    this.path = path;
+    this.cur = c;
+    const emergency = path.steerJerk > o.steerJerk, preview = emergency ? Math.min(0.08, o.preview) : o.preview;
+    const kp = path.sample(path.ks, c.i, c.f, v * preview), heading = path.heading(c.i, c.f),
+      ax = axleState(car, model, kp), psi = angle(car.yaw + ax.beta - heading);
+    const look = emergency ? clamp(0.15 * v + 6, 9, 19) : clamp(0.32 * v + 7, 9, 32),
+      fb = (emergency ? 0.65 : 0.45) * model.lat(v) / (v * v);
+    let k = kp + clamp(-2 * psi / look - c.e / (look * look), -fb, fb);
+    if (Number.isFinite(this.kc)) {
+      const delta = Math.max(o.steerJerk, Math.min(240, path.steerJerk ?? o.steerJerk)) * Math.max(0, dt) / (v * v);
+      k = this.kc + clamp(k - this.kc, -delta, delta);
+    }
+    this.kc = k;
+    const ay = Math.sign(k) * Math.min(Math.abs(v * v * k), 0.98 * model.lat(v) / Math.max(0.6, model.margin));
+    const betaError = ax.beta - model.betaFor(ay, v), slide = Math.sign(betaError) * Math.max(0, Math.abs(betaError) - o.slideBand);
+    let steer = clamp(
+      model.steerFor(ay, v) +
+      (emergency ? (o.evadeYawGain ?? Math.min(0.3, o.yawGain)) : o.yawGain) * (ay / Math.max(2, v) - car.yawRate) +
+      (emergency ? Math.min(1.6, o.slideGain) : o.slideGain) * slide,
+      -1, 1
+    );
+    for (const r of observer.list) {
+      if (!r.physical || r.pit || Math.abs(r.ds) > HALF_LENGTH + r.along + 0.8) continue;
+      const psiBody = angle(car.yaw - observer.me.h),
+        ownAcross = Math.abs(Math.cos(psiBody)) * HALF_WIDTH + Math.abs(Math.sin(psiBody)) * HALF_LENGTH;
+      const dir = Math.sign(r.d - observer.me.d), room = Math.abs(r.d - observer.me.d) - ownAcross - r.across;
+      const drift = dir * (car.vx * Math.cos(observer.me.h) - car.vz * Math.sin(observer.me.h) - r.vd);
+      const hold = course.racecraft?.canHold(car, r, room, drift);
+      if (hold && this.sideYield === r.id) this.sideYield = null;
+      if (returning && !hold && r.ds >= -1 && room - Math.max(0, drift) * 0.65 < 0.35 && drift > -0.15) this.sideYield ??= r.id;
+      if (room < 0.25 && drift > 0.35 && Math.abs(observer.me.d - dir * 0.5) < course.track.halfWidth - 1.1) {
+        steer -= dir * clamp((drift - 0.35) * 0.045, 0, 0.18);
+      }
+    }
+    nose ??= noseConstraint(car, observer, model, {
+      path, cursor: c, brakingTube, racecraft: course.racecraft,
+      adaptiveAttacks: o.adaptiveAttacks === true && course.racecraft?.enabled,
+      brakingHeadway: o.brakingHeadway ?? 0,
+      brakingSoon: path.sample(path.vbrk, c.i, c.f, Math.max(25, v * 0.65)) < v + 2,
+      lateralEscape: o.noseEscape && path !== course.line && path.attackSide && Math.abs(c.e) < 0.65 && ax.reserve > 0.75
+    });
+    const demand = longitudinalDemand(path, c, v, model, { cap: nose.cap, pit, wake: car.aero?.wake ?? 0 });
+    // A speed profile assumes that we are tracking it. Once a rear slide or
+    // growing path error invalidates that assumption, accelerating towards
+    // the profile only carries the car further off line. Recover grip first;
+    // the normal axle allocator still limits braking on the sliding rear.
+    const recovery = o.trackingRecovery === true ? clamp(Math.max(
+      (Math.abs(c.e) - 3) / 3,
+      Math.abs(c.e) > 1.5 ? (Math.abs(psi) - 0.3) / 0.3 : 0,
+      Math.abs(c.e) > 2 && c.e * psi > 0 ? (Math.abs(betaError) - 0.3) / 0.2 : 0
+    ), 0, 1) : 0;
+    if (recovery > 0) {
+      const recoverySpeed = Math.max(8, Math.min(demand.target, 55) * (1 - recovery * 0.5));
+      if (v > recoverySpeed) {
+        demand.acceleration = Math.min(demand.acceleration, -Math.min(5, model.brake(v) * 0.22) * recovery);
+        demand.source = 'tracking-recovery';
+      }
+    }
+    const rate = demand.acceleration < this.acceleration ? 100 : 85;
+    this.acceleration += clamp(demand.acceleration - this.acceleration, -rate * dt, rate * dt);
+    const yielding = observer.list.find(r => r.id === this.sideYield && r.physical && !r.pit &&
+      Math.abs(r.ds) < HALF_LENGTH + r.along + 1.2);
+    if (!yielding) this.sideYield = null;
+    // A return corridor cannot manufacture track width when another car is still
+    // alongside. Let it clear longitudinally rather than holding full throttle
+    // into a narrowing door gap. The normal axle allocator retains brake reserve.
+    if (yielding) this.acceleration = Math.min(this.acceleration, -Math.min(4, model.brake(v) * 0.22));
+    let pedals = allocate(this.acceleration, v, model, ax, o);
+    const urgentBrake = nose.blocker?.hazard && emergency
+      ? Math.min(nose.brake, Math.max(0.12, ax.share * 1.15) * ax.reserve)
+      : nose.brake;
+    if (urgentBrake > pedals.brake) pedals = { ...pedals, throttle: 0, brake: urgentBrake, reason: 'blocked-nose' };
+    const allocatedAcceleration = pedals.throttle * (model.drive(v) + model.dragK * v * v + 0.13) - (model.dragK * v * v + 0.13) - pedals.brake * model.brake(v);
+    if (pedals.reason === 'brake-reserve' && demand.source === 'nose') {
+      this.acceleration = Math.max(this.acceleration, allocatedAcceleration);
+    }
+    car.controls = { throttle: pedals.throttle, brake: pedals.brake, steer: clamp(steer, -1, 1) };
+    controlMemories.set(car, { kc: this.kc, acceleration: this.acceleration, sideYield: this.sideYield });
+    this.lastCar = car;
+    this.targetSpeed = demand.target;
+    this.lineSpeed = path.sample(path.vbrk, c.i, c.f);
+    this.e = c.e;
+    this.mode = pedals.brake > 0.025 ? 'BRAKE' : Math.abs(v * v * kp) < 4 ? 'PUSH' : 'CORNER';
+    this.trace = {
+      time, s: observer.me.s, d: observer.me.d, e: c.e, pathError: c.e,
+      source: demand.source, pedal: pedals.reason, pedalReason: pedals.reason,
+      target: demand.target, profileTarget: demand.profileTarget, wakeTarget: demand.wakeTarget,
+      noseCap: Number.isFinite(demand.cap) ? demand.cap : null, pitCap: Number.isFinite(demand.pit) ? demand.pit : null,
+      nextTarget: demand.next, feed: demand.feed,
+      requestedAcceleration: demand.requestedAcceleration, acceleration: this.acceleration, allocatedAcceleration,
+      frontSlip: ax.front, rearSlip: ax.rear, wheelspin: ax.spin, spin: ax.spin, reserve: ax.reserve, share: ax.share, use: ax.use,
+      nose: nose.blocker?.id ?? null, blocker: nose.blocker?.id ?? null, noseGeometry: nose.details,
+      yieldingTo: yielding?.id ?? null,
+      recovery,
+      steer: car.controls.steer, throttle: car.controls.throttle, brake: car.controls.brake,
+      preview, escapeTracking: Boolean(emergency), kp, k, kc: k, ay, measuredAy: car.ay,
+      yawRate: car.yawRate, beta: ax.beta, betaError, pathHeading: heading,
+      pathLateral: path.sample(path.lat, c.i, c.f), physicalSpeed: v,
+      wake: car.aero?.wake ?? 0, gear: car.gear, hybridKw: car.hybrid?.kw ?? 0
+    };
+    return car.controls;
+  }
+}

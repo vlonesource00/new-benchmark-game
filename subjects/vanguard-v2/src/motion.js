@@ -1,0 +1,110 @@
+import { Line } from '../../apex/src/line.js';
+import { liveGrip } from '../../apex/src/model.js';
+import { VanguardModel as CarModel } from './model.js';
+import lines from '../../apex/data/lines.json' with { type: 'json' };
+import { tyreWet } from '../../../game/engine/sim/water.js';
+import { clamp, advance, roadSample, gap, angle } from './math.js';
+
+const STEP = 0.1;
+
+/** Cached physical forecast per observed rival, with learnt pace ratio, off-line radius scaling, and 2D inertial scrub for hazards. */
+export class RivalMotion {
+  constructor(course, observer = null) {
+    this.course = course;
+    this.observer = observer;
+    this.guides = new Map();
+    this.models = new Map();
+  }
+  guide(cls) {
+    if (cls === this.course.classId) return this.course.line;
+    if (!this.guides.has(cls)) {
+      const baked = lines[this.course.track.id]?.[cls];
+      if (!baked) return this.course.line;
+      const line = new Line(this.course.track, { ds: baked.ds, edge: -0.55 });
+      line.load(baked);
+      const model = new CarModel(cls);
+      model.margin = 0.97;
+      model.jerk = 40;
+      line.speeds(model, { brakeExp: 2, mass: model.sp.mass + 45, notch: false });
+      this.guides.set(cls, line);
+    }
+    return this.guides.get(cls);
+  }
+  of(r, horizon = 0) {
+    const count = Math.max(36, Math.ceil(Math.min(8, Math.max(horizon, this.course.options.combatHorizon ?? 3.4)) / STEP) + 2);
+    if (r.motion?.length >= count) return r.motion;
+    const track = this.course.track, line = this.guide(r.cls);
+    let model = this.models.get(r.cls);
+    if (!model) { model = new CarModel(r.cls); this.models.set(r.cls, model); }
+    model.setDamage(r.car.damage ?? 0);
+    model.grip = liveGrip(r.car).grip * (1 - 0.36 * tyreWet(track, r.car)) * (track.tempGrip ?? 1);
+    model.margin = 0.97;
+    model.hybrid = Math.max(0, r.car.hybrid?.kw ?? 0);
+    let c = line === this.course.line ? r.reference : line.closest(r.car.x, r.car.z, r.reference.i, 20);
+    if (c.d2 > 225) c = line.closest(r.car.x, r.car.z, -1);
+    const heading = line.heading(c.i, c.f),
+      offset = r.d - line.sample(line.lat, c.i, c.f),
+      lateralRate = clamp(r.vd - (line.lat[line.idx(c.i + 2)] - line.lat[line.idx(c.i - 2)]) / (4 * line.ds) * r.v, -3, 3);
+    const observed = this.course.options.observedMotion === true;
+    const v2Motion = observed && this.course.options.adaptiveAttacks === true && this.course.options.progressiveAttacks === true;
+    const mass = r.car.spec.mass + r.car.fuel * 0.75,
+      profileGrip = line === this.course.line ? this.course.model.grip : 1,
+      paceRatio = v2Motion && r.kind === 'race' && r.ds > 5.8 && (r.paceRatio ?? 1) < 0.985 ? clamp(r.paceRatio, 0.75, 0.99) : 1,
+      scale = Math.sqrt(clamp(model.grip / Math.max(0.2, profileGrip), 0.35, 1.35)) * paceRatio;
+    let i = c.i, f = c.f, v = Math.max(0, r.car.vx * Math.sin(heading) + r.car.vz * Math.cos(heading)),
+      gear = r.car.gear ?? 1, road = r.s;
+    let previousRoad = roadSample(line, i, f, track.length), shiftTimer = r.car.shiftTimer ?? 0;
+    const rows = [];
+    for (let n = 0; n < count; n++) {
+      const t = n * STEP, s = roadSample(line, i, f, track.length);
+      if (n) road += gap(s, observed ? previousRoad : road, track.length);
+      previousRoad = s;
+      const d = line.sample(line.lat, i, f) + offset + lateralRate *
+          (observed ? 0.65 * (1 - Math.exp(-t / 0.65)) : Math.min(t, 0.7)),
+        h = line.heading(i, f) + angle(r.car.yaw - heading) * Math.exp(-t / 0.35);
+      rows.push({ s: road, d, v, h });
+      const limit = line.sample(line.vbrk, i, f, v * 0.12) * scale;
+      const nextGear = model.gearAt(v, gear);
+      if (!observed) gear = nextGear;
+      else if (shiftTimer <= 0 && nextGear !== gear) {
+        gear += Math.sign(nextGear - gear); shiftTimer = 0.11;
+      }
+      let acceleration = clamp(
+        (limit - v) * 2.7,
+        -model.brake(v),
+        Math.max(0.1, model.driveG(v, gear, mass) + model.towGain(v, r.car.aero?.wake ?? 0))
+      );
+      if (t < 0.25 && r.car.controls?.brake > 0.15) acceleration = Math.min(acceleration, r.ax);
+      if (observed) {
+        const weight = r.accelerationValid ? Math.exp(-t / 0.65) : 0,
+          measured = clamp(r.ax ?? acceleration, -model.brake(v), 8);
+        acceleration = acceleration * (1 - weight) + measured * weight;
+        if (shiftTimer > 0 && (r.car.controls?.brake ?? 0) < 0.05)
+          acceleration = Math.min(acceleration, -model.dragK * v * v - 0.13);
+        shiftTimer = Math.max(0, shiftTimer - STEP);
+      }
+      const next = Math.max(0, v + acceleration * STEP),
+        a = advance(line, i, f, (v + next) * 0.5 * STEP);
+      i = a.i; f = a.f; v = next;
+    }
+    return (r.motion = rows);
+  }
+  at(r, time) {
+    if (r.hazard && (Math.abs(r.psi) > 0.55 || r.car.speed < 7) && this.observer) {
+      return this.observer.inertialAt(r, time);
+    }
+    const rows = this.of(r), horizon = (rows.length - 1) * STEP, x = clamp(time / STEP, 0, rows.length - 1),
+      i = Math.min(rows.length - 2, Math.floor(x)), f = x - i, a = rows[i], b = rows[i + 1];
+    const s = a.s + (b.s - a.s) * f, d = a.d + (b.d - a.d) * f,
+      v = a.v + (b.v - a.v) * f, h = a.h + angle(b.h - a.h) * f, q = this.course.track.at(s);
+    return {
+      s, d, v, h,
+      x: q.x + Math.cos(q.heading) * d,
+      z: q.z - Math.sin(q.heading) * d,
+      vx: Math.sin(h) * v,
+      vz: Math.cos(h) * v,
+      sigma: 0.15 + 0.12 * Math.min(3.5, time) ** 2,
+      valid: time >= 0 && time <= horizon
+    };
+  }
+}

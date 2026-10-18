@@ -16,8 +16,11 @@ import { interceptState } from '../bridges/intercept-state.js';
 import { installVanguardStrategy } from '../../subjects/vanguard/src/strategy.js';
 import { createVanguardExecutor } from '../bridges/vanguard-bridge.js';
 import { vanguardState } from '../bridges/vanguard-state.js';
+import { installVanguardV2Strategy } from '../../subjects/vanguard-v2/src/strategy.js';
+import { createVanguardV2Executor, vanguardV2State } from '../bridges/vanguard-v2-bridge.js';
 // TEMPEST runs on RAZOR's seat protocol (control timing, epochs, the public race envelope).
 const corridorAi = (id) => id === 'razor' || id === 'tempest';
+const vanguardLike = (id) => id === 'vanguard' || id === 'vanguard-v2';
 import { installNativeStrategy } from '../../subjects/next-racer/src/strategy.js';
 import { guardControls,previewRoute } from '../../subjects/next-racer/src/safety.js';
 import { previewFeedback,feedbackDebug,resetFeedback } from '../../subjects/next-racer/src/feedback.js';
@@ -53,6 +56,7 @@ export class AsyncSeats {
       if (driver.id === 'tempest') installTempestStrategy(race, race.cars[index]);
       if (driver.id === 'intercept') installInterceptStrategy(race, race.cars[index]);
       if (driver.id === 'vanguard') installVanguardStrategy(race, race.cars[index]);
+      if (driver.id === 'vanguard-v2') installVanguardV2Strategy(race, race.cars[index]);
       return this.seat(driver, index, race);
     };
   }
@@ -90,12 +94,18 @@ export class AsyncSeats {
       ? createInterceptExecutor(race.track, index)
       : driver.id === 'vanguard'
         ? createVanguardExecutor(race.track, index)
-        : null;
-    const execState = driver.id === 'vanguard' ? vanguardState : interceptState;
+        : driver.id === 'vanguard-v2'
+          ? createVanguardV2Executor(race.track, index)
+          : null;
+    const execState = driver.id === 'vanguard-v2'
+      ? vanguardV2State
+      : driver.id === 'vanguard'
+        ? vanguardState
+        : interceptState;
     const seat = {
       driverId: driver.id, errors: 0, remote: true,
       seq: -1, inFlight: false, controls: null, pendingDt: 0, lastLatency: 0, sentAt: 0, lastDebug: null,
-      epoch:0,controlTime:null,preview:null,controlDelay:driver.id==='vanguard'?0:.02,
+      epoch:0,controlTime:null,preview:null,controlDelay:vanguardLike(driver.id)?0:.02,
       receive(data) {
         if((driver.id==='next-racer'||corridorAi(driver.id)||executor)&&data.epoch!==this.epoch)return;
         this.inFlight = false; this.controls = data.controls; this.errors = data.errors;
@@ -104,7 +114,7 @@ export class AsyncSeats {
         if(corridorAi(driver.id)){this.controlTime=data.time;this.controlDelay=Math.max(0,Math.min(.2,race.time-data.time));}
         if (driver.id === 'apex' || corridorAi(driver.id)) this.intent = data.intent ?? null;
         if(executor){executor.adopt(data.preview,race.cars[index],this.epoch);this.controlTime=data.time;this.preview=data.preview;
-          if(driver.id==='vanguard'){
+          if(vanguardLike(driver.id)){
             const observed=Math.max(0,race.time-data.time);
             // Long stalls are handled by the live executor; they must not make
             // the next normal reply's predicted arrival hundreds of ms late.
@@ -158,7 +168,7 @@ export class AsyncSeats {
             ambient:race.track.ambient,epoch:this.epoch,controlDelay:this.controlDelay,feedbackPeriod:1/120}:{}),
           ...(driver.id === 'apex' ? { state: apexState(race, race.cars[index]) } : {}),
           ...(executor ? {state:execState(race,race.cars[index]),ambient:race.track.ambient,
-             epoch:this.epoch,controlDelay:driver.id==='vanguard'?this.controlDelay:0,feedbackPeriod:1/120}:{}),
+             epoch:this.epoch,controlDelay:vanguardLike(driver.id)?this.controlDelay:0,feedbackPeriod:1/120}:{}),
           ...(corridorAi(driver.id) ? { state: razorState(race, race.cars[index]),
             ambient: race.track.ambient, epoch: this.epoch, controlDelay: this.controlDelay } : {}),
           debug: seats.wantDebug || undefined,

@@ -1,6 +1,8 @@
-// Driver pool, team liveries and the random teammate draw.
+// Driver registry, active race pool, team liveries and the random teammate draw.
 
+// Historical drivers remain addressable by replays and explicit benchmarks.
 export const AI_DRIVERS = Object.freeze([
+  { id: 'vanguard-v2', name: 'VANGUARD v2', short: 'VG2', arch: 'Multi-width C2 needle corridors · learnt rival pace & apex dives · 120 Hz force control', anyTrack: true, manage: false, governor: false },
   { id: 'oracle', name: 'ORACLE', short: 'ORC', arch: 'Measured physics envelope · min-time line · main-thread physics-rate combat', anyTrack: true, manage: false, governor: false },
   { id: 'vanguard', name: 'VANGUARD', short: 'VGD', arch: 'Split-horizon 120 Hz force control · S-thread traffic & fast hazard evasion · live stint strategy', anyTrack: true, manage: false, governor: false },
   { id: 'intercept', name: 'INTERCEPT', short: 'ICP', arch: 'Physics-rate control · committed gap attacks · live stint strategy', anyTrack: true, manage: false, governor: false },
@@ -17,6 +19,10 @@ export const AI_DRIVERS = Object.freeze([
   { id: 'phantom-v2',        name: 'PHANTOM v2',   short: 'PH2', arch: 'Ghost v2 · adaptive plant',            anyTrack: true },
   { id: 'solinator-6.1',     name: 'SOLINATOR 6.1', short: 'SL6', arch: 'Gate arrivals · physical transfers',  anyTrack: true }
 ]);
+
+// Retired architectures stay out of every race picker and automatic grid draw.
+const retiredAiIds = new Set(['astra', 'phantom', 'phantom-v2', 'solinator-6.1', 'gemini-supreme-v4', 'claude-revolution']);
+export const RACE_AI_DRIVERS = Object.freeze(AI_DRIVERS.filter((d) => !retiredAiIds.has(d.id)));
 
 export const TEAM_LIVERIES = Object.freeze([
   { id: 'solenne',  name: 'SOLENNE MOTORSPORT', short: 'SOL', color: '#e0442c', accent: '#1b1b1f' },
@@ -69,7 +75,7 @@ export function shuffle(list, rand) {
  */
 export function drawTeams({ teamCount = 6, humans = [], seed = Date.now(), trackReady = null, driversPerTeam = 2, humansTogether = false, coDriver = null } = {}) {
   const rand = mulberry32(seed);
-  const pool = AI_DRIVERS.filter((d) => !trackReady || trackReady(d));
+  const pool = RACE_AI_DRIVERS.filter((d) => !trackReady || trackReady(d));
   const liveries = shuffle(TEAM_LIVERIES, rand).slice(0, teamCount);
   const teams = liveries.map((livery, index) => ({ ...livery, index, drivers: [] }));
   const seats = teams.length * driversPerTeam;

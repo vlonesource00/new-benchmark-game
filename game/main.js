@@ -23,7 +23,7 @@ import { loadCareer, recordRace, aiRating, aiLicense, strengthOfField, difficult
 import { EnduranceRace, FIXED_DT } from './core/race.js';
 import { AsyncSeats } from './core/async-seats.js';
 import { TRACKS, trackById } from './core/tracks.js';
-import { drawTeams, mulberry32, AI_DRIVERS, TEAM_LIVERIES } from './core/teams.js';
+import { drawTeams, mulberry32, RACE_AI_DRIVERS as AI_DRIVERS, TEAM_LIVERIES } from './core/teams.js';
 import { assignClasses, gridFromQualifying, RACE_CLASSES, classProfile } from './core/classes.js';
 import { DEPLOY_MODES, MODE_ORDER } from './core/hybrid.js';
 import { FORMATS } from './core/rules.js';
@@ -113,7 +113,12 @@ addEventListener('pointerdown', (e) => { if (e.target.closest?.('button, .menu-i
 const telemetry = new TelemetryLog();
 const setup = load('pe.setup', { trackId: 'harbor-ring', formatId: 'classic', laps: FORMATS.classic.laps, teamCount: 6, drive: true, playerName: 'YOU', startCompound: 'medium', assist: true, gearbox: 'auto', startTime: 'track', dayCycle: true, weather: 'clear', seed: 20260930, difficulty: 'pro' });
 // AI duel: two AIs, one car each, a short race to watch (the menu's AI Duel screen).
-const duel = load('pe.duel', { a: 'claude-revolution', b: 'solstice', raceClass: 'gtp', trackId: 'harbor-ring', laps: 2, startType: 'rolling', startCompound: 'medium', weather: 'clear', pole: 'a', difficulty: 'alien' });
+const duel = load('pe.duel', { a: 'intercept', b: 'vanguard', raceClass: 'gtp', trackId: 'harbor-ring', laps: 2, startType: 'rolling', startCompound: 'medium', weather: 'clear', pole: 'a', difficulty: 'alien' });
+// Migrate saved choices when a racer leaves the active roster.
+if (setup.coDriver && !AI_DRIVERS.some((d) => d.id === setup.coDriver)) setup.coDriver = 'random';
+for (const [seat, fallback] of [['a', 'intercept'], ['b', 'vanguard']]) {
+  if (!AI_DRIVERS.some((d) => d.id === duel[seat])) duel[seat] = fallback;
+}
 let mode = 'race';
 // Settings of the session being set up or run: the race setup, or the duel's on top of it.
 const cfg = () => (mode === 'duel' ? { ...setup, trackId: duel.trackId, formatId: 'custom', laps: duel.laps, teamCount: 2, drive: false, session: 'hosted', qualifying: false, startCompound: duel.startCompound, weather: duel.weather, startType: duel.startType, difficulty: duel.difficulty } : setup);
