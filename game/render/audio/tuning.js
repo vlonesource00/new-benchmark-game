@@ -4,49 +4,49 @@
 
 export const TUNING_KEY = 'pe.audioTune';
 
-/** [LEVELS key, label, max, hint] grouped for the panel. The default comes from LEVELS itself. */
+/** [LEVELS key, label, max, test sound] grouped for the panel (test sounds: AudioEngine.audition). The default comes from LEVELS itself. */
 export const MIX_GROUPS = [
   ['Your car', [
-    ['engine', 'Engine', 1.5],
-    ['exhaustOnboard', 'Exhaust (cockpit)', 1.5],
-    ['intakeOnboard', 'Intake (cockpit)', 3],
-    ['intakeOutside', 'Intake (chase / TV)', 1.5],
-    ['whine', 'Gearbox whine', 0.04],
-    ['mgu', 'Hybrid motor', 0.15],
-    ['pops', 'Pops & bangs', 3]
+    ['engine', 'Engine', 1.5, 'rev'],
+    ['exhaustOnboard', 'Exhaust (cockpit)', 1.5, 'rev'],
+    ['intakeOnboard', 'Intake (cockpit)', 3, 'rev'],
+    ['intakeOutside', 'Intake (chase / TV)', 1.5, 'rev'],
+    ['whine', 'Gearbox whine', 0.04, 'coast'],
+    ['mgu', 'Hybrid motor', 0.15, 'hybrid'],
+    ['pops', 'Pops & bangs', 3, 'pops']
   ]],
   ['Other cars', [
-    ['rival', 'Nearby cars', 1.5],
-    ['field', 'Distant pack', 1.5]
+    ['rival', 'Nearby cars', 1.5, 'flyby'],
+    ['field', 'Distant pack', 1.5, 'pack']
   ]],
   ['Tyres & track', [
-    ['tyres', 'Tyre squeal', 1.5],
-    ['scrub', 'Tyre scrub', 3],
-    ['surface', 'Kerbs, gravel, grass', 1.2],
-    ['road', 'Road rumble', 0.2],
-    ['wind', 'Wind', 0.25]
+    ['tyres', 'Tyre squeal', 1.5, 'slide'],
+    ['scrub', 'Tyre scrub', 3, 'scrub'],
+    ['surface', 'Kerbs, gravel, grass', 1.2, 'surface'],
+    ['road', 'Road rumble', 0.2, 'cruise'],
+    ['wind', 'Wind', 0.25, 'cruise']
   ]],
   ['Effects & world', [
-    ['impacts', 'Crashes', 3],
-    ['fx', 'Effects bus', 1.5],
-    ['ambience', 'Circuit ambience', 1.5],
-    ['ambienceMenu', 'Menu ambience', 1.5],
-    ['rain', 'Rain', 1.2],
-    ['reverb', 'Reverb', 1.5],
-    ['ui', 'Interface beeps', 1]
+    ['impacts', 'Crashes', 3, 'crash'],
+    ['fx', 'Effects bus', 1.5, 'crash'],
+    ['ambience', 'Circuit ambience', 1.5, 'circuit'],
+    ['ambienceMenu', 'Menu ambience', 1.5, 'menuBed'],
+    ['rain', 'Rain', 1.2, 'rain'],
+    ['reverb', 'Reverb', 1.5, 'reverb'],
+    ['ui', 'Interface beeps', 1, 'ui']
   ]]
 ];
 
-/** [profile field, label, min, max]: multipliers applied to every engine of a class. */
+/** [profile field, label, min, max, test sound]: multipliers applied to every engine of a class. */
 export const ENGINE_CONTROLS = [
-  ['gain', 'Volume', 0.3, 2],
-  ['exhLP', 'Brightness', 0.5, 1.6],
-  ['crack', 'Rasp', 0, 2.5],
-  ['blow', 'Body (pulse width)', 0.7, 1.4],
-  ['intake', 'Intake roar', 0, 2.5],
-  ['turbo', 'Turbo', 0, 2.5],
-  ['pops', 'Pop rate', 0, 3],
-  ['cylVar', 'Lumpiness', 0, 4]
+  ['gain', 'Volume', 0.3, 2, 'rev'],
+  ['exhLP', 'Brightness', 0.5, 1.6, 'rev'],
+  ['crack', 'Rasp', 0, 2.5, 'rev'],
+  ['blow', 'Body (pulse width)', 0.7, 1.4, 'rev'],
+  ['intake', 'Intake roar', 0, 2.5, 'rev'],
+  ['turbo', 'Turbo', 0, 2.5, 'rev'],
+  ['pops', 'Pop rate', 0, 3, 'pops'],
+  ['cylVar', 'Lumpiness', 0, 4, 'rev']
 ];
 
 export const ENGINE_CLASSES = [['gt', 'GT3'], ['lmdh', 'GTP / LMDh']];

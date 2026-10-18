@@ -48,8 +48,17 @@ const TRACKS = {
   nurburgring: { room: 'forest', crowd: 0.45, sea: 0, leaves: 0.45, cicadas: 0, wind: 0.2, events: [['song', 5, 12], ['blackbird', 10, 24], ['cuckoo', 25, 60]] }
 };
 
+// Tuner test sounds: length, and whether the engine is muted so the tuned layer is heard alone.
+const DEMOS = {
+  rev: { dur: 7.2 }, pops: { dur: 3.3 },
+  coast: { dur: 4.5, mute: true, keep: 'whine', cockpit: true }, hybrid: { dur: 5.4, mute: true, keep: 'mgu', hybrid: true },
+  crash: { dur: 2.6, mute: true }, slide: { dur: 3, mute: true }, scrub: { dur: 3.5, mute: true }, surface: { dur: 5, mute: true }, cruise: { dur: 4.5, mute: true },
+  flyby: { dur: 4.8, mute: true }, pack: { dur: 5, mute: true }, reverb: { dur: 3.6, mute: true },
+  circuit: { dur: 8, mute: true, bed: 'circuit' }, menuBed: { dur: 6, mute: true, bed: 'menu' }, rain: { dur: 8, mute: true, bed: 'circuit', rain: 0.9 }
+};
+
 const fin = (x, d = 0) => (Number.isFinite(x) ? x : d);
-const rand = (a, b) => a + Math.random() * (b - a);
+const rand = (a, b) => a + Math.random() * (b - a), lerp = (a, b, x) => a + (b - a) * clamp(x, 0, 1);
 /** Level of a source `d` metres from the listener (slightly gentler than 1/d so the pack stays audible). */
 const distGain = (d) => Math.pow(6 / Math.max(6, d), 0.85);
 const airCutoff = (d) => clamp(20000 / (1 + Math.max(0, d - 4) / 45), 900, 20000);
@@ -443,7 +452,12 @@ export class AudioEngine {
     // A tuner audition replaces the focus car for a few seconds (the menu keeps its ambience).
     let bedMenu = false;
     const demoCar = this.demo ? this.demoFrame(t) : null;
-    if (demoCar) { bedMenu = Boolean(view.menu) || (cars.length === 0 && view.distance === undefined); view = { distance: this.demo.cockpit ? 1 : 6, weather: view.weather }; car = demoCar; running = true; cars = []; }
+    if (demoCar) {
+      const D = this.demo;
+      bedMenu = D.bed ? D.bed === 'menu' : Boolean(view.menu) || (cars.length === 0 && view.distance === undefined);
+      view = { distance: D.cockpit ? 1 : 6, weather: D.rain ? { rain: D.rain, wet: 0.7 } : { rain: D.bed ? 0 : fin(view.weather?.rain), wet: 0 } };
+      car = demoCar; running = true; cars = [demoCar, ...this.demoTraffic(t - D.t0)];
+    }
     const menu = Boolean(view.menu) || (cars.length === 0 && view.distance === undefined);
     const nowMs = performance.now() / 1000, dt = clamp(nowMs - (S.camT || nowMs - 0.016), 0.001, 0.1); S.camT = nowMs;
     const set = (param, v, tau = 0.05) => param.setTargetAtTime(fin(v), t, tau);
@@ -504,6 +518,7 @@ export class AudioEngine {
     set(f.mguLp.frequency, regen ? 3800 : 2600, 0.1);
     const mguWork = Math.abs(kw) > 2 ? 0.3 + 0.7 * clamp(Math.abs(kw) / 120, 0, 1) : 0;
     set(f.mgu.gain, moving ? LEVELS.mgu * mguWork * vs * (regen ? 1.15 : 1) * (inside ? 1 : 0.6) : 0, 0.1);
+    if (demoCar && this.demo?.mute) { set(p.level, 0, 0.03); if (this.demo.keep !== 'whine') set(f.whine.gain, 0, 0.03); if (this.demo.keep !== 'mgu') set(f.mgu.gain, 0, 0.03); }
 
     // Shifts: an upshift cuts the ignition for the dog ring to slam home; a downshift blips.
     if (moving && S.lastGear !== null && car.gear !== S.lastGear && speed > 5) {
@@ -667,41 +682,82 @@ export class AudioEngine {
   /** Live snapshot of the graph for debugging and tests. */
   // ---------- tuner auditions ----------
   /**
-   * Play a scripted car through the normal focus path: 'rev' (launch, two upshifts, limiter, lift with
-   * pops, downshifts), 'crash' (a light then a heavy hit) or 'slide' (a lock-up). Returns the length in s.
+   * Test sounds for the tuner. Most are a scripted car driven through the normal focus path, so they
+   * sound exactly as in a race; `mute` silences the engine (and the whine and motor unless `keep`)
+   * so the layer being tuned is heard on its own. Returns the length in seconds.
    */
   audition(kind, profileId = 'gt-v8-flat', { cockpit = false } = {}) {
     if (!this.ready || !ENGINE_PROFILES[profileId]) return 0;
-    const dur = { rev: 7.2, crash: 2.6, slide: 3 }[kind] ?? 0;
-    this.demo = dur ? { kind, id: profileId, cockpit, t0: this.ctx.currentTime, dur, events: kind === 'rev' ? [[2.2, 0.6, 'shift'], [3.7, 0.6, 'shift'], [4.62, 0.9, 'bang'], [4.76, 0.7, 'pop'], [4.92, 0.6, 'pop'], [5.08, 0.75, 'pop'], [5.35, 0.5, 'pop'], [5.65, 0.6, 'pop']] : [] } : null;
-    Object.assign(this.state, { lastGear: null, lastImpact: 0, lastImpactAt: 0, boost: 0 });
-    return dur;
+    const S = this.state, t = this.ctx.currentTime;
+    if (kind === 'ui') { [0, 0.6, 1.2].forEach((dt) => this.tone([1480], 0.012, 0.003, 0.06, 'sine', 1, this.uiBus, 0, t + dt)); return 1.4; }
+    const scene = DEMOS[kind]; if (!scene) return 0;
+    const id = scene.hybrid && !profileId.startsWith('gtp') ? 'gtp-v8-tt' : profileId;
+    const at = (u, fn) => [u, fn], bf = (k, type, d = 0, pan = 0) => () => this.backfire(k, type, d, pan);
+    const events = {
+      rev: [at(2.2, bf(0.6, 'shift')), at(3.7, bf(0.6, 'shift')), at(4.62, bf(0.9, 'bang')), at(4.76, bf(0.7, 'pop')), at(4.92, bf(0.6, 'pop')), at(5.08, bf(0.75, 'pop')), at(5.35, bf(0.5, 'pop')), at(5.65, bf(0.6, 'pop'))],
+      pops: [at(0.72, bf(0.9, 'bang')), at(0.85, bf(0.6, 'pop')), at(1.0, bf(0.7, 'pop')), at(1.2, bf(0.5, 'pop')), at(2.17, bf(1, 'bang')), at(2.3, bf(0.7, 'pop')), at(2.48, bf(0.8, 'pop')), at(2.75, bf(0.5, 'pop'))],
+      reverb: [at(0.2, bf(1, 'bang', 35, -0.5)), at(1.3, bf(1, 'bang', 90, 0.5)),
+        at(2.2, () => this.play(this.pick(this.buffers.impactHeavy), { gain: 0.5 * LEVELS.impacts, pan: 0.3, lp: airCutoff(70), send: 0.55, priority: 1 }))]
+    }[kind] ?? [];
+    this.demo = { kind, id, t0: t, ...scene, cockpit: scene.cockpit ?? cockpit, events };
+    Object.assign(S, { lastGear: null, lastImpact: 0, lastImpactAt: 0, boost: 0 });
+    // Bring the circuit's wildlife and the thunder forward so the ambience tests have something to hear.
+    if (scene.bed === 'circuit') for (const [ev] of TRACKS[this.trackId].events) S.nextEvent[ev] = t + rand(0.4, 4);
+    if (scene.rain) S.nextThunder = t + 2.5;
+    return scene.dur;
   }
 
   demoFrame(t) {
     const D = this.demo, u = t - D.t0;
     if (u > D.dur) { this.demo = null; Object.assign(this.state, { lastGear: null, lastImpact: 0 }); return null; }
-    const lerp = (a, b, x) => a + (b - a) * clamp(x, 0, 1), ratio = [0, 313, 195, 152];
-    const car = { x: 0, y: 0, z: 0, yaw: 0, vx: 0, vz: 0, zone: 'asphalt', audioProfile: D.id, classId: D.id.startsWith('gtp') ? 'lmdh' : 'gt', controls: { throttle: 0 }, wheels: [], impact: 0, rpm: SIM_IDLE, speed: 0, gear: 1, hybrid: { kw: 0 } };
-    const drive = (gear, speed, thr) => { car.gear = gear; car.speed = speed; car.controls.throttle = thr; car.rpm = Math.max(SIM_IDLE + 150, speed * ratio[gear]); car.hybrid.kw = thr > 0.5 ? 120 : -90; };
-    if (D.kind === 'rev') {
-      if (u < 0.6) drive(1, 0, 0);
-      else if (u < 2.2) { const x = (u - 0.6) / 1.6; drive(1, 26 * Math.pow(x, 1.1), 1); car.rpm = Math.max(car.rpm, lerp(SIM_IDLE, 5200, (u - 0.6) / 0.25)); }
-      else if (u < 3.7) drive(2, lerp(26, 42, (u - 2.2) / 1.5), 1);
-      else if (u < 4.6) drive(3, lerp(42, 52, (u - 3.7) / 0.9), 1);
-      else if (u < 6.4) { const sp = lerp(52, 12, Math.pow((u - 4.6) / 1.8, 0.8)); drive(sp > 30 ? 3 : sp > 17 ? 2 : 1, sp, 0); }
-      else { drive(1, 0, 0); car.hybrid.kw = 0; }
-      while (D.events.length && D.events[0][0] <= u) { const [, k, kind] = D.events.shift(); this.backfire(k, kind, 0, 0); }
-    } else if (D.kind === 'crash') {
-      drive(3, 30, 0.35);
-      car.impact = u > 1.3 ? 0.9 : u > 0.4 ? 0.18 : 0;
-    } else if (D.kind === 'slide') {
-      const sp = lerp(32, 12, u / 3); drive(2, sp, 0.2);
-      // Combined slip climbs into a lock-up and lets go (squeal starts at ~2.8, full at 6).
-      const slip = u < 0.3 ? 1 : u < 1.2 ? lerp(1, 6.5, (u - 0.3) / 0.9) : u < 2.2 ? 6.5 : lerp(6.5, 1, (u - 2.2) / 0.6);
-      car.wheels = [1, 1, 0.8, 0.8].map((m) => ({ tyre: { kappa: -slip * m / 10.5, alpha: 0 } }));
+    const ratio = [0, 313, 195, 152, 125, 105];
+    const car = { id: 'demo', x: 0, y: 0, z: 0, yaw: 0, vx: 0, vz: 0, zone: 'asphalt', audioProfile: D.id, classId: D.id.startsWith('gtp') ? 'lmdh' : 'gt', controls: { throttle: 0 }, wheels: [], impact: 0, rpm: SIM_IDLE, speed: 0, gear: 1, hybrid: { kw: 0 } };
+    const drive = (gear, speed, thr) => { car.gear = gear; car.speed = speed; car.controls.throttle = thr; car.rpm = Math.max(SIM_IDLE + 150, speed * ratio[gear]); car.hybrid.kw = D.mute && !D.hybrid ? 0 : thr > 0.5 ? 120 : -90; };
+    const slip = (s, steer = false) => { car.wheels = [1, 1, 0.8, 0.8].map((m) => ({ tyre: steer ? { kappa: 0, alpha: Math.atan(s * m / 8.6) } : { kappa: -s * m / 10.5, alpha: 0 } })); };
+    switch (D.kind) {
+      case 'rev':   // launch, two upshifts (the second bounces off the limiter), lift with pops, downshifts
+        if (u < 0.6) drive(1, 0, 0);
+        else if (u < 2.2) { drive(1, 26 * Math.pow((u - 0.6) / 1.6, 1.1), 1); car.rpm = Math.max(car.rpm, lerp(SIM_IDLE, 5200, (u - 0.6) / 0.25)); }
+        else if (u < 3.7) drive(2, lerp(26, 42, (u - 2.2) / 1.5), 1);
+        else if (u < 4.6) drive(3, lerp(42, 52, (u - 3.7) / 0.9), 1);
+        else if (u < 6.4) { const sp = lerp(52, 12, Math.pow((u - 4.6) / 1.8, 0.8)); drive(sp > 30 ? 3 : sp > 17 ? 2 : 1, sp, 0); }
+        else { drive(1, 0, 0); car.hybrid.kw = 0; }
+        break;
+      case 'pops': {  // two blips to the top and lifts: overrun crackle and bangs
+        const blip = (a) => u >= a && u < a + 0.55;
+        drive(3, 40, blip(0.15) || blip(1.6) ? 1 : 0);
+        car.rpm = blip(0.15) ? lerp(4500, 7900, (u - 0.15) / 0.5) : blip(1.6) ? lerp(4500, 8000, (u - 1.6) / 0.5) : Math.max(3000, 7800 - (u < 1.6 ? u - 0.7 : u - 2.15) * 4000);
+        break;
+      }
+      case 'coast':   // gearbox whine: on the throttle, then the overrun where it sings loudest
+        drive(5, u < 1.2 ? lerp(60, 70, u / 1.2) : lerp(70, 38, (u - 1.2) / 3.3), u < 1.2 ? 1 : 0); break;
+      case 'hybrid':  // deploy out of a corner, then regen into the next
+        if (u < 2.8) drive(u < 1.4 ? 2 : 3, lerp(14, 48, u / 2.8), 1); else drive(u < 4.2 ? 3 : 2, lerp(48, 12, (u - 2.8) / 2.6), 0);
+        break;
+      case 'crash': drive(3, 30, 0.35); car.impact = u > 1.3 ? 0.9 : u > 0.4 ? 0.18 : 0; break;
+      case 'slide':   // lock-up: combined slip climbs past the squeal threshold (~2.8, full at 6) and lets go
+        drive(2, lerp(32, 12, u / 3), 0.2); slip(u < 0.3 ? 1 : u < 1.2 ? lerp(1, 6.5, (u - 0.3) / 0.9) : u < 2.2 ? 6.5 : lerp(6.5, 1, (u - 2.2) / 0.6)); break;
+      case 'scrub':   // a hard, clean cornering load: scrub without squeal
+        drive(3, 34, 0.6); slip(u < 0.4 ? lerp(0, 2.6, u / 0.4) : u < 3 ? 2.6 : lerp(2.6, 0, (u - 3) / 0.5), true); break;
+      case 'surface': // kerb, gravel, grass
+        drive(3, 30, 0.5); car.zone = u < 1.2 ? 'kerb' : u < 1.6 ? 'asphalt' : u < 3.2 ? 'gravel' : u < 4.8 ? 'grass' : 'asphalt'; break;
+      case 'cruise':  // road rumble and wind build with speed
+        drive(5, lerp(8, 78, u / 2), 0.8); break;
+      default: drive(1, 0, 0);   // parked: ambience, rain, other cars, reverb
     }
+    while (D.events.length && D.events[0][0] <= u) D.events.shift()[1]();
     return car;
+  }
+
+  /** Other cars for the flyby and pack tests. */
+  demoTraffic(u) {
+    const D = this.demo, base = { classId: D.id.startsWith('gtp') ? 'lmdh' : 'gt', wheels: [], zone: 'asphalt', impact: 0, y: 0 };
+    if (D.kind === 'flyby') return [{ ...base, audioProfile: D.id, id: 'demo-flyby', x: 7, z: lerp(-170, 170, (u - 0.2) / 4.2), vx: 0, vz: 80, speed: 80, gear: 6, rpm: 7700, controls: { throttle: 1 } }];
+    if (D.kind === 'pack') return Array.from({ length: 16 }, (_, i) => {
+      const a = i * 2.39, r = 340 + (i % 5) * 40;
+      return { ...base, team: { id: `demo-${i % 8}` }, id: `demo-pack-${i}`, x: Math.cos(a) * r, z: Math.sin(a) * r, vx: 0, vz: 0, speed: 60, gear: 5, rpm: 6500 + 1200 * Math.sin(u * 1.3 + i), controls: { throttle: 1 } };
+    });
+    return [];
   }
 
   debug() {

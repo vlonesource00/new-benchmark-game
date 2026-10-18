@@ -13,11 +13,13 @@ const STYLE = `
 .atune header .kicker { font-size: 12px; letter-spacing: .3em; color: var(--accent); text-transform: uppercase; }
 .atune .body { overflow-y: auto; padding: 4px 20px 20px; flex: 1; }
 .atune h3 { margin: 18px 0 6px; font-size: 13px; letter-spacing: .3em; color: var(--dim); text-transform: uppercase; }
-.atune .sl { display: grid; grid-template-columns: 1fr 170px 52px; align-items: center; gap: 10px; padding: 3px 0; }
+.atune .sl { display: grid; grid-template-columns: 1fr 150px 46px 30px; align-items: center; gap: 10px; padding: 3px 0; }
 .atune .sl label { font-size: 16px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
 .atune .sl input { width: 100%; }
 .atune .sl output { font-family: var(--mono); font-size: 12px; color: var(--dim); text-align: right; cursor: pointer; }
 .atune .sl output.mod { color: var(--accent-2); }
+.atune .sl .test { border: 1px solid var(--line); background: transparent; color: var(--dim); font-size: 11px; height: 24px; padding: 0; }
+.atune .sl .test:hover { color: var(--ink); border-color: var(--accent); }
 .atune .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
 .atune select { background: #10131a; color: var(--ink); border: 1px solid var(--line); font-family: var(--display); font-size: 15px; padding: 6px 8px; flex: 1; min-width: 200px; }
 .atune .btn { border: 1px solid var(--line); background: transparent; padding: 7px 14px; font-size: 14px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--ink); }
@@ -31,10 +33,20 @@ let panel = null, audioRef = null, unlockRef = null, cls = 'gt', cockpit = false
 
 const clone = (t) => JSON.parse(JSON.stringify(t ?? emptyTuning()));
 const fmt = (v, d) => (d ? `${Math.round((v / d) * 100)}%` : v.toFixed(2));
+const SCENES = {
+  rev: 'Rev & shift', pops: 'Blips and lifts: pops and bangs', coast: 'Gearbox whine on the overrun (engine muted)', hybrid: 'Hybrid deploy, then regen (engine muted)',
+  crash: 'Light hit, then heavy hit', slide: 'Lock-up', scrub: 'Hard cornering scrub', surface: 'Kerb, gravel, grass', cruise: 'Road and wind building with speed',
+  flyby: 'A car passing at 290 km/h', pack: 'The pack, far off', reverb: 'Bangs and a crash at a distance', circuit: 'Circuit ambience',
+  menuBed: 'Menu ambience', rain: 'Rain and thunder', ui: 'Pit limiter beeps'
+};
+// Cockpit layers are tested from the cockpit, the outside intake from the chase camera; the rest follow the Chase/Cockpit switch.
+const VIEW = { exhaustOnboard: '1', intakeOnboard: '1', intakeOutside: '0' };
 
-function slider(id, label, min, max, value, def, step) {
+function slider(id, label, min, max, value, def, step, scene) {
+  const key = id.slice(2);
   return `<div class="sl"><label>${label}</label><input type="range" data-id="${id}" min="${min}" max="${max}" step="${step}" value="${value}">
-    <output data-out="${id}" title="Click to reset" class="${Math.abs(value - def) > 1e-6 ? 'mod' : ''}">${fmt(value, id.startsWith('L:') ? def : 0)}</output></div>`;
+    <output data-out="${id}" title="Click to reset" class="${Math.abs(value - def) > 1e-6 ? 'mod' : ''}">${fmt(value, id.startsWith('L:') ? def : 0)}</output>
+    <button class="test" data-play="${scene}" data-force="${VIEW[key] ?? ''}" title="Test: ${SCENES[scene]}">▶</button></div>`;
 }
 
 function render() {
@@ -44,15 +56,15 @@ function render() {
     <h3>Audition</h3>
     <div class="bar"><select data-engine>${pools}</select></div>
     <div class="bar">
-      <button class="btn go" data-play="rev">Rev & shift</button><button class="btn" data-play="crash">Crash</button><button class="btn" data-play="slide">Tyre slide</button>
+      <button class="btn go" data-play="rev">Rev & shift</button><button class="btn" data-play="pops">Pops</button><button class="btn" data-play="crash">Crash</button><button class="btn" data-play="slide">Tyre slide</button><button class="btn" data-play="flyby">Flyby</button>
       <span class="seg"><button data-view="0" class="${cockpit ? '' : 'on'}">Chase</button><button data-view="1" class="${cockpit ? 'on' : ''}">Cockpit</button></span>
     </div>
     <div class="status" data-status></div>
     <h3>Engines — ${ENGINE_CLASSES.find(([k]) => k === cls)[1]}</h3>
     <div class="bar"><span class="seg">${ENGINE_CLASSES.map(([k, n]) => `<button data-cls="${k}" class="${k === cls ? 'on' : ''}">${n}</button>`).join('')}</span>
-      <span class="hint">Multipliers on every engine of the class</span></div>
-    ${ENGINE_CONTROLS.map(([k, label, min, max]) => slider(`E:${k}`, label, min, max, eng[k] ?? 1, 1, 0.01)).join('')}
-    ${MIX_GROUPS.map(([group, rows]) => `<h3>${group}</h3>${rows.map(([k, label, max]) => slider(`L:${k}`, label, 0, max, LEVELS[k], DEFAULTS[k], max / 200)).join('')}`).join('')}`;
+      <span class="hint">Multipliers on every engine of the class · ▶ tests a sound</span></div>
+    ${ENGINE_CONTROLS.map(([k, label, min, max, scene]) => slider(`E:${k}`, label, min, max, eng[k] ?? 1, 1, 0.01, scene)).join('')}
+    ${MIX_GROUPS.map(([group, rows]) => `<h3>${group}</h3>${rows.map(([k, label, max, scene]) => slider(`L:${k}`, label, 0, max, LEVELS[k], DEFAULTS[k], max / 200, scene)).join('')}`).join('')}`;
   const sel = panel.querySelector('[data-engine]');
   sel.value = panel.dataset.engine ?? POOLS[cls][0];
   sel.addEventListener('change', () => { panel.dataset.engine = sel.value; });
@@ -68,10 +80,12 @@ function apply(id, value) {
 
 function status(msg) { const s = panel?.querySelector('[data-status]'); if (s) s.textContent = msg; }
 
-async function play(kind) {
+async function play(kind, force = '') {
   try { await unlockRef?.(); } catch { /* retried on the next click */ }
-  const id = panel.querySelector('[data-engine]').value, dur = audioRef.audition(kind, id, { cockpit });
-  status(dur ? `${kind === 'rev' ? 'Rev & shift' : kind === 'crash' ? 'Light hit, then heavy hit' : 'Lock-up'} · ${ENGINE_PROFILES[id].label} · ${cockpit ? 'cockpit' : 'chase'}` : 'Sound is still starting — click again');
+  const inside = force ? force === '1' : cockpit;
+  const id = panel.querySelector('[data-engine]').value, dur = audioRef.audition(kind, id, { cockpit: inside });
+  const engine = ['rev', 'pops', 'flyby'].includes(kind) ? ` · ${ENGINE_PROFILES[id].label}` : '';
+  status(dur ? `▶ ${SCENES[kind]}${engine} · ${inside ? 'cockpit' : 'chase'}` : 'Sound is still starting — click again');
 }
 
 function build() {
@@ -91,7 +105,7 @@ function build() {
   panel.addEventListener('click', (e) => {
     const b = e.target.closest('button, output'); if (!b) return;
     if (b.dataset.close !== undefined) close();
-    else if (b.dataset.play) play(b.dataset.play);
+    else if (b.dataset.play) play(b.dataset.play, b.dataset.force);
     else if (b.dataset.view) { cockpit = b.dataset.view === '1'; render(); }
     else if (b.dataset.cls) { cls = b.dataset.cls; panel.dataset.engine = POOLS[cls][0]; render(); }
     else if (b.dataset.out) { apply(b.dataset.out, null); render(); }
