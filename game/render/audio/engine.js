@@ -34,7 +34,7 @@ const RIVAL_VOICES = 6, MAX_ONESHOTS = 28, SOUND_SPEED = 343;
 export const LEVELS = {
   engine: 0.5, intakeOnboard: 1.35, intakeOutside: 0.35, exhaustOnboard: 0.55,
   rival: 0.5, field: 0.45, tyres: 0.5, wind: 0.07, road: 0.05, surface: 0.4,
-  whine: 0.009, mgu: 0.04, ambience: 0.55, ambienceMenu: 0.42, rain: 0.35,
+  whine: 0.009, mgu: 0.03, ambience: 0.55, ambienceMenu: 0.42, rain: 0.35,
   fx: 0.55, ui: 0.22, reverb: 0.5,
   impacts: 1, pops: 1, scrub: 1      // multipliers on the crash, backfire and scrub one-shots/layers
 };
@@ -243,14 +243,22 @@ export class AudioEngine {
     f.whine = this.gain(0); const diffMix = this.gain(0.6);
     f.gearOsc.connect(f.whine); f.diffOsc.connect(diffMix); diffMix.connect(f.whine); f.whine.connect(this.focusBus);
     f.gearOsc.start(); f.diffOsc.start();
-    // Hybrid motor-generator.
-    // Hybrid motor-generator: the motor's electrical whine (a few harmonics) and its reduction-gear mesh
-    // below it. Deploy is a smooth rising whir; regen is brighter, with a slight beat between the two.
-    f.mguOsc = c.createOscillator(); f.mguOsc.setPeriodicWave(this.periodic([1, 0.35, 0.18, 0.1]));
-    f.mguGear = c.createOscillator(); f.mguGear.setPeriodicWave(this.periodic([1, 0.3]));
-    f.mguLp = this.filter('lowpass', 2600, 0.9); f.mgu = this.gain(0); const gearMix = this.gain(0.5);
-    f.mguOsc.connect(f.mguLp); f.mguGear.connect(gearMix); gearMix.connect(f.mguLp); this.chain(f.mguLp, f.mgu, this.focusBus);
-    f.mguOsc.start(); f.mguGear.start();
+    // Hybrid motor-generator, voiced after the LMH front-axle motors (Ferrari 499P onboards): a clean,
+    // singing electrical whine that climbs with road speed, a twin a few cents off so it shimmers instead
+    // of droning, a gear-mesh whistle above it that comes up under regen, and an octave below for body.
+    // Nearly pure partials: the old buzzy, harmonic-rich oscillator read as a drone.
+    const pure = this.periodic([1, 0.08, 0.03]);
+    f.mguOsc = c.createOscillator(); f.mguOsc2 = c.createOscillator(); f.mguGear = c.createOscillator(); f.mguSub = c.createOscillator();
+    [f.mguOsc, f.mguOsc2, f.mguGear, f.mguSub].forEach((o) => o.setPeriodicWave(pure));
+    f.mguGearG = this.gain(0.2); const twin = this.gain(0.22), sub = this.gain(0.3);
+    f.mguLp = this.filter('lowpass', 4200, 0.7); const mguHp = this.filter('highpass', 140, 0.7); f.mgu = this.gain(0);
+    f.mguOsc.connect(f.mguLp); f.mguOsc2.connect(twin); twin.connect(f.mguLp); f.mguGear.connect(f.mguGearG); f.mguGearG.connect(f.mguLp); f.mguSub.connect(sub); sub.connect(f.mguLp);
+    this.chain(f.mguLp, mguHp, f.mgu, this.focusBus);
+    // A slow, shallow vibrato: the inverter's current ripple, which keeps the whine alive.
+    const vib = c.createOscillator(), vibDepth = this.gain(5); vib.frequency.value = 5.3; vib.connect(vibDepth);
+    [f.mguOsc, f.mguOsc2, f.mguGear, f.mguSub].forEach((o) => vibDepth.connect(o.detune));
+    f.mguOsc2.detune.value = 4;
+    [f.mguOsc, f.mguOsc2, f.mguGear, f.mguSub, vib].forEach((o) => o.start());
     // Tyres. Squeal is the tread's stick-slip ringing the carcass: two narrow resonances excited by
     // noise (never a steady oscillator, which reads as a whistle), their centres wandering, the level
     // fluttering with the slip. Scrub is the broad low roar of a tyre working at its limit.
@@ -513,11 +521,14 @@ export class AudioEngine {
     set(f.whine.gain, moving ? LEVELS.whine * vs * (inside ? 1 : 0.2) * (1.4 - 0.7 * load) : 0, 0.06);
     // Hybrid deploy / regen.
     const kw = prof.hybrid && car.hybrid ? fin(car.hybrid.kw) : 0;
-    const regen = kw < -2, mguHz = clamp(18 + speed * 15, 18, 1700);
-    set(f.mguOsc.frequency, mguHz, 0.04); set(f.mguGear.frequency, mguHz * 0.62 + (regen ? 6 : 0), 0.04);
-    set(f.mguLp.frequency, regen ? 3800 : 2600, 0.1);
-    const mguWork = Math.abs(kw) > 2 ? 0.3 + 0.7 * clamp(Math.abs(kw) / 120, 0, 1) : 0;
-    set(f.mgu.gain, moving ? LEVELS.mgu * mguWork * vs * (regen ? 1.15 : 1) * (inside ? 1 : 0.6) : 0, 0.1);
+    // The motor turns with the front wheels through its reduction gear, so the whine tracks road speed:
+    // ~600 Hz at 100 km/h, ~1.6 kHz flat out. Its loudness follows the motor current (|kW|).
+    const regen = kw < -2, mguHz = clamp(40 + speed * 19, 40, 2300);
+    set(f.mguOsc.frequency, mguHz, 0.04); set(f.mguOsc2.frequency, mguHz, 0.04); set(f.mguSub.frequency, mguHz * 0.5, 0.04);
+    set(f.mguGear.frequency, mguHz * 2.37, 0.04); set(f.mguGearG.gain, regen ? 0.42 : 0.18, 0.12);
+    set(f.mguLp.frequency, regen ? 5200 : 4200, 0.12);
+    const mguWork = Math.abs(kw) > 2 ? 0.25 + 0.75 * clamp(Math.abs(kw) / 120, 0, 1) : 0;
+    set(f.mgu.gain, moving ? LEVELS.mgu * mguWork * vs * (regen ? 1.25 : 1) * (inside ? 1 : 0.65) : 0, 0.08);
     if (demoCar && this.demo?.mute) { set(p.level, 0, 0.03); if (this.demo.keep !== 'whine') set(f.whine.gain, 0, 0.03); if (this.demo.keep !== 'mgu') set(f.mgu.gain, 0, 0.03); }
 
     // Shifts: an upshift cuts the ignition for the dog ring to slam home; a downshift blips.
