@@ -13,6 +13,7 @@ import { SafetyCarModel } from './render/safety-car.js';
 import { CarEffects } from './render/effects-pro.js';
 import { VisualFinish } from './render/finish-pro.js';
 import { AudioEngine } from './render/audio-pro.js';
+import { installAudioTuner, openAudioTuner } from './ui/audio-tuner.js';
 import { ExhaustEvents } from './render/exhaust.js';
 import { ReplayRecorder, ReplayDirector } from './render/replay.js';
 import { WeatherEffects } from './engine/render/weather.js';
@@ -83,6 +84,7 @@ document.addEventListener('visibilitychange', syncAudioFocus);
 ['pagehide', 'pageshow'].forEach((t) => addEventListener(t, syncAudioFocus));
 addEventListener('pointerdown', unlockAudio);
 addEventListener('keydown', unlockAudio);
+installAudioTuner(audio, unlockAudio);
 
 // ---------- world (one per circuit, built lazily) ----------
 let track = null, world = null, effects = null, worldTrackId = null;
@@ -263,6 +265,7 @@ const nav = {
     if ('quality' in patch) { finish?.setQuality(settings.quality); world?.setQuality?.(settings.quality); }
     if ('pixelRatio' in patch) { renderer.setPixelRatio(pixelRatio()); resize(); }
   },
+  audioTuner: () => openAudioTuner(),
   // Go racing / Race now: a fresh sky for the event, then the pre-race briefing with its forecast.
   start: () => { mode = 'race'; preraceBack = screen === 'setup' ? 'setup' : 'menu'; weatherSeed = rollSeed(); showPrerace(); }
 };

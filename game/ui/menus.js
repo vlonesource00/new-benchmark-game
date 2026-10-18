@@ -278,7 +278,8 @@ export function renderSettings(el, settings, act) {
     <div class="panel-wrap" style="max-width:760px">
       <div class="panel-head"><div><div class="kicker">Options</div><h2>Settings</h2></div><button class="back" data-back>← Back</button></div>
       <div class="block"><h3>Audio</h3>
-        <div class="row"><label>Master volume</label><input type="range" min="0" max="1" step="0.05" value="${settings.volume}" data-volume></div></div>
+        <div class="row"><label>Master volume</label><input type="range" min="0" max="1" step="0.05" value="${settings.volume}" data-volume></div>
+        <div class="row"><label>Sound tuner<span class="hint">Every mix level and engine character, with auditions · F8 in a race</span></label><button class="back" data-tuner>Open</button></div></div>
       <div class="block"><h3>Graphics</h3>
         <div class="row"><label>Graphics quality<span class="hint">Ultra: 8K shadows, denser grass, finer AO</span></label>${seg('quality', [['ultra', 'Ultra'], ['high', 'High'], ['low', 'Low']], settings.quality)}</div>
         <div class="row"><label>Render scale</label>${seg('pixelRatio', [[1, '1×'], [1.5, '1.5×'], [1.75, 'Native'], [2, '2× SSAA']], settings.pixelRatio)}</div></div>
@@ -290,6 +291,7 @@ export function renderSettings(el, settings, act) {
         <div class="row"><label>Gamepad</label><span class="mono">RT/LT pedals · LS steer · B pit · Y camera · LB/RB focus</span></div></div>
     </div>`;
   $(el, '[data-back]').addEventListener('click', () => act.go('menu'));
+  $(el, '[data-tuner]').addEventListener('click', () => act.audioTuner?.());
   $(el, '[data-volume]').addEventListener('input', (e) => act.settings({ volume: Number(e.target.value) }));
   $$(el, '[data-seg]').forEach((g) => $$(g, 'button').forEach((b) => b.addEventListener('click', () => {
     const v = g.dataset.seg === 'pixelRatio' ? Number(b.dataset.v) : b.dataset.v;

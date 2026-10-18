@@ -98,24 +98,51 @@ export function gearClunk(sr, seed) {
   }
   return { sr, ch: [fadeEdges(normalize([c], 0.8)[0], sr, 1)] };
 }
-/** Contact: a body thump, carbon crunch bursts and debris that rattles away. */
+/**
+ * Contact between race cars: composite panels and carbon, not bells. Everything here is damped
+ * noise (a struck panel rings for a few ms at most), so nothing can turn into a chime:
+ *   slam    the pressure front of the hit itself (a wide N-wave) with a noisy low whump of the tubs;
+ *   crunch  carbon and fibreglass breaking: a dense spray of short broadband cracks over 50-150 ms;
+ *   panel   the bodywork flexing: a short, low-Q mid-range rattle;
+ *   debris  (heavy) dull knocks of parts landing and skittering away;
+ *   scrape  (heavy) bodywork or a wheel grinding along the other car.
+ */
 export function impact(sr, seed, heavy = true) {
-  const R = rng(seed), n = Math.floor(sr * (heavy ? 1.3 : 0.55)), L = new Float32Array(n), Rr = new Float32Array(n);
-  const thump = heavy ? 58 : 85;
-  for (let i = 0; i < n; i++) { const t = i / sr, s = Math.sin(TAU * thump * t * (1 - t * 0.9)) * Math.exp(-t / (heavy ? 0.12 : 0.05)) * (heavy ? 1 : 0.6); L[i] += s; Rr[i] += s; }
-  const bursts = heavy ? 10 + Math.floor(R() * 6) : 4 + Math.floor(R() * 3);
-  for (let b = 0; b < bursts; b++) {
-    const at = Math.floor(R() * (heavy ? 0.14 : 0.06) * sr), f = 350 + R() * 2600, bq = new Biquad().set('bandpass', f, 1.2 + R() * 2, sr), d = (0.004 + R() * 0.018) * sr, g = (0.5 + R()) * (b === 0 ? 1.5 : 1), pan = R();
-    for (let j = 0; j < d * 6 && at + j < n; j++) { const v = bq.run((R() * 2 - 1) * Math.exp(-j / d)) * g; L[at + j] += v * (1 - pan * 0.6); Rr[at + j] += v * (0.4 + pan * 0.6); }
+  const R = rng(seed), n = Math.floor(sr * (heavy ? 1.1 : 0.45)), L = new Float32Array(n), Rr = new Float32Array(n);
+  const add = (at, v, pan) => { if (at < n) { L[at] += v * (1 - pan * 0.7); Rr[at] += v * (0.3 + pan * 0.7); } };
+  const t0 = Math.floor(0.002 * sr);
+  // Slam: N-wave front plus a noisy low whump (noise through a low-pass, not a sine, so it thuds).
+  const T = (heavy ? 0.006 : 0.0032) * sr, whumpLp = new Biquad().set('lowpass', heavy ? 160 : 220, 0.9, sr), whumpTau = (heavy ? 0.06 : 0.03) * sr;
+  for (let j = 0; j < whumpTau * 6; j++) {
+    const u = j / T;
+    const front = u < 0.08 ? Math.sin(Math.PI * 0.5 * u / 0.08) : u < 0.55 ? 1 - 1.7 * (u - 0.08) / 0.47 : u < 1.4 ? -0.7 * (0.5 + 0.5 * Math.cos(Math.PI * (u - 0.55) / 0.85)) : 0;
+    const whump = whumpLp.run((R() * 2 - 1)) * Math.exp(-j / whumpTau) * (1 - Math.exp(-j / (0.002 * sr))) * (heavy ? 5 : 3.5);
+    add(t0 + j, front * (heavy ? 1.1 : 0.9) + whump, 0.5);
   }
-  const debris = heavy ? 14 + Math.floor(R() * 10) : 4 + Math.floor(R() * 4);
-  for (let k = 0; k < debris; k++) {
-    const at = Math.floor((0.03 + Math.pow(R(), 1.6) * (heavy ? 0.95 : 0.4)) * sr), f = 1100 + R() * 5200, f2 = f * (1.37 + R() * 0.5), d = (0.012 + R() * 0.07) * sr, g = 0.05 + R() * 0.16, pan = R();
-    for (let j = 0; j < d * 5 && at + j < n; j++) { const e = Math.exp(-j / d), v = (Math.sin(TAU * f * j / sr) + 0.5 * Math.sin(TAU * f2 * j / sr)) * e * g; L[at + j] += v * (1 - pan); Rr[at + j] += v * pan; }
+  // Crunch: many short cracks, densest at the hit.
+  const span = (heavy ? 0.15 : 0.055) * sr, cracks = heavy ? 70 + Math.floor(R() * 30) : 22 + Math.floor(R() * 10);
+  for (let k = 0; k < cracks; k++) {
+    const at = t0 + Math.floor(Math.pow(R(), 2.2) * span), bq = new Biquad().set('bandpass', 500 + R() * 3800, 0.6 + R() * 0.8, sr);
+    const d = (0.0004 + R() * 0.0022) * sr, g = (0.4 + R() * 0.9) * (1 - (at - t0) / span * 0.7), pan = R();
+    for (let j = 0; j < d * 5; j++) add(at + j, bq.run((R() * 2 - 1) * Math.exp(-j / d)) * g * 2.2, pan);
   }
-  const lp = [new Biquad().set('lowpass', heavy ? 7000 : 8000, 0.7, sr), new Biquad().set('lowpass', heavy ? 7000 : 8000, 0.7, sr)];
-  for (let i = 0; i < n; i++) { L[i] = lp[0].run(L[i]); Rr[i] = lp[1].run(Rr[i]); }
-  normalize([L, Rr], 0.9); fadeEdges(L, sr, 2); fadeEdges(Rr, sr, 2);
+  // Panel: the bodywork flexing, a brief low-Q mid rattle.
+  const pk = new Biquad().set('bandpass', 550 + R() * 450, 0.9, sr), pTau = (heavy ? 0.035 : 0.018) * sr;
+  for (let j = 0; j < pTau * 5; j++) { const am = 0.55 + 0.45 * Math.sin(TAU * (95 + 40 * R()) * j / sr); add(t0 + j, pk.run(R() * 2 - 1) * Math.exp(-j / pTau) * am * 1.6, 0.5); }
+  if (heavy) {
+    // Debris: dull knocks of parts bouncing, thinning out.
+    for (let k = 0, at = 0.08; k < 7 + Math.floor(R() * 6) && at < 0.95; k++, at += 0.03 + R() * 0.12) {
+      const lp = new Biquad().set('lowpass', 900 + R() * 2200, 0.8, sr), d = (0.001 + R() * 0.004) * sr, g = (0.12 + R() * 0.3) * (1 - at), pan = R();
+      for (let j = 0; j < d * 5; j++) add(Math.floor(at * sr) + j, lp.run((R() * 2 - 1) * Math.exp(-j / d)) * g * 3, pan);
+    }
+    // Scrape: jagged grinding band, a few hundred ms.
+    const bp = new Biquad().set('bandpass', 1300 + R() * 900, 1.4, sr), s0 = Math.floor(0.03 * sr), sLen = (0.18 + R() * 0.15) * sr;
+    let jag = 0;
+    for (let j = 0; j < sLen; j++) { if (R() < 0.004) jag = R(); const env = Math.sin(Math.PI * j / sLen) * (0.4 + 0.6 * jag); add(s0 + j, bp.run(R() * 2 - 1) * env * 0.35, 0.6); }
+  }
+  const hp = [new Biquad().set('highpass', 40, 0.7, sr), new Biquad().set('highpass', 40, 0.7, sr)], lp = [new Biquad().set('lowpass', 11000, 0.7, sr), new Biquad().set('lowpass', 11000, 0.7, sr)];
+  for (let i = 0; i < n; i++) { L[i] = lp[0].run(hp[0].run(Math.tanh(L[i] * 1.2))); Rr[i] = lp[1].run(hp[1].run(Math.tanh(Rr[i] * 1.2))); }
+  normalize([L, Rr], 0.9); fadeEdges(L, sr, 1); fadeEdges(Rr, sr, 1);
   return { sr, ch: [L, Rr] };
 }
 /** Blow-off valve: a puff that flutters out, with the compressor whistle falling away. */

@@ -102,8 +102,10 @@ export class EngineDSP {
 
   noise() { let x = this.noiseState; x ^= x << 13; x ^= x >>> 17; x ^= x << 5; this.noiseState = x >>> 0; return (this.noiseState / 2147483648) - 1; }
 
-  setProfile(p) {
+  /** `live`: a retune of the same engine, so the crank keeps turning instead of restarting. */
+  setProfile(p, live = false) {
     p = p ?? DEFAULT_PROFILE;
+    const keep = live && this.p && this.p.firing.length === p.firing.length;
     this.p = p;
     const r = rng(this.seed * 31 + 7);
     const n = p.firing.length;
@@ -113,7 +115,7 @@ export class EngineDSP {
     p.firing.map((deg, i) => ({ off: (deg % 720) / 720, bank: p.banks > 1 ? p.bankOf[i] : 0, g: 1 + p.cylVar * (r() * 2 - 1) }))
       .sort((a, b) => a.off - b.off)
       .forEach((e, i) => { this.evOff[i] = e.off; this.evBank[i] = e.bank; this.evGain[i] = e.g; });
-    this.nEv = n; this.ei = 0; this.phase = 0;
+    this.nEv = n; if (!keep) { this.ei = 0; this.phase = 0; }
     for (let b = 0; b < 2; b++) {
       this.muff[b].set('peaking', p.muffHz, p.muffQ ?? 1.1, this.sr, p.muffDb ?? 4);
       this.tone2[b].set('lowpass', p.exhLP * 1.6, 0.6, this.sr);
@@ -358,7 +360,7 @@ if (typeof registerProcessor === 'function') {
       this.dsp = new EngineDSP(sampleRate, o.mode ?? 'focus', o.seed ?? 1);
       if (o.profile) this.dsp.setProfile(o.profile);
       this.prm = { rpm: 900, throttle: 0, level: 0, doppler: 1, cut: 0, stutter: 0, boost: 0 };
-      this.port.onmessage = (e) => { if (e.data?.profile) { this.dsp.setProfile(e.data.profile); this.dsp.reset(); } };
+      this.port.onmessage = (e) => { if (e.data?.profile) { this.dsp.setProfile(e.data.profile, e.data.live); if (!e.data.live) this.dsp.reset(); } };
     }
     process(inputs, outputs, params) {
       const out = outputs[0], prm = this.prm;

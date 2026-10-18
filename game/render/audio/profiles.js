@@ -66,7 +66,7 @@ const DEFS = {
 
 export const ENGINE_PROFILES = Object.freeze(Object.fromEntries(Object.entries(DEFS).map(([id, p]) => [id, Object.freeze({ id, ...p })])));
 
-const POOLS = {
+export const POOLS = {
   gt: ['gt-v8-cross', 'gt-f6', 'gt-v10', 'gt-v8-flat', 'gt-i6-tt', 'gt-v6-tt'],
   lmdh: ['gtp-v8-tt', 'gtp-v8-na', 'gtp-v6-tt']
 };

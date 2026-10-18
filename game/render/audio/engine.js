@@ -1,5 +1,6 @@
 import { clamp } from '../../engine/sim/math.js';
-import { ENGINE_PROFILES, profileIdFor, engineRpm, SIM_IDLE, SIM_MAX } from './profiles.js';
+import { ENGINE_PROFILES, POOLS, profileIdFor, engineRpm, SIM_IDLE, SIM_MAX } from './profiles.js';
+import { loadTuning, saveTuning, tuneProfile } from './tuning.js';
 import * as A from './buffers.js';
 import { EngineDSP } from './worklet.js';
 
@@ -34,8 +35,10 @@ export const LEVELS = {
   engine: 0.5, intakeOnboard: 1.35, intakeOutside: 0.35, exhaustOnboard: 0.55,
   rival: 0.5, field: 0.45, tyres: 0.5, wind: 0.07, road: 0.05, surface: 0.4,
   whine: 0.009, mgu: 0.04, ambience: 0.55, ambienceMenu: 0.42, rain: 0.35,
-  fx: 0.55, ui: 0.22, reverb: 0.5
+  fx: 0.55, ui: 0.22, reverb: 0.5,
+  impacts: 1, pops: 1, scrub: 1      // multipliers on the crash, backfire and scrub one-shots/layers
 };
+export const DEFAULT_LEVELS = Object.freeze({ ...LEVELS });
 
 const TRACKS = {
   'harbor-ring': { room: 'harbor', crowd: 0.55, sea: 0.55, leaves: 0, cicadas: 0, wind: 0.15, events: [['gull', 5, 14], ['horn', 55, 120], ['song', 14, 32]] },
@@ -86,6 +89,29 @@ export class AudioEngine {
     this.volume = 0.4; this.enabled = true; this.trackId = 'harbor-ring'; this.ctx = null; this.ready = false;
     this.meters = { peak: 0, rms: 0, reduction: 0 }; this.buffers = {}; this.oneShots = 0;
     if (typeof location !== 'undefined' && new URLSearchParams(location.search).has('debug')) globalThis.__audio = this;
+    this.applyTuning(loadTuning());
+  }
+
+  // ---------- player tuning (ui/audio-tuner.js) ----------
+  /** Replace the player's tuning, store it and apply it live. */
+  setTuning(tuning) { saveTuning(tuning); this.applyTuning(tuning); }
+  applyTuning(tuning) {
+    this.tuning = tuning;
+    Object.assign(LEVELS, DEFAULT_LEVELS);
+    for (const [k, v] of Object.entries(tuning.levels ?? {})) if (k in DEFAULT_LEVELS && Number.isFinite(v)) LEVELS[k] = v;
+    this.profiles = {};
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    this.revOut?.gain.setTargetAtTime(LEVELS.reverb, t, 0.05); this.fxBus?.gain.setTargetAtTime(LEVELS.fx, t, 0.05); this.uiBus?.gain.setTargetAtTime(LEVELS.ui, t, 0.05);
+    // Retune the running voices in place.
+    if (this.focus?.profile) { this.focus.profile = this.prof(this.focus.profile.id); this.focus.voice.setProfile(this.focus.profile, true); }
+    for (const v of this.rivals ?? []) if (v.profileId) v.voice.setProfile(this.prof(v.profileId), true);
+    if (this.field?.voice) this.field.voice.setProfile(this.prof('gt-v8-flat'), true);
+  }
+  /** The profile with the player's class multipliers applied. */
+  prof(id) {
+    if (!this.profiles[id]) this.profiles[id] = tuneProfile(ENGINE_PROFILES[id], this.tuning?.engines?.[id.startsWith('gtp') ? 'lmdh' : 'gt']);
+    return this.profiles[id];
   }
 
   // ---------- setup ----------
@@ -165,7 +191,7 @@ export class AudioEngine {
     if (this.worklet) {
       const node = new AudioWorkletNode(c, 'engine-voice', { numberOfInputs: 0, numberOfOutputs: 2, outputChannelCount: mode === 'focus' ? [2, 1] : [1, 1], processorOptions: { mode, seed, profile } });
       const params = {}; for (const k in PARAM_DEFAULTS) params[k] = node.parameters.get(k);
-      return { node, params, mode, profileId: profile.id, setProfile: (p) => node.port.postMessage({ profile: p }), out: (dest) => node.connect(dest, 0), outIntake: mode === 'focus' ? (dest) => node.connect(dest, 1) : null };
+      return { node, params, mode, profileId: profile.id, setProfile: (p, live = false) => node.port.postMessage({ profile: p, live }), out: (dest) => node.connect(dest, 0), outIntake: mode === 'focus' ? (dest) => node.connect(dest, 1) : null };
     }
     const dsp = new EngineDSP(c.sampleRate, mode, seed); dsp.setProfile(profile);
     const chans = mode === 'focus' ? 2 : 1, sp = c.createScriptProcessor(1024, 1, chans), params = {}, prm = {};
@@ -179,7 +205,7 @@ export class AudioEngine {
       dsp.render(L, R, tmp, L.length, prm);
       if (R) for (let i = 0; i < L.length; i++) { L[i] += tmp[i] * 0.6; R[i] += tmp[i] * 0.6; }
     };
-    return { node: sp, params, mode, profileId: profile.id, setProfile: (p) => { dsp.setProfile(p); dsp.reset(); }, out: (dest) => sp.connect(dest), outIntake: null };
+    return { node: sp, params, mode, profileId: profile.id, setProfile: (p, live = false) => { dsp.setProfile(p, live); if (!live) dsp.reset(); }, out: (dest) => sp.connect(dest), outIntake: null };
   }
 
   periodic(amps) {
@@ -382,8 +408,8 @@ export class AudioEngine {
     const B = this.buffers, list = kind === 'bang' ? B.bang : kind === 'shift' ? B.crack : B.pop;
     const rate = rand(0.88, 1.12);
     // The focus car's pops go straight onto its bus (they happen outside the pipe), muffled only by the cockpit.
-    if (distance <= 0) { this.play(this.pick(list), { gain: strength * 0.5, rate, dest: this.focusBus, lp: (this.state?.d ?? 6) < 2.4 ? 5000 : 0, priority: 1 }); return; }
-    const k = strength * 0.4 * distGain(distance);
+    if (distance <= 0) { this.play(this.pick(list), { gain: strength * 0.5 * LEVELS.pops, rate, dest: this.focusBus, lp: (this.state?.d ?? 6) < 2.4 ? 5000 : 0, priority: 1 }); return; }
+    const k = strength * 0.4 * LEVELS.pops * distGain(distance);
     if (k < 0.01) return;
     this.play(this.pick(list), { gain: k, rate, pan, lp: airCutoff(distance), send: clamp(distance / 120, 0.05, 0.5) });
   }
@@ -414,6 +440,10 @@ export class AudioEngine {
   update(car, running, cars = [], view = {}) {
     if (!this.ready || !car) return;
     const c = this.ctx, t = c.currentTime, S = this.state, f = this.focus;
+    // A tuner audition replaces the focus car for a few seconds (the menu keeps its ambience).
+    let bedMenu = false;
+    const demoCar = this.demo ? this.demoFrame(t) : null;
+    if (demoCar) { bedMenu = Boolean(view.menu) || (cars.length === 0 && view.distance === undefined); view = { distance: this.demo.cockpit ? 1 : 6, weather: view.weather }; car = demoCar; running = true; cars = []; }
     const menu = Boolean(view.menu) || (cars.length === 0 && view.distance === undefined);
     const nowMs = performance.now() / 1000, dt = clamp(nowMs - (S.camT || nowMs - 0.016), 0.001, 0.1); S.camT = nowMs;
     const set = (param, v, tau = 0.05) => param.setTargetAtTime(fin(v), t, tau);
@@ -429,7 +459,7 @@ export class AudioEngine {
     S.cam = [L.x, L.y, L.z];
 
     // ----- focus car -----
-    const prof = ENGINE_PROFILES[profileIdFor(car)];
+    const prof = this.prof(profileIdFor(car));
     if (prof !== f.profile) { f.profile = prof; f.voice.setProfile(prof); }
     const rel = this.local(L, car), camD = view.distance ?? rel.d;
     S.d += (camD - S.d) * 0.25;
@@ -496,7 +526,7 @@ export class AudioEngine {
     this.setSqueal(f.squeal[0], sq, hz, LEVELS.tyres * (inside ? 0.7 : 1), t);
     this.setSqueal(f.squeal[1], sq * 0.7, hz * 1.13, LEVELS.tyres * (inside ? 0.7 : 1), t);
     set(f.scrubLp.frequency, 380 + speed * 6, 0.1);
-    set(f.scrub.gain, slide.scrub * vt * (moving && onTarmac ? 1 - wet * 0.5 : 0) * 0.11, 0.08);
+    set(f.scrub.gain, slide.scrub * vt * (moving && onTarmac ? 1 - wet * 0.5 : 0) * 0.11 * LEVELS.scrub, 0.08);
     // Surfaces.
     const kerb = moving && car.zone === 'kerb', gravel = moving && car.zone === 'gravel', grass = moving && car.zone === 'grass';
     set(f.kerbOsc.frequency, clamp(speed / 0.55, 5, 110), 0.03);
@@ -516,7 +546,7 @@ export class AudioEngine {
     const imp = fin(car.impact);
     if (moving && imp > S.lastImpact + 0.02 && t - S.lastImpactAt > 0.12) {
       S.lastImpactAt = t;
-      this.play(this.pick(imp > 0.35 ? this.buffers.impactHeavy : this.buffers.impactLight), { gain: 0.15 + 0.65 * clamp(imp, 0, 1), dest: this.focusBus, rate: rand(0.9, 1.08), priority: 1 });
+      this.play(this.pick(imp > 0.35 ? this.buffers.impactHeavy : this.buffers.impactLight), { gain: (0.15 + 0.65 * clamp(imp, 0, 1)) * LEVELS.impacts, dest: this.focusBus, rate: rand(0.9, 1.08), priority: 1 });
     }
 
     // Pit lane: limiter beep onboard, jacks and wheel guns at the box.
@@ -534,7 +564,7 @@ export class AudioEngine {
     // ----- rivals, the field and ambience -----
     this.updateRivals(car, cars, L, live, running, t, set);
     const loud = load * (0.4 + 0.6 * rf) * (inside ? 1 : clamp(1 / (1 + Math.max(0, d - 5) * 0.02), 0.2, 1));
-    this.updateAmbience(menu, inside, running, loud, rain, t, set);
+    this.updateAmbience(menu || bedMenu, inside, running, loud, rain, t, set);
 
     S.lastGear = car.gear; S.lastImpact = imp; S.lastThr = thr; S.lastZone = car.zone;
   }
@@ -561,13 +591,13 @@ export class AudioEngine {
       if (this.rivals.some((v) => v.car === e.o && v.state === 'active')) continue;
       const v = this.rivals.find((x) => x.state === 'idle'); if (!v) break;
       const pid = profileIdFor(e.o);
-      if (pid !== v.profileId) { v.profileId = pid; v.voice.setProfile(ENGINE_PROFILES[pid]); }
+      if (pid !== v.profileId) { v.profileId = pid; v.voice.setProfile(this.prof(pid)); }
       v.car = e.o; v.state = 'active'; v.lastGear = e.o.gear;
     }
     let squeal = null;
     for (const v of this.rivals) {
       if (v.state !== 'active') continue;
-      const e = byId.get(v.car.id), o = e.o, rel = e.rel, prof = ENGINE_PROFILES[v.profileId], p = v.voice.params;
+      const e = byId.get(v.car.id), o = e.o, rel = e.rel, prof = this.prof(v.profileId), p = v.voice.params;
       const sim = running ? clamp(fin(o.rpm, SIM_IDLE), SIM_IDLE * 0.9, SIM_MAX) : SIM_IDLE + 120, thr = running ? e.thr : 0;
       const idleLift = 1 + 1.4 * (1 - e.rf) ** 4 * (1 - thr);
       set(p.rpm, engineRpm(prof, sim), 0.03); set(p.throttle, thr, 0.03);
@@ -587,7 +617,7 @@ export class AudioEngine {
       }
       // Rival contact.
       const imp = fin(o.impact), last = S.impacts.get(o.id) ?? 0;
-      if (running && imp > last + 0.03 && rel.d < 150) this.play(this.pick(imp > 0.35 ? this.buffers.impactHeavy : this.buffers.impactLight), { gain: (0.15 + 0.6 * clamp(imp, 0, 1)) * distGain(rel.d), pan: clamp(rel.x / Math.max(6, rel.d), -1, 1), lp: airCutoff(rel.d), send: clamp(rel.d / 120, 0.05, 0.5), priority: 1 });
+      if (running && imp > last + 0.03 && rel.d < 150) this.play(this.pick(imp > 0.35 ? this.buffers.impactHeavy : this.buffers.impactLight), { gain: (0.15 + 0.6 * clamp(imp, 0, 1)) * LEVELS.impacts * distGain(rel.d), pan: clamp(rel.x / Math.max(6, rel.d), -1, 1), lp: airCutoff(rel.d), send: clamp(rel.d / 120, 0.05, 0.5), priority: 1 });
       S.impacts.set(o.id, imp);
     }
     const rs = this.rivalSqueal;
@@ -599,7 +629,7 @@ export class AudioEngine {
       if (this.rivals.some((v) => v.car === e.o && v.state === 'active')) continue;
       const g = distGain(e.rel.d), k = g * g * (0.3 + 0.7 * e.thr); pow += k; rpmW += k * fin(e.o.rpm, SIM_IDLE); w += k;
     }
-    const fp = this.field.voice.params, fprof = ENGINE_PROFILES['gt-v8-flat'];
+    const fp = this.field.voice.params, fprof = this.prof('gt-v8-flat');
     set(fp.level, live && pow > 1e-6 ? 1 : 0, 0.2);
     set(fp.rpm, engineRpm(fprof, w > 0 ? rpmW / w : SIM_IDLE), 0.15); set(fp.throttle, running ? 0.7 : 0, 0.2);
     set(this.field.gain.gain, live ? clamp(Math.sqrt(pow), 0, 0.5) * LEVELS.field : 0, 0.25);
@@ -635,6 +665,45 @@ export class AudioEngine {
   }
 
   /** Live snapshot of the graph for debugging and tests. */
+  // ---------- tuner auditions ----------
+  /**
+   * Play a scripted car through the normal focus path: 'rev' (launch, two upshifts, limiter, lift with
+   * pops, downshifts), 'crash' (a light then a heavy hit) or 'slide' (a lock-up). Returns the length in s.
+   */
+  audition(kind, profileId = 'gt-v8-flat', { cockpit = false } = {}) {
+    if (!this.ready || !ENGINE_PROFILES[profileId]) return 0;
+    const dur = { rev: 7.2, crash: 2.6, slide: 3 }[kind] ?? 0;
+    this.demo = dur ? { kind, id: profileId, cockpit, t0: this.ctx.currentTime, dur, events: kind === 'rev' ? [[2.2, 0.6, 'shift'], [3.7, 0.6, 'shift'], [4.62, 0.9, 'bang'], [4.76, 0.7, 'pop'], [4.92, 0.6, 'pop'], [5.08, 0.75, 'pop'], [5.35, 0.5, 'pop'], [5.65, 0.6, 'pop']] : [] } : null;
+    Object.assign(this.state, { lastGear: null, lastImpact: 0, lastImpactAt: 0, boost: 0 });
+    return dur;
+  }
+
+  demoFrame(t) {
+    const D = this.demo, u = t - D.t0;
+    if (u > D.dur) { this.demo = null; Object.assign(this.state, { lastGear: null, lastImpact: 0 }); return null; }
+    const lerp = (a, b, x) => a + (b - a) * clamp(x, 0, 1), ratio = [0, 313, 195, 152];
+    const car = { x: 0, y: 0, z: 0, yaw: 0, vx: 0, vz: 0, zone: 'asphalt', audioProfile: D.id, classId: D.id.startsWith('gtp') ? 'lmdh' : 'gt', controls: { throttle: 0 }, wheels: [], impact: 0, rpm: SIM_IDLE, speed: 0, gear: 1, hybrid: { kw: 0 } };
+    const drive = (gear, speed, thr) => { car.gear = gear; car.speed = speed; car.controls.throttle = thr; car.rpm = Math.max(SIM_IDLE + 150, speed * ratio[gear]); car.hybrid.kw = thr > 0.5 ? 120 : -90; };
+    if (D.kind === 'rev') {
+      if (u < 0.6) drive(1, 0, 0);
+      else if (u < 2.2) { const x = (u - 0.6) / 1.6; drive(1, 26 * Math.pow(x, 1.1), 1); car.rpm = Math.max(car.rpm, lerp(SIM_IDLE, 5200, (u - 0.6) / 0.25)); }
+      else if (u < 3.7) drive(2, lerp(26, 42, (u - 2.2) / 1.5), 1);
+      else if (u < 4.6) drive(3, lerp(42, 52, (u - 3.7) / 0.9), 1);
+      else if (u < 6.4) { const sp = lerp(52, 12, Math.pow((u - 4.6) / 1.8, 0.8)); drive(sp > 30 ? 3 : sp > 17 ? 2 : 1, sp, 0); }
+      else { drive(1, 0, 0); car.hybrid.kw = 0; }
+      while (D.events.length && D.events[0][0] <= u) { const [, k, kind] = D.events.shift(); this.backfire(k, kind, 0, 0); }
+    } else if (D.kind === 'crash') {
+      drive(3, 30, 0.35);
+      car.impact = u > 1.3 ? 0.9 : u > 0.4 ? 0.18 : 0;
+    } else if (D.kind === 'slide') {
+      const sp = lerp(32, 12, u / 3); drive(2, sp, 0.2);
+      // Combined slip climbs into a lock-up and lets go (squeal starts at ~2.8, full at 6).
+      const slip = u < 0.3 ? 1 : u < 1.2 ? lerp(1, 6.5, (u - 0.3) / 0.9) : u < 2.2 ? 6.5 : lerp(6.5, 1, (u - 2.2) / 0.6);
+      car.wheels = [1, 1, 0.8, 0.8].map((m) => ({ tyre: { kappa: -slip * m / 10.5, alpha: 0 } }));
+    }
+    return car;
+  }
+
   debug() {
     if (!this.ctx) return { state: 'locked' };
     return {
