@@ -417,8 +417,8 @@ export class AudioEngine {
     const B = this.buffers, list = kind === 'bang' ? B.bang : kind === 'shift' ? B.crack : B.pop;
     const rate = rand(0.88, 1.12);
     // The focus car's pops go straight onto its bus (they happen outside the pipe), muffled only by the cockpit.
-    if (distance <= 0) { this.play(this.pick(list), { gain: strength * 0.5 * LEVELS.pops, rate, dest: this.focusBus, lp: (this.state?.d ?? 6) < 2.4 ? 5000 : 0, priority: 1 }); return; }
-    const k = strength * 0.4 * LEVELS.pops * distGain(distance);
+    if (distance <= 0) { this.play(this.pick(list), { gain: strength * 0.4 * LEVELS.pops, rate, dest: this.focusBus, lp: (this.state?.d ?? 6) < 2.4 ? 5000 : 0, priority: 1 }); return; }
+    const k = strength * 0.32 * LEVELS.pops * distGain(distance);
     if (k < 0.01) return;
     this.play(this.pick(list), { gain: k, rate, pan, lp: airCutoff(distance), send: clamp(distance / 120, 0.05, 0.5) });
   }

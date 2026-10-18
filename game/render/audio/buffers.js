@@ -51,38 +51,45 @@ export function smoothRandom(sr, sec, rate, seed = 3) {
 
 // ---------- exhaust pops, gear clunks, impacts ----------
 /**
- * Exhaust afterfire, heard in the open: unburnt fuel detonating at the tailpipe exit. Each
- * detonation is a shock front (an N-wave: near-instant rise, a short positive phase, a longer
- * negative one), a bright crackle of burning gas behind it, and the same front bouncing off the
- * track a few ms later. No pipe resonance and no low "body": a pop is an explosion outside the
- * car, which is what makes it sharp rather than boxed in.
- *   pop   a single crack (overrun);  bang  a heavy detonation and its ripple (lift at speed);
- *   shift a quick crack-crack on the upshift cut.
+ * Exhaust afterfire: unburnt fuel lighting in the hot exhaust and blowing out of the tailpipe.
+ * What makes it a gunshot rather than a firecracker is size: the flame front fills the pipe, so
+ * the pressure pulse lasts several ms (a firecracker's lasts a fraction of one), and the pipe and
+ * silencer volume throw a short low boom behind it. Each detonation is
+ *   front  an N-wave of 3-5 ms (bang 7-11 ms), saturated so its leading edge cracks;
+ *   boom   one heavily damped low resonance of the pipe volume (no comb of pipe harmonics:
+ *          that is what rang like a can) plus a low-passed flame whump;
+ *   crack  a short burst of burning-gas crackle in the 1-5 kHz band, under the front.
+ *   pop   one or two shots (overrun);  bang  a big detonation and its brrap ripple (lift at speed);
+ *   shift a quick double crack on the upshift cut.
  */
 export function exhaustPop(sr, seed, kind = 'pop') {
   const R = rng(seed), big = kind === 'bang', shift = kind === 'shift';
-  const n = Math.floor(sr * (big ? 0.5 : 0.22)), c = new Float32Array(n);
-  const shots = [[0.002, 1, big ? 2.6 : 1.1 + R() * 0.4]]; // 2 ms in, so the edge fade never blunts the front
-  if (big) for (let k = 0, at = 0.025 + R() * 0.02; k < 2 + Math.floor(R() * 3); k++) { shots.push([at, 0.3 + R() * 0.35, 0.7 + R() * 0.5]); at += 0.018 + R() * 0.045; }
-  if (shift) for (let k = 0, at = 0.016 + R() * 0.012; k < 1 + Math.floor(R() * 2); k++) { shots.push([at, 0.45 + R() * 0.3, 0.8 + R() * 0.3]); at += 0.014 + R() * 0.02; }
-  if (!big && !shift && R() < 0.4) shots.push([0.012 + R() * 0.03, 0.25 + R() * 0.25, 0.7]);
-  const hp = new Biquad().set('highpass', big ? 70 : 160, 0.7, sr), sizzle = new Biquad().set('highpass', 1800, 0.7, sr);
-  const air = new Biquad().set('lowpass', 15000, 0.7, sr), ground = (0.0022 + R() * 0.0018) * sr | 0, gl = new Biquad().set('lowpass', 6000, 0.7, sr);
-  const dry = new Float32Array(n);
+  const n = Math.floor(sr * (big ? 0.6 : 0.3)), c = new Float32Array(n);
+  // [time s, strength, front length ms]; 2 ms in, so the edge fade never blunts the front.
+  const shots = [[0.002, 1, big ? 7 + R() * 4 : shift ? 2.6 + R() * 0.8 : 3.2 + R() * 1.6]];
+  if (big) for (let k = 0, at = 0.03 + R() * 0.02; k < 2 + Math.floor(R() * 3); k++) { shots.push([at, 0.35 + R() * 0.35, 3.5 + R() * 3]); at += 0.025 + R() * 0.05; }
+  if (shift) shots.push([0.018 + R() * 0.014, 0.55 + R() * 0.3, 2.4 + R() * 0.8]);
+  if (!big && !shift && R() < 0.45) shots.push([0.02 + R() * 0.04, 0.3 + R() * 0.3, 2.6 + R() * 1.2]);
+  const boomHz = big ? 70 + R() * 30 : 105 + R() * 45;
+  const boom = new Biquad().set('bandpass', boomHz, big ? 2.4 : 1.8, sr), body = new Biquad().set('bandpass', 320 + R() * 160, 1.1, sr);
+  const whumpLp = new Biquad().set('lowpass', big ? 380 : 520, 0.8, sr), crackBp = new Biquad().set('bandpass', 1400 + R() * 900, 0.8, sr);
+  const whumpTau = (big ? 0.055 : 0.022) * sr, crackTau = (big ? 0.012 : 0.005) * sr;
   for (let i = 0; i < n; i++) {
-    let x = 0, s = 0;
+    let x = 0, w = 0, k = 0;
     for (const [at, g, ms] of shots) {
       const j = i - Math.floor(at * sr); if (j < 0) continue;
-      const T = ms * 0.001 * sr, u = j / T; // N-wave: snap up to +1, fall straight through zero to -0.6, recover
-      if (u < 0.06) x += g * Math.sin(Math.PI * 0.5 * u / 0.06);
-      else if (u < 0.5) x += g * (1 - 1.6 * (u - 0.06) / 0.44);
-      else if (u < 1.2) x -= g * 0.6 * (0.5 + 0.5 * Math.cos(Math.PI * (u - 0.5) / 0.7));
-      // Burning-gas crackle: dense at the front, thinning out.
-      s += (R() * 2 - 1) * g * Math.exp(-j / ((big ? 0.016 : 0.007) * sr)) * (R() < 0.35 ? 1 : 0.3);
+      const u = j / (ms * 0.001 * sr); // N-wave: snap up to +1, fall straight through zero to -0.6, recover
+      if (u < 0.05) x += g * Math.sin(Math.PI * 0.5 * u / 0.05);
+      else if (u < 0.45) x += g * (1 - 1.6 * (u - 0.05) / 0.4);
+      else if (u < 1.25) x -= g * 0.6 * (0.5 + 0.5 * Math.cos(Math.PI * (u - 0.45) / 0.8));
+      w += (R() * 2 - 1) * g * Math.exp(-j / whumpTau) * (1 - Math.exp(-j / (0.0015 * sr)));
+      k += (R() * 2 - 1) * g * Math.exp(-j / crackTau) * (R() < 0.3 ? 1 : 0.25);
     }
-    dry[i] = x + sizzle.run(s) * (big ? 0.55 : 0.45);
+    const y = x * 1.1 + boom.run(x) * (big ? 2.2 : 1.2) + body.run(x) * 0.9 + whumpLp.run(w) * (big ? 1.2 : 0.7) + crackBp.run(k) * 2.6;
+    c[i] = Math.tanh(y * 2.2);
   }
-  for (let i = 0; i < n; i++) c[i] = air.run(hp.run(Math.tanh((dry[i] + (i >= ground ? gl.run(dry[i - ground]) * 0.45 : 0)) * 1.3)));
+  const hp = new Biquad().set('highpass', big ? 32 : 45, 0.7, sr), lp = new Biquad().set('lowpass', big ? 6000 : 7000, 0.7, sr);
+  for (let i = 0; i < n; i++) c[i] = lp.run(hp.run(c[i]));
   return { sr, ch: [fadeEdges(normalize([c])[0], sr, 1)] };
 }
 /** Dog-ring engagement: a short metallic clack on a dull thump. */
