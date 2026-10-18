@@ -341,7 +341,7 @@ async function startRace({ session = (cfg().qualifying ?? true) ? 'qualifying' :
   raceInfo = { official: official(), difficulty: diffId, seats: seatsInfo, teamRating: Object.fromEntries(teams.map((t) => [t.id, teamRating(t)])), turns: def.turns ?? 10, track: def.name, format: FORMATS[setup.formatId]?.label ?? 'CUSTOM' };
   raceInfo.sof = strengthOfField(Object.values(raceInfo.teamRating));
   models = cars.map((car, i) => {
-    const model = new CarModel(car);
+    const model = new CarModel(car, teams[i]);
     model.setColor(teams[i].color);
     if (wheelAsset) model.setWheelAsset(wheelAsset);
     scene.add(model.root);

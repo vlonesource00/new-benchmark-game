@@ -7,15 +7,41 @@ import { numberTexture, radialTexture } from './textures.js';
 import bodyUrl from './assets/gt-body.glb?url';
 import { buildLmdhBody } from './lmdh-body.js';
 
-// Presentation car: the Blender GT body (gt-body.glb) merged into one draw per
-// material, a per-car clear-coated livery, a seated driver, light glows and
-// exhaust pops. It keeps the host CarModel API that main.js relies on.
+// Presentation car: a Blender GT body merged into one draw per material, a
+// per-car clear-coated livery, a seated driver, light glows and exhaust pops.
+// GT3 entries get one of the modelled cars in assets/gt3 (built by
+// scripts/blender/gt3), picked per team; the safety car keeps gt-body.glb.
+// It keeps the host CarModel API that main.js relies on.
 
-let bodyPromise = null;
-function loadBody() {
-  bodyPromise ??= new Promise((resolve) => {
-    new GLTFLoader().load(bodyUrl, (gltf) => {
+const gt3Urls = import.meta.glob('./assets/gt3/*.glb', { query: '?url', import: 'default', eager: true });
+const gt3Meta = import.meta.glob('./assets/gt3/*.json', { import: 'default', eager: true });
+const gt3Id = (path) => path.match(/([^/]+)\.\w+$/)[1];
+const GT3 = Object.fromEntries(Object.entries(gt3Urls).map(([path, url]) => [gt3Id(path), { url, meta: gt3Meta[path.replace(/\.glb$/, '.json')] ?? {} }]));
+export const GT3_MODELS = Object.keys(GT3);
+// Each team runs the car whose real-world livery its colours echo.
+const TEAM_MODEL = {
+  lumen: 'corvette', verdant: 'corvette', ember: 'mclaren', harbor: 'mclaren', crimson: 'ferrari', saffron: 'ferrari',
+  glacier: 'porsche', rosso: 'porsche', meridian: 'aston', pinecrest: 'aston', onyx: 'mercedes', tidewater: 'mercedes',
+  kestrel: 'mustang', aurum: 'lexus', solenne: 'bmw', nocturne: 'bmw'
+};
+// Livery pattern per model (paint shader branch).
+const PATTERN = { mercedes: 1, mclaren: 2, ferrari: 3, porsche: 4, mustang: 5, aston: 6, bmw: 7, corvette: 8, lexus: 9 };
+
+export function gt3ModelFor(team) {
+  const want = TEAM_MODEL[team?.id];
+  if (want && GT3[want]) return want;
+  if (!GT3_MODELS.length) return null;
+  let h = 0; for (const ch of String(team?.id ?? '')) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return GT3_MODELS[h % GT3_MODELS.length];
+}
+
+const bodies = new Map();
+function loadBody(url = bodyUrl) {
+  if (bodies.has(url)) return bodies.get(url);
+  const promise = new Promise((resolve) => {
+    new GLTFLoader().load(url, (gltf) => {
       const groups = new Map();
+      let shadowGeo = null;
       gltf.scene.updateMatrixWorld(true);
       gltf.scene.traverse((o) => {
         if (!o.isMesh) return;
@@ -23,13 +49,14 @@ function loadBody() {
         const g = o.geometry.clone().applyMatrix4(o.matrixWorld);
         for (const key of Object.keys(g.attributes)) if (key !== 'position' && key !== 'normal') g.deleteAttribute(key);
         const flat = g.index ? g.toNonIndexed() : g;
+        if (name === 'Shadow') { shadowGeo = flat; shadowGeo.deleteAttribute('normal'); return; }
         if (!groups.has(name)) groups.set(name, []);
         groups.get(name).push(flat);
       });
       const merged = new Map();
       for (const [name, list] of groups) merged.set(name, mergeGeometries(list, false));
-      // Position-only copy of the whole body for the shadow proxy.
-      const shadowGeo = mergeGeometries([...merged.values()].map((g) => { const c = new THREE.BufferGeometry(); c.setAttribute('position', g.attributes.position); return c; }), false);
+      // Position-only copy of the whole body for the shadow proxy (when the file has no low-poly one).
+      shadowGeo ??= mergeGeometries([...merged.values()].map((g) => { const c = new THREE.BufferGeometry(); c.setAttribute('position', g.attributes.position); return c; }), false);
       // Lamp centroids per side drive the glow sprites.
       const lamps = {};
       for (const key of ['LightF', 'LightR']) {
@@ -45,7 +72,8 @@ function loadBody() {
       resolve({ merged, lamps, shadowGeo });
     }, undefined, () => resolve(null));
   });
-  return bodyPromise;
+  bodies.set(url, promise);
+  return promise;
 }
 
 const shared = {};
@@ -59,6 +87,10 @@ function sharedMaterials() {
   shared.well = new THREE.MeshStandardMaterial({ color: '#070808', roughness: .95 });
   shared.hook = new THREE.MeshStandardMaterial({ color: '#c8281c', roughness: .45, metalness: .3 });
   shared.lightF = new THREE.MeshStandardMaterial({ color: '#ffffff', emissive: '#e4f2ff', emissiveIntensity: 5, roughness: .1 });
+  shared.lens = new THREE.MeshStandardMaterial({ color: '#8d949b', metalness: 1, roughness: .1, envMapIntensity: 1.5 });
+  shared.trim = new THREE.MeshPhysicalMaterial({ color: '#0b0c0d', roughness: .18, metalness: .2, clearcoat: 1, clearcoatRoughness: .05 });
+  shared.amber = new THREE.MeshStandardMaterial({ color: '#ffb347', emissive: '#ff8a10', emissiveIntensity: 1.6, roughness: .2 });
+  shared.id = new THREE.MeshStandardMaterial({ color: '#7dffa0', emissive: '#22ff66', emissiveIntensity: 2.2, roughness: .3 });
   shared.rubber = new THREE.MeshStandardMaterial({ color: '#141516', roughness: .92 });
   shared.alloy = new THREE.MeshStandardMaterial({ color: '#8f969a', metalness: 1, roughness: .24 });
   shared.suit = new THREE.MeshStandardMaterial({ color: '#1c2226', roughness: .85 });
@@ -87,33 +119,74 @@ function carbonWeave(material) {
   };
 }
 
-// Livery: two-tone lower body, twin stripes and number roundels projected in body space.
-function paintMaterial(color, number) {
+// Livery: per-model graphics in body space (pattern 1-9, see PATTERN) in the team
+// colour and accent, or the legacy two-tone with twin stripes (pattern 0), plus
+// number roundels on the doors and roof.
+function paintMaterial(color, number, pattern = 0, meta = {}) {
   const m = new THREE.MeshPhysicalMaterial({ color, metalness: .55, roughness: .3, clearcoat: 1, clearcoatRoughness: .035, envMapIntensity: 1.25 });
   m.userData.uniforms = {
     uStripe: { value: new THREE.Color('#f3f1ea') }, uAccent: { value: new THREE.Color('#111416') },
-    uNumber: { value: numberTexture(number) }
+    uNumber: { value: numberTexture(number) }, uPattern: { value: pattern },
+    uDoor: { value: new THREE.Vector2(...(meta.door ?? [-0.18, 0.62])) }, uRoof: { value: new THREE.Vector2(...(meta.roof ?? [-0.42, 1.12])) }
   };
   m.onBeforeCompile = (s) => {
     Object.assign(s.uniforms, m.userData.uniforms);
     s.vertexShader = 'varying vec3 vObj;\n' + s.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\nvObj=position;');
-    s.fragmentShader = 'varying vec3 vObj;uniform vec3 uStripe;uniform vec3 uAccent;uniform sampler2D uNumber;\n' + s.fragmentShader
+    s.fragmentShader = 'varying vec3 vObj;uniform vec3 uStripe;uniform vec3 uAccent;uniform sampler2D uNumber;uniform int uPattern;uniform vec2 uDoor;uniform vec2 uRoof;\n' + s.fragmentShader
       .replace('#include <color_fragment>', `#include <color_fragment>
-        float ax=abs(vObj.x);
-        float stripe=(1.-smoothstep(.055,.062,abs(ax-.15)))*smoothstep(.66,.70,vObj.y);
-        float lower=1.-smoothstep(.40,.415,vObj.y+vObj.z*.035);
-        diffuseColor.rgb=mix(diffuseColor.rgb,uStripe,stripe);
-        diffuseColor.rgb=mix(diffuseColor.rgb,uAccent,lower*step(.6,ax));
+        float ax=abs(vObj.x), y=vObj.y, z=vObj.z;
+        vec3 P=diffuseColor.rgb, A=uAccent, K=vec3(.025,.027,.03), Wt=vec3(.9,.9,.88), col=P;
+        if(uPattern==0){
+          float stripe=(1.-smoothstep(.055,.062,abs(ax-.15)))*smoothstep(.66,.70,y);
+          float lower=1.-smoothstep(.40,.415,y+z*.035);
+          col=mix(col,uStripe,stripe);
+          col=mix(col,A,lower*step(.6,ax));
+        } else if(uPattern==1){ // claws: jagged accent bands sweeping up the flanks and bonnet
+          float zig=abs(fract(z*2.2)-.5);
+          float band=y-(.30+(1.6-z)*.10)-zig*.16;
+          float c=step(abs(band-.10),.035)+step(abs(band-.26),.02);
+          c+=step(.74,y)*step(1.0,z)*step(abs(ax-.30-zig*.10),.028);
+          col=mix(P,A,clamp(c,0.,1.));
+        } else if(uPattern==2){ // primary nose and roof, dark tail and sills, accent seam
+          float d=y*1.1+z*.30-.80;
+          col=d<0.?K:P; col=mix(col,A,step(abs(d),.028));
+        } else if(uPattern==3){ // accent saddle over the cockpit, dark pinstripes
+          float band=abs(z-.45+y*.25);
+          col=mix(P,A,step(band,.30)); col=mix(col,K,step(abs(band-.32),.018));
+        } else if(uPattern==4){ // dark lower flanks and an accent slash behind the front wheel
+          col=mix(P,K,step(y,.40+z*.03)*step(.7,ax));
+          float slash=abs(z-.75+(y-.4)*1.2);
+          col=mix(col,A,step(slash,.07)*step(.6,ax)*step(y,.9));
+        } else if(uPattern==5){ // accent lower body sweeping up over the front wheels
+          float edge=.38+.22*smoothstep(1.,2.2,z)+.04*sin(z*2.);
+          col=mix(P,A,step(y,edge)); col=mix(col,K,step(abs(y-edge),.012));
+        } else if(uPattern==6){ // twin accent swooshes along the flanks, bonnet arrow
+          float s1=abs(y-(.55+.10*sin(z*1.3+.6)));
+          col=mix(P,A,clamp(step(s1,.022)+step(abs(s1-.07),.012),0.,1.)*step(.75,ax));
+          col=mix(col,A,step(.76,y)*step(1.2,z)*step(ax,min(.30,.06+(2.4-z)*.14)));
+        } else if(uPattern==7){ // art-car colour blocks
+          vec2 q=vec2(z*.9+y*.6,z*.5-y*1.3+ax*.4);
+          float c=mod(floor(q.x*1.6)+floor(q.y*1.4),4.);
+          col=c<1.?P:c<2.?A:c<3.?Wt:mix(P,K,.6);
+        } else if(uPattern==8){ // dark roof, accent shoulder pinstripe
+          col=mix(P,K,step(1.0,y)*step(ax,.6));
+          col=mix(col,A,step(abs(y-.72+z*.015),.012)*step(.8,ax));
+        } else if(uPattern==9){ // accent lower body and a rising side blade
+          col=mix(P,A,step(y,.33));
+          float blade=abs(y-(.40+(1.-z)*.10));
+          col=mix(col,A,step(blade,.03)*step(z,1.)*step(-2.,z)*step(.8,ax));
+        }
+        diffuseColor.rgb=col;
         // Door roundel, readable from both sides.
-        vec2 du=vec2(-sign(vObj.x)*(vObj.z+.18),vObj.y-.62)/.52+.5;
+        vec2 du=vec2(-sign(vObj.x)*(z-uDoor.x),y-uDoor.y)/.52+.5;
         if(ax>.78&&du.x>0.&&du.x<1.&&du.y>0.&&du.y<1.){vec4 n=texture2D(uNumber,du);diffuseColor.rgb=mix(diffuseColor.rgb,n.rgb,n.a);}
-        vec2 ru=vec2(-vObj.x,vObj.z+.42)/.5+.5;
-        if(vObj.y>1.12&&ru.x>0.&&ru.x<1.&&ru.y>0.&&ru.y<1.){vec4 n=texture2D(uNumber,ru);diffuseColor.rgb=mix(diffuseColor.rgb,n.rgb,n.a);}`)
+        vec2 ru=vec2(-vObj.x,z-uRoof.x)/.5+.5;
+        if(y>uRoof.y&&ru.x>0.&&ru.x<1.&&ru.y>0.&&ru.y<1.){vec4 n=texture2D(uNumber,ru);diffuseColor.rgb=mix(diffuseColor.rgb,n.rgb,n.a);}`)
       .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
         float flake=fract(sin(dot(floor(vObj*900.),vec3(12.9898,78.233,37.719)))*43758.5453);
         roughnessFactor=clamp(roughnessFactor*(.75+flake*.5),.05,1.);`);
   };
-  m.customProgramCacheKey = () => 'phantom-paint';
+  m.customProgramCacheKey = () => 'phantom-paint-v2';
   return m;
 }
 
@@ -130,14 +203,18 @@ export function setHeadlights(k) {
 }
 
 export class CarModel {
-  constructor(car) {
+  constructor(car, team = null) {
     const S = sharedMaterials();
     this.car = car; this.root = new THREE.Group(); this.body = new THREE.Group(); this.root.add(this.body);
     this.number = car.id === 0 ? 7 : 11 + ((car.id * 7 + serial++) % 88);
-    this.paint = paintMaterial(car.color || '#c43b25', this.number);
+    const proto = car.classId === 'lmdh', R = car.spec?.radius ?? .345;
+    // GT cars with a team get that team's modelled GT3; the safety car keeps the generic body.
+    this.modelId = !proto && team ? gt3ModelFor(team) : null;
+    const meta = this.modelId ? GT3[this.modelId].meta : {};
+    this.paint = paintMaterial(car.color || '#c43b25', this.number, PATTERN[this.modelId] ?? 0, meta);
+    if (team?.accent) this.paint.userData.uniforms.uAccent.value.set(team.accent);
     this.tail = new THREE.MeshStandardMaterial({ color: '#5a0804', emissive: '#ff1a06', emissiveIntensity: 1.2, roughness: .2 });
     this.brakeMaterials = [this.tail];
-    const proto = car.classId === 'lmdh', R = car.spec?.radius ?? .345;
     this.radius = R;
     const shadow = new THREE.Mesh(new THREE.PlaneGeometry(proto ? 2.3 : 2.35, proto ? 5.4 : 5.0), S.contact); shadow.rotation.x = -Math.PI / 2; shadow.position.y = .012; shadow.renderOrder = 1; this.root.add(shadow);
 
@@ -145,6 +222,7 @@ export class CarModel {
     this.interior = new THREE.Group(); this.body.add(this.interior);
     // A prototype driver lies lower and nearer the centreline under the canopy.
     if (proto) this.interior.position.set(.07, -.2, -.12);
+    else if (meta.seatZ != null) this.interior.position.z = meta.seatZ + .22;
     mesh(new THREE.BoxGeometry(1.3, .15, .25), S.carbon, this.interior, 0, .8, .5);
     mesh(new THREE.BoxGeometry(.46, .22, .55), S.carbon, this.interior, -.32, .55, -.22);
     mesh(new THREE.BoxGeometry(.48, .66, .12), S.carbon, this.interior, -.32, .86, -.5).rotation.x = -.16;
@@ -173,10 +251,10 @@ export class CarModel {
       this.wheels.push({ group, spin, discMaterial, placeholder: [tire, rim] });
     });
 
-    this.ready = (proto ? Promise.resolve(buildLmdhBody()) : loadBody()).then((body) => {
+    this.ready = (proto ? Promise.resolve(buildLmdhBody()) : loadBody(this.modelId ? GT3[this.modelId].url : bodyUrl)).then((body) => {
       if (!body) { this.useLegacyBody(); return; }
       this.addShadowProxy(body.shadowGeo, car);
-      const mats = { Paint: this.paint, Glass: S.glass, Carbon: S.carbon, Grille: S.grille, Chrome: S.chrome, Well: S.well, Hook: S.hook, LightF: S.lightF, LightR: this.tail };
+      const mats = { Paint: this.paint, Glass: S.glass, Carbon: S.carbon, Grille: S.grille, Chrome: S.chrome, Well: S.well, Hook: S.hook, LightF: S.lightF, LightR: this.tail, Lens: S.lens, Trim: S.trim, Amber: S.amber, Id: S.id };
       for (const [name, geo] of body.merged) {
         const m = mesh(geo, mats[name] || S.carbon, this.body, 0, 0, 0, name !== 'Glass' && name !== 'LightF' && name !== 'LightR');
         if (name === 'Glass') m.renderOrder = 3;
@@ -188,6 +266,12 @@ export class CarModel {
         const f = new THREE.Mesh(new THREE.PlaneGeometry(.55, .22), S.flame.clone()); f.position.set(side * 1.25, .28, -.72); f.rotation.x = -Math.PI / 2;
         // Prototype exhausts exit the tail: flames point straight back.
         if (body.exhaust) { f.position.copy(body.exhaust[i]).add(new THREE.Vector3(0, 0, -.2)); f.rotation.set(-Math.PI / 2, 0, Math.PI / 2); f.scale.set(.8, .8, 1); }
+        // Modelled GT3s: side pipes fire outward, rear pipes straight back.
+        else if (meta.exhaust) {
+          const [x, y, z] = meta.exhaust[i % meta.exhaust.length];
+          if (meta.exhaustDir === 'rear') { f.position.set(meta.exhaust.length > 1 ? x : side * Math.abs(x), y, z - .2); f.rotation.set(-Math.PI / 2, 0, Math.PI / 2); f.scale.set(.8, .8, 1); }
+          else f.position.set(side * (Math.abs(x) + .22), y, z);
+        }
         const f2 = f.clone(); f2.rotation.set(0, 0, 0); f2.position.copy(f.position); f2.material = f.material;
         f.visible = f2.visible = false; this.body.add(f, f2); this.flames.push(f, f2);
       }
