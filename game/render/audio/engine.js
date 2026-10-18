@@ -33,7 +33,7 @@ const RIVAL_VOICES = 6, MAX_ONESHOTS = 28, SOUND_SPEED = 343;
 export const LEVELS = {
   engine: 0.5, intakeOnboard: 1.35, intakeOutside: 0.35, exhaustOnboard: 0.55,
   rival: 0.5, field: 0.45, tyres: 0.5, wind: 0.07, road: 0.05, surface: 0.4,
-  whine: 0.009, mgu: 0.005, ambience: 0.55, ambienceMenu: 0.42, rain: 0.35,
+  whine: 0.009, mgu: 0.04, ambience: 0.55, ambienceMenu: 0.42, rain: 0.35,
   fx: 0.55, ui: 0.22, reverb: 0.5
 };
 
@@ -62,7 +62,7 @@ function slideOf(car) {
   if (!s.length) return { scrub: 0, squeal: 0, s: 0 };
   s.sort((a, b) => b - a);
   const top = s.length > 1 ? (s[0] + s[1]) / 2 : s[0];
-  return { scrub: smooth(1.9, 3.4, top), squeal: smooth(3, 6.5, top), s: top };
+  return { scrub: smooth(1.6, 3.2, top), squeal: smooth(2.8, 6, top), s: top };
 }
 
 /** Main-thread stand-in for an AudioParam (ScriptProcessor fallback). */
@@ -209,8 +209,13 @@ export class AudioEngine {
     f.gearOsc.connect(f.whine); f.diffOsc.connect(diffMix); diffMix.connect(f.whine); f.whine.connect(this.focusBus);
     f.gearOsc.start(); f.diffOsc.start();
     // Hybrid motor-generator.
-    f.mguOsc = c.createOscillator(); f.mguOsc.setPeriodicWave(this.periodic([1, 0, 0.1])); f.mgu = this.gain(0);
-    this.chain(f.mguOsc, this.filter('lowpass', 2200, 0.5), f.mgu, this.focusBus); f.mguOsc.start();
+    // Hybrid motor-generator: the motor's electrical whine (a few harmonics) and its reduction-gear mesh
+    // below it. Deploy is a smooth rising whir; regen is brighter, with a slight beat between the two.
+    f.mguOsc = c.createOscillator(); f.mguOsc.setPeriodicWave(this.periodic([1, 0.35, 0.18, 0.1]));
+    f.mguGear = c.createOscillator(); f.mguGear.setPeriodicWave(this.periodic([1, 0.3]));
+    f.mguLp = this.filter('lowpass', 2600, 0.9); f.mgu = this.gain(0); const gearMix = this.gain(0.5);
+    f.mguOsc.connect(f.mguLp); f.mguGear.connect(gearMix); gearMix.connect(f.mguLp); this.chain(f.mguLp, f.mgu, this.focusBus);
+    f.mguOsc.start(); f.mguGear.start();
     // Tyres. Squeal is the tread's stick-slip ringing the carcass: two narrow resonances excited by
     // noise (never a steady oscillator, which reads as a whistle), their centres wandering, the level
     // fluttering with the slip. Scrub is the broad low roar of a tyre working at its limit.
@@ -237,7 +242,11 @@ export class AudioEngine {
 
   /** One tyre-squeal voice: pink noise through two cascaded narrow band-passes at f and ~1.9 f, wobbling and fluttering. */
   squealVoice(k, dest) {
-    const B = this.buffers, src = this.loopSource(B.pink, 0.9 + 0.08 * k), amp = this.gain(0);
+    const c = this.ctx, B = this.buffers, src = this.loopSource(B.pink, 0.9 + 0.08 * k), amp = this.gain(0);
+    // Tonal core: the carcass ringing at one pitch with harmonics, warbling as the stick-slip jitters.
+    const osc = c.createOscillator(); osc.setPeriodicWave(this.periodic([1, 0.55, 0.3, 0.18, 0.1, 0.06])); osc.frequency.value = 850;
+    const jit = this.loopSource(B.flutter, 1.3 + 0.3 * k), jitDepth = this.gain(55); jit.connect(jitDepth); jitDepth.connect(osc.detune);
+    const tonal = this.gain(0.022); this.chain(osc, this.filter('lowpass', 4500, 0.7), tonal, amp); osc.start();
     const bands = [1, 1.92].map((m, i) => {
       const a = this.filter('bandpass', 850 * m, 8), b = this.filter('bandpass', 850 * m, 8), g = this.gain(i ? 0.45 : 1);
       this.chain(src, a, b, g, amp); return [a, b];
@@ -245,14 +254,16 @@ export class AudioEngine {
     const wob = this.loopSource(B.slow, 1 + 0.27 * k), wobDepth = this.gain(45);
     wob.connect(wobDepth); for (const [a, b] of bands) { wobDepth.connect(a.detune); wobDepth.connect(b.detune); }
     const fl = this.loopSource(B.flutter, 0.85 + 0.2 * k), flDepth = this.gain(0); fl.connect(flDepth); flDepth.connect(amp.gain);
+    wobDepth.connect(osc.detune);
     amp.connect(dest);
-    return { bands, amp, flDepth };
+    return { bands, amp, flDepth, osc };
   }
 
   /** Drives a squeal voice: `k` 0..1 how hard it slides, `hz` the lower resonance. */
   setSqueal(v, k, hz, level, t) {
     const g = Math.pow(clamp(fin(k), 0, 1), 1.6) * level * 5; // a full slide sits a few dB under the engine
     v.bands.forEach(([a, b], i) => { const f = hz * (i ? 1.92 : 1); a.frequency.setTargetAtTime(f, t, 0.08); b.frequency.setTargetAtTime(f, t, 0.08); });
+    v.osc.frequency.setTargetAtTime(hz, t, 0.06);
     v.amp.gain.setTargetAtTime(g, t, g > v.amp.gain.value ? 0.04 : 0.12);
     v.flDepth.gain.setTargetAtTime(g * 0.45, t, 0.06);
   }
@@ -370,7 +381,8 @@ export class AudioEngine {
     if (!this.ready || !this.enabled) return;
     const B = this.buffers, list = kind === 'bang' ? B.bang : kind === 'shift' ? B.crack : B.pop;
     const rate = rand(0.88, 1.12);
-    if (distance <= 0) { this.play(this.pick(list), { gain: strength * 0.42, rate, dest: this.focus.exhIn, priority: 1 }); return; }
+    // The focus car's pops go straight onto its bus (they happen outside the pipe), muffled only by the cockpit.
+    if (distance <= 0) { this.play(this.pick(list), { gain: strength * 0.5, rate, dest: this.focusBus, lp: (this.state?.d ?? 6) < 2.4 ? 5000 : 0, priority: 1 }); return; }
     const k = strength * 0.4 * distGain(distance);
     if (k < 0.01) return;
     this.play(this.pick(list), { gain: k, rate, pan, lp: airCutoff(distance), send: clamp(distance / 120, 0.05, 0.5) });
@@ -436,7 +448,8 @@ export class AudioEngine {
     set(f.intake.gain, inside ? LEVELS.intakeOnboard : LEVELS.intakeOutside, 0.1);
     // Engine. Idle is lifted so the dynamic range from idle to full song stays playable (~16 dB, not 30).
     const p = f.voice.params, erpm = engineRpm(prof, simRpm);
-    const idleLift = 1 + 2.2 * (1 - rf) * (1 - rf) * (1 - load);
+    // Only true idle is lifted (so it isn't lost under the mix); mid revs are left alone, or the car grunts everywhere.
+    const idleLift = 1 + 1.8 * (1 - rf) ** 4 * (1 - load);
     set(p.level, live ? LEVELS.engine * idleLift * (running ? 1 : 0.6) : 0, live ? 0.04 : 0.3);
     set(p.rpm, erpm, 0.025);
     set(p.doppler, inside || rel.d < 8 ? 1 : this.doppler(rel, car, S.camV), 0.05);
@@ -456,13 +469,17 @@ export class AudioEngine {
     set(f.whine.gain, moving ? LEVELS.whine * vs * (inside ? 1 : 0.2) * (1.4 - 0.7 * load) : 0, 0.06);
     // Hybrid deploy / regen.
     const kw = prof.hybrid && car.hybrid ? fin(car.hybrid.kw) : 0;
-    set(f.mguOsc.frequency, clamp(30 + speed * 19, 30, 2200), 0.04);
-    set(f.mgu.gain, moving ? LEVELS.mgu * clamp(Math.abs(kw) / 120, 0, 1) * (inside ? 1 : 0.25) : 0, 0.08);
+    const regen = kw < -2, mguHz = clamp(18 + speed * 15, 18, 1700);
+    set(f.mguOsc.frequency, mguHz, 0.04); set(f.mguGear.frequency, mguHz * 0.62 + (regen ? 6 : 0), 0.04);
+    set(f.mguLp.frequency, regen ? 3800 : 2600, 0.1);
+    const mguWork = Math.abs(kw) > 2 ? 0.3 + 0.7 * clamp(Math.abs(kw) / 120, 0, 1) : 0;
+    set(f.mgu.gain, moving ? LEVELS.mgu * mguWork * vs * (regen ? 1.15 : 1) * (inside ? 1 : 0.6) : 0, 0.1);
 
     // Shifts: an upshift cuts the ignition for the dog ring to slam home; a downshift blips.
     if (moving && S.lastGear !== null && car.gear !== S.lastGear && speed > 5) {
       if (car.gear > S.lastGear) {
-        p.cut.cancelScheduledValues(t); p.cut.setValueAtTime(1, t); p.cut.setValueAtTime(0, t + rand(0.05, 0.075));
+        // A modern sequential box cuts for a few tens of ms; the hybrids' motor fills the gap, so theirs is shorter still.
+        p.cut.cancelScheduledValues(t); p.cut.setValueAtTime(0.9, t); p.cut.setValueAtTime(0, t + (prof.hybrid ? rand(0.022, 0.032) : rand(0.03, 0.045)));
         this.play(this.pick(this.buffers.clunk), { gain: inside ? 0.32 : 0.14, dest: this.focusBus, when: t + 0.045, rate: rand(0.9, 1.1) });
       } else {
         p.throttle.cancelScheduledValues(t); p.throttle.setValueAtTime(1, t); p.throttle.setTargetAtTime(load, t + 0.08, 0.03); S.blipUntil = t + 0.12;
@@ -479,7 +496,7 @@ export class AudioEngine {
     this.setSqueal(f.squeal[0], sq, hz, LEVELS.tyres * (inside ? 0.7 : 1), t);
     this.setSqueal(f.squeal[1], sq * 0.7, hz * 1.13, LEVELS.tyres * (inside ? 0.7 : 1), t);
     set(f.scrubLp.frequency, 380 + speed * 6, 0.1);
-    set(f.scrub.gain, slide.scrub * vt * (moving && onTarmac ? 1 - wet * 0.5 : 0) * 0.06, 0.08);
+    set(f.scrub.gain, slide.scrub * vt * (moving && onTarmac ? 1 - wet * 0.5 : 0) * 0.11, 0.08);
     // Surfaces.
     const kerb = moving && car.zone === 'kerb', gravel = moving && car.zone === 'gravel', grass = moving && car.zone === 'grass';
     set(f.kerbOsc.frequency, clamp(speed / 0.55, 5, 110), 0.03);
@@ -552,12 +569,12 @@ export class AudioEngine {
       if (v.state !== 'active') continue;
       const e = byId.get(v.car.id), o = e.o, rel = e.rel, prof = ENGINE_PROFILES[v.profileId], p = v.voice.params;
       const sim = running ? clamp(fin(o.rpm, SIM_IDLE), SIM_IDLE * 0.9, SIM_MAX) : SIM_IDLE + 120, thr = running ? e.thr : 0;
-      const idleLift = 1 + 1.6 * (1 - e.rf) * (1 - e.rf) * (1 - thr);
+      const idleLift = 1 + 1.4 * (1 - e.rf) ** 4 * (1 - thr);
       set(p.rpm, engineRpm(prof, sim), 0.03); set(p.throttle, thr, 0.03);
       set(p.level, LEVELS.rival * idleLift * (running ? 1 : 0.6), 0.05);
       set(p.doppler, this.doppler(rel, o, S.camV), 0.06);
       p.stutter.setValueAtTime(running && o.rpm > 8050 && e.thr > 0.8 ? 1 : 0, t);
-      if (running && v.lastGear !== null && o.gear > v.lastGear && o.speed > 5) { p.cut.cancelScheduledValues(t); p.cut.setValueAtTime(1, t); p.cut.setValueAtTime(0, t + 0.06); }
+      if (running && v.lastGear !== null && o.gear > v.lastGear && o.speed > 5) { p.cut.cancelScheduledValues(t); p.cut.setValueAtTime(0.9, t); p.cut.setValueAtTime(0, t + (prof.hybrid ? 0.026 : 0.038)); }
       v.lastGear = o.gear;
       set(v.gain.gain, distGain(rel.d), 0.05);
       set(v.air.frequency, airCutoff(rel.d), 0.08);

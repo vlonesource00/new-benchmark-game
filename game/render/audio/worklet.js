@@ -36,6 +36,12 @@ function shapeTable(attack) {
   return t;
 }
 const BLOW = shapeTable(0.1), SUCK = shapeTable(0.5);
+/** Afterfire shock front (N-wave): snap to +1, straight fall through zero to -0.6, recover. */
+const NWAVE = (() => {
+  const t = new Float32Array(SHAPE_N + 2);
+  for (let i = 0; i < t.length; i++) { const u = Math.min(1, i / SHAPE_N) * 1.2; t[i] = u < 0.06 ? Math.sin(Math.PI * 0.5 * u / 0.06) : u < 0.5 ? 1 - 1.6 * (u - 0.06) / 0.44 : -0.6 * (0.5 + 0.5 * Math.cos(Math.PI * Math.min(1, (u - 0.5) / 0.7))); }
+  return t;
+})();
 
 /** RBJ biquad, transposed direct form II. */
 export class Biquad {
@@ -146,8 +152,9 @@ export class EngineDSP {
     if (combust > 0 && p.crack > 0) this.addPulse(frac, Math.max(5, w * 0.13), amp * p.crack * combust * (0.3 + 0.7 * rf), bank, 1);
     if (this.mode !== 'field') this.addPulse(frac, w * 2.4, -p.intake * (0.1 + 0.9 * this.thr) * (0.2 + 0.8 * rf) * jitter, 2, 0);
     // Unburnt fuel lighting in the hot pipe: on an ignition cut, and now and then on a high-rpm overrun.
-    const pop = cut ? 0.22 * p.pops * (0.3 + rf) : (combust === 0 && rf > 0.42 ? p.pops * 0.05 * (rf - 0.42) * 2 : 0);
-    if (pop > 0 && R() < pop) this.addPulse(frac, 7 + R() * 9, (1.2 + R() * 1.6) * (0.6 + 0.4 * rf), bank, 1);
+    // Afterfires are explosions at the pipe exit: they skip the pipes and filters (kind 2), so they crack instead of thudding.
+    const pop = cut ? 0.09 * p.pops * (0.3 + rf) : (combust === 0 && rf > 0.42 ? p.pops * 0.05 * (rf - 0.42) * 2 : 0);
+    if (pop > 0 && R() < pop) this.addPulse(frac, this.sr * (0.0008 + R() * 0.0009), (0.5 + R() * 0.7) * (0.6 + 0.4 * rf), bank, 2);
   }
 
   /** Renders n samples. outR / outI may be null (mono modes). Params are block targets. */
@@ -215,7 +222,7 @@ export class EngineDSP {
       this.phase = ph;
 
       // Pulses.
-      let b0 = 0, b1 = 0, ia = 0;
+      let b0 = 0, b1 = 0, ia = 0, q0 = 0, q1 = 0;
       for (let j = 0; j < this.np;) {
         const t = this.pt[j], x = t / this.pw[j];
         if (x >= 1) {
@@ -223,21 +230,24 @@ export class EngineDSP {
           this.pt[j] = this.pt[last]; this.pw[j] = this.pw[last]; this.pa[j] = this.pa[last]; this.pb[j] = this.pb[last]; this.pk[j] = this.pk[last];
           continue;
         }
-        const tab = this.pb[j] === 2 ? SUCK : BLOW, fi = x * SHAPE_N, ii = fi | 0;
+        const kind = this.pk[j], tab = kind === 2 ? NWAVE : this.pb[j] === 2 ? SUCK : BLOW, fi = x * SHAPE_N, ii = fi | 0;
         let v = (tab[ii] + (tab[ii + 1] - tab[ii]) * (fi - ii)) * this.pa[j];
-        if (this.pk[j]) v *= this.noise();
         const bk = this.pb[j];
-        if (bk === 0) b0 += v; else if (bk === 1) b1 += v; else ia += v;
+        if (kind === 2) { v += this.noise() * this.pa[j] * 0.35 * (1 - x); if (bk === 0) q0 += v; else q1 += v; }
+        else {
+          if (kind) v *= this.noise();
+          if (bk === 0) b0 += v; else if (bk === 1) b1 += v; else ia += v;
+        }
         this.pt[j] = t + 1; j++;
       }
 
       // Pipes per bank, then saturation, muffler body and tone.
       let e0 = this.tail[0].run(this.head[0].run(b0, dH[0], hR, hD), dT[0], tR, tD);
-      e0 = this.tone2[0].run(this.tone[0].run(this.muff[0].run(soft(e0 * drive) * norm)));
+      e0 = this.tone2[0].run(this.tone[0].run(this.muff[0].run(soft(e0 * drive) * norm))) + q0;
       let e1 = e0;
       if (banks > 1) {
         e1 = this.tail[1].run(this.head[1].run(b1, dH[1], hR, hD), dT[1], tR, tD);
-        e1 = this.tone2[1].run(this.tone[1].run(this.muff[1].run(soft(e1 * drive) * norm)));
+        e1 = this.tone2[1].run(this.tone[1].run(this.muff[1].run(soft(e1 * drive) * norm))) + q1;
       }
       // DC blockers.
       let x = e0; e0 = x - this.dcx[0] + dcK * this.dc[0]; this.dcx[0] = x; this.dc[0] = e0;

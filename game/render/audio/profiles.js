@@ -26,40 +26,42 @@ const V10 = { firing: even(10, 72), bankOf: [0, 1, 0, 1, 0, 1, 0, 1, 0, 1], cyl:
 const V6 = { firing: even(6, 120), bankOf: [0, 1, 0, 1, 0, 1], cyl: 6, banks: 2 };
 const I6 = { firing: even(6, 120), bankOf: [0, 1, 0, 1, 0, 1], cyl: 6, banks: 1 };
 
-const base = { hRefl: 0.4, tRefl: -0.6, hDamp: 0.5, tDamp: 0.32, rough: 0.045, cylVar: 0.07, muffQ: 1.1, spread: 0.5, pops: 0.7, turbo: 0, mech: 0.4, orders: [14, 22.5] };
+// Moderate pipe reflections: strong ones ring like a can. Small cylinder spread: a big one makes every engine lump like a V8.
+const base = { hRefl: 0.3, tRefl: -0.45, hDamp: 0.5, tDamp: 0.32, rough: 0.025, cylVar: 0.02, muffQ: 1.1, spread: 0.5, pops: 0.7, turbo: 0, mech: 0.4, orders: [14, 22.5] };
 
 const DEFS = {
   // ---- GT3 ----
   'gt-v8-cross': { ...base, ...V8_CROSS, label: '6.3 L NA cross-plane V8', idle: 950, redline: 7500,
-    header: [0.74, 0.78], tail: [1.95, 2.1], blow: 74, crack: 0.16, cylVar: 0.1, drive: 1.35, exhLP: 4600,
+    header: [0.74, 0.78], tail: [1.95, 2.1], blow: 74, crack: 0.16, cylVar: 0.05, drive: 1.35, exhLP: 4600,
     muffHz: 105, muffDb: 5, intakeHz: 250, intake2Hz: 760, intake: 0.55, pops: 1, orders: [12, 20], gain: 0.85 },
   'gt-f6': { ...base, ...FLAT6, label: '4.2 L NA flat six', idle: 1200, redline: 9400,
-    header: [0.56, 0.58], tail: [1.25, 1.3], blow: 54, crack: 0.3, cylVar: 0.06, drive: 1.6, exhLP: 7200,
+    header: [0.56, 0.58], tail: [1.25, 1.3], blow: 54, crack: 0.3, cylVar: 0.015, drive: 1.6, exhLP: 7200,
     muffHz: 165, muffDb: 3, intakeHz: 340, intake2Hz: 1150, intake: 0.75, mech: 0.9, orders: [18, 27, 36], gain: 0.94 },
   'gt-v10': { ...base, ...V10, label: '5.2 L NA V10', idle: 1100, redline: 8700,
-    header: [0.5, 0.52], tail: [1.5, 1.56], blow: 50, crack: 0.28, cylVar: 0.05, drive: 1.7, exhLP: 7800,
+    header: [0.5, 0.52], tail: [1.5, 1.56], blow: 50, crack: 0.28, cylVar: 0.012, drive: 1.7, exhLP: 7800,
     muffHz: 140, muffDb: 3, intakeHz: 380, intake2Hz: 1300, intake: 0.6, mech: 0.6, orders: [20, 31], gain: 0.51 },
   'gt-v8-flat': { ...base, ...V8_FLAT, label: '5.5 L NA flat-plane V8', idle: 1100, redline: 8600,
-    header: [0.6, 0.61], tail: [1.6, 1.66], blow: 56, crack: 0.3, cylVar: 0.06, drive: 1.6, exhLP: 6800,
+    header: [0.6, 0.61], tail: [1.6, 1.66], blow: 56, crack: 0.3, cylVar: 0.015, drive: 1.6, exhLP: 6800,
     muffHz: 130, muffDb: 4, intakeHz: 320, intake2Hz: 1000, intake: 0.65, mech: 0.5, orders: [16, 24], gain: 1.0 },
   'gt-i6-tt': { ...base, ...I6, label: '3.0 L twin-turbo straight six', idle: 1000, redline: 7300,
     header: [0.46, 0.46], tail: [2.2, 2.2], hRefl: 0.32, tRefl: -0.5, blow: 76, crack: 0.08, drive: 1.2, exhLP: 3500,
-    muffHz: 95, muffDb: 6, intakeHz: 300, intake2Hz: 950, intake: 0.3, turbo: 1, turboHz: [1400, 3600], pops: 0.6, mech: 0.5, orders: [12, 21], gain: 0.59 },
+    muffHz: 95, muffDb: 6, intakeHz: 300, intake2Hz: 950, intake: 0.3, turbo: 1, turboHz: [1400, 3600], pops: 0.6, mech: 0.5, orders: [12, 21], gain: 0.53 },
   'gt-v6-tt': { ...base, ...V6, label: '3.0 L twin-turbo 120° V6', idle: 1050, redline: 8000,
     header: [0.42, 0.43], tail: [1.7, 1.76], blow: 62, crack: 0.14, drive: 1.4, exhLP: 4400,
     muffHz: 120, muffDb: 4, intakeHz: 330, intake2Hz: 1050, intake: 0.35, turbo: 1.1, turboHz: [1700, 4400], pops: 0.9, mech: 0.6, orders: [15, 26], gain: 0.85 },
   // ---- GTP / LMDh hybrids (each also carries the rear-axle motor whine) ----
-  // Prototype engines are stressed members behind a turbine or a tuned, silenced system: smoother
-  // pulses (wider `blow`), little combustion rasp, a deeper muffler body than the GT3s.
-  'gtp-v8-tt': { ...base, ...V8_FLAT, label: '4.6 L twin-turbo V8 hybrid', idle: 1100, redline: 8800,
-    header: [0.5, 0.5], tail: [1.5, 1.52], blow: 66, crack: 0.07, rough: 0.035, drive: 1.2, exhLP: 4300,
-    muffHz: 120, muffDb: 5.5, intakeHz: 330, intake2Hz: 1000, intake: 0.35, turbo: 0.7, turboHz: [1500, 3800], pops: 0.6, mech: 0.35, orders: [16, 25], hybrid: true, gain: 1.07 },
-  'gtp-v8-na': { ...base, ...V8_CROSS, label: '5.5 L NA V8 hybrid', idle: 1000, redline: 8400,
-    header: [0.7, 0.74], tail: [1.7, 1.82], blow: 68, crack: 0.12, rough: 0.04, cylVar: 0.08, drive: 1.35, exhLP: 5200,
-    muffHz: 110, muffDb: 6, intakeHz: 280, intake2Hz: 860, intake: 0.6, pops: 0.8, mech: 0.35, orders: [14, 22], hybrid: true, gain: 0.84 },
-  'gtp-v6-tt': { ...base, ...V6, label: '2.4 L twin-turbo V6 hybrid', idle: 1300, redline: 9500,
-    header: [0.38, 0.39], tail: [1.3, 1.32], blow: 62, crack: 0.1, rough: 0.035, drive: 1.3, exhLP: 4800,
-    muffHz: 145, muffDb: 4.5, intakeHz: 370, intake2Hz: 1200, intake: 0.35, turbo: 0.9, turboHz: [1800, 4600], pops: 0.7, mech: 0.4, orders: [18, 30], hybrid: true, gain: 1.0 }
+  // Prototypes: high-revving race engines in their own right. Turbo cars lose a little crack to the
+  // turbine but keep a bright, open note; the NA V8 is the loudest car on the grid. Every one
+  // also carries the rear-axle motor (engine.js).
+  'gtp-v8-tt': { ...base, ...V8_FLAT, label: '4.6 L twin-turbo flat-plane V8 hybrid', idle: 1150, redline: 9000,
+    header: [0.52, 0.53], tail: [1.35, 1.4], blow: 52, crack: 0.24, drive: 1.6, exhLP: 6800,
+    muffHz: 150, muffDb: 2.5, intakeHz: 360, intake2Hz: 1150, intake: 0.4, turbo: 0.6, turboHz: [1500, 3800], pops: 0.9, mech: 0.6, orders: [16, 25], hybrid: true, gain: 0.68 },
+  'gtp-v8-na': { ...base, ...V8_FLAT, label: '5.5 L NA flat-plane V8 hybrid', idle: 1100, redline: 9000,
+    header: [0.58, 0.6], tail: [1.3, 1.36], blow: 50, crack: 0.3, drive: 1.7, exhLP: 7800,
+    muffHz: 140, muffDb: 2.5, intakeHz: 340, intake2Hz: 1080, intake: 0.7, pops: 1, mech: 0.6, orders: [16, 24], hybrid: true, gain: 0.74 },
+  'gtp-v6-tt': { ...base, ...V6, label: '3.0 L twin-turbo 120° V6 hybrid', idle: 1300, redline: 9800,
+    header: [0.4, 0.41], tail: [1.15, 1.2], blow: 48, crack: 0.28, drive: 1.7, exhLP: 7600,
+    muffHz: 170, muffDb: 2, intakeHz: 400, intake2Hz: 1300, intake: 0.4, turbo: 0.7, turboHz: [1800, 4600], pops: 1, mech: 0.7, orders: [18, 30], hybrid: true, gain: 0.79 }
 };
 
 export const ENGINE_PROFILES = Object.freeze(Object.fromEntries(Object.entries(DEFS).map(([id, p]) => [id, Object.freeze({ id, ...p })])));

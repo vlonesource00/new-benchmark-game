@@ -8,7 +8,7 @@
 // nothing turns into a constant hiss. The few genuinely noisy things (wind,
 // spray, rain, a blow-off valve) are band-limited and only play when their
 // cause is present.
-import { Biquad, Tube, rng } from './worklet.js';
+import { Biquad, rng } from './worklet.js';
 
 const TAU = Math.PI * 2;
 const yieldFrame = () => new Promise((r) => setTimeout(r, 0));
@@ -50,28 +50,40 @@ export function smoothRandom(sr, sec, rate, seed = 3) {
 }
 
 // ---------- exhaust pops, gear clunks, impacts ----------
-/** Exhaust afterfire: a sharp, ragged pressure front through a header and tailpipe, with a low thump. */
+/**
+ * Exhaust afterfire, heard in the open: unburnt fuel detonating at the tailpipe exit. Each
+ * detonation is a shock front (an N-wave: near-instant rise, a short positive phase, a longer
+ * negative one), a bright crackle of burning gas behind it, and the same front bouncing off the
+ * track a few ms later. No pipe resonance and no low "body": a pop is an explosion outside the
+ * car, which is what makes it sharp rather than boxed in.
+ *   pop   a single crack (overrun);  bang  a heavy detonation and its ripple (lift at speed);
+ *   shift a quick crack-crack on the upshift cut.
+ */
 export function exhaustPop(sr, seed, kind = 'pop') {
   const R = rng(seed), big = kind === 'bang', shift = kind === 'shift';
-  const n = Math.floor(sr * (big ? 0.9 : 0.4)), c = new Float32Array(n);
-  const h = new Tube(), t = new Tube(), gasC = 560 + R() * 120;
-  const dH = 2 * (0.45 + R() * 0.35) / gasC * sr, dT = 2 * (1.1 + R() * 0.9) / gasC * sr;
-  const lp = new Biquad().set('lowpass', shift ? 7500 : big ? 4200 : 5600, 0.7, sr), body = new Biquad().set('peaking', 140 + R() * 60, 1, sr, big ? 7 : 4);
-  const shots = [[0, 1]];
-  if (big) for (let k = 0, at = 0.06; k < 2 + Math.floor(R() * 3); k++) { shots.push([at, 0.35 + R() * 0.3]); at += 0.03 + R() * 0.06; }
-  const tau = (shift ? 0.0012 : big ? 0.004 : 0.0022) * sr, thumpHz = big ? 70 : 110, thumpTau = (big ? 0.07 : 0.03) * sr;
+  const n = Math.floor(sr * (big ? 0.5 : 0.22)), c = new Float32Array(n);
+  const shots = [[0.002, 1, big ? 2.6 : 1.1 + R() * 0.4]]; // 2 ms in, so the edge fade never blunts the front
+  if (big) for (let k = 0, at = 0.025 + R() * 0.02; k < 2 + Math.floor(R() * 3); k++) { shots.push([at, 0.3 + R() * 0.35, 0.7 + R() * 0.5]); at += 0.018 + R() * 0.045; }
+  if (shift) for (let k = 0, at = 0.016 + R() * 0.012; k < 1 + Math.floor(R() * 2); k++) { shots.push([at, 0.45 + R() * 0.3, 0.8 + R() * 0.3]); at += 0.014 + R() * 0.02; }
+  if (!big && !shift && R() < 0.4) shots.push([0.012 + R() * 0.03, 0.25 + R() * 0.25, 0.7]);
+  const hp = new Biquad().set('highpass', big ? 70 : 160, 0.7, sr), sizzle = new Biquad().set('highpass', 1800, 0.7, sr);
+  const air = new Biquad().set('lowpass', 15000, 0.7, sr), ground = (0.0022 + R() * 0.0018) * sr | 0, gl = new Biquad().set('lowpass', 6000, 0.7, sr);
+  const dry = new Float32Array(n);
   for (let i = 0; i < n; i++) {
-    let x = 0;
-    for (const [at, g] of shots) {
+    let x = 0, s = 0;
+    for (const [at, g, ms] of shots) {
       const j = i - Math.floor(at * sr); if (j < 0) continue;
-      const env = (1 - Math.exp(-j / (0.00015 * sr))) * Math.exp(-j / (tau * (g < 1 ? 0.7 : 1)));
-      x += (R() * 2 - 1) * env * g * 1.4 + Math.sin(TAU * thumpHz * (1 - j / (sr * 0.4)) * j / sr) * Math.exp(-j / thumpTau) * g * (big ? 0.9 : 0.5);
+      const T = ms * 0.001 * sr, u = j / T; // N-wave: snap up to +1, fall straight through zero to -0.6, recover
+      if (u < 0.06) x += g * Math.sin(Math.PI * 0.5 * u / 0.06);
+      else if (u < 0.5) x += g * (1 - 1.6 * (u - 0.06) / 0.44);
+      else if (u < 1.2) x -= g * 0.6 * (0.5 + 0.5 * Math.cos(Math.PI * (u - 0.5) / 0.7));
+      // Burning-gas crackle: dense at the front, thinning out.
+      s += (R() * 2 - 1) * g * Math.exp(-j / ((big ? 0.016 : 0.007) * sr)) * (R() < 0.35 ? 1 : 0.3);
     }
-    let y = t.run(h.run(x, dH, 0.4, 0.55), dT, -0.6, 0.35);
-    y = Math.tanh(y * 1.6);
-    c[i] = lp.run(body.run(y));
+    dry[i] = x + sizzle.run(s) * (big ? 0.55 : 0.45);
   }
-  return { sr, ch: [fadeEdges(normalize([c])[0], sr, 2)] };
+  for (let i = 0; i < n; i++) c[i] = air.run(hp.run(Math.tanh((dry[i] + (i >= ground ? gl.run(dry[i - ground]) * 0.45 : 0)) * 1.3)));
+  return { sr, ch: [fadeEdges(normalize([c])[0], sr, 1)] };
 }
 /** Dog-ring engagement: a short metallic clack on a dull thump. */
 export function gearClunk(sr, seed) {
