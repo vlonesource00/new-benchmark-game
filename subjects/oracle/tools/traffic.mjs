@@ -63,6 +63,30 @@ while (race.phase !== 'finished' && race.time < cap && !subj.every((i) => race.c
     const me = race.cars[i]; if (me.race.finishTime !== null) return;
     const d = race.entries[i].bridges[0]?.driver;
     if (d?.catching) { const w = d.combat?.mv?.kind === 'MOVE' ? 'catchMv' : 'catchLn'; M[k][w] = (M[k][w] ?? 0) + 6 * FIXED_DT; }
+    // loss: time lost against the car's own line speed (dt * (1 - v / line v), a tow counts as a gain), by situation:
+    // mv (a move held), side (a car within 6 m along and 5 m across), behind (a car 0-30 m ahead in its lane),
+    // near (any other car within 30 m ahead or 10 m behind), clear.
+    if (d?.loc && d.line && race.time > 3) {
+      const vr = d.line.sample(d.line.v, d.loc.i, d.loc.f); let w = 'clear';
+      if (d.combat?.mv?.kind === 'MOVE') w = 'mv';
+      else for (let j = 0; j < race.cars.length; j++) { if (j === i) continue;
+        const ds = ((at[j].s - at[i].s) % L + L * 1.5) % L - L / 2, dl = Math.abs(at[j].l - at[i].l);
+        if (Math.abs(ds) < 6 && dl < 5) { w = 'side'; break; }
+        if (ds > 0 && ds < 30 && dl < 2.6) w = 'behind'; else if (w === 'clear' && ds > -10 && ds < 30) w = 'near'; }
+      const Lo = (M[k].loss ??= { mv: [0, 0], side: [0, 0], behind: [0, 0], near: [0, 0], clear: [0, 0] });
+      Lo[w][0] += 6 * FIXED_DT * (1 - me.speed / Math.max(5, vr)); Lo[w][1] += 6 * FIXED_DT;
+      // hes: off full throttle (< 0.9, no brake, not catching a slide) where the car's own profile half a second on is
+      // over 2 m/s faster than it is going: the hesitation the eye sees, by the same situations; hesCap: the part the
+      // follow cap asked for.
+      if (me.controls.brake < 0.02 && me.controls.throttle < 0.9 && !d.catching && d.line.sample(d.line.vb, d.loc.i, d.loc.f, me.speed * 0.5) > me.speed + 2) {
+        const H = (M[k].hes ??= {}); H[w] = (H[w] ?? 0) + 6 * FIXED_DT; if (d.combat?.capBy) { H.cap = (H.cap ?? 0) + 6 * FIXED_DT; const y = 'c_' + (d.combat.capBy.why ?? '?'); H[y] = (H[y] ?? 0) + 6 * FIXED_DT; } }
+      // mvRec: every move with its type, the speed edge it started with, how long it ran, the time it lost and its end.
+      const mv = d.combat?.mv, R = (M[k].rec ??= { cur: null, n0: null });
+      if (mv?.kind === 'MOVE' && !R.cur) { const T = d.combat.rivals.get(mv.id); R.cur = { t0: race.time, s0: d.loc.s, type: mv.dive ? 'dive' : mv.early ? 'early' : 'pull', dv: me.speed - (T?.car.speed ?? me.speed), gap: T?.gap ?? 0, loss: 0, side: mv.side, n0: { ...mv.n } }; }
+      if (R.cur && mv?.kind === 'MOVE') R.cur.loss += 6 * FIXED_DT * (1 - me.speed / Math.max(5, vr));
+      if (R.cur && mv?.kind !== 'MOVE') { const c = R.cur, end = mv.n.done > c.n0.done ? 'done' : mv.n.drop > c.n0.drop ? 'drop' : 'lost';
+        if (opts.mvRec) console.log(`mvr ${ai}${k} ${c.type} ${end} dur ${(race.time - c.t0).toFixed(1)} loss ${c.loss.toFixed(2)} dv ${c.dv.toFixed(1)} gap ${c.gap.toFixed(1)} s ${c.s0.toFixed(0)}`); R.cur = null; }
+    }
     if (d?.loc && me.controls.throttle < 0.7 && me.controls.brake < 0.05 && me.speed < d.line.sample(d.line.v, d.loc.i, d.loc.f) - 2) {
       const beside = race.cars.some((c, j) => { if (j === i) return false; const ds = ((at[j].s - at[i].s) % L + L * 1.5) % L - L / 2; return Math.abs(ds) < 6 && Math.abs(at[j].l - at[i].l) > 2.1 && Math.abs(at[j].l - at[i].l) < 5; });
       if (beside) { M[k].lift = (M[k].lift ?? 0) + 6 * FIXED_DT; if (d.combat?.capBy) { const cb = d.combat, w = cb.capBy.r.gap < 5.06 + 1 ? 'liftAlong' : cb.mv?.kind === 'MOVE' && cb.mv.id === cb.capBy.r.car.id ? 'liftTgt' : 'liftAhead'; M[k].liftCap = (M[k].liftCap ?? 0) + 6 * FIXED_DT; M[k][w] = (M[k][w] ?? 0) + 6 * FIXED_DT; } }
@@ -82,9 +106,9 @@ while (race.phase !== 'finished' && race.time < cap && !subj.every((i) => race.c
   prev = pos;
 }
 const ord = race.order();
-if (opts.fcAudit) subj.forEach((i, k) => { const fa = race.entries[i].bridges[0]?.driver?.combat?.fa; if (fa) for (const [key, b] of Object.entries(fa.k)) console.log(`fa ${ai}${k} ${key} n ${b.n} fc ${(b.fc / b.n).toFixed(2)} hold ${(b.hold / b.n).toFixed(2)} path ${(b.path / b.n).toFixed(2)}`); });
+if (opts.fcAudit) subj.forEach((i, k) => { const fa = race.entries[i].bridges[0]?.driver?.combat?.fa; if (fa) for (const [key, b] of Object.entries(fa.k)) console.log(`fa ${ai}${k} ${key} n ${b.n} fc ${(b.fc / b.n).toFixed(2)} hold ${(b.hold / b.n).toFixed(2)} path ${(b.path / b.n).toFixed(2)} ed3 ${(b.ed3 / b.n).toFixed(2)} ed6 ${(b.ed6 / b.n).toFixed(2)}`); });
 if (opts.mvLog) subj.forEach((i, k) => { for (const e of race.entries[i].bridges[0]?.driver?.combat?.mv?.ev ?? []) console.log(`ev ${ai}${k} ${e}`); });
 subj.forEach((i, k) => {
   const c = race.cars[i], st = race.stewards.of(race.entries[i]), t = c.race.finishTime;
-  console.log(`${ai}${k} P${ord.indexOf(c) + 1} time ${t != null ? t.toFixed(2) : 'DNF'} stuck ${M[k].stuck.toFixed(1)} pass ${M[k].pass} lost ${M[k].lost} inc ${st.inc} dmg ${(c.damage * 100).toFixed(1)} hits ${M[k].hits} heavy ${M[k].heavy} best ${c.race.bestLap?.toFixed(2)} lift ${(M[k].lift ?? 0).toFixed(1)} liftCap ${(M[k].liftCap ?? 0).toFixed(1)} liftAlong ${(M[k].liftAlong ?? 0).toFixed(1)} liftTgt ${(M[k].liftTgt ?? 0).toFixed(1)} liftAhead ${(M[k].liftAhead ?? 0).toFixed(1)} catchMv ${(M[k].catchMv ?? 0).toFixed(1)} catchLn ${(M[k].catchLn ?? 0).toFixed(1)}${M[k].free != null || M[k].corner != null ? ` stuckFree ${(M[k].free ?? 0).toFixed(1)} stuckCorner ${(M[k].corner ?? 0).toFixed(1)}` : ''}${race.entries[i].bridges[0]?.driver?.combat?.mv ? ' mv ' + JSON.stringify(race.entries[i].bridges[0].driver.combat.mv.n) : ''}`);
+  console.log(`${ai}${k} P${ord.indexOf(c) + 1} time ${t != null ? t.toFixed(2) : 'DNF'} stuck ${M[k].stuck.toFixed(1)} pass ${M[k].pass} lost ${M[k].lost} inc ${st.inc} dmg ${(c.damage * 100).toFixed(1)} hits ${M[k].hits} heavy ${M[k].heavy} best ${c.race.bestLap?.toFixed(2)} lift ${(M[k].lift ?? 0).toFixed(1)} liftCap ${(M[k].liftCap ?? 0).toFixed(1)} liftAlong ${(M[k].liftAlong ?? 0).toFixed(1)} liftTgt ${(M[k].liftTgt ?? 0).toFixed(1)} liftAhead ${(M[k].liftAhead ?? 0).toFixed(1)} catchMv ${(M[k].catchMv ?? 0).toFixed(1)} catchLn ${(M[k].catchLn ?? 0).toFixed(1)}${M[k].loss ? ' loss ' + Object.entries(M[k].loss).map(([w, [x, t]]) => `${w}:${x.toFixed(1)}/${t.toFixed(0)}`).join(',') : ''}${M[k].hes ? ' hes ' + Object.entries(M[k].hes).map(([w, x]) => `${w}:${x.toFixed(1)}`).join(',') : ''}${M[k].free != null || M[k].corner != null ? ` stuckFree ${(M[k].free ?? 0).toFixed(1)} stuckCorner ${(M[k].corner ?? 0).toFixed(1)}` : ''}${race.entries[i].bridges[0]?.driver?.combat?.mv ? ' mv ' + JSON.stringify(race.entries[i].bridges[0].driver.combat.mv.n) : ''}`);
 });

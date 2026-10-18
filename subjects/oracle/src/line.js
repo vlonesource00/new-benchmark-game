@@ -132,7 +132,20 @@ export class Line {
     }
   }
   /** Positions, curvature, speed profile and lap time from the current offsets. */
-  build() { this.geometry(0, this.n); this.profile(); return this.time; }
+  build() { this.geometry(0, this.n); this.lateP = null; this.profile(); return this.time; }
+  /**
+   * The profile with braking `scale` times harder (late braking in an attack): its own v and vb, built once per scale.
+   * Solo it is slower (the car carries the extra speed deep and runs out of road), but it is the speed a car on the
+   * inside of a rival brakes from to draw alongside by the apex, for a few hundredths of a second of exit.
+   */
+  late(scale) {
+    if (this.lateP?.scale === scale) return this.lateP;
+    const keep = { v: this.v, vb: this.vb, g: this.brakeGain, t: this.time };
+    this.v = new Float64Array(this.n); this.vb = new Float64Array(this.n); this.brakeGain *= scale; this.profile();
+    this.lateP = { scale, v: this.v, vb: this.vb };
+    this.v = keep.v; this.vb = keep.vb; this.brakeGain = keep.g; this.time = keep.t;
+    return this.lateP;
+  }
   geometry(from, to) {
     const n = this.n;
     for (let j = from; j < to; j++) { const i = wrap(j, n); this.x[i] = this.cx[i] + this.nx[i] * this.w[i]; this.z[i] = this.cz[i] + this.nz[i] * this.w[i]; }

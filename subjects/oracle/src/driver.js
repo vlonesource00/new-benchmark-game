@@ -20,9 +20,14 @@ import { cloneCar, cloneDriver, shadowTrack } from './shadow.js';
 // Tow and elbows (2026-10-18): the tow is taken right up to the car ahead (towReact 0: the cap's reaction gap held it
 // ten metres back at the leader's speed, throwing the tow away), and side by side the lane sits a car's width off the
 // rival (sideGap 0, rubbing allowed) and follows it back in when it moves over (edgeRelax), rather than leaving a lane.
+// Closing speed (2026-10-18): on a straight behind a car that is not braking, the follow cap holds only once ORACLE
+// could no longer steer clear of it on a lane the planner can drive (capEscape), so the speed it closes with is kept
+// for the move instead of being lifted away from 20-40 m back. Measured neutral on lap time (8 seeds, Harbor and
+// Desert), less lifting behind traffic, scenes unchanged; yieldOverlap, pullClose, pullApex, earlyIn, planReact 0,
+// lateBrake and fcHold were each measured and stay off.
 export const RACECRAFT = { moves: true, diveApex: true, capArrive: true, capWide: 0.6, laneAhead: true, laneSmooth: 12,
   capClose: true, earlyPass: true, earlyNeed: -1, wideGap: 1.6, besideLane: true, markRule: true,
-  rivalPhys: true, markExtrap: true, sideGap: 0, capSide: true, towReact: 0, edgeRelax: 3 };
+  rivalPhys: true, markExtrap: true, sideGap: 0, capSide: true, towReact: 0, edgeRelax: 3, capEscape: 1 };
 
 export class OracleDriver {
   constructor(track, options = {}) { this.track = track; this.options = { ...RACECRAFT, ...options }; this.classId = null; this.hint = -1; this.steer = 0; this.mode = 'INIT'; }
@@ -94,7 +99,7 @@ export class OracleDriver {
     const laneD = (d) => { if (!la) return lane; const l = this.lateral + clamp(fight.lateral - this.lateral, -la * d, la * d); return Math.abs(l) > 0.3 ? l : 0; };
     const lf = [], lfAt = (a) => (lf[a] ??= laneD(a * 8) ? line.laneFactor(loc.i, loc.f, a * 8, laneD(a * 8)) : 1);
     const laneAt = (d) => { const q = Math.max(0, d) / 8, a = Math.floor(q), t = q - a; return lfAt(a) + (lfAt(a + 1) - lfAt(a)) * t; };
-    const target = o.forwardPass ? line.v : line.vb, speedAt = (d) => { const p = line.sample(target, loc.i, loc.f, d) * grip * lp; return lane || la ? p * laneAt(d) : p; };
+    const target = o.forwardPass ? line.v : fight.late ? line.late(fight.late).vb : line.vb, speedAt = (d) => { const p = line.sample(target, loc.i, loc.f, d) * grip * lp; return lane || la ? p * laneAt(d) : p; };
     // capT: a follow cap is a safe speed for the gap now, met over a time headway (a cap 3 m/s under the car at 75 m/s
     // is a lift, not a stab of full brake); the profile itself is met at the look distance as before.
     const capD = Math.max(look, v * (o.capT ?? 0)), vNow = speedAt(0), vAhead = capD > look ? speedAt(look) : Math.min(speedAt(look), fight.cap);
@@ -117,7 +122,7 @@ export class OracleDriver {
     // station-to-station wobble in k swung the share, and the brake takeover with it, between frames).
     const kw = o.kWin ?? 0.4, ks = kw ? [0.1, 0.3, 0.5, 0.7, 0.9].reduce((a, u) => a + line.sample(line.k, loc.i, loc.f, v * kw * u), 0) / 5 : line.sample(line.k, loc.i, loc.f, v * 0.1), k = o.laneCurv ? Math.abs(ks / Math.max(0.5, 1 + ks * this.lateral)) : Math.abs(ks), latCap = at(this.env.lat, v) * line.latScale * line.sample(line.grip, loc.i, loc.f) * grip * grip;
     const used = clamp(v * v * k / Math.max(1, latCap), 0, 1), cp = o.combExp ?? 2, rest = Math.max(o.restFloor ?? Math.sqrt(0.12), (1 - used ** cp) ** (1 / cp));
-    const avail = at(this.env.brake, v) * line.brakeGain * grip * grip * rest;
+    const avail = at(this.env.brake, v) * line.brakeGain * (fight.late || 1) * grip * grip * rest;
     // needHys: a braking point once taken is held until the need falls this share of the grip below the trigger.
     this.taking = need < -((o.brakeOn ?? 0.7) - (this.taking ? o.needHys ?? 0 : 0)) * avail;
     if (this.taking) want = Math.min(want, need);
