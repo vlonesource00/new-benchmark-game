@@ -364,9 +364,10 @@ if (typeof registerProcessor === 'function') {
       this.dsp = new EngineDSP(sampleRate, o.mode ?? 'focus', o.seed ?? 1);
       if (o.profile) this.dsp.setProfile(o.profile);
       this.prm = { rpm: 900, throttle: 0, level: 0, doppler: 1, cut: 0, stutter: 0, boost: 0 };
-      this.port.onmessage = (e) => { if (e.data?.profile) { this.dsp.setProfile(e.data.profile, e.data.live); if (!e.data.live) this.dsp.reset(); } };
+      this.port.onmessage = (e) => { if (e.data?.dispose) this.stopped = true; else if (e.data?.profile) { this.dsp.setProfile(e.data.profile, e.data.live); if (!e.data.live) this.dsp.reset(); } };
     }
     process(inputs, outputs, params) {
+      if (this.stopped) return false;
       const out = outputs[0], prm = this.prm;
       for (const k in prm) prm[k] = params[k][0];
       const L = out[0], R = out[1] ?? null, I = outputs[1]?.[0] ?? null;

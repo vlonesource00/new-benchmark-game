@@ -88,6 +88,12 @@ button { font-family: var(--display); color: inherit; cursor: pointer; }
 .stepper input::-webkit-inner-spin-button, .stepper input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
 input[type=text] { font-family: var(--display); font-size: 18px; background: rgba(255,255,255,.05); border: 1px solid var(--line); color: var(--ink); padding: 6px 10px; width: 180px; text-transform: uppercase; }
 input[type=range] { accent-color: var(--accent); width: 180px; }
+[data-audio-v2] { appearance: none; position: relative; flex: 0 0 48px; width: 48px; height: 26px; margin: 0; border: 1px solid var(--line); border-radius: 20px; background: #343d48; cursor: pointer; transition: background .16s; }
+[data-audio-v2]::before { content: ''; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: #fff; transition: transform .16s; }
+[data-audio-v2]:checked { background: var(--accent); border-color: var(--accent); }
+[data-audio-v2]:checked::before { transform: translateX(22px); }
+[data-audio-v2]:focus-visible { outline: 2px solid var(--ink); outline-offset: 4px; }
+@media (prefers-reduced-motion: reduce) { [data-audio-v2], [data-audio-v2]::before { transition: none; } }
 .cta { border: 0; background: var(--accent); color: #fff; font-size: 26px; font-weight: 900; font-style: italic; text-transform: uppercase; padding: 14px 34px; letter-spacing: .04em; clip-path: polygon(12px 0, 100% 0, calc(100% - 12px) 100%, 0 100%); transition: filter .15s, transform .15s; }
 .cta:hover { filter: brightness(1.12); transform: translateY(-1px); }
 .cta.ghost { background: rgba(255,255,255,.08); }

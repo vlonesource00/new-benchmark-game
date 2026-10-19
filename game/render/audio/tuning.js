@@ -53,16 +53,16 @@ export const ENGINE_CLASSES = [['gt', 'GT3'], ['lmdh', 'GTP / LMDh']];
 
 export const emptyTuning = () => ({ levels: {}, engines: { gt: {}, lmdh: {} } });
 
-export function loadTuning() {
+export function loadTuning(key = TUNING_KEY) {
   try {
-    const t = JSON.parse(localStorage.getItem(TUNING_KEY) ?? 'null');
+    const t = JSON.parse(localStorage.getItem(key) ?? 'null');
     if (t && typeof t === 'object') return { levels: { ...t.levels }, engines: { gt: { ...t.engines?.gt }, lmdh: { ...t.engines?.lmdh } } };
   } catch { /* storage unavailable or corrupt */ }
   return emptyTuning();
 }
 
-export function saveTuning(t) {
-  try { localStorage.setItem(TUNING_KEY, JSON.stringify(t)); } catch { /* storage unavailable */ }
+export function saveTuning(t, key = TUNING_KEY) {
+  try { localStorage.setItem(key, JSON.stringify(t)); } catch { /* storage unavailable */ }
 }
 
 /** A profile with its class multipliers applied (the original when nothing is tuned). */

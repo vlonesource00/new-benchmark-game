@@ -3,6 +3,10 @@ import { ENGINE_PROFILES, POOLS, profileIdFor, engineRpm, SIM_IDLE, SIM_MAX } fr
 import { loadTuning, saveTuning, tuneProfile } from './tuning.js';
 import * as A from './buffers.js';
 import { EngineDSP } from './worklet.js';
+import { RecordedEngineDSP } from './sample-worklet.js';
+import { loadRecordings } from './recordings.js';
+import { switchableVoice } from './switchable-voice.js';
+import { V2_LEVELS, pressureRelease, materialEffect, softenAsset } from './v2-effects.js';
 
 // Race audio pipeline.
 //
@@ -29,6 +33,7 @@ import { EngineDSP } from './worklet.js';
 // below (bus and layer gains), and TRACKS (per-circuit ambience and room).
 
 const WORKLET_URL = new URL('./worklet.js', import.meta.url);
+const SAMPLE_WORKLET_URL = new URL('./sample-worklet.js', import.meta.url);
 const RIVAL_VOICES = 6, MAX_ONESHOTS = 28, SOUND_SPEED = 343;
 
 export const LEVELS = {
@@ -82,6 +87,7 @@ function slideOf(car) {
 class HostParam {
   constructor(v) { this.v = v; this.target = v; this.tau = 0; this.q = []; }
   get value() { return this.v; }
+  set value(v) { this.v = this.target = v; this.tau = 0; this.q.length = 0; }
   setTargetAtTime(v, t, tau) { this.q.push({ t, v, tau: Math.max(1e-4, tau) }); return this; }
   setValueAtTime(v, t) { this.q.push({ t, v, tau: 0 }); return this; }
   cancelScheduledValues() { this.q.length = 0; return this; }
@@ -95,24 +101,81 @@ class HostParam {
 const PARAM_DEFAULTS = { rpm: 900, throttle: 0, level: 0, doppler: 1, cut: 0, stutter: 0, boost: 0 };
 
 export class AudioEngine {
-  constructor() {
+  constructor({ v2 = true } = {}) {
+    this.v2 = v2; this.voices = []; this.squeals = []; this.variantLoops = []; this.sampleStatus = 'not loaded';
     this.volume = 0.4; this.enabled = true; this.trackId = 'harbor-ring'; this.ctx = null; this.ready = false;
     this.meters = { peak: 0, rms: 0, reduction: 0 }; this.buffers = {}; this.oneShots = 0;
     if (typeof location !== 'undefined' && new URLSearchParams(location.search).has('debug')) globalThis.__audio = this;
-    this.applyTuning(loadTuning());
+    this.applyTuning(loadTuning(this.tuningKey));
+  }
+
+  get tuningKey() { return this.v2 ? 'pe.audioTune.v2' : 'pe.audioTune'; }
+  get defaultLevels() { return this.v2 ? V2_LEVELS : DEFAULT_LEVELS; }
+  get versionLabel() {
+    return !this.v2 ? 'Original audio active' : this.sampleStatus === 'ready' ? 'V2 audio active' : this.sampleStatus === 'unavailable' ? 'Recordings unavailable — original engines active' : this.sampleStatus === 'loading' ? 'Loading V2 recordings…' : 'V2 loads when sound starts';
+  }
+  versionChanged() { if (typeof window !== 'undefined') window.dispatchEvent(new Event('audio-version-change')); }
+
+  /** Switch the complete sound design live, retaining the mixer, mute and master volume. */
+  async setV2(enabled) {
+    this.v2 = Boolean(enabled);
+    this.applyTuning(loadTuning(this.tuningKey));
+    this.versionChanged();
+    if (!this.ready) return;
+    if (this.v2) {
+      try { await this.prepareRecordings(); }
+      catch (e) { this.sampleStatus = 'unavailable'; this.versionChanged(); console.warn('V2 recordings could not load; original engine remains available.', e); return; }
+    }
+    // A later toggle may have arrived while the pack was decoding.
+    for (const voice of this.voices) voice.setV2(this.v2 && Boolean(this.recordingPack));
+    Object.assign(this.buffers, this.v2 ? this.v2Effects : this.originalEffects);
+    this.roomId = null; this.setTrack(this.trackId);
+    this.versionChanged();
+  }
+
+  async prepareRecordings() {
+    if (this.recordingPack) return this.recordingPack;
+    if (this.loadingRecordings) return this.loadingRecordings;
+    this.sampleStatus = 'loading';
+    this.versionChanged();
+    this.loadingRecordings = (async () => {
+      const pack = await loadRecordings(this.ctx);
+      if (this.worklet) {
+        try { await this.ctx.audioWorklet.addModule(SAMPLE_WORKLET_URL); this.sampleWorklet = true; }
+        catch (e) { this.sampleWorklet = false; console.warn('Recorded engines use the main-thread fallback.', e); }
+      }
+      this.recordingPack = pack;
+      const src = this.loopSource(pack.rain), lp = this.filter('lowpass', 3000, 0.6);
+      this.sampleRain = this.gain(0); this.chain(src, lp, this.sampleRain, this.weatherBus);
+      for (const squeal of this.squeals) this.addRecordedTyre(squeal);
+      this.sampleStatus = 'ready'; return pack;
+    })().catch((e) => { this.loadingRecordings = null; this.sampleStatus = 'unavailable'; throw e; });
+    return this.loadingRecordings;
+  }
+
+  addRecordedTyre(v) {
+    if (v.sample) return;
+    v.sample = this.gain(0); v.sampleSource = this.loopSource(this.recordingPack.tyre, 0.98 + v.k * 0.025);
+    this.chain(v.sampleSource, this.filter('highpass', 550, 0.65), this.filter('lowpass', 3400, 0.65), v.sample, v.dest);
   }
 
   // ---------- player tuning (ui/audio-tuner.js) ----------
   /** Replace the player's tuning, store it and apply it live. */
-  setTuning(tuning) { saveTuning(tuning); this.applyTuning(tuning); }
+  setTuning(tuning) { saveTuning(tuning, this.tuningKey); this.applyTuning(tuning); }
   applyTuning(tuning) {
     this.tuning = tuning;
-    Object.assign(LEVELS, DEFAULT_LEVELS);
+    Object.assign(LEVELS, this.defaultLevels);
     for (const [k, v] of Object.entries(tuning.levels ?? {})) if (k in DEFAULT_LEVELS && Number.isFinite(v)) LEVELS[k] = v;
     this.profiles = {};
     if (!this.ctx) return;
     const t = this.ctx.currentTime;
     this.revOut?.gain.setTargetAtTime(LEVELS.reverb, t, 0.05); this.fxBus?.gain.setTargetAtTime(LEVELS.fx, t, 0.05); this.uiBus?.gain.setTargetAtTime(LEVELS.ui, t, 0.05);
+    for (const pair of this.variantLoops) { pair.original.gain.setTargetAtTime(this.v2 ? 0 : 1, t, 0.08); pair.v2.gain.setTargetAtTime(this.v2 ? 1 : 0, t, 0.08); }
+    if (this.focus?.kerbLp) {
+      this.focus.kerbLp.Q.setTargetAtTime(this.v2 ? 0.6 : 1.4, t, 0.08);
+      this.focus.kerbRattleBp.Q.setTargetAtTime(this.v2 ? 0.65 : 2, t, 0.08);
+      this.focus.mguVibrato.gain.setTargetAtTime(this.v2 ? 0.7 : 5, t, 0.08);
+    }
     // Retune the running voices in place.
     if (this.focus?.profile) { this.focus.profile = this.prof(this.focus.profile.id); this.focus.voice.setProfile(this.focus.profile, true); }
     for (const v of this.rivals ?? []) if (v.profileId) v.voice.setProfile(this.prof(v.profileId), true);
@@ -120,7 +183,8 @@ export class AudioEngine {
   }
   /** The profile with the player's class multipliers applied. */
   prof(id) {
-    if (!this.profiles[id]) this.profiles[id] = tuneProfile(ENGINE_PROFILES[id], this.tuning?.engines?.[id.startsWith('gtp') ? 'lmdh' : 'gt']);
+    // The old gains compensate for the oscillator/waveguide profiles, not for levelled recordings.
+    if (!this.profiles[id]) this.profiles[id] = tuneProfile(this.v2 ? { ...ENGINE_PROFILES[id], gain: 0.9 } : ENGINE_PROFILES[id], this.tuning?.engines?.[id.startsWith('gtp') ? 'lmdh' : 'gt']);
     return this.profiles[id];
   }
 
@@ -169,6 +233,7 @@ export class AudioEngine {
     await c.resume();
     this.ready = true; this.fadeInUntil = c.currentTime + 2.5;
     this.master.gain.setTargetAtTime(this.enabled ? this.volume : 0, c.currentTime + 0.15, 0.45);
+    if (this.v2) this.setV2(true).catch((e) => console.warn('V2 audio failed to initialise', e));
     // The slower-to-generate beds (crowd, nature) arrive a moment later and fade in from silence.
     setTimeout(() => this.loadBeds().catch((e) => console.warn('Ambience generation failed', e)), 120);
   }
@@ -193,17 +258,31 @@ export class AudioEngine {
     B.gun = [51, 52, 53].map((s) => buf(A.wheelGun(sr, s)));
     B.jackUp = buf(A.airJack(sr, 61, true)); B.jackDown = buf(A.airJack(sr, 62, false));
     B.gravel = buf(A.gravelLoop(lo, 71)); B.grass = buf(A.grassLoop(lo, 72));
+    this.originalEffects = { ...B };
+    const effects = this.v2Effects = { ...B };
+    for (const [key, kind, seeds] of [['pop', 'pop', [1, 2, 3, 4]], ['bang', 'bang', [7, 8, 9]], ['crack', 'shift', [10, 11, 12]]]) effects[key] = seeds.map((s) => buf(pressureRelease(sr, s, kind)));
+    for (const [key, kind, seeds] of [['clunk', 'clunk', [21, 22, 23]], ['impactHeavy', 'heavy', [31, 32, 33]], ['impactLight', 'light', [34, 35, 36]], ['bov', 'bov', [41, 42]], ['gun', 'gun', [51, 52, 53]]]) effects[key] = seeds.map((s) => buf(materialEffect(sr, s, kind)));
+    effects.jackUp = buf(materialEffect(sr, 61, 'jackUp')); effects.jackDown = buf(materialEffect(sr, 62, 'jackDown'));
+    effects.gravel = buf(softenAsset(A.gravelLoop(lo, 71), 2300, 0.8)); effects.grass = buf(softenAsset(A.grassLoop(lo, 72), 1500, 0.8));
+    effects.pink = buf(softenAsset(A.pinkNoise(lo, 4, 11), 3200, 0.85));
+    effects.brown = buf(softenAsset(A.brownNoise(lo, 4, 12), 500, 0.85));
+    if (this.v2) Object.assign(B, effects);
   }
 
   /** Engine voice: an AudioWorkletNode, or a ScriptProcessor running the same DSP where worklets are unavailable. */
   makeVoice(mode, seed, profile) {
+    const voice = switchableVoice(this.ctx, (...args) => this.makeRawVoice(...args), false, mode, seed, profile, PARAM_DEFAULTS);
+    this.voices.push(voice); return voice;
+  }
+
+  makeRawVoice(mode, seed, profile, recorded = false) {
     const c = this.ctx;
-    if (this.worklet) {
-      const node = new AudioWorkletNode(c, 'engine-voice', { numberOfInputs: 0, numberOfOutputs: 2, outputChannelCount: mode === 'focus' ? [2, 1] : [1, 1], processorOptions: { mode, seed, profile } });
+    if (recorded ? this.sampleWorklet : this.worklet) {
+      const node = new AudioWorkletNode(c, recorded ? 'recorded-engine' : 'engine-voice', { numberOfInputs: 0, numberOfOutputs: 2, outputChannelCount: mode === 'focus' ? [2, 1] : [1, 1], processorOptions: { mode, seed, profile, ...(recorded ? { recordings: this.recordingPack.recordings } : {}) } });
       const params = {}; for (const k in PARAM_DEFAULTS) params[k] = node.parameters.get(k);
-      return { node, params, mode, profileId: profile.id, setProfile: (p, live = false) => node.port.postMessage({ profile: p, live }), out: (dest) => node.connect(dest, 0), outIntake: mode === 'focus' ? (dest) => node.connect(dest, 1) : null };
+      return { node, params, mode, profileId: profile.id, setProfile: (p, live = false) => node.port.postMessage({ profile: p, live }), out: (dest) => node.connect(dest, 0), outIntake: mode === 'focus' ? (dest) => node.connect(dest, 1) : null, dispose: () => { node.port.postMessage({ dispose: true }); node.disconnect(); node.port.close(); } };
     }
-    const dsp = new EngineDSP(c.sampleRate, mode, seed); dsp.setProfile(profile);
+    const dsp = recorded ? new RecordedEngineDSP(c.sampleRate, mode, seed, this.recordingPack.recordings) : new EngineDSP(c.sampleRate, mode, seed); dsp.setProfile(profile);
     const chans = mode === 'focus' ? 2 : 1, sp = c.createScriptProcessor(1024, 1, chans), params = {}, prm = {};
     for (const k in PARAM_DEFAULTS) params[k] = new HostParam(PARAM_DEFAULTS[k]);
     let tmp = new Float32Array(1024), last = c.currentTime;
@@ -215,7 +294,7 @@ export class AudioEngine {
       dsp.render(L, R, tmp, L.length, prm);
       if (R) for (let i = 0; i < L.length; i++) { L[i] += tmp[i] * 0.6; R[i] += tmp[i] * 0.6; }
     };
-    return { node: sp, params, mode, profileId: profile.id, setProfile: (p, live = false) => { dsp.setProfile(p, live); if (!live) dsp.reset(); }, out: (dest) => sp.connect(dest), outIntake: null };
+    return { node: sp, params, mode, profileId: profile.id, setProfile: (p, live = false) => { dsp.setProfile(p, live); if (!live) dsp.reset?.(); }, out: (dest) => sp.connect(dest), outIntake: null, dispose: () => { sp.onaudioprocess = null; sp.disconnect(); } };
   }
 
   periodic(amps) {
@@ -227,13 +306,22 @@ export class AudioEngine {
     const s = this.ctx.createBufferSource(); s.buffer = buffer; s.loop = true; s.playbackRate.value = rate;
     s.start(this.ctx.currentTime, Math.random() * buffer.duration); return s;
   }
+  variantLoop(key, rate = 1) {
+    const original = this.gain(this.v2 ? 0 : 1), v2 = this.gain(this.v2 ? 1 : 0), output = this.gain(1);
+    const a = this.loopSource(this.originalEffects[key], rate), b = this.loopSource(this.v2Effects[key], rate);
+    a.connect(original); b.connect(v2); original.connect(output); v2.connect(output);
+    this.variantLoops.push({ original, v2 });
+    return { connect: (dest) => output.connect(dest), playbackRate: {
+      setTargetAtTime: (v, t, tau) => { a.playbackRate.setTargetAtTime(v, t, tau); b.playbackRate.setTargetAtTime(v, t, tau); }
+    } };
+  }
   filter(type, f, q = 0.7) { const b = this.ctx.createBiquadFilter(); b.type = type; b.frequency.value = f; b.Q.value = q; return b; }
   gain(v = 0) { const g = this.ctx.createGain(); g.gain.value = v; return g; }
   chain(...nodes) { for (let i = 0; i < nodes.length - 1; i++) nodes[i].connect(nodes[i + 1]); return nodes[nodes.length - 1]; }
 
   buildFocus() {
     const c = this.ctx, B = this.buffers, f = this.focus = {};
-    const profile = ENGINE_PROFILES['gt-v8-cross'];
+    const profile = this.prof('gt-v8-cross');
     f.voice = this.makeVoice('focus', 1, profile); f.profile = profile;
     f.exhIn = this.gain(1); f.cabin = this.filter('lowpass', 20000, 0.6); f.exhGain = this.gain(1);
     f.voice.out(f.exhIn); this.chain(f.exhIn, f.cabin, f.exhGain, this.focusBus);
@@ -256,7 +344,7 @@ export class AudioEngine {
     f.mguOsc.connect(f.mguLp); f.mguOsc2.connect(twin); twin.connect(f.mguLp); f.mguGear.connect(f.mguGearG); f.mguGearG.connect(f.mguLp); f.mguSub.connect(sub); sub.connect(f.mguLp);
     this.chain(f.mguLp, mguHp, f.mgu, this.focusBus);
     // A slow, shallow vibrato: the inverter's current ripple, which keeps the whine alive.
-    const vib = c.createOscillator(), vibDepth = this.gain(5); vib.frequency.value = 5.3; vib.connect(vibDepth);
+    const vib = c.createOscillator(), vibDepth = this.gain(this.v2 ? 0.7 : 5); f.mguVibrato = vibDepth; vib.frequency.value = 5.3; vib.connect(vibDepth);
     [f.mguOsc, f.mguOsc2, f.mguGear, f.mguSub].forEach((o) => vibDepth.connect(o.detune));
     f.mguOsc2.detune.value = 4;
     [f.mguOsc, f.mguOsc2, f.mguGear, f.mguSub, vib].forEach((o) => o.start());
@@ -265,28 +353,30 @@ export class AudioEngine {
     // fluttering with the slip. Scrub is the broad low roar of a tyre working at its limit.
     f.squeal = [0, 1].map((k) => this.squealVoice(k, this.focusBus));
     f.scrubLp = this.filter('lowpass', 700, 0.7); f.scrub = this.gain(0);
-    this.chain(this.loopSource(B.pink, 1), this.filter('highpass', 140, 0.7), f.scrubLp, f.scrub, this.focusBus);
+    this.chain(this.variantLoop('pink', 1), this.filter('highpass', 140, 0.7), f.scrubLp, f.scrub, this.focusBus);
     // Rolling roar and off-track rumble.
-    f.roadLp = this.filter('lowpass', 160, 0.8); f.road = this.gain(0); this.chain(this.loopSource(B.brown), f.roadLp, f.road, this.focusBus);
+    f.roadLp = this.filter('lowpass', 160, 0.8); f.road = this.gain(0); this.chain(this.variantLoop('brown'), f.roadLp, f.road, this.focusBus);
     // Kerb: the ridges' buzz (a tone at the ridge rate through the car's body) with a rattle gated by it.
     f.kerbOsc = c.createOscillator(); f.kerbOsc.setPeriodicWave(this.periodic(Array.from({ length: 12 }, (_, k) => 1 / (k + 1) ** 1.1)));
-    f.kerb = this.gain(0); this.chain(f.kerbOsc, this.filter('lowpass', 380, 1.4), this.filter('peaking', 95, 1), f.kerb, this.focusBus);
+    f.kerbLp = this.filter('lowpass', 380, this.v2 ? 0.6 : 1.4);
+    f.kerb = this.gain(0); this.chain(f.kerbOsc, f.kerbLp, this.filter('peaking', 95, 1), f.kerb, this.focusBus);
     f.kerbRattle = this.gain(0); const rattleAm = this.gain(0); f.kerbOsc.connect(rattleAm.gain);
-    this.chain(this.loopSource(B.pink, 0.9), this.filter('bandpass', 1500, 2), rattleAm, f.kerbRattle, this.focusBus);
+    f.kerbRattleBp = this.filter('bandpass', 1500, this.v2 ? 0.65 : 2);
+    this.chain(this.variantLoop('pink', 0.9), f.kerbRattleBp, rattleAm, f.kerbRattle, this.focusBus);
     f.kerbOsc.start();
-    f.gravel = this.gain(0); f.gravelSrc = this.loopSource(B.gravel); this.chain(f.gravelSrc, f.gravel, this.focusBus);
-    f.grass = this.gain(0); f.grassSrc = this.loopSource(B.grass); this.chain(f.grassSrc, f.grass, this.focusBus);
+    f.gravel = this.gain(0); f.gravelSrc = this.variantLoop('gravel'); this.chain(f.gravelSrc, f.gravel, this.focusBus);
+    f.grass = this.gain(0); f.grassSrc = this.variantLoop('grass'); this.chain(f.grassSrc, f.grass, this.focusBus);
     // Wet: the spray off the tyres.
-    f.spray = this.gain(0); this.chain(this.loopSource(B.pink, 0.8), this.filter('bandpass', 1500, 0.5), this.filter('lowpass', 5200, 0.7), f.spray, this.focusBus);
+    f.spray = this.gain(0); this.chain(this.variantLoop('pink', 0.8), this.filter('bandpass', 1500, 0.5), this.filter('lowpass', 5200, 0.7), f.spray, this.focusBus);
     // Wind over the car/helmet, gusting.
     f.windLp = this.filter('lowpass', 300, 0.6); f.wind = this.gain(0); f.windGust = this.gain(0);
-    this.chain(this.loopSource(B.pink, 0.7), f.windLp, this.filter('highpass', 90, 0.7), f.wind, this.focusBus);
+    this.chain(this.variantLoop('pink', 0.7), f.windLp, this.filter('highpass', 90, 0.7), f.wind, this.focusBus);
     this.loopSource(B.gust).connect(f.windGust); f.windGust.connect(f.wind.gain);
   }
 
   /** One tyre-squeal voice: pink noise through two cascaded narrow band-passes at f and ~1.9 f, wobbling and fluttering. */
   squealVoice(k, dest) {
-    const c = this.ctx, B = this.buffers, src = this.loopSource(B.pink, 0.9 + 0.08 * k), amp = this.gain(0);
+    const c = this.ctx, B = this.buffers, src = this.loopSource(this.originalEffects.pink, 0.9 + 0.08 * k), amp = this.gain(0);
     // Tonal core: the carcass ringing at one pitch with harmonics, warbling as the stick-slip jitters.
     const osc = c.createOscillator(); osc.setPeriodicWave(this.periodic([1, 0.55, 0.3, 0.18, 0.1, 0.06])); osc.frequency.value = 850;
     const jit = this.loopSource(B.flutter, 1.3 + 0.3 * k), jitDepth = this.gain(55); jit.connect(jitDepth); jitDepth.connect(osc.detune);
@@ -300,12 +390,17 @@ export class AudioEngine {
     const fl = this.loopSource(B.flutter, 0.85 + 0.2 * k), flDepth = this.gain(0); fl.connect(flDepth); flDepth.connect(amp.gain);
     wobDepth.connect(osc.detune);
     amp.connect(dest);
-    return { bands, amp, flDepth, osc };
+    const voice = { bands, amp, flDepth, osc, k, dest };
+    this.squeals.push(voice); return voice;
   }
 
   /** Drives a squeal voice: `k` 0..1 how hard it slides, `hz` the lower resonance. */
   setSqueal(v, k, hz, level, t) {
-    const g = Math.pow(clamp(fin(k), 0, 1), 1.6) * level * 5; // a full slide sits a few dB under the engine
+    const amount = Math.pow(clamp(fin(k), 0, 1), 1.6) * level;
+    const sampled = this.v2 && Boolean(v.sample);
+    const g = sampled ? 0 : amount * 5;
+    v.sample?.gain.setTargetAtTime(sampled ? amount * 0.85 : 0, t, 0.08);
+    v.sampleSource?.playbackRate.setTargetAtTime(clamp(hz / 900, 0.85, 1.25), t, 0.12);
     v.bands.forEach(([a, b], i) => { const f = hz * (i ? 1.92 : 1); a.frequency.setTargetAtTime(f, t, 0.08); b.frequency.setTargetAtTime(f, t, 0.08); });
     v.osc.frequency.setTargetAtTime(hz, t, 0.06);
     v.amp.gain.setTargetAtTime(g, t, g > v.amp.gain.value ? 0.04 : 0.12);
@@ -357,7 +452,7 @@ export class AudioEngine {
   setTrack(id) {
     this.trackId = TRACKS[id] ? id : 'harbor-ring';
     if (!this.ctx || !this.reverb) return;
-    const room = A.ROOMS[TRACKS[this.trackId].room];
+    const room = this.v2 ? A.ROOMS.open : A.ROOMS[TRACKS[this.trackId].room];
     if (this.roomId !== room) { this.roomId = room; this.reverb.buffer = this.toBuffer(A.impulseResponse(Math.min(48000, this.ctx.sampleRate), room)); }
     if (this.state) this.state.nextEvent = {};
   }
@@ -406,6 +501,12 @@ export class AudioEngine {
   cue(name) {
     if (!this.ready || !this.enabled) return;
     const B = this.buffers, now = this.ctx.currentTime;
+    if (this.v2) {
+      const notes = { click: [620], wipe: [330, 440], light: [700], go: [1046], final: [784, 1046], flag: [523, 659], fastest: [784, 1174], sting: [659, 880] }[name] ?? [];
+      notes.forEach((hz, i) => this.tone([hz], name === 'click' ? 0.012 : 0.027, 0.008, name === 'click' ? 0.07 : 0.28, 'sine', 1, this.uiBus, 0, now + i * 0.13));
+      if (name === 'go' || name === 'flag') this.play(B.cheer, { gain: 0.2, dest: this.ambBus, send: 0.05, priority: 1 });
+      return;
+    }
     if (name === 'light') this.tone([880, 1760], 0.05, 0.004, 0.22);
     else if (name === 'go') { this.tone([1760], 0.06, 0.004, 0.5); this.play(B.cheer, { gain: 0.55, dest: this.ambBus, send: 0.4, priority: 1 }); }
     else if (name === 'final') { this.tone([1318.5, 2637, 3955], 0.035, 0.002, 1.5); this.tone([1318.5, 2637, 3955], 0.03, 0.002, 1.3, 'sine', 1, this.uiBus, 0, now + 0.42); }
@@ -424,9 +525,9 @@ export class AudioEngine {
   backfire(strength, kind, distance = 0, pan = 0) {
     if (!this.ready || !this.enabled) return;
     const B = this.buffers, list = kind === 'bang' ? B.bang : kind === 'shift' ? B.crack : B.pop;
-    const rate = rand(0.88, 1.12);
+    const rate = this.v2 ? rand(0.94, 1.06) : rand(0.88, 1.12);
     // The focus car's pops go straight onto its bus (they happen outside the pipe), muffled only by the cockpit.
-    if (distance <= 0) { this.play(this.pick(list), { gain: strength * 0.4 * LEVELS.pops, rate, dest: this.focusBus, lp: (this.state?.d ?? 6) < 2.4 ? 5000 : 0, priority: 1 }); return; }
+    if (distance <= 0) { this.play(this.pick(list), { gain: strength * 0.4 * LEVELS.pops, rate, dest: this.focusBus, lp: this.v2 ? 3200 : (this.state?.d ?? 6) < 2.4 ? 5000 : 0, priority: 1 }); return; }
     const k = strength * 0.32 * LEVELS.pops * distGain(distance);
     if (k < 0.01) return;
     this.play(this.pick(list), { gain: k, rate, pan, lp: airCutoff(distance), send: clamp(distance / 120, 0.05, 0.5) });
@@ -669,7 +770,9 @@ export class AudioEngine {
     set(this.ambBus.gain, base, menu ? 0.8 : 0.3);
     set(b.crowd.gain, tr.crowd * 0.55, 1.2); set(b.sea.gain, tr.sea * 0.5, 1.2); set(b.leaves.gain, tr.leaves * 0.3 * (1 + rain), 1.2);
     set(b.cicadas.gain, tr.cicadas * 0.16 * (1 - rain), 1.2); set(b.wind.gain, tr.wind * 0.4, 1.2);
-    set(b.rain.gain, rain * LEVELS.rain * (inside ? 1.25 : 1), 0.8);
+    const sampledRain = this.v2 && Boolean(this.sampleRain);
+    set(b.rain.gain, sampledRain ? 0 : rain * LEVELS.rain * (inside ? 1.25 : 1), 0.8);
+    if (this.sampleRain) set(this.sampleRain.gain, sampledRain ? rain * LEVELS.rain * (inside ? 0.65 : 1) * (1 - 0.25 * loud) : 0, 0.8);
     if (!this.bedsReady) return;
     // Wildlife and circuit events.
     for (const [kind, lo, hi] of tr.events) {
@@ -677,7 +780,7 @@ export class AudioEngine {
       if (t < due) continue;
       S.nextEvent[kind] = t + rand(lo, hi);
       if ((kind === 'song' || kind === 'blackbird' || kind === 'cuckoo') && rain > 0.4) continue;
-      const g = { gull: 0.3, horn: 0.25, song: 0.16, blackbird: 0.15, cuckoo: 0.12, cowbell: 0.14, hawk: 0.12 }[kind] ?? 0.15;
+      const g = ({ gull: 0.3, horn: 0.25, song: 0.16, blackbird: 0.15, cuckoo: 0.12, cowbell: 0.14, hawk: 0.12 }[kind] ?? 0.15) * (this.v2 ? 0.35 : 1);
       this.play(this.pick(B[kind]), { gain: g * rand(0.6, 1.1), rate: kind === 'horn' ? 1 : rand(0.92, 1.08), pan: rand(-0.85, 0.85), dest: this.ambBus, send: kind === 'horn' ? 0.6 : 0.3, lp: kind === 'horn' ? 0 : rand(5000, 16000) });
     }
     // Circuit PA chime, now and then during the race.
@@ -775,7 +878,7 @@ export class AudioEngine {
   debug() {
     if (!this.ctx) return { state: 'locked' };
     return {
-      state: this.ctx.state, sampleRate: this.ctx.sampleRate, worklet: this.worklet, ready: this.ready, bedsReady: Boolean(this.bedsReady), track: this.trackId,
+      state: this.ctx.state, version: this.v2 ? 2 : 1, recordings: this.sampleStatus, sampleRate: this.ctx.sampleRate, worklet: this.worklet, ready: this.ready, bedsReady: Boolean(this.bedsReady), track: this.trackId,
       master: this.master.gain.value, meters: this.meters, oneShots: this.oneShots,
       focus: { profile: this.focus.profile.id, level: this.focus.voice.params.level.value, rpm: this.focus.voice.params.rpm.value },
       rivals: this.rivals.map((v) => ({ state: v.state, car: v.car?.id ?? null, profile: v.profileId, gain: +v.gain.gain.value.toFixed(3) })),

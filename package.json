@@ -9,6 +9,7 @@
     "sandbox:build": "vite build --config sandbox/vite.config.mjs",
     "game": "vite --config game/vite.config.mjs",
     "game:build": "vite build --config game/vite.config.mjs",
+    "check:audio": "node --test scripts/check-audio-v2.mjs",
     "serve": "node scripts/mobile-server.mjs",
     "benchmark": "node scripts/run-triad.mjs --field penta"
   },

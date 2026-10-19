@@ -44,7 +44,7 @@ const load = (key, fallback) => { try { return { ...fallback, ...JSON.parse(loca
 const save = (key, v) => { try { localStorage.setItem(key, JSON.stringify(v)); } catch { /* storage unavailable */ } };
 
 // ---------- renderer ----------
-const settings = load('pe.settings', { volume: 0.5, quality: 'high', pixelRatio: 1.75 });
+const settings = load('pe.settings', { volume: 0.5, audioV2: true, quality: 'high', pixelRatio: 1.75 });
 // Render scale: capped at the display's own density, except 2× SSAA which supersamples past it.
 const pixelRatio = () => (settings.pixelRatio >= 2 ? Math.max(2, devicePixelRatio || 1) : Math.min(devicePixelRatio || 1, settings.pixelRatio));
 const canvas = $('#scene');
@@ -71,7 +71,7 @@ function resize() {
 }
 addEventListener('resize', resize);
 
-const audio = new AudioEngine();
+const audio = new AudioEngine({ v2: settings.audioV2 !== false });
 const exhaust = new ExhaustEvents();
 const unlockAudio = () => audio.unlock().then(() => audio.setVolume(settings.volume)).catch(() => {});
 const syncAudioFocus = () => {
@@ -85,6 +85,10 @@ document.addEventListener('visibilitychange', syncAudioFocus);
 addEventListener('pointerdown', unlockAudio);
 addEventListener('keydown', unlockAudio);
 installAudioTuner(audio, unlockAudio);
+addEventListener('audio-version-change', () => {
+  const label = document.querySelector('[data-audio-status]');
+  if (label) label.textContent = audio.versionLabel;
+});
 
 // ---------- world (one per circuit, built lazily) ----------
 let track = null, world = null, effects = null, worldTrackId = null;
@@ -267,10 +271,12 @@ const nav = {
   settings(patch) {
     Object.assign(settings, patch); save('pe.settings', settings);
     if ('volume' in patch) audio.setVolume(settings.volume);
+    if ('audioV2' in patch) audio.setV2(settings.audioV2).catch((e) => console.warn('Audio version switch failed', e));
     if ('quality' in patch) { finish?.setQuality(settings.quality); world?.setQuality?.(settings.quality); }
     if ('pixelRatio' in patch) { renderer.setPixelRatio(pixelRatio()); resize(); }
   },
   audioTuner: () => openAudioTuner(),
+  audioStatus: () => audio.versionLabel,
   // Go racing / Race now: a fresh sky for the event, then the pre-race briefing with its forecast.
   start: () => { mode = 'race'; preraceBack = screen === 'setup' ? 'setup' : 'menu'; weatherSeed = rollSeed(); showPrerace(); }
 };

@@ -278,6 +278,7 @@ export function renderSettings(el, settings, act) {
     <div class="panel-wrap" style="max-width:760px">
       <div class="panel-head"><div><div class="kicker">Options</div><h2>Settings</h2></div><button class="back" data-back>← Back</button></div>
       <div class="block"><h3>Audio</h3>
+        <div class="row"><label for="audio-v2">V2 audio<span class="hint">Recorded engines and rain, dry mix, softer exhaust and tyre effects. Switch off for original audio.</span><span class="hint" data-audio-status>${act.audioStatus?.() ?? ''}</span></label><input id="audio-v2" type="checkbox" role="switch" data-audio-v2 ${settings.audioV2 !== false ? 'checked' : ''} aria-label="V2 audio"></div>
         <div class="row"><label>Master volume</label><input type="range" min="0" max="1" step="0.05" value="${settings.volume}" data-volume></div>
         <div class="row"><label>Sound tuner<span class="hint">Every mix level and engine character, with auditions · F8 in a race</span></label><button class="back" data-tuner>Open</button></div></div>
       <div class="block"><h3>Graphics</h3>
@@ -293,6 +294,7 @@ export function renderSettings(el, settings, act) {
   $(el, '[data-back]').addEventListener('click', () => act.go('menu'));
   $(el, '[data-tuner]').addEventListener('click', () => act.audioTuner?.());
   $(el, '[data-volume]').addEventListener('input', (e) => act.settings({ volume: Number(e.target.value) }));
+  $(el, '[data-audio-v2]').addEventListener('change', (e) => act.settings({ audioV2: e.target.checked }));
   $$(el, '[data-seg]').forEach((g) => $$(g, 'button').forEach((b) => b.addEventListener('click', () => {
     const v = g.dataset.seg === 'pixelRatio' ? Number(b.dataset.v) : b.dataset.v;
     act.settings({ [g.dataset.seg]: v }); renderSettings(el, { ...settings, [g.dataset.seg]: v }, act);

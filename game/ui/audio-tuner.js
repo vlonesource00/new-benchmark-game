@@ -32,6 +32,7 @@ const STYLE = `
 let panel = null, audioRef = null, unlockRef = null, cls = 'gt', cockpit = false;
 
 const clone = (t) => JSON.parse(JSON.stringify(t ?? emptyTuning()));
+const defaults = () => audioRef?.defaultLevels ?? DEFAULTS;
 const fmt = (v, d) => (d ? `${Math.round((v / d) * 100)}%` : v.toFixed(2));
 const SCENES = {
   rev: 'Rev & shift', pops: 'Blips and lifts: pops and bangs', coast: 'Gearbox whine on the overrun (engine muted)', hybrid: 'Hybrid deploy, then regen (engine muted)',
@@ -53,7 +54,7 @@ function render() {
   const t = audioRef.tuning ?? emptyTuning(), eng = t.engines?.[cls] ?? {};
   const pools = ENGINE_CLASSES.map(([k, name]) => `<optgroup label="${name}">${POOLS[k].map((id) => `<option value="${id}">${ENGINE_PROFILES[id].label}</option>`).join('')}</optgroup>`).join('');
   panel.querySelector('.body').innerHTML = `
-    <h3>Audition</h3>
+    <h3>Audition · ${audioRef.v2 ? 'V2 recorded audio' : 'Original audio'}</h3>
     <div class="bar"><select data-engine>${pools}</select></div>
     <div class="bar">
       <button class="btn go" data-play="rev">Rev & shift</button><button class="btn" data-play="pops">Pops</button><button class="btn" data-play="crash">Crash</button><button class="btn" data-play="slide">Tyre slide</button><button class="btn" data-play="flyby">Flyby</button>
@@ -63,8 +64,8 @@ function render() {
     <h3>Engines — ${ENGINE_CLASSES.find(([k]) => k === cls)[1]}</h3>
     <div class="bar"><span class="seg">${ENGINE_CLASSES.map(([k, n]) => `<button data-cls="${k}" class="${k === cls ? 'on' : ''}">${n}</button>`).join('')}</span>
       <span class="hint">Multipliers on every engine of the class · ▶ tests a sound</span></div>
-    ${ENGINE_CONTROLS.map(([k, label, min, max, scene]) => slider(`E:${k}`, label, min, max, eng[k] ?? 1, 1, 0.01, scene)).join('')}
-    ${MIX_GROUPS.map(([group, rows]) => `<h3>${group}</h3>${rows.map(([k, label, max, scene]) => slider(`L:${k}`, label, 0, max, LEVELS[k], DEFAULTS[k], max / 200, scene)).join('')}`).join('')}`;
+    ${ENGINE_CONTROLS.filter(([k]) => !audioRef.v2 || ['gain', 'exhLP', 'intake', 'pops'].includes(k)).map(([k, label, min, max, scene]) => slider(`E:${k}`, label, min, max, eng[k] ?? 1, 1, 0.01, scene)).join('')}
+    ${MIX_GROUPS.map(([group, rows]) => `<h3>${group}</h3>${rows.map(([k, label, max, scene]) => slider(`L:${k}`, label, 0, max, LEVELS[k], defaults()[k], max / 200, scene)).join('')}`).join('')}`;
   const sel = panel.querySelector('[data-engine]');
   sel.value = panel.dataset.engine ?? POOLS[cls][0];
   sel.addEventListener('change', () => { panel.dataset.engine = sel.value; });
@@ -73,7 +74,7 @@ function render() {
 function apply(id, value) {
   const t = clone(audioRef.tuning);
   const [kind, key] = id.split(':');
-  if (kind === 'L') { if (value === null || Math.abs(value - DEFAULTS[key]) < 1e-6) delete t.levels[key]; else t.levels[key] = value; }
+  if (kind === 'L') { if (value === null || Math.abs(value - defaults()[key]) < 1e-6) delete t.levels[key]; else t.levels[key] = value; }
   else { t.engines[cls] ??= {}; if (value === null || Math.abs(value - 1) < 1e-6) delete t.engines[cls][key]; else t.engines[cls][key] = value; }
   audioRef.setTuning(t);
 }
@@ -98,7 +99,7 @@ function build() {
   for (const ev of ['keydown', 'keyup']) panel.addEventListener(ev, (e) => { if (e.code !== 'F8' && e.code !== 'Escape') e.stopPropagation(); });
   panel.addEventListener('input', (e) => {
     const id = e.target.dataset?.id; if (!id) return;
-    const v = Number(e.target.value), out = panel.querySelector(`[data-out="${id}"]`), def = id.startsWith('L:') ? DEFAULTS[id.slice(2)] : 1;
+    const v = Number(e.target.value), out = panel.querySelector(`[data-out="${id}"]`), def = id.startsWith('L:') ? defaults()[id.slice(2)] : 1;
     out.textContent = fmt(v, id.startsWith('L:') ? def : 0); out.classList.toggle('mod', Math.abs(v - def) > 1e-6);
     apply(id, v);
   });
@@ -123,6 +124,7 @@ export const audioTunerOpen = () => Boolean(panel && panel.style.display !== 'no
 /** Wire the tuner to the game's audio engine; F8 toggles it from anywhere. */
 export function installAudioTuner(audio, unlock) {
   audioRef = audio; unlockRef = unlock;
+  addEventListener('audio-version-change', () => { if (audioTunerOpen()) render(); });
   addEventListener('keydown', (e) => {
     if (e.code === 'F8') { e.preventDefault(); audioTunerOpen() ? close() : openAudioTuner(); }
     else if (e.code === 'Escape' && audioTunerOpen()) { e.stopImmediatePropagation(); close(); }

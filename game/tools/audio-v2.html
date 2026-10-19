@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Phantom Endurance · Audio comparison</title>
+<style>
+  :root { color-scheme: dark; font: 16px system-ui,sans-serif; background:#101317; color:#e8edf2; }
+  body { max-width:900px; margin:0 auto; padding:48px 24px; }
+  h1 { margin:8px 0 16px; font-size:clamp(28px,5vw,46px); letter-spacing:-.04em; }
+  p { color:#aeb9c5; line-height:1.6; max-width:700px; }
+  .kicker { color:#ff775d; letter-spacing:.18em; font-size:12px; text-transform:uppercase; }
+  section { padding:24px; background:#191f26; border:1px solid #303b47; border-radius:12px; margin:20px 0; }
+  .row { display:flex; flex-wrap:wrap; align-items:center; gap:16px; margin:14px 0; }
+  label { display:flex; align-items:center; gap:10px; }
+  button,select { font:inherit; color:inherit; background:#26323e; border:1px solid #435264; border-radius:7px; padding:11px 15px; }
+  button { cursor:pointer; } button:hover { border-color:#ff775d; } button:focus-visible,input:focus-visible,select:focus-visible { outline:2px solid #ff997e; outline-offset:3px; }
+  input[type=checkbox] { width:22px; height:22px; accent-color:#ff775d; }
+  input[type=range] { accent-color:#ff775d; } select { max-width:100%; }
+  #status { color:#8fd8c0; min-height:24px; } small { color:#96a6b7; } a { color:#ffad93; }
+</style>
+<div class="kicker">Phantom Endurance / Sound room</div>
+<h1>Hear the two versions.</h1>
+<p>Compare the engine, exhaust, tyres and rain without running a race. Use the same volume and car for both versions.</p>
+<section>
+  <div class="row"><label><input id="v2" type="checkbox" role="switch" checked> V2 audio</label><span id="status" role="status" aria-live="polite">Click a sound to enable audio</span></div>
+  <div class="row"><label>Volume <input id="volume" aria-label="Master volume" type="range" min="0" max="1" step="0.025" value="0.35"></label><button id="stop">Silence</button></div>
+  <div class="row"><label>Car <select id="engine" aria-label="Engine profile"></select></label><label><input id="cockpit" type="checkbox"> Cockpit</label></div>
+</section>
+<section>
+  <div class="row" id="sounds"></div>
+  <small>The same auditions are available in the game’s Sound tuner (F8). The game’s persistent switch is in Settings → Audio.</small>
+</section>
+<p>V2 uses recorded engine textures, a dry mix, short pressure releases and recorded weather. The voices are approximations rather than exact recordings of every race car. <a href="../render/audio/samples/CREDITS.md">Recording credits</a></p>
+<script type="module">
+  import { AudioEngine } from '../render/audio/engine.js';
+  import { ENGINE_PROFILES } from '../render/audio/profiles.js';
+  const $ = (s) => document.querySelector(s), audio = new AudioEngine(), engine = $('#engine');
+  for (const [id, p] of Object.entries(ENGINE_PROFILES)) engine.add(new Option(`${p.hybrid ? 'GTP' : 'GT3'} · ${p.label}`, id));
+  const scenes = { rev:'Rev & shift', pops:'Pops & bangs', slide:'Tyre slide', scrub:'Tyre scrub', crash:'Impacts', surface:'Kerb / gravel / grass', rain:'Rain', cruise:'Wind & road', hybrid:'Hybrid motor', flyby:'Flyby', circuit:'Circuit ambience', ui:'Pit beep' };
+  const showStatus = () => { $('#status').textContent = audio.versionLabel; };
+  addEventListener('audio-version-change', showStatus);
+  let action = 0;
+  async function ready() {
+    await audio.unlock(); audio.enabled = true; audio.setVolume(Number($('#volume').value));
+    await audio.setV2($('#v2').checked); showStatus();
+  }
+  for (const [kind, label] of Object.entries(scenes)) {
+    const b = document.createElement('button'); b.textContent = label;
+    b.onclick = async () => { const request = ++action; try { await ready(); if (request === action) audio.audition(kind, engine.value, { cockpit: $('#cockpit').checked }); } catch (e) { $('#status').textContent = `Could not start audio: ${e.message}`; } };
+    $('#sounds').append(b);
+  }
+  $('#v2').onchange = () => { audio.setV2($('#v2').checked).then(showStatus); };
+  $('#volume').oninput = () => audio.setVolume(Number($('#volume').value));
+  $('#stop').onclick = () => { action++; audio.demo = null; audio.enabled = false; audio.setVolume(Number($('#volume').value)); };
+  const probe = { id:'audio-preview', x:0, z:0, yaw:0, speed:0, rpm:1100, gear:1, trackId:'harbor-ring', controls:{ throttle:0 }, wheels:[], zone:'asphalt' };
+  setInterval(() => { if (!document.hidden) audio.update(probe, false, [], { menu:true, weather:{ rain:0, wet:0 } }); }, 1000 / 30);
+  document.addEventListener('visibilitychange', () => { if (audio.ctx) (document.hidden ? audio.ctx.suspend() : audio.ctx.resume()).catch(() => {}); });
+</script>
+</html>

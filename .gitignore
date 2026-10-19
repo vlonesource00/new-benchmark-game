@@ -1,3 +1,5 @@
 node_modules/
 dist/
 game/dist/
+.tmp/audio-v2-source/
+.tmp/audio-v2-preview/
