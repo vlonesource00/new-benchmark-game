@@ -9,6 +9,8 @@ export const TRACKS = Object.freeze([
   { id: 'desert', scenario: 'desert', name: 'MIRAGE 1000', place: 'Dusk · Desert road course', turns: 9, ready: true,
     blurb: 'Heat haze, two huge straights and a long sweeping final turn. Slipstream heaven.' },
   { id: 'nurburgring', scenario: 'nurburgring', name: 'NÜRBURGRING 24H', place: 'Eifel · GP-Strecke + Nordschleife · 25.3 km', turns: 170, ready: true,
-    blurb: 'The Green Hell. GP circuit into the full Nordschleife: Flugplatz, Fuchsröhre, Karussell, Pflanzgarten, Döttinger Höhe.' }
+    blurb: 'The Green Hell. GP circuit into the full Nordschleife: Flugplatz, Fuchsröhre, Karussell, Pflanzgarten, Döttinger Höhe.' },
+  { id: 'lago', scenario: 'lago', name: 'LAGO AURELIA', place: 'Lago Aurelia · Lakeside road course · 7.8 km', turns: 21, ready: true,
+    blurb: 'A marina straight, the Lungolago along the shore, fast sweepers, a walled old town and the vineyard straight.' }
 ]);
 export const trackById = (id) => TRACKS.find((t) => t.id === id) ?? TRACKS[0];

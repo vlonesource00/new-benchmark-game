@@ -12,7 +12,8 @@ const FIELD_COLORS = {
   solenne: ['#b89a4a', '#c9ab55', '#7f8f45', '#5f7a3c', '#8a6a48', '#8f7bb0', '#9c88bd'],
   'harbor-ring': ['#6f8a4a', '#87984f', '#5f7a3c'],
   desert: ['#b98a5c', '#a87a50', '#c49a6a'],
-  alpine: ['#5d6f52', '#6a7a5a']
+  alpine: ['#5d6f52', '#6a7a5a'],
+  lago: ['#8a8f4a', '#a39a55', '#6f7d3c', '#b39b5a']
 };
 const PER_THEME = {
   'harbor-ring': { lots: 6, camps: 1, fan: 1, clumps: 46, fields: 4, road: true, offices: 26 },
@@ -20,7 +21,9 @@ const PER_THEME = {
   desert: { lots: 4, camps: 2, fan: 1, clumps: 0, fields: 8, road: true, offices: 0 },
   alpine: { lots: 3, camps: 1, fan: 1, clumps: 0, fields: 6, road: true, offices: 0 },
   // The Eifel brings its own forest, villages and fan camps (render/eifel.js).
-  nurburgring: { lots: 6, camps: 3, fan: 1, clumps: 0, fields: 0, road: false, offices: 0 }
+  nurburgring: { lots: 6, camps: 3, fan: 1, clumps: 0, fields: 0, road: false, offices: 0 },
+  // Lago brings its own vineyards and old town (render/lago.js); no ring road through the lake.
+  lago: { lots: 5, camps: 2, fan: 1, clumps: 30, fields: 14, road: false, offices: 0 }
 };
 
 function canvasTexture(w, h, draw) {
@@ -47,7 +50,7 @@ export function buildFill(world) {
   const t = world.track, rng = world.rng, d = world.dummy, b = world.bounds, th = world.theme;
   const root = world.root, live = world.live, out = { glows: [] };
   const margin = t.barrierOffset + 46;
-  const landOk = (x, z) => !th.harbor || x < 520;
+  const landOk = (x, z) => (!th.harbor || x < 520) && world.land(x, z);
   // A circle is free when it clears the track by `margin` and the occupancy grid.
   const fits = (x, z, r, m = margin) => landOk(x, z) && Math.abs(t.nearest(x, z).lateral) > m + r && world.isFree(x, z, r);
   // Random free spot inside the circuit's bounding box grown by `reach` (infield included).

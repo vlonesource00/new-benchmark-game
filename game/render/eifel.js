@@ -70,7 +70,7 @@ function chamfer(mark, n, cell) {
 }
 
 // Instances grouped into 500 m cells per kind; cells beyond a kind's range are hidden.
-class Chunks {
+export class Chunks {
   constructor() { this.items = new Map(); this.meshes = []; }
   put(kind, x, y, z, ry, sx, sy = sx, sz = sx, color = null) {
     const key = `${kind}|${Math.floor(x / 500)},${Math.floor(z / 500)}`;

@@ -71,10 +71,26 @@ class GradedOutputPass extends OutputPass {
 // even when it reconstructs normals from depth; a stub stands in for it.
 // The blend raises AO to a power (blendIntensity) instead of mixing, which
 // keeps open ground clean while deepening contact shadows under cars and stands.
+// AO is low-frequency and denoised anyway, so it runs at half resolution (a quarter
+// of the pixels; GTAO was over half the frame's GPU time at full size) and the
+// bilinear upsample in the blend is invisible. The blend multiplies straight onto
+// the frame instead of copying it to the other buffer first.
 class DepthGTAOPass extends GTAOPass {
   constructor(...args) {
     super(...args);
     this.blendMaterial.fragmentShader = this.blendMaterial.fragmentShader.replace('vec4(mix(vec3(1.), texel.rgb, intensity), texel.a)', 'vec4(vec3(pow(clamp(texel.r, 0., 1.), intensity)), texel.a)');
+    this.needsSwap = false;
+  }
+  setSize(width, height) { super.setSize(Math.max(1, width >> 1), Math.max(1, height >> 1)); }
+  render(renderer, writeBuffer, readBuffer) {
+    const g = this.gtaoMaterial.uniforms, cam = this.camera;
+    g.cameraNear.value = cam.near; g.cameraFar.value = cam.far;
+    g.cameraProjectionMatrix.value.copy(cam.projectionMatrix); g.cameraProjectionMatrixInverse.value.copy(cam.projectionMatrixInverse); g.cameraWorldMatrix.value.copy(cam.matrixWorld);
+    this.renderPass(renderer, this.gtaoMaterial, this.gtaoRenderTarget, 0xffffff, 1.0);
+    this.pdMaterial.uniforms.cameraProjectionMatrixInverse.value.copy(cam.projectionMatrixInverse);
+    this.renderPass(renderer, this.pdMaterial, this.pdRenderTarget, 0xffffff, 1.0);
+    this.blendMaterial.uniforms.intensity.value = this.blendIntensity; this.blendMaterial.uniforms.tDiffuse.value = this.pdRenderTarget.texture;
+    this.renderPass(renderer, this.blendMaterial, readBuffer);
   }
 }
 DepthGTAOPass.prototype.normalRenderTarget = { depthTexture: null, setSize() {}, dispose() {} };

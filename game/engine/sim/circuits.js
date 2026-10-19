@@ -4,6 +4,7 @@
  * checked with scripts/track-metrics.mjs for corner radius and clearance.
  */
 import { NURBURGRING_POINTS, NURBURGRING_CORNERS } from './nurburgring.js';
+import { LAGO_POINTS, LAGO_CORNERS } from './lago.js';
 // Long straights are split so Catmull-Rom segments stay short and even.
 const pts = (list, split = true) => {
   const out = [];
@@ -85,4 +86,16 @@ export const NURBURGRING = circuit({
   pit: { lateralM: -12.8, entryFraction: 0.99565, limiterFraction: 0.99842, boxStartFraction: 0.00474, boxEndFraction: 0.01423, exitFraction: 0.02371 }
 });
 
-export const CIRCUITS = Object.freeze({ solenne: SOLENNE, alpine: ALPENRING, desert: MIRAGE, nurburgring: NURBURGRING });
+// 7.8 km lakeside road course built from exact arcs (lago.js), points every 5 m.
+// Pits on the infield side of the 1.2 km marina straight.
+export const LAGO = circuit({
+  id: 'lago', name: 'Autodromo del Lago Aurelia', seed: 61842,
+  description: 'Lakeside road course: three long straights, fast sweepers along the shore and a tight old-town sector.',
+  controlPoints: pts(LAGO_POINTS, false),
+  roadHalfWidth: 7.6, curbWidth: 1.15, runoffWidth: 12, sampleDensity: 2,
+  sectors: Object.freeze([]), landmarks: Object.freeze(LAGO_CORNERS),
+  start: { finishFraction: 0.0463, gridFraction: 0.0425 },
+  pit: { entryFraction: 0.0026, limiterFraction: 0.034, boxStartFraction: 0.0553, boxEndFraction: 0.0798, exitFraction: 0.097 }
+});
+
+export const CIRCUITS = Object.freeze({ solenne: SOLENNE, alpine: ALPENRING, desert: MIRAGE, nurburgring: NURBURGRING, lago: LAGO });

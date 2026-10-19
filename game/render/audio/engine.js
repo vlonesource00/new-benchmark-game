@@ -45,7 +45,8 @@ const TRACKS = {
   solenne: { room: 'stands', crowd: 0.85, sea: 0, leaves: 0.12, cicadas: 0.3, wind: 0.1, events: [['song', 8, 20], ['blackbird', 15, 35]] },
   alpine: { room: 'valley', crowd: 0.35, sea: 0, leaves: 0.3, cicadas: 0, wind: 0.32, events: [['cowbell', 14, 32], ['song', 7, 16], ['blackbird', 18, 40]] },
   desert: { room: 'open', crowd: 0.4, sea: 0, leaves: 0, cicadas: 0.12, wind: 0.45, events: [['hawk', 28, 70]] },
-  nurburgring: { room: 'forest', crowd: 0.45, sea: 0, leaves: 0.45, cicadas: 0, wind: 0.2, events: [['song', 5, 12], ['blackbird', 10, 24], ['cuckoo', 25, 60]] }
+  nurburgring: { room: 'forest', crowd: 0.45, sea: 0, leaves: 0.45, cicadas: 0, wind: 0.2, events: [['song', 5, 12], ['blackbird', 10, 24], ['cuckoo', 25, 60]] },
+  lago: { room: 'harbor', crowd: 0.7, sea: 0.3, leaves: 0.1, cicadas: 0.35, wind: 0.12, events: [['gull', 8, 20], ['song', 10, 24], ['horn', 70, 140]] }
 };
 
 // Tuner test sounds: length, and whether the engine is muted so the tuned layer is heard alone.

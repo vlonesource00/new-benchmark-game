@@ -32,5 +32,10 @@ export const EVENTS = [
     id: 'green-hell', series: 'Green Hell', kind: 'hosted', art: 'nurburgring',
     blurb: 'Two laps of the 25 km Nordschleife combination. Code 60 cautions.',
     preset: { session: 'hosted', formatId: 'custom', laps: 2, trackId: 'nurburgring', field: 'multi', startType: 'rolling', weather: 'changeable', startTime: 'morning', caution: 'full', qualifying: false, teamCount: 8 }
+  },
+  {
+    id: 'lago-aurelia', series: 'Gran Premio del Lago', kind: 'hosted', art: 'lago',
+    blurb: 'Lakeside straights, the old town chicanes and the Porto hairpin. Golden hour.',
+    preset: { session: 'hosted', formatId: 'custom', laps: 8, trackId: 'lago', field: 'gt3', startType: 'rolling', weather: 'clear', startTime: 'track', caution: 'full', qualifying: true, teamCount: 8 }
   }
 ];

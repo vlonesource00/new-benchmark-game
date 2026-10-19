@@ -7,7 +7,9 @@ import * as THREE from 'three';
 // track, buildings, car parks and water, without any per-object bookkeeping.
 
 const PATCH = 120;          // metres of grass around the camera
-const DENSITY = { high: 22, ultra: 36 };   // blades per square metre
+const NEAR = 40;            // dense square round the camera; the rest of the patch is a sparse ring
+const DENSITY = { high: 22, ultra: 36 };   // blades per square metre near the camera
+const FAR_DENSITY = { high: 3.2, ultra: 5 };
 const MASK_RES = 2048;
 
 const COLORS = {
@@ -32,43 +34,59 @@ function bladeGeometry() {
   return g;
 }
 
+// Two draws share one blade buffer: a dense NEAR square wrapping round the camera,
+// and the full patch at a fraction of the density for the ring outside it, its
+// blades widened to keep the cover. Vertex work (eight vertices per blade, each
+// sampling the mask) was the cost; this cuts the blade count about four times.
 export class GrassField {
   constructor(world, renderer, kind = 'grass') {
-    const rng = world.rng, n = Math.round(PATCH * PATCH * DENSITY.ultra);
-    const geo = bladeGeometry(), off = new Float32Array(n * 4);
+    const rng = world.rng, n = Math.round(Math.max(NEAR * NEAR * DENSITY.ultra, PATCH * PATCH * FAR_DENSITY.ultra));
+    const off = new Float32Array(n * 4);
     for (let i = 0; i < n; i++) off.set([rng() * PATCH, rng() * PATCH, .16 + rng() ** 2 * .4, rng() * Math.PI * 2], i * 4);
-    geo.setAttribute('aBlade', new THREE.InstancedBufferAttribute(off, 4));
-    geo.instanceCount = n; this.max = n;
-    geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e9);
-
+    const blades = new THREE.InstancedBufferAttribute(off, 4);
     const [base, tip] = (COLORS[kind] ?? COLORS.grass).map((c) => new THREE.Color(c));
     this.mask = this.renderMask(world, renderer);
-    const uniforms = { uCam: { value: new THREE.Vector2() }, uPatch: { value: PATCH }, uMask: { value: this.mask.texture }, uMaskBox: { value: this.maskBox }, uBase: { value: base }, uTip: { value: tip }, uTime: world.timeUniform };
-    const material = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: .85, side: THREE.DoubleSide });
-    material.onBeforeCompile = (s) => {
-      Object.assign(s.uniforms, uniforms);
-      s.vertexShader = `attribute vec4 aBlade;uniform vec2 uCam;uniform float uPatch;uniform sampler2D uMask;uniform vec4 uMaskBox;uniform vec3 uBase,uTip;uniform float uTime;\n` + s.vertexShader
-        .replace('#include <color_vertex>', `#include <color_vertex>
-          vColor.rgb = mix(uBase, uTip, color.r) * (.85 + .3 * fract(aBlade.w * 7.3));`)
-        .replace('#include <begin_vertex>', `
-          vec2 org = uCam - uPatch * .5;
-          vec2 wp = org + mod(aBlade.xy - org, uPatch);
-          vec2 muv = vec2((wp.x - uMaskBox.x) / uMaskBox.z, (uMaskBox.y - wp.y) / uMaskBox.w);
-          float inside = step(0., muv.x) * step(muv.x, 1.) * step(0., muv.y) * step(muv.y, 1.);
-          float m = mix(1., 1. - textureLod(uMask, muv, 0.).r, inside);
-          float edge = 1. - smoothstep(.35, 1., length(wp - uCam) / (uPatch * .5));
-          float h = aBlade.z * smoothstep(.35, .9, m) * edge;
-          float c = cos(aBlade.w), sn = sin(aBlade.w);
-          vec3 transformed = vec3(position.x * c, position.y * h, position.x * sn);
-          float gust = sin(uTime * 1.7 + wp.x * .13 + wp.y * .07) * .5 + sin(uTime * 3.1 + wp.x * .31) * .2;
-          transformed.x += gust * position.y * position.y * h * .35;
-          transformed.z += (fract(aBlade.w * 3.1) - .5) * position.y * position.y * h * .5;
-          transformed.xz += wp;`);
+    const shared = { uCam: { value: new THREE.Vector2() }, uMask: { value: this.mask.texture }, uMaskBox: { value: this.maskBox }, uBase: { value: base }, uTip: { value: tip }, uTime: world.timeUniform };
+    const part = (far) => {
+      const geo = bladeGeometry(); geo.setAttribute('aBlade', blades); geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e9);
+      const uniforms = { ...shared, uPatch: { value: far ? PATCH : NEAR }, uWide: { value: 1 } };
+      const material = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: .85, side: THREE.DoubleSide });
+      material.onBeforeCompile = (s) => {
+        Object.assign(s.uniforms, uniforms);
+        s.vertexShader = `attribute vec4 aBlade;uniform vec2 uCam;uniform float uPatch,uWide;uniform sampler2D uMask;uniform vec4 uMaskBox;uniform vec3 uBase,uTip;uniform float uTime;
+` + s.vertexShader
+          .replace('#include <color_vertex>', `#include <color_vertex>
+            vColor.rgb = mix(uBase, uTip, color.r) * (.85 + .3 * fract(aBlade.w * 7.3));`)
+          .replace('#include <begin_vertex>', `
+            vec2 org = uCam - uPatch * .5;
+            vec2 wp = org + mod(aBlade.xy - org, uPatch);
+            vec2 rel = abs(wp - uCam);
+            ${far
+              ? `float zone = step(${(NEAR / 2).toFixed(1)}, max(rel.x, rel.y)) * (1. - smoothstep(.35, 1., length(wp - uCam) / (uPatch * .5)));`
+              : `float zone = 1. - smoothstep(${(NEAR * .3).toFixed(1)}, ${(NEAR * .5).toFixed(1)}, max(rel.x, rel.y)) * step(.25, fract(aBlade.w * 13.7));`}
+            float h = 0.;
+            if (zone > 0.) {
+              vec2 muv = vec2((wp.x - uMaskBox.x) / uMaskBox.z, (uMaskBox.y - wp.y) / uMaskBox.w);
+              float inside = step(0., muv.x) * step(muv.x, 1.) * step(0., muv.y) * step(muv.y, 1.);
+              float m = mix(1., 1. - textureLod(uMask, muv, 0.).r, inside);
+              h = aBlade.z * smoothstep(.35, .9, m) * zone;
+            }
+            float c = cos(aBlade.w), sn = sin(aBlade.w);
+            vec3 transformed = vec3(position.x * c * uWide, position.y * h, position.x * sn * uWide);
+            float gust = sin(uTime * 1.7 + wp.x * .13 + wp.y * .07) * .5 + sin(uTime * 3.1 + wp.x * .31) * .2;
+            transformed.x += gust * position.y * position.y * h * .35;
+            transformed.z += (fract(aBlade.w * 3.1) - .5) * position.y * position.y * h * .5;
+            transformed.xz += wp;`);
+      };
+      material.customProgramCacheKey = () => far ? 'gpu-grass-far' : 'gpu-grass';
+      const mesh = new THREE.Mesh(geo, material);
+      mesh.frustumCulled = false; mesh.receiveShadow = true; mesh.castShadow = false; mesh.userData.wide = uniforms.uWide;
+      mesh.onBeforeRender = (r, scene, camera) => { shared.uCam.value.set(camera.position.x, camera.position.z); };
+      return mesh;
     };
-    material.customProgramCacheKey = () => 'gpu-grass';
-    this.mesh = new THREE.Mesh(geo, material);
-    this.mesh.frustumCulled = false; this.mesh.receiveShadow = true; this.mesh.castShadow = false;
-    this.mesh.onBeforeRender = (r, scene, camera) => { uniforms.uCam.value.set(camera.position.x, camera.position.z); };
+    this.near = part(false); this.far = part(true); this.max = n;
+    this.mesh = new THREE.Group(); this.mesh.add(this.near, this.far);
+    this.setQuality('high');
   }
 
   // White wherever static scenery other than the ground covers the terrain.
@@ -91,11 +109,16 @@ export class GrassField {
     return target;
   }
 
-  // Blades are scattered uniformly, so any prefix of them is an even, sparser field.
+  // Blades are scattered uniformly, so any prefix of them is an even, sparser field
+  // (wrapped into the near square, a prefix is just as even there).
   setQuality(mode) {
     this.mesh.visible = mode === 'high' || mode === 'ultra';
-    this.mesh.geometry.instanceCount = Math.round(this.max * (DENSITY[mode] ?? DENSITY.high) / DENSITY.ultra);
+    const near = DENSITY[mode] ?? DENSITY.high, far = FAR_DENSITY[mode] ?? FAR_DENSITY.high;
+    // Past 12 m the near square thins to one blade in four, meeting the widened far ring at its edge.
+    this.near.geometry.instanceCount = Math.min(this.max, Math.round(NEAR * NEAR * near));
+    this.far.geometry.instanceCount = Math.min(this.max, Math.round(PATCH * PATCH * far));
+    this.far.userData.wide.value = Math.sqrt(near / far) * .8;
   }
 
-  dispose() { this.mesh.geometry.dispose(); this.mesh.material.dispose(); this.mask.dispose(); }
+  dispose() { for (const m of [this.near, this.far]) { m.geometry.dispose(); m.material.dispose(); } this.mask.dispose(); }
 }

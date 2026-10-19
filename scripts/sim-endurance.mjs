@@ -2,7 +2,7 @@
 //   node scripts/sim-endurance.mjs --calibrate            measure unscaled fuel/wear per metre
 //   node scripts/sim-endurance.mjs --laps 6 --teams 6 --seed 7 [--track harbor-ring] [--difficulty 0.9]
 //     [--caution full|fcy] [--call <race s> [--call-kind sc|fcy]] [--trace]   race control / safety car
-//   node scripts/sim-endurance.mjs --profile [--track harbor-ring]   record the difficulty reference pace
+//   node scripts/sim-endurance.mjs --profile [--track harbor-ring] [--only SPEARHEAD,SOLSTICE]   record the difficulty reference pace
 import { Track } from '../game/engine/sim/track.js';
 import { EnduranceRace, FIXED_DT, maxWear } from '../game/core/race.js';
 import { FORMATS, COMPOUNDS } from '../game/core/rules.js';
@@ -40,7 +40,9 @@ if (args.includes('--profile')) {
   const { PACE_PROFILES } = await import('../game/core/pace-profiles.js');
   const track = new Track(trackName), BIN = 5, n = Math.ceil(track.length / BIN);
   let best = null;
-  for (const d of AI_DRIVERS.filter((x) => x.anyTrack || trackName === 'harbor-ring')) {
+  // --only NAME,NAME limits the run to those drivers (the network racers are slow to simulate).
+  const only = args.includes('--only') ? args[args.indexOf('--only') + 1].split(',') : null;
+  for (const d of AI_DRIVERS.filter((x) => (x.anyTrack || trackName === 'harbor-ring') && (!only || only.includes(x.name)))) {
     const teams = [{ id: 'p', name: 'P', short: 'P', color: '#fff', index: 0, starter: 0, drivers: [{ kind: 'ai', id: d.id, name: d.name, short: d.short }], grid: 0 }];
     const race = new EnduranceRace({ track, teams, format: { ...FORMATS.custom, mandatoryStops: 0, mandatorySwap: false }, laps: 30 });
     race.start();

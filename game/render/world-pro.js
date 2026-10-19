@@ -9,6 +9,8 @@ import { buildTrackWear } from './trackwear.js';
 import { batchStatic, protectedRefs } from './batch.js';
 import { GrassField } from './grass.js';
 import { buildEifel } from './eifel.js';
+import { lakeOutline, buildLago } from './lago.js';
+import { buildMountains } from './mountains.js';
 import { LIGHTING, wetSurface } from '../engine/render/surfaces.js';
 import { ribbon } from '../engine/render/world.js';
 import {
@@ -143,7 +145,7 @@ export const THEMES = {
   solenne: { lighting: 'day', hour: 13, city: 'village', palms: 0, trees: 2200, blimp: 'SOLENNE', banner: 'CIRCUIT DE SOLENNE  ·  GRAND PRIX',
     hills: { colors: ['#56704e', '#6f8a6a', '#93a69a'], height: 1.1 } },
   alpine: { lighting: 'night', hour: 21.5, ground: 'alpine', palms: 0, trees: 0, pines: 2600, stars: true, blimp: 'ALPENRING', banner: 'ALPENRING  ·  NACHTRENNEN',
-    hills: { colors: ['#2a343c', '#3a4650', '#56626c'], height: 3.6, snow: true, jagged: true } },
+    hills: { colors: ['#2a343c', '#3a4650', '#56626c'], height: 2.4, snow: true, jagged: true } },
   desert: { lighting: 'dusk', hour: 18.6, ground: 'sand', palms: 70, trees: 0, blades: false, rocks: true, blimp: 'MIRAGE', banner: 'MIRAGE 1000  ·  DESERT GRAND PRIX',
     hills: { colors: ['#a8603a', '#b97a52', '#caa07c'], height: 1.3, mesa: true } },
   // The Eifel landscape (render/eifel.js) replaces the horizon ranges and the scattered trees.
@@ -152,10 +154,15 @@ export const THEMES = {
   // `stands` adds grandstands at lap fractions after the main one opposite the pits.
   nurburgring: { lighting: 'golden', hour: 17.2, eifel: true, palms: 0, trees: 0, haze: 1.3, birds: '#3b332c', gp: [.972, .186],
     stands: [[.0328, 0, 90], [.0808, 0, 80], [.1665, 0, 70]], blimp: 'NÜRBURGRING', banner: '24H NÜRBURGRING  ·  GRÜNE HÖLLE',
-    hills: { colors: ['#3f5a3c', '#566f52', '#7b8f80'], height: 1 } }
+    hills: { colors: ['#3f5a3c', '#566f52', '#7b8f80'], height: 1 } },
+  // Lake circuit (render/lago.js): the lake is cut out of the ground; marina, castle, old town and vineyards.
+  lago: { lighting: 'golden', hour: 16.9, lago: true, city: 'village', palms: 160, trees: 1300, haze: 1.1,
+    stands: [[.157, 0, 100], [.29, 0, 90], [.466, 0, 70], [.571, 0, 80], [.906, 0, 90], [.953, 0, 70]],
+    blimp: 'LAGO AURELIA', banner: 'AUTODROMO DEL LAGO AURELIA  ·  GRAN PREMIO',
+    hills: { colors: ['#4a5d4c', '#6a7b78', '#8f9ea6'], height: 2.3, jagged: true } }
 };
 // world-pro helpers lent to the per-circuit landscape modules.
-const KIT = { std, add, box, decal, sway, mipAlpha, canvasTexture, sweep };
+const KIT = { std, add, box, decal, sway, mipAlpha, canvasTexture, sweep, waterNormal, TIME };
 
 // Sun height (the y of the light direction) at each lighting preset; the day
 // cycle blends neighbouring presets. Theme start hours sit on their preset.
@@ -241,7 +248,10 @@ export class World {
     this.keyDir = new THREE.Vector3(0, 1, 0); this.lightDir = new THREE.Vector3(); this.tmpDir = new THREE.Vector3(); this.tmpColor = new THREE.Color();
     this.lamps = 0; this.dark = this.theme.lighting === 'night' ? 1 : 0;
 
-    this.clearOf = (x, z, r = 0) => Math.abs(track.nearest(x, z).lateral) > track.barrierOffset + 2.5 + r;
+    // On the lake circuit nothing is placed in (or right at the edge of) the water.
+    this.lake = this.theme.lago ? lakeOutline(track, this.bounds.cx, this.bounds.cz) : null;
+    this.land = this.lake ? (x, z) => !this.lake.near(x, z, 6) : () => true;
+    this.clearOf = (x, z, r = 0) => Math.abs(track.nearest(x, z).lateral) > track.barrierOffset + 2.5 + r && this.land(x, z);
     // Coarse occupancy grid (8 m cells) so the landscape fill, the city and the trees don't overlap.
     this.taken = new Set(); this.glows = [];
     // Pit lane geometry, identical to the one the race builds (core/pit.js).
@@ -255,11 +265,12 @@ export class World {
     this.inGP = gp ? (s) => { const f = wrap(s, track.length) / track.length; return f >= gp[0] || f <= gp[1]; } : () => true;
     this.buildTrack(); this.buildGround(); this.buildTrackside(); buildTrackWear(this); this.buildPitLane(); this.buildPaddock(); this.buildStands();
     if (this.theme.harbor) this.buildHarbor();
+    if (this.lake) this.lago = buildLago(this, KIT);
     this.buildCity();
     // Landscape fill; its objects are kept so a lower quality setting can hide them.
     const r0 = this.root.children.length, l0 = this.live.children.length; this.glows.push(...buildFill(this).glows);
     this.fillObjects = [...this.root.children.slice(r0), ...this.live.children.slice(l0)];
-    if (this.theme.eifel) this.eifel = buildEifel(this, KIT); else this.buildHills();
+    if (this.theme.eifel) this.eifel = buildEifel(this, KIT); else buildMountains(this, KIT);
     this.buildNature(); this.buildSkyLife();
     if (this.theme.rocks) this.buildDesert();
     this.buildStars();
@@ -537,9 +548,19 @@ export class World {
     const material = new THREE.MeshStandardMaterial({ ...grass, roughness: 1, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 4 });
     material.onBeforeCompile = (s) => {
       s.vertexShader = 'varying vec3 vW;\n' + s.vertexShader.replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\nvW=(modelMatrix*vec4(transformed,1.)).xyz;');
-      s.fragmentShader = 'varying vec3 vW;\n' + s.fragmentShader.replace('#include <color_fragment>', `#include <color_fragment>
-        float a=sin(vW.x*.011+sin(vW.z*.008)*2.)*sin(vW.z*.015+1.3);float b=sin(vW.x*.041+vW.z*.037)*.5+.5;
-        diffuseColor.rgb*=mix(vec3(.78,.84,.66),vec3(1.12,1.04,.82),a*.5+.5)*mix(.92,1.06,b);
+      // Two samples of the grass map, the second on a rotated world grid at another
+      // scale, blended by noise, break up the 13 m repeat; value-noise fbm then lays
+      // dry and lush patches over the field at 250 m, 80 m and 20 m scales.
+      s.fragmentShader = `varying vec3 vW;
+        float gHash(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
+        float gNoise(vec2 p){vec2 i=floor(p),f=fract(p);f=f*f*(3.-2.*f);
+          return mix(mix(gHash(i),gHash(i+vec2(1,0)),f.x),mix(gHash(i+vec2(0,1)),gHash(i+vec2(1,1)),f.x),f.y);}
+        ` + s.fragmentShader.replace('#include <map_fragment>', `#ifdef USE_MAP
+          vec4 sampledDiffuseColor = mix(texture2D(map, vMapUv), texture2D(map, mat2(.8,-.6,.6,.8) * vW.xz * (1. / 17.3)), smoothstep(.3, .7, gNoise(vW.xz * .03)));
+          diffuseColor *= sampledDiffuseColor;
+        #endif`).replace('#include <color_fragment>', `#include <color_fragment>
+        float a=gNoise(vW.xz*.004)*.6+gNoise(vW.xz*.0125+7.)*.3+gNoise(vW.xz*.05-3.)*.1;float b=gNoise(vW.xz*.11+11.);
+        diffuseColor.rgb*=mix(vec3(.62,.72,.5),vec3(1.16,1.02,.72),smoothstep(.15,.85,a))*mix(.86,1.08,b);
         float mow=step(.5,fract(vW.x*.05+vW.z*.02));diffuseColor.rgb*=mix(.96,1.04,mow);`);
     };
     // Sand and alpine meadow are tints of the same grass shader.
@@ -553,6 +574,14 @@ export class World {
       // Terrain stops at the quay edge; the sea takes over east of x=770.
       const west = -3200, east = 770, ground = add(this.root, new THREE.PlaneGeometry(east - west, 6400), material, (east + west) / 2, -.055, 0, false);
       ground.rotation.x = -Math.PI / 2; this.groundMeshes = [ground];
+    } else if (this.lake) {
+      // The 9 km square with the lake cut out; UVs keep the plane's 0..1 so the grass repeat matches.
+      const { cx, cz } = this.bounds, H = 4500, outer = new THREE.Shape([[-H, -H], [H, -H], [H, H], [-H, H]].map(([x, y]) => new THREE.Vector2(cx + x, -cz + y)));
+      outer.holes.push(new THREE.Path(this.lake.poly.map(([x, z]) => new THREE.Vector2(x, -z))));
+      const geo = new THREE.ShapeGeometry(outer, 1), uv = geo.attributes.uv;
+      for (let i = 0; i < uv.count; i++) uv.setXY(i, (uv.getX(i) - cx + H) / (2 * H), (uv.getY(i) + cz + H) / (2 * H));
+      geo.rotateX(-Math.PI / 2);
+      const ground = add(this.root, geo, material, 0, -.055, 0, false); this.groundMeshes = [ground];
     } else {
       const ground = add(this.root, new THREE.PlaneGeometry(9000, 9000), material, this.bounds.cx, -.055, this.bounds.cz, false);
       ground.rotation.x = -Math.PI / 2; this.groundMeshes = [ground];
@@ -1076,29 +1105,6 @@ export class World {
   // Horizon ranges layered into the haze. The harbor keeps its western arc; the
   // other circuits get a full ring around the layout. Mountains carry snow above
   // a height line (vertex colours), mesas get flat tops.
-  buildHills() {
-    const h = this.theme.hills, rng = this.rng, b = this.bounds, arc = h.arc ?? [0, 2];
-    const cx = this.theme.harbor ? 0 : b.cx, cz = this.theme.harbor ? 0 : b.cz, base = this.theme.harbor ? 2300 : Math.max(2300, b.r + 1400);
-    const snow = new THREE.Color('#e6ecf4'), tmp = new THREE.Color();
-    for (let layer = 0; layer < 3; layer++) {
-      const v = [], col = [], idx = [], radius = base + layer * 520, seg = h.jagged ? 360 : 180, rows = h.snow ? 6 : 1, c0 = new THREE.Color(h.colors[layer]);
-      for (let i = 0; i <= seg; i++) {
-        const a = Math.PI * arc[0] + i / seg * Math.PI * arc[1], x = cx + Math.cos(a) * radius, z = cz + Math.sin(a) * radius;
-        let y = 120 + Math.sin(a * 5 + layer) * 70 + Math.sin(a * 13 + layer * 2) * 30 + rng() * 22 + layer * 60;
-        if (h.jagged) y += Math.abs(Math.sin(a * 23 + layer * 3)) * 140 + Math.abs(Math.sin(a * 57 + layer)) * 60;
-        if (h.mesa) y = Math.sin(a * 7 + layer * 1.3) > -.2 ? Math.min(y, 150 + layer * 40) : y * .3;
-        y *= h.height;
-        for (let r = 0; r <= rows; r++) {
-          const k = r / rows, yy = -5 + (y + 5) * k; v.push(x, yy, z);
-          tmp.copy(c0).lerp(snow, h.snow ? smooth01((yy - 260) / 120) : 0); col.push(tmp.r, tmp.g, tmp.b);
-        }
-        if (i < seg) for (let r = 0; r < rows; r++) { const q = i * (rows + 1) + r, n = q + rows + 1; idx.push(q, q + 1, n, q + 1, n + 1, n); }
-      }
-      const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(v, 3)); g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3)); g.setIndex(idx); g.computeVertexNormals();
-      add(this.root, g, std('#ffffff', 1, 0, { side: THREE.DoubleSide, vertexColors: true }), 0, 0, 0, false);
-    }
-  }
-
   // Braking boards off the harbor: the entry of each corner that follows at
   // least 220 m of near-straight.
   brakingZones() {
@@ -1344,7 +1350,7 @@ export class World {
       flush();
       if (color.updateRanges.length) color.needsUpdate = true;
     }
-    this.eifel?.update(car);
+    this.eifel?.update(car); this.lago?.update(car.x, car.z);
     for (const a of this.animators) a(now);
     for (const st of this.stands) { const dist = st.centre.distanceTo(this.centre.set(car.x, 0, car.z)); const target = countdown > 0 ? .9 : clamp(1.4 - dist / 120, .25, 1); st.excite.value += (target - st.excite.value) * Math.min(1, dt * 2); }
     if (Math.floor(now * 5) !== this.screenTick) { this.screenTick = Math.floor(now * 5); this.drawScreen(car, now); }
@@ -1360,8 +1366,8 @@ export class World {
     }
     // Gulls wheel above the harbor side; each flock drifts along its own orbit.
     // Elsewhere the same flocks become birds circling over the infield.
-    const bc = this.bounds, centres = this.theme.harbor ? [[640, 0], [900, 300], [760, -300], [300, 120]]
-      : [[bc.cx, bc.cz], [bc.x0 + 200, bc.cz], [bc.x1 - 200, bc.cz + 150], [bc.cx, bc.z0 + 200]];
+    const bc = this.bounds, centres = this.gullCentres ?? (this.theme.harbor ? [[640, 0], [900, 300], [760, -300], [300, 120]]
+      : [[bc.cx, bc.cz], [bc.x0 + 200, bc.cz], [bc.x1 - 200, bc.cz + 150], [bc.cx, bc.z0 + 200]]);
     this.gullSeeds.forEach((g, i) => {
       const c = centres[g.flock], a = now * g.sp + g.ph; this.dummy.position.set(c[0] + Math.cos(a) * g.r, g.h + Math.sin(now * .5 + i) * 3, c[1] + Math.sin(a) * g.r);
       this.dummy.rotation.set(0, -a, Math.sin(now + i) * .3); this.dummy.scale.setScalar(1); this.dummy.updateMatrix(); this.gulls.setMatrixAt(i, this.dummy.matrix);
