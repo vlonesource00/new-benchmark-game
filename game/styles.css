@@ -137,6 +137,9 @@ input[type=range] { accent-color: var(--accent); width: 180px; }
 .tower .bug { display: flex; align-items: center; gap: 10px; background: linear-gradient(90deg, var(--accent) 0 6px, #0b0d12 6px); padding: 6px 12px 6px 16px; clip-path: polygon(0 0, 100% 0, calc(100% - 10px) 100%, 0 100%); }
 .tower .bug .live { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 8px var(--accent); animation: rp-blink 1.4s steps(2) infinite; }
 .tower .bug b { font-size: 22px; font-style: italic; font-weight: 900; letter-spacing: .02em; }
+.tower .bug .tod { margin-left: auto; font-family: var(--mono); font-size: 13px; font-weight: 700; color: #f4b740; }
+.tower .bug .tod:empty { display: none; }
+.tower .bug .tod:not(:empty) + .clock { margin-left: 10px; }
 .tower .bug .clock { margin-left: auto; font-family: var(--mono); font-size: 15px; font-weight: 700; color: var(--ink); }
 .tower .head { display: flex; justify-content: space-between; align-items: center; background: var(--glass-hi); padding: 3px 10px; font-size: 10px; letter-spacing: .26em; color: var(--faint); font-weight: 700; }
 .tower .head .final { color: #111; background: var(--ink); padding: 1px 6px; animation: rp-blink 1s steps(2) infinite; }

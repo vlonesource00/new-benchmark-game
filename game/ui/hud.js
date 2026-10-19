@@ -11,7 +11,7 @@ export class Hud {
     this.el = el;
     el.innerHTML = `
       <div class="tower">
-        <div class="bug"><i class="live"></i><b>LAP <span data-lap>1/1</span></b><span class="clock" data-clock>0:00</span></div>
+        <div class="bug"><i class="live"></i><b>LAP <span data-lap>1/1</span></b><span class="tod" data-tod></span><span class="clock" data-clock>0:00</span></div>
         <div class="head"><span data-tmode>INTERVAL</span><span data-final></span></div>
         <ol data-tower></ol>
       </div>
@@ -117,6 +117,9 @@ export class Hud {
     const focus = snap.cars.find((c) => c.id === focusId) ?? leader;
     this.q('lap').textContent = `${Math.min(snap.laps, Math.max(1, leader?.lap ?? 1))}/${snap.laps}`;
     this.q('clock').textContent = fmtClock(snap.time);
+    // Time of day while the day cycle runs, so the sun's progress is readable.
+    const h = ctx.hour == null ? null : ((ctx.hour % 24) + 24) % 24, tod = this.q('tod');
+    tod.textContent = h == null ? '' : `${String(Math.floor(h)).padStart(2, '0')}:${String(Math.floor(h % 1 * 60)).padStart(2, '0')}`;
 
     // Timing tower: alternates interval-to-car-ahead and gap-to-leader like a TV feed.
     const tower = this.q('tower'), intervals = Math.floor(snap.time / 12) % 2 === 0;

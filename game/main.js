@@ -146,7 +146,11 @@ let debugHour = null, debugClock = 0;
 // re-rolled for the next event (or by New forecast on the briefing). The menu previews its opening sky.
 const rollSeed = () => (Math.random() * 2 ** 31) | 0;
 let weatherSeed = rollSeed();
-const hourSpan = (laps) => Math.max(1, Math.min(8, laps * .35));
+// Day cycle: the clock runs DAY_SCALE times real time over the race's expected length, so even a
+// short sprint visibly moves the sun (2 h at least) and a long race can run through the night.
+const DAY_SCALE = 16;
+const hourSpan = (seconds) => Math.max(2, Math.min(14, seconds * DAY_SCALE / 3600));
+let raceDayHours = 0;
 const sunHeight = (hour) => Math.max(0, Math.sin(Math.PI * (hour - 6.5) / 13));
 const planTracks = new Map();
 /**
@@ -165,7 +169,7 @@ function weatherPlan(s = cfg()) {
 /** Forecast rows by lap (grouped past 30 laps) and by time (1–30 min steps, at most ~24 rows). */
 function forecast(s = cfg()) {
   const plan = weatherPlan(s), { lap, formation, laps, span } = plan;
-  const sunAt = (t) => sunHeight(s.dayCycle === false ? startHour() : startHour() + hourSpan(laps) * Math.min(1, Math.max(0, (t - formation) / (span - formation))));
+  const sunAt = (t) => sunHeight(s.dayCycle === false ? startHour() : startHour() + hourSpan(span) * Math.min(1, Math.max(0, (t - formation) / (span - formation))));
   const run = (edges) => forecastWeather({ id: plan.id, seed: plan.seed, track: plan.track, span, edges, sunAt });
   const group = laps > 30 ? Math.ceil(laps / 24) : 1, lapEdges = [0];
   for (let l = group; l < laps; l += group) lapEdges.push(formation + l * lap);
@@ -191,7 +195,7 @@ function raceHour() {
   if (debugHour !== null) return debugHour;
   if (!setup.dayCycle || !snap?.cars.length || !trackLength) return startHour();
   const lead = snap.cars.reduce((a, c) => (c.progress > a.progress ? c : a));
-  return startHour() + hourSpan(snap.laps) * Math.max(0, Math.min(1, lead.progress / (snap.laps * trackLength)));
+  return startHour() + raceDayHours * Math.max(0, Math.min(1, lead.progress / (snap.laps * trackLength)));
 }
 let focusId = 0, playerTeamId = null, simScale = 1, paused = false, raceActive = false, camModes = ['chase', 'bonnet', 'elevated'], camIndex = 0;
 let recorder = null, replay = null, rain = null;
@@ -328,6 +332,7 @@ async function startRace({ session = (cfg().qualifying ?? true) ? 'qualifying' :
     const duelRun = mode === 'duel';
     race = new EnduranceRace({ track: new Track(def.scenario), teams, format: duelRun ? { ...FORMATS.custom, mandatoryStops: 0, mandatorySwap: false } : FORMATS[setup.formatId] ?? FORMATS.custom, laps: duelRun ? 12 : setup.laps, startCompound: setup.startCompound ?? 'medium', difficulty: difficultyById(raceDifficulty()).k, weather: setup.weather ?? 'clear', seed: setup.seed, weatherSeed, weatherSpan: weatherPlan(setup).span, makeBridge: seats.factory(), session, startType: setup.startType ?? 'rolling', caution: duelRun ? 'off' : setup.caution ?? 'full' });
     if (duelRun) race.laps = setup.laps;
+    raceDayHours = hourSpan(weatherPlan(cfg()).span);
     await seats.start(race);
     world.setPitBoxes?.(race.lane, teams);
   } catch (error) {
@@ -436,7 +441,7 @@ function onSnapshot() {
     const mine = mineRow(); if (mine) focus(mine.id, true);
   }
   wasDriving = driving;
-  hud.update(snap, { teamsById, focusId, playerTeamId, driving, trackLength, pitOpen, ratingOf, sof: raceInfo?.sof });
+  hud.update(snap, { teamsById, focusId, playerTeamId, driving, trackLength, pitOpen, ratingOf, sof: raceInfo?.sof, hour: setup.dayCycle ? raceHour() : null });
 }
 
 function setSpeed(n) {
@@ -448,7 +453,7 @@ function focus(id, snapCam = false) {
   focusId = id;
   spectator.setTarget(cars[id], camModes[camIndex]);
   if (!snapCam) spectator.snapToTarget();
-  if (snap) hud.update(snap, { teamsById, focusId, playerTeamId, driving: playerDriving(), trackLength, pitOpen, ratingOf, sof: raceInfo?.sof });
+  if (snap) hud.update(snap, { teamsById, focusId, playerTeamId, driving: playerDriving(), trackLength, pitOpen, ratingOf, sof: raceInfo?.sof, hour: setup.dayCycle ? raceHour() : null });
 }
 function cycleFocus(step) {
   if (!snap) return;

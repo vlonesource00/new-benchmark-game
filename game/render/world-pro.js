@@ -164,13 +164,23 @@ export const THEMES = {
 // world-pro helpers lent to the per-circuit landscape modules.
 const KIT = { std, add, box, decal, sway, mipAlpha, canvasTexture, sweep, waterNormal, TIME };
 
-// Sun height (the y of the light direction) at each lighting preset; the day
-// cycle blends neighbouring presets. Theme start hours sit on their preset.
-const TWILIGHT = { sun: '#ff9a62', sky: '#6c6f8e', ground: '#4a4440', fog: '#6e6878', intensity: .9, fill: .6, environment: .4, exposure: 1.18, elevation: .06, turbidity: 5, density: .0006 };
+// The day cycle's own palette, keyed by sun height (the y of the light
+// direction): neighbouring stops blend as the sun moves. Golden sits where the
+// circuits' art-directed golden hours put the sun. Fill (sky light) drops
+// faster than the sun towards evening, so shadows deepen and the light warms
+// through the afternoon instead of all at once before dark.
+const CYCLE = {
+  night: { sun: '#dce6ff', sky: '#26334f', ground: '#1e2026', fog: '#0e1422', intensity: 1.9, fill: .42, environment: .22, exposure: 1.08, turbidity: 1.2, density: .0007, rayleigh: .3, cover: .72 },
+  twilight: { sun: '#ff6c3c', sky: '#46507c', ground: '#3c3236', fog: '#55526e', intensity: .75, fill: .5, environment: .32, exposure: 1.14, turbidity: 5, density: .0006, rayleigh: 2, cover: .66 },
+  dusk: { sun: '#ff8a3a', sky: '#bf8f84', ground: '#74513a', fog: '#d39470', intensity: 2.5, fill: .66, environment: .48, exposure: 1.06, turbidity: 7, density: .00055, rayleigh: 2.6, cover: .6 },
+  golden: { sun: '#ffc888', sky: '#bcd0e2', ground: '#a08a6c', fog: '#dcc2a0', intensity: 3.1, fill: .86, environment: .6, exposure: 1.01, turbidity: 3.6, density: .00052, rayleigh: 1.8, cover: .5 },
+  afternoon: { sun: '#ffe6c6', sky: '#bcd8f2', ground: '#9d967c', fog: '#c9d2d4', intensity: 3.4, fill: 1.08, environment: .7, exposure: .96, turbidity: 2.6, density: .00045, rayleigh: 1.6, cover: .54 },
+  day: { sun: '#fffaf2', sky: '#bfe1ff', ground: '#9b987e', fog: '#bfd6e2', intensity: 3.6, fill: 1.28, environment: .78, exposure: .93, turbidity: 2, density: .0004, rayleigh: 1.45, cover: .56 }
+};
 const GREY = new THREE.Color();
-const SKY_STOPS = [[-.12, 'night'], [0, 'twilight'], [.2, 'dusk'], [.42, 'golden'], [.95, 'day']].map(([y, mode]) => {
-  const p = mode === 'twilight' ? TWILIGHT : LIGHTING[mode];
-  return { y, p, mode, rayleigh: { night: .3, twilight: 2, dusk: 2.4 }[mode] ?? 1.6, cover: { golden: .5, day: .56, dusk: .6, twilight: .66, night: .72 }[mode],
+const SKY_STOPS = [[-.12, 'night'], [0, 'twilight'], [.18, 'dusk'], [.42, 'golden'], [.7, 'afternoon'], [.95, 'day']].map(([y, mode]) => {
+  const p = CYCLE[mode];
+  return { y, p, mode, rayleigh: p.rayleigh, cover: p.cover,
     sun: new THREE.Color(p.sun), sky: new THREE.Color(p.sky), ground: new THREE.Color(p.ground), fog: new THREE.Color(p.fog) };
 });
 // Chimney smoke as one draw: camera-facing quads placed per puff, shaded like
@@ -215,7 +225,7 @@ const sunHeight = (hour) => Math.sin(Math.PI * (hour - 6.5) / 13);
 // the rest of the lap. The shadow light turns into a key from those masts, so car
 // shadows fall away from the nearest lamp instead of straight down from the sky.
 const MOON = { dir: new THREE.Vector3(-.35, .78, .52).normalize(), color: new THREE.Color('#9fb3e4'), intensity: .22, shadow: .2 };
-const FLOOD_COLOR = new THREE.Color('#ffefdc'), FLOOD_CANDELA = 5200, FLOOD_KEY = .5, FLOOD_SPOTS = 4;
+const FLOOD_COLOR = new THREE.Color('#ffefdc'), FLOOD_CANDELA = 2100, FLOOD_KEY = .5, FLOOD_SPOTS = 4;
 const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
 
 export class World {
@@ -445,7 +455,7 @@ export class World {
         // Floodlight pools: masts every 135 m from s=40, alternating sides; no real lights.
         if(uFlood>0.){float fs=vRoad.y*4.-40.,fm=mod(fs,135.),fd=min(fm,135.-fm);
           float fside=mod(floor((fs+67.5)/135.),2.)>.5?1.:-1.,flt=vRoad.x*4.-${t.halfWidth.toFixed(2)};
-          float pool=(.45+.55*exp(-fd*fd/2450.))*(1.+.3*fside*flt/${t.halfWidth.toFixed(2)});${this.theme.gp ? `
+          float pool=(.22+.78*exp(-fd*fd/1900.))*(1.+.3*fside*flt/${t.halfWidth.toFixed(2)});${this.theme.gp ? `
           float gpf=vRoad.y*4./${t.length.toFixed(1)};pool*=step(${this.theme.gp[0]},gpf)+step(gpf,${this.theme.gp[1]});` : ''}
           outgoingLight+=diffuseColor.rgb*vec3(1.,.95,.84)*uFlood*pool*.55;}
         #include <opaque_fragment>`).replace('#include <color_fragment>', `#include <color_fragment>
