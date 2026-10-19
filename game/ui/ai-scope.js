@@ -179,13 +179,15 @@ export class AiScope {
     };
     const yawOf = (P, k) => { k = Math.max(0, Math.min(P.length - 1, k)); const q = P[Math.min(P.length - 1, k + 1)], o = P[Math.max(0, k - 1)]; return Math.atan2(q.x - o.x, q.z - o.z); };
 
-    // Cars nearby: boxes in team colour; the focused car outlined in its architecture colour.
-    const near = race.cars.map((c, i) => ({ c, i, d: Math.hypot(c.x - car.x, c.z - car.z) })).filter((q) => q.d < 160 && !q.c.ghost).sort((a, b) => a.d - b.d).slice(0, 14);
+    // Cars nearby: boxes in team colour; the focused car outlined in its architecture colour. Ghosts (every car
+    // in qualifying, cars in the pit lane or being rescued) do not collide, so they are drawn see-through, not dropped.
+    const near = race.cars.map((c, i) => ({ c, i, d: Math.hypot(c.x - car.x, c.z - car.z) })).filter((q) => q.d < 160 && !race.entries[q.i]?.retired).sort((a, b) => a.d - b.d).slice(0, 14);
     near.forEach((q, k) => {
       let o = this.cars[k];
       if (!o) { o = new THREE.Mesh(this.boxGeo, new THREE.MeshStandardMaterial({ roughness: 0.5, metalness: 0.2 })); o.add(new THREE.LineSegments(this.edgeGeo, new THREE.LineBasicMaterial({ color: '#000' }))); this.scene.add(o); this.cars[k] = o; }
       const ent = race.entries[q.i], c = this.teamsById?.[ent?.team?.id]?.color ?? ent?.team?.color ?? (q.i === this.focus ? this.teamColor : '#8a93a6');
       o.visible = true; o.position.set(q.c.x, 0, q.c.z); o.rotation.y = q.c.yaw ?? 0; o.material.color.set(c);
+      o.material.transparent = Boolean(q.c.ghost); o.material.opacity = q.c.ghost ? 0.45 : 1; o.material.depthWrite = !q.c.ghost;
       o.children[0].material.color.set(q.i === this.focus ? m?.theme?.color ?? '#fff' : '#05070a');
       if (q.i !== this.focus) { const name = ent?.team?.short ?? `#${q.c.id}`; this.label(name, c, 0.7).position.set(q.c.x, CAR.h + 1.3, q.c.z); }
     });
