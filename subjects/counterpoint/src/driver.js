@@ -6,7 +6,7 @@
 import { Pilot } from './pilot.js';
 import { RivalBook } from './rivals.js';
 import { Planner } from './planner.js';
-import { followCap } from './follow.js';
+import { followCap, moveCap } from './follow.js';
 import { carState, pilotState, rivalState, surfaceState } from './state.js';
 
 export const DEFAULTS = { period: 0.2, horizon: 2.4, dt: 1 / 60, robust: 4, fightRivals: 2, simRivals: 3, reflex: true };
@@ -22,7 +22,7 @@ export class CounterpointDriver {
     this.remote = remote;
     if (remote) {
       remote.onmessage = ({ data }) => this.receive(data);
-      remote.postMessage({ type: 'init', scenario: track.scenario, options: options });
+      remote.postMessage({ type: 'init', scenario: track.scenario, options: this.o });
     }
     this.reset();
   }
@@ -103,7 +103,7 @@ export class CounterpointDriver {
       this.due = this.clock + this.o.period;
     }
     const m = this.move;
-    let cap = m?.follow ? followCap(car, cars, length) : Infinity;
+    let cap = moveCap(car, cars, length, m);
     // Reflex: a pressing move that the field has overtaken (the car ahead brakes harder than forecast) gets the hard
     // follow limit (no reaction allowance) at once and one fresh plan on the next tick, not one every tick after.
     if (m && !m.follow && this.o.reflex) {
@@ -120,6 +120,10 @@ export class CounterpointDriver {
     if (!m) return { intent: 'PACE', sub: 'free air · racing line' };
     if (m.waiting) return { intent: 'PLAN', sub: 'first plan of the fight on its way' };
     const press = !m.follow, g = /^(LL|RR|L|R)(.+?)!?$/.exec(m.key);
+    if (m.yieldTo != null) {
+      const n = near.find((x) => String(x.r.id) === String(m.yieldTo));
+      return { intent: 'YIELD', sub: `dropping in behind #${m.yieldTo}${n ? ` · ${n.ds >= 0 ? 'nose behind' : 'nose ahead'} ${Math.abs(n.ds).toFixed(1)} m` : ''}`, focus: String(m.yieldTo), kind: 'yield' };
+    }
     if (g) {
       const n = near.find((x) => String(x.r.id) === g[2]), ds = n?.ds ?? 0, side = SIDE[g[1]], wide = g[1].length === 2;
       const where = `${side < 0 ? 'left' : 'right'}${wide ? ' wide' : ''} of #${g[2]}`;

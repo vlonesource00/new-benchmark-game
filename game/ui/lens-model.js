@@ -299,7 +299,7 @@ PROFILES.oracle = (d, v) => {
 // again against a rival that covers; their score leans to the worse case. The panel shows each move's price, the
 // chosen one's price term by term against the runner-up's, and what it foresaw.
 const CP_TERMS = [['road', 'road gained'], ['speed', 'speed carried'], ['passes', 'places won'], ['losses', 'places lost'], ['damage', 'damage'],
-  ['rubs', 'rubs'], ['off', 'track limits'], ['slide', 'sliding'], ['boxed', 'boxed in'], ['harm', 'harm to rival'],
+  ['rubs', 'rubs'], ['hits', 'hits (non-rub contact)'], ['off', 'track limits'], ['slide', 'sliding'], ['boxed', 'boxed in'], ['harm', 'harm to rival'],
   ['worst', 'worst-case weight'], ['keep', 'keeping the move']];
 PROFILES.counterpoint = (d, v) => {
   const n = d.counts ?? {}, x = v?.extras ?? null, all = (d.candidates ?? []).slice().sort((a, b) => (b.worst != null) - (a.worst != null) || b.score - a.score);
@@ -315,7 +315,7 @@ PROFILES.counterpoint = (d, v) => {
     focus: d.focus != null && d.kind ? { id: d.focus, kind: d.kind } : null, side: d.side ?? 0,
     cands: all.map((q) => ({ label: q.key, score: q.score, chosen: q.key === d.key, points: pts(q.key),
       note: `${q.score >= 0 ? '+' : ''}${q.score.toFixed(1)} m${q.worst != null ? ` · worst ${q.worst.toFixed(1)}` : ' · habit only'}` })),
-    candNote: 'metres of race over 2.4 s · ! presses · the best by habit are replayed against a covering rival',
+    candNote: 'metres of race over 2.4 s · ! presses · Y yields · the best by habit are replayed against a covering rival',
     breakdown: rows.length ? { a: d.key, b: ru.key, margin, rows, why: swing.join(' · ') } : null,
     gauges: [
       gauge('decision margin', margin == null ? null : clamp01(margin / 20), margin == null ? '' : `${margin.toFixed(1)} m over ${ru.key}`, '#ff9e3d'),

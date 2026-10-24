@@ -5,9 +5,10 @@
 import { clamp, wrap } from '../../../game/engine/sim/math.js';
 import { wakes, collisions } from '../../../game/engine/sim/vehicle.js';
 import { cloneCar, cloneDriver, shadowTrack } from '../../oracle/src/shadow.js';
-import { followCap, relative } from './follow.js';
+import { classifyContact } from '../../vanguard/tools/combat-metrics.mjs';
+import { followCap, moveCap, relative } from './follow.js';
 
-const COVER = 2.2;
+const COVER = 2.2, LEN = 4.56, ROOM = 2.45; // cover shift, car length, a car's width plus a little air (centre to centre)
 
 /** A rival pilot copy put into the rival car's current state (lane, pedals, station), at its learnt pace. */
 function rivalPilot(proto, r, car) {
@@ -34,7 +35,7 @@ export class Rollouts {
     const byId = new Map(sim.map((x) => [x.car.id, x]));
     const all = [me, ...sim.map((x) => x.car)], start = sim.map((x) => relative(me, x.car, length).ds);
     const dmg0 = me.damage, diag = { pairs: [] };
-    let prog = 0, off = 0, slide = 0, severe = 0, rub = 0, harmOff = 0, s0 = me.s, contact = null;
+    let prog = 0, off = 0, slide = 0, severe = 0, rub = 0, hits = 0, harmOff = 0, s0 = me.s, contact = null;
     // The future as it was simulated, for the debugger: every car every 0.2 s, and where the first touch happened.
     const mark = Math.max(1, Math.round(0.2 / dt)), pts = [], rivalPts = sim.map(() => []);
     const sample = (t) => {
@@ -48,7 +49,7 @@ export class Rollouts {
     const every = o.pilotEvery ?? 1, pdt = dt * every;
     for (let t = 0, n = 0; t < H - 1e-9; t += dt, n++) {
       if (n % every === 0) {
-        drv.command = { lateral: plan.lane, cap: plan.follow ? followCap(me, all, length) : Infinity, mode: plan.key };
+        drv.command = { lateral: plan.lane, cap: moveCap(me, all, length, plan), mode: plan.key };
         drv.update(me, all, pdt, {});
         for (const x of sim) {
           const h = this.book.habit(x.r, x.car.x, x.car.z, x.hint);
@@ -56,7 +57,16 @@ export class Rollouts {
           if (hyp === 'cover') {
             // Defence: a rival with COUNTERPOINT close behind it moves over toward COUNTERPOINT's side, a car's width at most.
             const rel = relative(x.car, me, length);
-            if (rel.ds < 2 && rel.ds > -25 && Math.abs(rel.dl) < 6) lane = h.lane + clamp(x.r.line.locate(me.x, me.z, h.loc.i).e - h.lane, -COVER, COVER);
+            if (rel.ds < 2 && rel.ds > -25 && Math.abs(rel.dl) < 6) {
+              const e = x.r.line.locate(me.x, me.z, h.loc.i).e, shift = h.lane + clamp(e - h.lane, -COVER, COVER);
+              lane = shift;
+              // Once the cars overlap, the cover may close the door but not drive into it: it leaves a car's width,
+              // or what its habit would have left if that is less.
+              if (rel.ds > -LEN) {
+                const side = Math.sign(h.loc.e - e) || 1;
+                lane = side > 0 ? Math.max(shift, Math.min(h.lane, e + ROOM)) : Math.min(shift, Math.max(h.lane, e - ROOM));
+              }
+            }
           }
           x.drv.command = { lateral: lane, cap: followCap(x.car, all, length), mode: hyp };
           x.drv.update(x.car, all, pdt, {});
@@ -66,9 +76,15 @@ export class Rollouts {
       for (let k = 0; k < all.length; k++) all[k].step(dt, track, w[k]);
       diag.pairs.length = 0;
       collisions(all, diag);
+      for (const x of sim) { if (!x.inContact) x.hit = false; x.inContact = false; }
       for (const [a, b, closing] of diag.pairs) if (a === me.id || b === me.id) {
-        if (closing > 6) severe++; else rub++;
-        const x = byId.get(a === me.id ? b : a); if (x) x.touched = true;
+        const x = byId.get(a === me.id ? b : a);
+        // Contact judged as the racing standard judges it: a rub is side to side, near parallel and slow to close;
+        // anything else (a nose or a tail, an angle, a hard close) is a hit, counted once per touch.
+        const kind = x ? classifyContact(me, x.car, closing) : { rub: false, severe: closing > 6 };
+        if (kind.severe) severe++;
+        if (kind.rub) rub++; else if (!x?.hit) { hits++; if (x) x.hit = true; }
+        if (x) x.touched = x.inContact = true;
         if (!contact) contact = { x: (me.x + (x?.car.x ?? me.x)) / 2, z: (me.z + (x?.car.z ?? me.z)) / 2, t: +(t + dt).toFixed(2), closing: +closing.toFixed(2), id: x?.car.id ?? null };
       }
       // A rival COUNTERPOINT has touched and that is now off the road is COUNTERPOINT's doing.
@@ -93,7 +109,7 @@ export class Rollouts {
       if (end > 0 && end < 25 && Math.abs(dl) < 2.15) block = Math.max(block, Math.max(0, pace - x.r.ratio) * me.speed);
     });
     const out = { prog, v: me.speed, vRef: line.sample(line.vb, loc.i, loc.f) * (pilot.options.pace ?? 1), passes, losses, block,
-      dmg: 0, severe, rub, off: 0, slide: 0, end: { x: me.x, z: me.z, e: loc.e }, hyp,
+      dmg: 0, severe, rub, hits, off: 0, slide: 0, end: { x: me.x, z: me.z, e: loc.e }, hyp,
       pts, rivals: sim.map((x, k) => ({ id: x.car.id, pts: rivalPts[k] })), contact };
     // Value to go: the ego alone drives back to the line for `tail` seconds from where the move left it. A move
     // that ends wide and fast at the next corner is caught here, past the horizon of the fight.

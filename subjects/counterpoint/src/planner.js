@@ -6,7 +6,7 @@
 import { clamp } from '../../../game/engine/sim/math.js';
 import { Rollouts } from './rollout.js';
 
-export const VALUE = { carry: 0.8, pass: 10, loss: 12, damage: 4000, severe: 30, rub: 1.5, off: 150, offAny: 20, slide: 60, keep: 15, block: 8, harm: 1 };
+export const VALUE = { carry: 0.8, pass: 10, loss: 12, damage: 4000, severe: 30, hit: 25, rub: 1.5, off: 150, offAny: 20, slide: 60, keep: 15, block: 8, harm: 1 };
 
 export class Planner {
   constructor(track, book, options = {}) {
@@ -19,7 +19,7 @@ export class Planner {
   terms(x) {
     const v = this.v;
     return { road: x.prog, speed: v.carry * (x.v - x.vRef), passes: v.pass * x.passes, losses: -v.loss * x.losses,
-      damage: -v.damage * x.dmg - v.severe * x.severe, rubs: -v.rub * x.rub, off: -v.off * x.off - (x.off > 0 ? v.offAny : 0),
+      damage: -v.damage * x.dmg - v.severe * x.severe, rubs: -v.rub * x.rub, hits: -v.hit * (x.hits ?? 0), off: -v.off * x.off - (x.off > 0 ? v.offAny : 0),
       slide: -v.slide * x.slide, boxed: -v.block * (x.block ?? 0),
       // The damage and the off-road a move causes a rival it touches cost what they would cost COUNTERPOINT itself.
       harm: -v.harm * (v.damage * (x.harm ?? 0) + v.off * (x.harmOff ?? 0)) };
@@ -43,24 +43,55 @@ export class Planner {
       if (ds < -15 || ds > 60) continue;
       const e = line.locate(r.car.x, r.car.z, (at + Math.round(ds / line.ds) + line.n) % line.n).e;
       for (const [side, w] of [['L', -2.35], ['R', 2.35], ['LL', -3.4], ['RR', 3.4]]) for (const follow of [true, false]) add(e + w, `${side}${r.id}`, follow);
+      // Yield: with the rival alongside, keep the lane and drop in behind it (the follow rule aimed at it), the move
+      // that gives up a place it cannot hold rather than fight for room that is not there. With COUNTERPOINT's nose
+      // ahead the place is its own (`own`): `plan` keeps that yield only when every other move touches.
+      if (this.o.yield !== false && ds > -4.5 && ds < 8) out.push({ lane: clamp(pilot.lateral, lo, Math.max(lo, hi)), key: `Y${r.id}`, follow: true, yieldTo: r.id, own: ds <= 0 });
     }
+    // No chop: a car alongside, or with its nose within 2 m of COUNTERPOINT's tail, keeps the room it has. A move
+    // may not close the gap to it below a car's width (it may keep a gap that is already smaller). The lane held
+    // now always survives, so there is always a move.
+    const room = this.o.chopRoom ?? 2.45;
+    const close = near.filter(({ ds }) => ds > -6.6 && ds < 4.56).map(({ r, ds }) => line.locate(r.car.x, r.car.z, (at + Math.round(ds / line.ds) + line.n) % line.n).e);
+    if (close.length) return out.filter((c) => close.every((e) => Math.abs(c.lane - e) >= Math.min(room, Math.abs(pilot.lateral - e)) - 0.1));
     return out;
+  }
+  /**
+   * The move that continues the last one: the same path (lane within 0.6 m, same follow and yield), whatever it is
+   * called now. A lane named after a rival moves when the rival does, so the label alone would let the car hop
+   * between two names for one path, or keep a name while the path jumps.
+   */
+  kept(cands) {
+    const l = this.last;
+    if (!l) return null;
+    let best = null, d = 0.6;
+    for (const c of cands) {
+      if (c.follow !== l.follow || (c.yieldTo ?? null) !== (l.yieldTo ?? null)) continue;
+      const g = Math.abs(c.lane - l.lane); if (g < d) { d = g; best = c; }
+    }
+    return best;
   }
   plan(car, pilot, near) {
     const sims = near.filter(({ ds }) => ds > -25 && ds < 80).slice(0, this.o.simRivals ?? 3);
-    const cands = this.candidates(car, pilot, near), keep = this.last?.key;
-    for (const c of cands) { c.habit = this.rollouts.run(car, pilot, sims, c, 'habit'); c.score = this.value(c.habit) + (c.key === keep ? this.v.keep : 0); }
+    let cands = this.candidates(car, pilot, near);
+    for (const c of cands) c.habit = this.rollouts.run(car, pilot, sims, c, 'habit');
+    // A place already held is given up only to escape a collision the rival's own line makes certain: when its
+    // habit leaves no other move clean. The covering rival is a hypothesis; it is not reason enough to yield.
+    const touches = (x) => x.dmg > 0 || (x.hits ?? 0) > 0;
+    if (cands.some((c) => !c.yieldTo && !touches(c.habit))) cands = cands.filter((c) => !c.own);
+    const keep = this.kept(cands);
+    for (const c of cands) c.score = this.value(c.habit) + (c === keep ? this.v.keep : 0);
     cands.sort((a, b) => b.score - a.score);
     // The best few are also played against a rival that covers; the worse case weighs as much as the average.
     const top = cands.slice(0, this.o.robust ?? 4);
     for (const c of top) {
       c.cover = this.rollouts.run(car, pilot, sims, c, 'cover');
       const a = this.value(c.habit), b = this.value(c.cover), mean = (a + b) / 2;
-      c.score = mean - 0.5 * (mean - Math.min(a, b)) + (c.key === keep ? this.v.keep : 0);
+      c.score = mean - 0.5 * (mean - Math.min(a, b)) + (c === keep ? this.v.keep : 0);
     }
     top.sort((a, b) => b.score - a.score);
     this.decisions++;
-    this.ranked = [...top, ...cands.slice(top.length)]; this.keepKey = keep;
+    this.ranked = [...top, ...cands.slice(top.length)]; this.keepCand = keep;
     this.nearBrief = sims.map(({ r, ds }) => ({ id: r.id, ds: +ds.toFixed(1), dl: +(r.car.lateral - car.lateral).toFixed(1) }));
     if (this.o.record) {
       const brief = (x) => x && { p: +x.prog.toFixed(1), blk: +x.block.toFixed(2), v: +(x.v - x.vRef).toFixed(1), pass: x.passes, loss: x.losses, dmg: +(x.dmg * 100).toFixed(2), rub: x.rub, sev: x.severe, off: +x.off.toFixed(2), harm: +((x.harm ?? 0) * 100).toFixed(2), hOff: +(x.harmOff ?? 0).toFixed(2) };
@@ -83,7 +114,7 @@ export class Planner {
     const terms = (x, c) => {
       if (!x) return null;
       const t = Object.fromEntries(Object.entries(this.terms(x)).map(([k, v]) => [k, r1(v)]));
-      if (c) { t.keep = c.key === this.keepKey ? this.v.keep : 0; t.worst = r1(c.score - this.value(x) - t.keep); }
+      if (c) { t.keep = c === this.keepCand ? this.v.keep : 0; t.worst = r1(c.score - this.value(x) - t.keep); }
       return t;
     };
     const second = this.ranked?.find((c) => c !== m);
