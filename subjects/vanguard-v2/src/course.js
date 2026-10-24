@@ -241,6 +241,9 @@ export class Course {
           ? offsets[j]
           : offsets[j] * (1 - ease((x - entry - hold) / returnLength));
     }
+    // Optional owner-specific refinement runs before the geometry and speed
+    // envelope are compiled. Existing drivers keep their original shifts.
+    this.refineCorridor?.(shift, i0, n, { origin, entry });
     let pool;
     for (let k = 0; k < this.pool.length; k++) {
       const candidate = this.pool[(slot + k) % this.pool.length];

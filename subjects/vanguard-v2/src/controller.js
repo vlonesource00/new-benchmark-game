@@ -66,7 +66,8 @@ export function noseConstraint(car, observer, model, { lateralEscape = false, pa
     const halfAlong = Math.abs(Math.cos(delta)) * HALF_LENGTH + Math.abs(Math.sin(delta)) * HALF_WIDTH;
     const sideRoom = Math.abs(across) - HALF_WIDTH - halfAcross,
       sideClosing = -Math.sign(across) * lateralClosing;
-    if (forward < HALF_LENGTH + halfAlong - 0.6 && sideRoom > -0.12 &&
+    const doorOverlap = Number.isFinite(racecraft?.options?.doorOverlap) ? clamp(racecraft.options.doorOverlap, .12, .28) : .12;
+    if (forward < HALF_LENGTH + halfAlong - 0.6 && sideRoom > -doorOverlap &&
       racecraft?.canHold(car, r, sideRoom, sideClosing)) continue;
     const otherV = r.car.vx * sy + r.car.vz * cy, closing = Math.max(0, v - otherV), room = forward - HALF_LENGTH - halfAlong - 0.65;
     // If an active evasive corridor is already turning us clear of a distant hazard, do not brake on the straight body ray.
@@ -163,6 +164,9 @@ export function noseConstraint(car, observer, model, { lateralEscape = false, pa
 export class Controller {
   constructor(options) { this.options = options; this.reset(); }
   reset() { if (this.lastCar) controlMemories.delete(this.lastCar); this.lastCar = null; this.cursor = -1; this.path = null; this.kc = NaN; this.acceleration = 0; this.sideYield = null; this.trace = {}; }
+  sideCorrection(car, rival, course, observer, { dir, drift }) {
+    return -dir * clamp((drift - 0.35) * 0.045, 0, 0.18);
+  }
   step(car, path, course, observer, dt, { pit = Infinity, nose = null, time = 0, returning = false, brakingTube = this.options.brakingTube } = {}) {
     const model = course.model, o = this.options, v = Math.max(0.5, car.speed);
     let c = path.closest(car.x, car.z, path === this.path ? this.cursor : -1);
@@ -199,7 +203,7 @@ export class Controller {
       if (hold && this.sideYield === r.id) this.sideYield = null;
       if (returning && !hold && r.ds >= -1 && room - Math.max(0, drift) * 0.65 < 0.35 && drift > -0.15) this.sideYield ??= r.id;
       if (room < 0.25 && drift > 0.35 && Math.abs(observer.me.d - dir * 0.5) < course.track.halfWidth - 1.1) {
-        steer -= dir * clamp((drift - 0.35) * 0.045, 0, 0.18);
+        steer += this.sideCorrection(car, r, course, observer, { dir, drift, room, hold, returning });
       }
     }
     nose ??= noseConstraint(car, observer, model, {

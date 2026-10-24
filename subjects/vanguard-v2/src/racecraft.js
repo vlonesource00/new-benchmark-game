@@ -1,4 +1,4 @@
-import { angle } from './math.js';
+import { angle, clamp } from './math.js';
 
 const ledgers = new WeakMap();
 /** Observe the existing scalar damage assignments without changing their
@@ -48,7 +48,11 @@ export class Racecraft {
     const laps = Math.max(1, state.totalLaps ?? 20), completed = Math.max(0, (car.race?.lap ?? 1) - 1);
     this.limit = (this.options.raceDamageBudget ?? 0.20) * Math.min(1, laps / 20);
     this.remaining = Math.max(0, this.limit - this.spent);
-    this.moveBudget = Math.min(0.01, this.remaining / Math.max(1, laps - completed) * 1.5);
+    const maxMove = Number.isFinite(this.options.maxMoveDamageBudget)
+      ? clamp(this.options.maxMoveDamageBudget, .001, .05) : .01,
+      frontload = Number.isFinite(this.options.raceBudgetFrontload) ? clamp(this.options.raceBudgetFrontload, 0, .4) : 0;
+    this.moveBudget = Math.min(maxMove, Math.max(
+      this.remaining / Math.max(1, laps - completed) * 1.5, this.remaining * frontload));
     if (gained > 0 && this.contactSpent >= this.moveBudget) this.cooldownUntil = now + 2;
     this.enabled = this.options.racecraft === true;
     this.rubbing = this.enabled && this.moveBudget >= 0.001 && now >= this.cooldownUntil;
@@ -75,8 +79,9 @@ export class Racecraft {
   /** Keep force control at the door. Yield for a hard squeeze or a substantial
    * heading difference, not merely because an aligned car is close beside us. */
   canHold(car, r, room, lateralClosing) {
-    return this.rubbing && !r.hazard && r.eligible && room > -0.14 &&
-      room - Math.max(0, lateralClosing) * 0.28 > -0.20 && lateralClosing < 1.65 &&
+    const overlap = Number.isFinite(this.options.doorOverlap) ? clamp(this.options.doorOverlap, .12, .28) : .14;
+    return this.rubbing && !r.hazard && r.eligible && room > -overlap &&
+      room - Math.max(0, lateralClosing) * 0.28 > -(overlap + .06) && lateralClosing < 1.65 &&
       Math.abs(angle(car.yaw - r.car.yaw)) < 0.18;
   }
   contactRisk(a, b, contact, hazard, dt, previousPeak = 0) {

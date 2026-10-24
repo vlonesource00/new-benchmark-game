@@ -19,6 +19,7 @@ import { interceptState } from '../bridges/intercept-state.js';
 import { installInterceptStrategy } from '../../subjects/intercept/src/strategy.js';
 import { createVanguardBridge } from '../bridges/vanguard-bridge.js';
 import { createVanguardV2Bridge, vanguardV2State } from '../bridges/vanguard-v2-bridge.js';
+import { createCounterpointBridge, counterpointState, installCounterpointStrategy } from '../bridges/counterpoint-bridge.js';
 import { installVanguardV2Strategy } from '../../subjects/vanguard-v2/src/strategy.js';
 import { createOracleBridge } from '../bridges/oracle-bridge.js';
 import { oracleState } from '../bridges/oracle-state.js';
@@ -99,6 +100,9 @@ export function createSeatBridge(driver, index, race) {
     case 'vanguard-v2':
       installVanguardV2Strategy(race, race.cars[index]);
       return createVanguardV2Bridge({ hostTrack, index, state: car => vanguardV2State(race, car) });
+    case 'counterpoint':
+      installCounterpointStrategy(race, race.cars[index]);
+      return createCounterpointBridge({ hostTrack, index, state: car => counterpointState(race, car) });
     case 'next-racer':
       installNativeStrategy(race,race.cars[index]);
       return createNextRacerBridge({hostTrack,index,state:car=>nextRacerState(race,car)});
