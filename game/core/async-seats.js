@@ -18,10 +18,9 @@ import { createVanguardExecutor } from '../bridges/vanguard-bridge.js';
 import { vanguardState } from '../bridges/vanguard-state.js';
 import { installVanguardV2Strategy } from '../../subjects/vanguard-v2/src/strategy.js';
 import { createVanguardV2Executor, vanguardV2State } from '../bridges/vanguard-v2-bridge.js';
-import { createCounterpointExecutor, counterpointState, installCounterpointStrategy } from '../bridges/counterpoint-bridge.js';
 // TEMPEST runs on RAZOR's seat protocol (control timing, epochs, the public race envelope).
 const corridorAi = (id) => id === 'razor' || id === 'tempest';
-const vanguardLike = (id) => id === 'vanguard' || id === 'vanguard-v2' || id === 'counterpoint';
+const vanguardLike = (id) => id === 'vanguard' || id === 'vanguard-v2';
 import { installNativeStrategy } from '../../subjects/next-racer/src/strategy.js';
 import { guardControls,previewRoute } from '../../subjects/next-racer/src/safety.js';
 import { previewFeedback,feedbackDebug,resetFeedback } from '../../subjects/next-racer/src/feedback.js';
@@ -50,7 +49,7 @@ export class AsyncSeats {
   factory() {
     return (driver, index, race) => {
       // Human and ORACLE seats run on the main thread: ORACLE drives at physics rate on the live field.
-      if (driver.kind === 'human' || driver.id === 'oracle') return createSeatBridge(driver, index, race);
+      if (driver.kind === 'human' || driver.id === 'oracle' || driver.id === 'counterpoint') return createSeatBridge(driver, index, race);
       if (driver.id === 'next-racer') installNativeStrategy(race,race.cars[index]);
       if (driver.id === 'apex') installApexStrategy(race, race.cars[index]);
       if (driver.id === 'razor') installRazorStrategy(race, race.cars[index]);
@@ -58,7 +57,6 @@ export class AsyncSeats {
       if (driver.id === 'intercept') installInterceptStrategy(race, race.cars[index]);
       if (driver.id === 'vanguard') installVanguardStrategy(race, race.cars[index]);
       if (driver.id === 'vanguard-v2') installVanguardV2Strategy(race, race.cars[index]);
-      if (driver.id === 'counterpoint') installCounterpointStrategy(race, race.cars[index]);
       return this.seat(driver, index, race);
     };
   }
@@ -98,12 +96,8 @@ export class AsyncSeats {
         ? createVanguardExecutor(race.track, index)
         : driver.id === 'vanguard-v2'
           ? createVanguardV2Executor(race.track, index)
-          : driver.id === 'counterpoint'
-            ? createCounterpointExecutor(race.track, index)
-            : null;
-    const execState = driver.id === 'counterpoint'
-      ? counterpointState
-      : driver.id === 'vanguard-v2'
+          : null;
+    const execState = driver.id === 'vanguard-v2'
       ? vanguardV2State
       : driver.id === 'vanguard'
         ? vanguardState
@@ -192,8 +186,7 @@ export class AsyncSeats {
         if (!host.failed && host.initialised) host.worker.postMessage({ type: 'reset', slot, cars: race.cars.map(snapshotCar) });
       },
       debug() { if(executor&&!local){const debug=executor.debug();return {...debug,planner:this.lastDebug?{intent:this.lastDebug.intent,side:this.lastDebug.side,
-        cands:this.lastDebug.cands,resources:this.lastDebug.resources,focus:this.lastDebug.focus,focusGap:this.lastDebug.focusGap,
-        interactive:this.lastDebug.interactive}:null,
+        cands:this.lastDebug.cands,resources:this.lastDebug.resources,focus:this.lastDebug.focus,focusGap:this.lastDebug.focusGap}:null,
         workerLatencyMs:this.lastLatency,inFlight:this.inFlight,requestSequence:this.seq,replyTime:this.controlTime};}
         return local?.debug?.() ?? (driver.id==='next-racer'&&this.lastDebug?
         {...this.lastDebug,...feedbackDebug(race.cars[index])}:this.lastDebug) ?? { architecture: driver.arch ?? driver.id }; },

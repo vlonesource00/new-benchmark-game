@@ -2,7 +2,7 @@
 
 // Historical drivers remain addressable by replays and explicit benchmarks.
 export const AI_DRIVERS = Object.freeze([
-  { id: 'counterpoint', name: 'COUNTERPOINT', short: 'CPT', arch: 'Non-RL interactive rival-response planning · 120 Hz force control', anyTrack: true, manage: false, governor: false, experimental: true },
+  { id: 'counterpoint', name: 'COUNTERPOINT', short: 'CPT', arch: 'Joint physics rollouts of every move · rivals, tow and contact simulated · main-thread', anyTrack: true, manage: false, governor: false, experimental: true },
   { id: 'vanguard-v2', name: 'VANGUARD v2', short: 'VG2', arch: 'Multi-width C2 needle corridors · learnt rival pace & apex dives · 120 Hz force control', anyTrack: true, manage: false, governor: false },
   { id: 'oracle', name: 'ORACLE', short: 'ORC', arch: 'Measured physics envelope · min-time line · main-thread physics-rate combat', anyTrack: true, manage: false, governor: false },
   { id: 'vanguard', name: 'VANGUARD', short: 'VGD', arch: 'Split-horizon 120 Hz force control · S-thread traffic & fast hazard evasion · live stint strategy', anyTrack: true, manage: false, governor: false },

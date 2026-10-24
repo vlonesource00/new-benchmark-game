@@ -35,7 +35,7 @@ if (diagnosticUntil !== Infinity && (!Number.isFinite(diagnosticUntil) || diagno
 if (Object.keys(options).length && driver !== 'counterpoint') throw Error('Options apply only to the challenger');
 const originalPrepare = CounterpointDriver.prototype.prepare;
 CounterpointDriver.prototype.prepare = function(car) {
-  if (!this.prepared || this.classId !== car.classId) this.settings = { ...this.settings, ...options };
+  if (!this.optionsApplied) { this.optionsApplied = true; const { value, ...rest } = options; Object.assign(this.o, rest); Object.assign(this.planner.v, value ?? {}); }
   return originalPrepare.call(this, car);
 };
 const source = provenance(), wall = performance.now();
