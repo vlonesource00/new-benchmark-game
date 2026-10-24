@@ -30,7 +30,7 @@ export class Planner {
     const line = pilot.line, max = this.o.maxLane ?? 7, out = [], edge = this.track.halfWidth - (this.o.laneEdge ?? 0.95);
     // A lane is metres off the line; the road is where the line is not. Lanes stay on the asphalt at the car's
     // station and 40 m on, the stretch the move is driven over.
-    const at = line.locate(car.x, car.z, pilot.hint).i, ahead = (at + Math.round(40 / line.ds)) % line.n, w0 = line.w[at], w1 = line.w[ahead];
+    const loc = line.locate(car.x, car.z, pilot.hint), at = loc.i, me = loc.e, ahead = (at + Math.round(40 / line.ds)) % line.n, w0 = line.w[at], w1 = line.w[ahead];
     // The racing line itself is always allowed: it runs near the edge in places, and a clamp past it would push every
     // move, the line included, into a car alongside on the other side.
     const lo = Math.min(0, Math.max(-max, -edge - Math.min(w0, w1))), hi = Math.max(0, Math.min(max, edge - Math.max(w0, w1)));
@@ -46,15 +46,21 @@ export class Planner {
       // Yield: with the rival alongside, keep the lane and drop in behind it (the follow rule aimed at it), the move
       // that gives up a place it cannot hold rather than fight for room that is not there. With COUNTERPOINT's nose
       // ahead the place is its own (`own`): `plan` keeps that yield only when every other move touches.
-      if (this.o.yield !== false && ds > -4.5 && ds < 8) out.push({ lane: clamp(pilot.lateral, lo, Math.max(lo, hi)), key: `Y${r.id}`, follow: true, yieldTo: r.id, own: ds <= 0 });
+      if (this.o.yield !== false && ds > -4.5 && ds < 8) out.push({ lane: me, key: `Y${r.id}`, follow: true, yieldTo: r.id, own: ds <= 0 });
     }
     // No chop: a car alongside, or with its nose within 2 m of COUNTERPOINT's tail, keeps the room it has. A move
-    // may not close the gap to it below a car's width (it may keep a gap that is already smaller). The lane held
-    // now always survives, so there is always a move.
+    // may not close the gap to it below a car's width (it may keep a gap that is already smaller), and, while the
+    // cars overlap, may not end on its far side, which is reached only through it. The lane held now always
+    // stays, so there is always a move. Room is measured from where the car is, not from the lane its pilot is
+    // steering for (which, on the first plan of a fight, has not been set yet).
     const room = this.o.chopRoom ?? 2.45;
-    const close = near.filter(({ ds }) => ds > -6.6 && ds < 4.56).map(({ r, ds }) => line.locate(r.car.x, r.car.z, (at + Math.round(ds / line.ds) + line.n) % line.n).e);
-    if (close.length) return out.filter((c) => close.every((e) => Math.abs(c.lane - e) >= Math.min(room, Math.abs(pilot.lateral - e)) - 0.1));
-    return out;
+    const close = near.filter(({ ds }) => ds > -6.6 && ds < 4.56).map(({ r, ds }) => ({ ds, e: line.locate(r.car.x, r.car.z, (at + Math.round(ds / line.ds) + line.n) % line.n).e }));
+    if (!close.length) return out;
+    const kept = out.filter((c) => close.every(({ ds, e }) => Math.abs(c.lane - e) >= Math.min(room, Math.abs(me - e)) - 0.1 && (ds < -4.56 || (c.lane - e) * (me - e) >= 0)));
+    // With every lane shut, the car keeps the lane it is in, unclamped: past the stretch's asphalt limit on the
+    // outside of a rival, the clamp would steer it into the rival.
+    for (const follow of [true, false]) if (!kept.some((c) => c.follow === follow && !c.yieldTo)) kept.push({ lane: me, key: `here${follow ? '' : '!'}`, follow });
+    return kept;
   }
   /**
    * The move that continues the last one: the same path (lane within 0.6 m, same follow and yield), whatever it is
@@ -76,16 +82,19 @@ export class Planner {
     let cands = this.candidates(car, pilot, near);
     for (const c of cands) c.habit = this.rollouts.run(car, pilot, sims, c, 'habit');
     // A place already held is given up only to escape a collision the rival's own line makes certain: when its
-    // habit leaves no other move clean. The covering rival is a hypothesis; it is not reason enough to yield.
+    // habit leaves no other move clean and the yield is. A touch no move escapes (the cars already together) is no
+    // reason to hand the place over. The covering rival is a hypothesis; it is not reason enough to yield.
     const touches = (x) => x.dmg > 0 || (x.hits ?? 0) > 0;
     if (cands.some((c) => !c.yieldTo && !touches(c.habit))) cands = cands.filter((c) => !c.own);
+    else cands = cands.filter((c) => !c.own || !touches(c.habit));
     const keep = this.kept(cands);
     for (const c of cands) c.score = this.value(c.habit) + (c === keep ? this.v.keep : 0);
     cands.sort((a, b) => b.score - a.score);
-    // The best few are also played against a rival that covers; the worse case weighs as much as the average.
-    const top = cands.slice(0, this.o.robust ?? 4);
+    // The best few are also played against a rival that covers; the worse case weighs as much as the average. With
+    // no rival in a position to defend, the cover is the habit.
+    const top = cands.slice(0, this.o.robust ?? 4), shifts = this.rollouts.covers(car, sims);
     for (const c of top) {
-      c.cover = this.rollouts.run(car, pilot, sims, c, 'cover');
+      c.cover = shifts ? this.rollouts.run(car, pilot, sims, c, 'cover', shifts) : c.habit;
       const a = this.value(c.habit), b = this.value(c.cover), mean = (a + b) / 2;
       c.score = mean - 0.5 * (mean - Math.min(a, b)) + (c === keep ? this.v.keep : 0);
     }

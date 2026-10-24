@@ -47,6 +47,7 @@ async function runCase({ driver, scene, seed, options, trace, solo = false }) {
   if (Object.keys(options).length) {
     const prepare = VanguardDriver.prototype.prepare;
     VanguardDriver.prototype.prepare = function(car) { prepare.call(this, car); Object.assign(this.options, options); };
+    if (driver === 'counterpoint') Object.assign((await import('../../counterpoint/src/driver.js')).DEFAULTS, options);
   }
   const shim = installWorkerShim({ frameSteps: 2, seed });
   const track = new Track(scene.track), seats = new AsyncSeats(scene.track), cls = 'gt';
@@ -215,7 +216,7 @@ if (args[0] === '--run') {
     }
     const trace = flag('trace-case', '') === scene.id;
     const data = { driver: driver === '_control' ? scene.rival : driver, scene, seed,
-      options: driver === 'vanguard' ? options : {}, trace, solo: driver === '_control' };
+      options: driver === 'vanguard' || driver === 'counterpoint' ? options : {}, trace, solo: driver === '_control' };
     const child = spawn(process.execPath, ['--import', './scripts/json-loader.mjs', fileURLToPath(import.meta.url), '--run', JSON.stringify(data)],
       { cwd: root, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     try { os.setPriority(child.pid, os.constants.priority.PRIORITY_BELOW_NORMAL); } catch {}

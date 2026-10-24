@@ -40,9 +40,30 @@ export function followCap(me, cars, length, { react = 0.15, reach = 70, skip = n
   return cap;
 }
 
-/** The cap a move is driven under: the follow rule when it follows, and behind the car it yields to when it yields. */
+/**
+ * The press rule: close on the car ahead in the lane as fast as wanted, but never faster than the closing speed can
+ * be shed, on `share` of the car's brakes, before the gap is a car length and `air`. It does not assume the car
+ * ahead brakes (the rollout drives its braking, and the live reflex answers it); it is what keeps a press from
+ * running into a car that moves across in front of it, which a real attacker lifts for.
+ */
+export function pressCap(me, cars, length, { share = 0.6, air = 0.4, reach = 40 } = {}) {
+  const env = envelope(me.classId), v = me.speed;
+  const mine = share * at(env.brake, v) * (1 - 0.16 * (me.aero?.wake ?? 0) * downforceShare(env, v));
+  let cap = Infinity;
+  for (const o of cars) {
+    if (o === me || o.ghost) continue;
+    const { ds, dl } = relative(me, o, length);
+    if (ds <= 0 || ds > reach || Math.abs(dl) > WIDE) continue;
+    cap = Math.min(cap, Math.max(0, o.speed) + Math.sqrt(2 * mine * Math.max(0, ds - LEN - air)));
+  }
+  return cap;
+}
+
+/** The cap a move is driven under: the follow rule when it follows, behind the car it yields to when it yields, and
+ * the press rule when it presses. */
 export function moveCap(me, cars, length, move) {
-  if (!move?.follow) return Infinity;
+  if (!move) return Infinity;
+  if (!move.follow) return pressCap(me, cars, length);
   const tuck = move.yieldTo != null ? cars.find((c) => c.id === move.yieldTo) ?? null : null;
   return followCap(me, cars, length, { tuck });
 }

@@ -25,10 +25,29 @@ export class Rollouts {
     this.count = 0; this.steps = 0;
   }
   /**
-   * Drive `plan` ({lane, follow}) for the ego under rival hypothesis `hyp` ('habit' | 'cover').
-   * Returns what happened, in the planner's units (metres, seconds, damage share).
+   * The defence each rival would make now, as a lane shift from its habit (Map id → metres), or null if none would.
+   * It is the defence the racing standard allows and INTERCEPT and ORACLE make: one move, toward the inside of the
+   * next corner, made while COUNTERPOINT is still behind, and the same whatever COUNTERPOINT then does. A cover that
+   * followed each move to its own side would make every side look shut, so no attack would ever look worth it.
    */
-  run(car, pilot, others, plan, hyp) {
+  covers(car, others) {
+    const length = this.track.length, out = new Map();
+    // INTERCEPT's trigger: the car behind is 6 m to max(24 m, 0.45 s) back and closing by more than 1.2 m/s, and
+    // the road turns at max(55 m, 1.2 s) ahead of the defender. Closer than 6 m the move would cross the attacker's
+    // nose, which neither the standard nor INTERCEPT allows; on a straight there is nothing to cover.
+    for (const { r } of others) {
+      const rel = relative(r.car, car, length), line = r.line, v = r.car.speed;
+      if (!(rel.ds < -6 && rel.ds > -Math.max(24, v * 0.45) && Math.abs(rel.dl) < 6 && car.speed - v > 1.2)) continue;
+      const k = line.k[(r.hint + Math.round(Math.max(55, v * 1.2) / line.ds)) % line.n];
+      if (Math.abs(k) > 0.002) out.set(r.id, -Math.sign(k) * COVER);
+    }
+    return out.size ? out : null;
+  }
+  /**
+   * Drive `plan` ({lane, follow}) for the ego under rival hypothesis `hyp` ('habit' | 'cover', the latter with the
+   * `shifts` of `covers`). Returns what happened, in the planner's units (metres, seconds, damage share).
+   */
+  run(car, pilot, others, plan, hyp, shifts = null) {
     const o = this.o, dt = o.dt ?? 1 / 60, H = o.horizon ?? 2.4, length = this.track.length, track = this.shadow;
     const me = cloneCar(car), drv = cloneDriver(pilot); drv.isShadow = true;
     const sim = others.map(({ r }) => ({ r, car: cloneCar(r.car), drv: rivalPilot(this.book.pilotFor(r.car), r, r.car), hint: r.hint, dmg0: r.car.damage, touched: false }));
@@ -54,18 +73,16 @@ export class Rollouts {
         for (const x of sim) {
           const h = this.book.habit(x.r, x.car.x, x.car.z, x.hint);
           let lane = h.lane; x.hint = h.loc.i;
-          if (hyp === 'cover') {
-            // Defence: a rival with COUNTERPOINT close behind it moves over toward COUNTERPOINT's side, a car's width at most.
+          const shift = shifts?.get(x.r.id);
+          if (hyp === 'cover' && shift) {
+            const cover = h.lane + shift;
+            lane = cover;
+            // Once the cars overlap, the cover may close the door but not drive into it: it leaves a car's width,
+            // or what its habit would have left if that is less.
             const rel = relative(x.car, me, length);
-            if (rel.ds < 2 && rel.ds > -25 && Math.abs(rel.dl) < 6) {
-              const e = x.r.line.locate(me.x, me.z, h.loc.i).e, shift = h.lane + clamp(e - h.lane, -COVER, COVER);
-              lane = shift;
-              // Once the cars overlap, the cover may close the door but not drive into it: it leaves a car's width,
-              // or what its habit would have left if that is less.
-              if (rel.ds > -LEN) {
-                const side = Math.sign(h.loc.e - e) || 1;
-                lane = side > 0 ? Math.max(shift, Math.min(h.lane, e + ROOM)) : Math.min(shift, Math.max(h.lane, e - ROOM));
-              }
+            if (rel.ds > -LEN && rel.ds < LEN) {
+              const e = x.r.line.locate(me.x, me.z, h.loc.i).e, side = Math.sign(h.loc.e - e) || 1;
+              lane = side > 0 ? Math.max(cover, Math.min(h.lane, e + ROOM)) : Math.min(cover, Math.max(h.lane, e - ROOM));
             }
           }
           x.drv.command = { lateral: lane, cap: followCap(x.car, all, length), mode: hyp };

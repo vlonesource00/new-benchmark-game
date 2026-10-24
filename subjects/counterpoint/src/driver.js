@@ -55,6 +55,8 @@ export class CounterpointDriver {
   }
   adopt(m, explain) {
     const prev = this.move;
+    // A plan that continues the path already driven keeps its reflex: one fresh plan per path, not one per plan.
+    if (prev?.reflexed && prev.follow === m.follow && Math.abs(prev.lane - m.lane) < 0.6) m.reflexed = true;
     this.move = m; this.explained = explain;
     if (prev?.key !== m.key) {
       this.counts.switches++;
@@ -104,11 +106,14 @@ export class CounterpointDriver {
     }
     const m = this.move;
     let cap = moveCap(car, cars, length, m);
-    // Reflex: a pressing move that the field has overtaken (the car ahead brakes harder than forecast) gets the hard
-    // follow limit (no reaction allowance) at once and one fresh plan on the next tick, not one every tick after.
+    // Reflex: a pressing move whose car ahead is on the brakes (it brakes sooner or harder than forecast) gets the hard
+    // follow limit (no reaction allowance) at once and one fresh plan on the next tick. Only a car that is braking
+    // counts: in a tow at speed the hard limit is always below the car's speed (the wake costs it brakes), so judged
+    // on the limit alone the reflex would cut the throttle on every straight, a press it was asked to drive.
     if (m && !m.follow && this.o.reflex) {
-      const hard = followCap(car, cars, length, { react: 0 });
-      if (hard < car.speed - 1) { cap = hard; if (!m.reflexed) { m.reflexed = true; this.due = 0; this.reflexes++; this.note(`reflex: ${m.key} overtaken by the field, hard follow`); } }
+      const braking = cars.filter((o) => o !== car && !o.ghost && (o.controls?.brake ?? 0) > 0.15);
+      const hard = braking.length ? followCap(car, braking, length, { react: 0 }) : Infinity;
+      if (hard < car.speed - 1) { cap = Math.min(cap, hard); if (!m.reflexed) { m.reflexed = true; this.due = 0; this.reflexes++; this.note(`reflex: ${m.key} car ahead braking, hard follow`); } }
     }
     this.cap = cap;
     this.pilot.command = { lateral: m?.lane ?? 0, cap, mode: m?.key ?? 'PACE' };

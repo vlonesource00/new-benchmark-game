@@ -16,19 +16,24 @@ export class Pilot extends OracleDriver {
     return super.update(car, cars, dt, { ...context, mode: 'race' });
   }
   /**
-   * The pace half of ORACLE's self-check: when the car's own copy, driving the commanded lane, slides or runs past
-   * the kerb over the next seconds, the pace comes down until a clean future exists, and creeps back while it is
-   * clean. Which lane to drive is the planner's call (its rollouts price that lane's slide and road), so the lane
-   * half, refusing a lane the copy cannot drive, is left out.
+   * The pace half of ORACLE's self-check: when the car's own copy slides or runs past the kerb over the next
+   * seconds, the pace comes down until a clean future exists, and creeps back while it is clean. Which lane to drive
+   * is the planner's call (its rollouts price each lane's slide and road), so the pace comes down only when neither
+   * the commanded lane nor the way back to the racing line is clean at it: a copy that judged the commanded lane
+   * alone cut the pace of the whole profile for an attacking lane held into the next corner, and the car lifted on
+   * the straight and braked early; one that judged the line alone cut it for the move back across from a lane
+   * alongside a rival, and lost the place it was holding.
    */
   govern(car) {
-    const o = this.options, step = o.guardStep ?? 0.03, lo = o.guardLo ?? 0.85, lane = this.laneHold ?? 0;
+    const o = this.options, step = o.guardStep ?? 0.03, lo = o.guardLo ?? 0.85, hold = this.laneHold ?? 0;
+    const lanes = Math.abs(hold) > 0.3 ? [hold, 0] : [0];
+    const judge = (p) => { let b = Infinity; for (const l of lanes) { b = Math.min(b, this.rollout(car, p, l)); if (b === 0) break; } return b; };
     this.veto = null;
-    const now = this.rollout(car, this.gp, lane);
-    if (now === 0) { const up = Math.min(1, this.gp + (o.guardUp ?? 0.01)); if (up > this.gp && this.rollout(car, up, lane) === 0) this.gp = up; return; }
+    const now = judge(this.gp);
+    if (now === 0) { const up = Math.min(1, this.gp + (o.guardUp ?? 0.01)); if (up > this.gp && judge(up) === 0) this.gp = up; return; }
     let best = this.gp, bestBad = now;
     for (let p = this.gp - step; p >= lo - 1e-9; p -= step) {
-      const bad = this.rollout(car, p, lane);
+      const bad = judge(p);
       if (bad < bestBad - 1e-6) { best = p; bestBad = bad; }
       if (bad === 0) break;
     }
