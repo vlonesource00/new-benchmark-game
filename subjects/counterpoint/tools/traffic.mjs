@@ -233,6 +233,8 @@ try {
       damageReference20Laps: .2,
       incidents: finishSnapshots[k]?.incidents ?? race.stewards.of(race.entries[i]).inc,
       errors: finishSnapshots[k]?.errors ?? race.entries[i].bridges.reduce((n, b) => n + b.errors, 0),
+      planning: (({ planMs, planMax, decisions, rollouts, carSteps } = {}) => planMs == null ? undefined
+        : { ms: planMs, maxMs: planMax, decisions, meanMs: planMs / Math.max(1, decisions), rollouts, carSteps })(race.entries[i].bridges[race.entries[i].active].debug?.()),
       plannerLog: race.entries[i].bridges[race.entries[i].active].driver?.planner?.log })) };
   const dir = new URL('../results/', import.meta.url); mkdirSync(dir, { recursive: true });
   const out = flag('out', `traffic-${driver}-${cls}-${trafficClass}-${trackId}-${seed}.json`);

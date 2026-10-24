@@ -8,7 +8,7 @@ export class Pilot extends OracleDriver {
   constructor(track, options = {}) {
     // The self-check governor is off: it vetoes lanes on its own solo forecast, which is the planner's job, and
     // measured solo laps are identical without it (Harbor GT3 60.94 / 61.31 / 62.18 s either way).
-    super(track, { guard: false, ...options });
+    super(track, { guard: false, poseInit: true, ...options });
     this.command = { lateral: 0, cap: Infinity, mode: 'PACE' };
   }
   update(car, cars, dt, context = {}) {

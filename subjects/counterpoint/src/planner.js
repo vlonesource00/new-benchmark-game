@@ -25,7 +25,7 @@ export class Planner {
     const line = pilot.line, max = this.o.maxLane ?? 7, out = [], edge = this.track.halfWidth - (this.o.laneEdge ?? 0.95);
     // A lane is metres off the line; the road is where the line is not. Lanes stay on the asphalt at the car's
     // station and 40 m on, the stretch the move is driven over.
-    const ahead = (pilot.hint + Math.round(40 / line.ds)) % line.n, w0 = line.w[Math.max(0, pilot.hint)], w1 = line.w[Math.max(0, ahead)];
+    const at = line.locate(car.x, car.z, pilot.hint).i, ahead = (at + Math.round(40 / line.ds)) % line.n, w0 = line.w[at], w1 = line.w[ahead];
     const lo = Math.max(-max, -edge - Math.min(w0, w1)), hi = Math.min(max, edge - Math.max(w0, w1));
     const add = (lane, key, follow) => {
       lane = clamp(lane, lo, Math.max(lo, hi));
@@ -34,7 +34,7 @@ export class Planner {
     for (const follow of [true, false]) { add(0, 'line', follow); add(pilot.lateral, 'hold', follow); }
     for (const { r, ds } of near.slice(0, this.o.fightRivals ?? 2)) {
       if (ds < -15 || ds > 60) continue;
-      const e = line.locate(r.car.x, r.car.z, (pilot.hint + Math.round(ds / line.ds) + line.n) % line.n).e;
+      const e = line.locate(r.car.x, r.car.z, (at + Math.round(ds / line.ds) + line.n) % line.n).e;
       for (const [side, w] of [['L', -2.35], ['R', 2.35], ['LL', -3.4], ['RR', 3.4]]) for (const follow of [true, false]) add(e + w, `${side}${r.id}`, follow);
     }
     return out;
