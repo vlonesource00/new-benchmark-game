@@ -16,7 +16,7 @@ export class CounterpointDriver {
     this.planner = new Planner(track, this.book, this.o);
     this.reset();
   }
-  reset() { this.clock = 0; this.due = 0; this.move = null; this.book.reset(); this.planner.reset(); this.pilot.classId && this.pilot.reset(); this.reflexes = 0; }
+  reset() { this.clock = 0; this.due = 0; this.move = null; this.book.reset(); this.planner.reset(); this.pilot.classId && this.pilot.reset(); this.reflexes = 0; this.planMs = 0; this.planMax = 0; }
   prepare(car) {
     if (this.pilot.classId === car.classId) return;
     this.pilot.prepare(car);
@@ -31,7 +31,9 @@ export class CounterpointDriver {
     const near = this.book.near(car), length = this.track.length;
     if (!near.length) this.move = null;
     else if (this.clock >= this.due || !this.move) {
+      const t0 = performance.now();
       this.move = this.planner.plan(car, this.pilot, near);
+      const ms = performance.now() - t0; this.planMs += ms; this.planMax = Math.max(this.planMax, ms);
       this.due = this.clock + this.o.period;
     }
     const m = this.move;
@@ -48,7 +50,7 @@ export class CounterpointDriver {
   debug() {
     const m = this.move, r = this.planner.rollouts;
     return { architecture: 'COUNTERPOINT', intent: m ? m.key : 'PACE', lane: m?.lane ?? 0, follow: m?.follow ?? null,
-      score: m?.score, candidates: m?.cands, decisions: this.planner.decisions, rollouts: r.count, carSteps: r.steps, reflexes: this.reflexes,
+      score: m?.score, candidates: m?.cands, decisions: this.planner.decisions, rollouts: r.count, carSteps: r.steps, reflexes: this.reflexes, planMs: this.planMs, planMax: this.planMax,
       trace: this.pilot.trace };
   }
   visualDebug() { return null; }
