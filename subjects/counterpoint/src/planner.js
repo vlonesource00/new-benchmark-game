@@ -28,7 +28,9 @@ export class Planner {
     // A lane is metres off the line; the road is where the line is not. Lanes stay on the asphalt at the car's
     // station and 40 m on, the stretch the move is driven over.
     const at = line.locate(car.x, car.z, pilot.hint).i, ahead = (at + Math.round(40 / line.ds)) % line.n, w0 = line.w[at], w1 = line.w[ahead];
-    const lo = Math.max(-max, -edge - Math.min(w0, w1)), hi = Math.min(max, edge - Math.max(w0, w1));
+    // The racing line itself is always allowed: it runs near the edge in places, and a clamp past it would push every
+    // move, the line included, into a car alongside on the other side.
+    const lo = Math.min(0, Math.max(-max, -edge - Math.min(w0, w1))), hi = Math.max(0, Math.min(max, edge - Math.max(w0, w1)));
     const add = (lane, key, follow) => {
       lane = clamp(lane, lo, Math.max(lo, hi));
       if (!out.some((c) => c.follow === follow && Math.abs(c.lane - lane) < 0.5)) out.push({ lane, key: `${key}${follow ? '' : '!'}`, follow });
