@@ -39,10 +39,10 @@ export class CounterpointDriver {
     const m = this.move;
     let cap = m?.follow ? followCap(car, cars, length) : Infinity;
     // Reflex: a pressing move that the field has overtaken (the car ahead brakes harder than forecast) gets the hard
-    // follow limit at once and a fresh plan on the next tick.
+    // follow limit (no reaction allowance) at once and one fresh plan on the next tick, not one every tick after.
     if (m && !m.follow && this.o.reflex) {
-      const hard = followCap(car, cars, length, { decel: 12, react: 0 });
-      if (hard < car.speed - 1) { cap = hard; this.due = 0; this.reflexes++; }
+      const hard = followCap(car, cars, length, { react: 0 });
+      if (hard < car.speed - 1) { cap = hard; if (!m.reflexed) { m.reflexed = true; this.due = 0; this.reflexes++; } }
     }
     this.pilot.command = { lateral: m?.lane ?? 0, cap, mode: m?.key ?? 'PACE' };
     return this.pilot.update(car, cars, dt, context);

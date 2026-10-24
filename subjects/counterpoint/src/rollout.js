@@ -30,10 +30,11 @@ export class Rollouts {
   run(car, pilot, others, plan, hyp) {
     const o = this.o, dt = o.dt ?? 1 / 60, H = o.horizon ?? 2.4, length = this.track.length, track = this.shadow;
     const me = cloneCar(car), drv = cloneDriver(pilot); drv.isShadow = true;
-    const sim = others.map(({ r }) => ({ r, car: cloneCar(r.car), drv: rivalPilot(this.book.pilotFor(r.car), r, r.car), hint: r.hint }));
+    const sim = others.map(({ r }) => ({ r, car: cloneCar(r.car), drv: rivalPilot(this.book.pilotFor(r.car), r, r.car), hint: r.hint, dmg0: r.car.damage, touched: false }));
+    const byId = new Map(sim.map((x) => [x.car.id, x]));
     const all = [me, ...sim.map((x) => x.car)], start = sim.map((x) => relative(me, x.car, length).ds);
     const dmg0 = me.damage, diag = { pairs: [] };
-    let prog = 0, off = 0, slide = 0, severe = 0, rub = 0, s0 = me.s;
+    let prog = 0, off = 0, slide = 0, severe = 0, rub = 0, harmOff = 0, s0 = me.s;
     const edge = track.halfWidth + (track.curbWidth ?? 0), half = (car.spec?.track ?? 1.72) / 2;
     // The pilots decide every `every` physics steps and hold their pedals in between (the pilot costs four times
     // what a physics step does); the physics itself always runs at the rollout rate.
@@ -58,7 +59,12 @@ export class Rollouts {
       for (let k = 0; k < all.length; k++) all[k].step(dt, track, w[k]);
       diag.pairs.length = 0;
       collisions(all, diag);
-      for (const [a, b, closing] of diag.pairs) if (a === me.id || b === me.id) { if (closing > 6) severe++; else rub++; }
+      for (const [a, b, closing] of diag.pairs) if (a === me.id || b === me.id) {
+        if (closing > 6) severe++; else rub++;
+        const x = byId.get(a === me.id ? b : a); if (x) x.touched = true;
+      }
+      // A rival COUNTERPOINT has touched and that is now off the road is COUNTERPOINT's doing.
+      for (const x of sim) if (x.touched && Math.abs(x.car.lateral) - half > edge) harmOff += dt;
       prog += wrap(me.s - s0 + length / 2, length) - length / 2; s0 = me.s;
       if (Math.abs(me.lateral) - half > edge) off += dt;
       const beta = Math.abs(Math.atan2(me.v, Math.max(2, me.u)));
@@ -90,7 +96,8 @@ export class Rollouts {
       if (beta > 0.3) slide += (beta - 0.3) * dt;
       this.steps++;
     }
-    out.dmg = me.damage - dmg0; out.off = off; out.slide = slide;
+    out.dmg = me.damage - dmg0; out.off = off; out.slide = slide; out.harmOff = harmOff;
+    out.harm = sim.reduce((h, x) => h + (x.touched ? x.car.damage - x.dmg0 : 0), 0);
     return out;
   }
 }

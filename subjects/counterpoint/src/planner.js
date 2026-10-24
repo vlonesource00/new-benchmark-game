@@ -6,7 +6,7 @@
 import { clamp } from '../../../game/engine/sim/math.js';
 import { Rollouts } from './rollout.js';
 
-export const VALUE = { carry: 0.8, pass: 10, loss: 12, damage: 4000, severe: 30, rub: 1.5, off: 150, offAny: 20, slide: 60, keep: 4, block: 8 };
+export const VALUE = { carry: 0.8, pass: 10, loss: 12, damage: 4000, severe: 30, rub: 1.5, off: 150, offAny: 20, slide: 60, keep: 15, block: 8, harm: 1 };
 
 export class Planner {
   constructor(track, book, options = {}) {
@@ -18,7 +18,9 @@ export class Planner {
   value(x) {
     const v = this.v;
     return x.prog + v.carry * (x.v - x.vRef) + v.pass * x.passes - v.loss * x.losses - v.damage * x.dmg - v.severe * x.severe
-      - v.rub * x.rub - v.off * x.off - (x.off > 0 ? v.offAny : 0) - v.slide * x.slide - v.block * (x.block ?? 0);
+      - v.rub * x.rub - v.off * x.off - (x.off > 0 ? v.offAny : 0) - v.slide * x.slide - v.block * (x.block ?? 0)
+      // The damage and the off-road a move causes a rival it touches cost what they would cost COUNTERPOINT itself.
+      - v.harm * (v.damage * (x.harm ?? 0) + v.off * (x.harmOff ?? 0));
   }
   /** The moves worth simulating: the line, the lane held now, and either side of each rival close enough to fight. */
   candidates(car, pilot, near) {
@@ -54,7 +56,7 @@ export class Planner {
     top.sort((a, b) => b.score - a.score);
     this.decisions++;
     if (this.o.record) {
-      const brief = (x) => x && { p: +x.prog.toFixed(1), blk: +x.block.toFixed(2), v: +(x.v - x.vRef).toFixed(1), pass: x.passes, loss: x.losses, dmg: +(x.dmg * 100).toFixed(2), rub: x.rub, sev: x.severe, off: +x.off.toFixed(2) };
+      const brief = (x) => x && { p: +x.prog.toFixed(1), blk: +x.block.toFixed(2), v: +(x.v - x.vRef).toFixed(1), pass: x.passes, loss: x.losses, dmg: +(x.dmg * 100).toFixed(2), rub: x.rub, sev: x.severe, off: +x.off.toFixed(2), harm: +((x.harm ?? 0) * 100).toFixed(2), hOff: +(x.harmOff ?? 0).toFixed(2) };
       (this.log ??= []).push({ s: +car.s.toFixed(0), v: +car.speed.toFixed(1), near: sims.map(({ r, ds }) => [r.id, +ds.toFixed(1), +(r.car.lateral - car.lateral).toFixed(1)]),
         pick: top[0].key, top: cands.slice(0, 6).map((c) => [c.key, +c.score.toFixed(1), brief(c.habit), brief(c.cover)]) });
     }
