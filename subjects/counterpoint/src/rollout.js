@@ -67,13 +67,30 @@ export class Rollouts {
     }
     this.count++;
     const line = pilot.line, loc = line.locate(me.x, me.z, drv.hint);
-    let passes = 0, losses = 0;
+    let passes = 0, losses = 0, block = 0;
+    const pace = this.book.rivals.get(car.id)?.ratio ?? pilot.options.pace ?? 1;
     sim.forEach((x, k) => {
-      const end = relative(me, x.car, length).ds;
+      const { ds: end, dl } = relative(me, x.car, length);
       if (start[k] > 0 && end < -1) passes++;
       if (start[k] < 0 && end > 1) losses++;
+      // Still boxed in behind a slower car when the horizon ends: the road it will keep costing (m/s), which the
+      // horizon itself cannot see. A move that ends alongside or ahead has escaped it.
+      if (end > 0 && end < 25 && Math.abs(dl) < 2.15) block = Math.max(block, Math.max(0, pace - x.r.ratio) * me.speed);
     });
-    return { prog, v: me.speed, vRef: line.sample(line.vb, loc.i, loc.f) * (pilot.options.pace ?? 1), passes, losses,
-      dmg: me.damage - dmg0, severe, rub, off, slide, end: { x: me.x, z: me.z, e: loc.e } };
+    const out = { prog, v: me.speed, vRef: line.sample(line.vb, loc.i, loc.f) * (pilot.options.pace ?? 1), passes, losses, block,
+      dmg: 0, severe, rub, off: 0, slide: 0, end: { x: me.x, z: me.z, e: loc.e } };
+    // Value to go: the ego alone drives back to the line for `tail` seconds from where the move left it. A move
+    // that ends wide and fast at the next corner is caught here, past the horizon of the fight.
+    const tail = o.tail ?? 2, solo = [me];
+    for (let t = 0, n = 0; t < tail - 1e-9; t += dt, n++) {
+      if (n % every === 0) { drv.command = { lateral: 0, cap: Infinity, mode: 'tail' }; drv.update(me, solo, pdt, {}); }
+      me.step(dt, track, wakes(solo)[0]);
+      if (Math.abs(me.lateral) - half > edge) off += dt;
+      const beta = Math.abs(Math.atan2(me.v, Math.max(2, me.u)));
+      if (beta > 0.3) slide += (beta - 0.3) * dt;
+      this.steps++;
+    }
+    out.dmg = me.damage - dmg0; out.off = off; out.slide = slide;
+    return out;
   }
 }

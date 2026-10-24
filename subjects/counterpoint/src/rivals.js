@@ -16,8 +16,9 @@ export class RivalBook {
   reset() { this.rivals.clear(); }
   observe(car, cars, dt) {
     const length = this.track.length;
+    // COUNTERPOINT itself is booked too, so its own pace is measured on the same scale as the rivals'.
     for (const o of cars) {
-      if (o === car || o.ghost) continue;
+      if (o.ghost) continue;
       const line = this.pilotFor(o).line, n = line.n;
       let r = this.rivals.get(o.id);
       const loc = line.locate(o.x, o.z, r?.hint ?? -1);
@@ -45,7 +46,7 @@ export class RivalBook {
     const length = this.track.length, out = [];
     for (const r of this.rivals.values()) {
       const ds = wrap(r.car.s - car.s + length / 2, length) - length / 2;
-      if (ds > from && ds < to && !r.car.ghost) out.push({ r, ds });
+      if (r.car !== car && ds > from && ds < to && !r.car.ghost) out.push({ r, ds });
     }
     return out.sort((a, b) => Math.abs(a.ds) - Math.abs(b.ds));
   }

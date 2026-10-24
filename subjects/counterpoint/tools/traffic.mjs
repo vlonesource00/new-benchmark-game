@@ -66,6 +66,13 @@ race.collisionStats.pairs.push = function(...rows) {
     if (finishSnapshots[k] || race.cars[i].race.finishTime !== null) continue;
     const contact = classifyContact(race.cars[i], race.cars[i === a ? b : a], closing);
     metrics[k].contacts++; metrics[k].mildRubs += Number(contact.rub); metrics[k].severe += Number(contact.severe);
+    if (closing > 3) {
+      const j = i === a ? b : a, car = race.cars[i], o = race.cars[j], ri = track.nearest(car.x, car.z), rj = track.nearest(o.x, o.z),
+        debug = race.entries[i].bridges[race.entries[i].active].debug?.();
+      events.push({ t: race.time, subject: k, other: j, otherDriver: field[j].id, kind: 'contact', closing: +closing.toFixed(1),
+        ds: +(gap(rj.s, ri.s, track.length)).toFixed(1), dl: +(rj.lateral - ri.lateral).toFixed(1), v: +car.speed.toFixed(1), vo: +o.speed.toFixed(1),
+        brake: +car.controls.brake.toFixed(2), obrake: +(o.controls?.brake ?? 0).toFixed(2), intent: debug?.intent, s: +ri.s.toFixed(0) });
+    }
   }
   return collisionPush.apply(this, rows);
 };
@@ -103,6 +110,13 @@ try {
           preceding: args.includes('--trace-solo') ? previous.history.slice() : undefined });
       }
       previous.valid = car.race.valid;
+      // Damage that arrives without a car-to-car contact (walls, kerbs) shows up here.
+      if (car.damage - (previous.damage ?? 0) > 0.004) {
+        const road = track.nearest(car.x, car.z), debug = race.entries[i].bridges[race.entries[i].active].debug?.();
+        events.push({ t: race.time, subject: k, kind: 'damage', amount: +((car.damage - (previous.damage ?? 0)) * 100).toFixed(2),
+          s: +road.s.toFixed(0), lateral: +road.lateral.toFixed(1), v: +car.speed.toFixed(1), intent: debug?.intent });
+      }
+      previous.damage = car.damage;
       if (previous.lap !== null && car.race.lap > previous.lap) {
         metrics[k].lapResults.push({ lap: car.race.lap - 1, seconds: car.race.lastLap,
           state: car.race.lastState, valid: car.race.lastState !== 'red' });
@@ -218,7 +232,8 @@ try {
       timeFromGreen: race.cars[i].race.finishTime === null ? null : race.cars[i].race.finishTime - green,
       damageReference20Laps: .2,
       incidents: finishSnapshots[k]?.incidents ?? race.stewards.of(race.entries[i]).inc,
-      errors: finishSnapshots[k]?.errors ?? race.entries[i].bridges.reduce((n, b) => n + b.errors, 0) })) };
+      errors: finishSnapshots[k]?.errors ?? race.entries[i].bridges.reduce((n, b) => n + b.errors, 0),
+      plannerLog: race.entries[i].bridges[race.entries[i].active].driver?.planner?.log })) };
   const dir = new URL('../results/', import.meta.url); mkdirSync(dir, { recursive: true });
   const out = flag('out', `traffic-${driver}-${cls}-${trafficClass}-${trackId}-${seed}.json`);
   if (!/^[a-z0-9_.-]+$/i.test(out)) throw Error('Invalid output filename');

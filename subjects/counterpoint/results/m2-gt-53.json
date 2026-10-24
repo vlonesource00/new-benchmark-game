@@ -51,11 +51,11 @@
     }
   ],
   "telemetryValid": false,
-  "diagnosticOnly": true,
-  "diagnosticUntil": 60,
+  "diagnosticOnly": false,
+  "diagnosticUntil": null,
   "plannerCounterScope": "Observed through the last delivered worker reply at finish; unique reply timestamps are counted as samples.",
   "measurement": "Matched hard-tyre solo or two rear-start subjects behind six governed real rivals. Same worker-seat delivery model; ORACLE retains its production physics-rate main-thread path. Attack episodes are geometric pull-outs, not intentions. Safety freezes at each subject finish. Compare completed distance before time. No pit calls or cautions.",
-  "fingerprint": "75e0a3c927ad4e45ef8efd67beb0c07b90098371bd9d595283ca236ccf08bddb",
+  "fingerprint": "3facb67cf93d676d3f93fe1cd85663fca406c178913c49b2c69b3039ccbf080a",
   "sourceHashes": {
     "game/bridges/ai-worker.js": "d4ae4a6f1ad16577769b155010dd202b03a006c179f557323f53361e2316086c",
     "game/bridges/apex-bridge.js": "aff82810c62d6ef2df7c1c768ff969c974f8921d25bbc33ede2ab10c092cdd40",
@@ -174,9 +174,9 @@
     "subjects/counterpoint/src/driver.js": "5abba55a9eda09610e690e1b24100dc83d007f31bb2548311df49124bf2656b8",
     "subjects/counterpoint/src/follow.js": "345f460887483432fcd73ad91d460c6c4e5c7ba5ea66c7e04dd7fb3a628bc518",
     "subjects/counterpoint/src/pilot.js": "92ac6957a1d69ff49df6fb25af906b863bb8dc02d7df02768bbc3f8168fe2554",
-    "subjects/counterpoint/src/planner.js": "7ddf9f69ae254c76fb10cce95394718b791cbc52c25da54e7826b20f2f3defb6",
+    "subjects/counterpoint/src/planner.js": "e25bfc82f33ce7bd4c4129c3808ada0afd2dcbf08c1ec478676533477f4e1955",
     "subjects/counterpoint/src/rivals.js": "bd1380915a3fd8553f37b884b454a9016e81a75d16415e5bcfe82886131a950d",
-    "subjects/counterpoint/src/rollout.js": "6d7fcf1747d23c5064ed0c7816f957b836d69065fc08128d8e2966ff9e06fe51",
+    "subjects/counterpoint/src/rollout.js": "cff89a83bf6fa2f5cb45268493df6e494caf24a7c84184745ac88ad0076190b9",
     "subjects/counterpoint/tools/campaign.mjs": "4fcbdbbabeeef249022ab6c8e0854d2db3500e4535816e413ec020a3ebae1d0b",
     "subjects/counterpoint/tools/check.mjs": "96b768942f0d20f8844ac0770d3c876f29f7302a0ef4909f2704238a6d995a5e",
     "subjects/counterpoint/tools/inspect-traffic.mjs": "0efbf9ff4fb1199cadcb54b1df318a4abafc001dccd39cd0c87444540e73e57d",
@@ -186,8 +186,9 @@
     "subjects/counterpoint/tools/pace-probe.mjs": "bc926cd053e2dbd0f5bcaa27906aeaea467a36d88b2b6ceed7385d2a09c1b8d1",
     "subjects/counterpoint/tools/pass-regression.mjs": "96b8c7963cebe9721e3e2e0ff1e352b302f0c1f14c8108b27cdd980eb90c7771",
     "subjects/counterpoint/tools/provenance.mjs": "f9b704f302b985be4ba2c2efe6173cc69161fee95c7818fbeda763f2cf5bc7b2",
+    "subjects/counterpoint/tools/summary.mjs": "088d0f6fc85303a23d4dca60ef5272c195797d9477889a6a9665c01b7a9ab686",
     "subjects/counterpoint/tools/traffic-telemetry.mjs": "5bcaee26eebc927892ce8586f350e4237bfe33f39d57a6b55f93da2b5958ced9",
-    "subjects/counterpoint/tools/traffic.mjs": "922186e91ddc2ae19d37fd74162d08034ff19fda56409787d9d819f269587c83",
+    "subjects/counterpoint/tools/traffic.mjs": "a01da01bd2c21bba7767cc3dc6c5b5355f8b6272cc262b16221976ba5869d7d7",
     "subjects/intercept/config.json": "7302a8e41e30f810d08a1f33040fff732e8b2d43daf7331f26a1e6bf79e42420",
     "subjects/intercept/data/courses.json": "e3566b3a06430868d71e9287dfd6c6c520a3da027aabea01951d407ee131dc2f",
     "subjects/intercept/src/axles.js": "bf650f85b5264e1cd7a7bb170b366618b70d5d2cc1a0def901301f9b51ccfb24",
@@ -329,78 +330,82 @@
     "subjects/vanguard/tools/trajectory-check.mjs": "f31b002a91bea976a136acc777ce04f9d4306284073c6df2fafe4ebd8324a14b"
   },
   "node": "v24.18.0",
-  "changesDuringRun": [],
-  "wallSeconds": 108.8393355,
-  "time": 60.00833333333057,
+  "changesDuringRun": [
+    "subjects/counterpoint/src/planner.js",
+    "subjects/counterpoint/src/rivals.js",
+    "subjects/counterpoint/src/rollout.js"
+  ],
+  "wallSeconds": 237.0454564,
+  "time": 271.0083333332512,
   "events": [
     {
-      "t": 8.441666666666189,
+      "t": 8.841666666666166,
       "subject": 1,
       "rival": 4,
       "kind": "retained-pass"
     },
     {
-      "t": 9.64166666666612,
+      "t": 10.491666666666072,
       "subject": 0,
       "rival": 4,
       "kind": "retained-pass"
     },
     {
-      "t": 15.591666666665782,
-      "subject": 1,
+      "t": 18.191666666665633,
+      "subject": 0,
       "rival": 5,
       "kind": "retained-pass"
     },
     {
-      "t": 17.741666666665658,
-      "subject": 0,
+      "t": 22.991666666665367,
+      "subject": 1,
       "rival": 5,
       "kind": "retained-pass"
     },
     {
       "t": 24.991666666665253,
+      "subject": 0,
+      "rival": 3,
+      "kind": "retained-pass"
+    },
+    {
+      "t": 25.291666666665236,
       "subject": 1,
       "rival": 3,
       "kind": "retained-pass"
     },
     {
-      "t": 25.091666666665247,
-      "subject": 0,
-      "rival": 3,
-      "kind": "retained-pass"
-    },
-    {
-      "t": 28.54166666666505,
-      "subject": 0,
-      "rival": 2,
-      "kind": "retained-pass"
-    },
-    {
-      "t": 29.541666666664995,
+      "t": 31.141666666664904,
       "subject": 0,
       "rival": 0,
       "kind": "retained-pass"
     },
     {
-      "t": 31.441666666664887,
-      "subject": 1,
+      "t": 31.291666666664895,
+      "subject": 0,
       "rival": 2,
       "kind": "retained-pass"
     },
     {
-      "t": 32.341666666664835,
+      "t": 34.54166666666471,
+      "subject": 1,
+      "rival": 0,
+      "kind": "retained-pass"
+    },
+    {
+      "t": 37.34166666666455,
       "subject": 0,
       "rival": 1,
       "kind": "retained-pass"
     },
     {
-      "t": 32.49166666666483,
+      "t": 42.041666666664284,
       "subject": 1,
-      "rival": 0,
+      "rival": 2,
       "kind": "retained-pass"
     },
     {
-      "t": 45.391666666664094,
+      "t": 55.34166666666597,
       "subject": 1,
       "rival": 1,
       "kind": "retained-pass"
@@ -410,42 +415,42 @@
     {
       "retired": false,
       "finishTime": null,
-      "damage": 0.10403360615272036
+      "damage": 0.12955123097807894
     },
     {
       "retired": false,
       "finishTime": null,
-      "damage": 0.07362933836373318
+      "damage": 0.11339202455664646
     },
     {
       "retired": false,
       "finishTime": null,
-      "damage": 0.05809994736973077
+      "damage": 0.08801104006436394
     },
     {
       "retired": false,
       "finishTime": null,
-      "damage": 0
+      "damage": 0.009697312637984552
     },
     {
       "retired": false,
       "finishTime": null,
-      "damage": 0.04600612203710817
+      "damage": 0.07439049025688815
     },
     {
       "retired": false,
       "finishTime": null,
-      "damage": 0
+      "damage": 0.0023963668878601847
     }
   ],
   "subjects": [
     {
-      "stuckSeconds": 10.650000000000016,
-      "besideLiftSeconds": 2.499999999999999,
-      "attackEpisodes": 25,
+      "stuckSeconds": 12.500000000000043,
+      "besideLiftSeconds": 1.4000000000000006,
+      "attackEpisodes": 29,
       "firstAttackSeconds": 0.0416666666666643,
       "retainedPasses": 6,
-      "contacts": 1,
+      "contacts": 0,
       "mildRubs": 0,
       "severe": 0,
       "offtrackSeconds": 0,
@@ -454,23 +459,18 @@
         "RR7!": 0.2,
         "R7!": 0.6,
         "LL7!": 0.2,
-        "line!": 1.6000000000000008,
-        "hold": 2.7499999999999982,
-        "line": 1.850000000000001,
+        "line!": 3.699999999999995,
+        "hold": 0.8000000000000002,
+        "line": 0.2,
         "LL7": 0.39999999999999997,
         "LL4": 0.25,
-        "L7!": 0.3,
-        "R4!": 0.2,
-        "L7": 0.2,
-        "L5!": 0.6,
-        "R5": 0.2,
-        "RR5!": 0.44999999999999996,
-        "hold!": 0.25,
-        "R5!": 0.05,
-        "RR7": 0.15000000000000002,
-        "R3!": 0.05,
-        "L3!": 0.2,
-        "LL2!": 0.1
+        "L7!": 0.6,
+        "RR4!": 1.0500000000000003,
+        "L5!": 1.3000000000000005,
+        "RR7": 0.1,
+        "hold!": 0.1,
+        "R2": 1.3000000000000005,
+        "R2!": 1.6500000000000008
       },
       "stuckNoseSeconds": 0,
       "attackReturnTransitions": 0,
@@ -478,61 +478,82 @@
       "setupDecisions": null,
       "plannerDecisions": null,
       "plannerSamples": 0,
-      "missingPlannerSamples": 969,
+      "missingPlannerSamples": 5115,
       "plannerCounterDrops": 0,
       "plannerStaleSeconds": 0,
       "maxPlannerAge": 0,
       "contestedHoldSeconds": 0,
       "returnAlignmentSeconds": 0,
       "roadRejectedPlans": null,
-      "lapResults": [],
+      "lapResults": [
+        {
+          "lap": 1,
+          "seconds": 64.00000000001114,
+          "state": "purple",
+          "valid": true
+        },
+        {
+          "lap": 2,
+          "seconds": 61.82500000002334,
+          "state": "purple",
+          "valid": true
+        },
+        {
+          "lap": 3,
+          "seconds": 61.98333333327696,
+          "state": "yellow",
+          "valid": true
+        },
+        {
+          "lap": 4,
+          "seconds": 62.166666666610126,
+          "state": "yellow",
+          "valid": true
+        }
+      ],
       "invalidations": [],
+      "plannerAgeAtFinish": null,
       "plannerAgeAtObservationEnd": null,
       "position": 1,
-      "finishTime": null,
-      "bestLap": null,
-      "damage": 0.01682130624307988,
-      "finishLaps": 0,
-      "completed": false,
-      "progress": 2036.9668810480925,
-      "timeFromGreen": null,
+      "finishTime": 267.30833333325455,
+      "bestLap": 61.82500000002334,
+      "damage": 0,
+      "finishLaps": 4,
+      "completed": true,
+      "progress": 10818.732207972791,
+      "timeFromGreen": 255.77499999992122,
       "damageReference20Laps": 0.2,
-      "incidents": 4,
+      "incidents": 0,
       "errors": 0
     },
     {
-      "stuckSeconds": 22.25000000000018,
-      "besideLiftSeconds": 4.299999999999993,
-      "attackEpisodes": 32,
+      "stuckSeconds": 21.050000000000164,
+      "besideLiftSeconds": 8.249999999999982,
+      "attackEpisodes": 37,
       "firstAttackSeconds": 0.0416666666666643,
       "retainedPasses": 6,
-      "contacts": 38,
-      "mildRubs": 28,
+      "contacts": 121,
+      "mildRubs": 87,
       "severe": 0,
       "offtrackSeconds": 0,
       "stuckByIntent": {
-        "line": 2.6999999999999984,
-        "L6!": 2.1000000000000005,
-        "LL4": 0.39999999999999997,
+        "line": 2.0500000000000007,
+        "L6!": 0.5499999999999999,
+        "LL4": 1.4000000000000006,
         "L4!": 0.2,
         "LL6!": 0.2,
-        "L6": 0.25,
-        "hold": 5.04999999999999,
-        "L5!": 1.6500000000000008,
-        "RR6!": 1.6000000000000008,
-        "R6!": 0.65,
-        "hold!": 0.8500000000000002,
-        "RR3!": 0.2,
-        "RR2": 0.5499999999999999,
-        "R6": 0.2,
-        "RR6": 0.2,
-        "line!": 1.950000000000001,
-        "RR0!": 1.1000000000000003,
-        "RR0": 0.35,
-        "R0!": 0.2,
-        "L0!": 0.39999999999999997,
-        "LL0": 0.1,
-        "LL1": 1.3500000000000005
+        "L6": 2.6499999999999986,
+        "hold": 3.4999999999999956,
+        "hold!": 5.849999999999987,
+        "line!": 0.9500000000000003,
+        "R5!": 0.49999999999999994,
+        "RR5!": 0.25,
+        "LL6": 0.15000000000000002,
+        "RR6!": 0.35,
+        "R6": 0.25,
+        "R6!": 0.3,
+        "RR1": 0.65,
+        "RR2": 1.2500000000000004
       },
       "stuckNoseSeconds": 0,
       "attackReturnTransitions": 0,
@@ -540,26 +561,52 @@
       "setupDecisions": null,
       "plannerDecisions": null,
       "plannerSamples": 0,
-      "missingPlannerSamples": 969,
+      "missingPlannerSamples": 5189,
       "plannerCounterDrops": 0,
       "plannerStaleSeconds": 0,
       "maxPlannerAge": 0,
       "contestedHoldSeconds": 0,
       "returnAlignmentSeconds": 0,
       "roadRejectedPlans": null,
-      "lapResults": [],
+      "lapResults": [
+        {
+          "lap": 1,
+          "seconds": 66.95833333334669,
+          "state": "green",
+          "valid": true
+        },
+        {
+          "lap": 2,
+          "seconds": 62.141666666684955,
+          "state": "green",
+          "valid": true
+        },
+        {
+          "lap": 3,
+          "seconds": 62.28333333327669,
+          "state": "yellow",
+          "valid": true
+        },
+        {
+          "lap": 4,
+          "seconds": 62.45833333327653,
+          "state": "yellow",
+          "valid": true
+        }
+      ],
       "invalidations": [],
+      "plannerAgeAtFinish": null,
       "plannerAgeAtObservationEnd": null,
       "position": 2,
-      "finishTime": null,
-      "bestLap": null,
-      "damage": 0.05688049537477185,
-      "finishLaps": 0,
-      "completed": false,
-      "progress": 1887.715016626741,
-      "timeFromGreen": null,
+      "finishTime": 271.0083333332512,
+      "bestLap": 62.141666666684955,
+      "damage": 0.11876753652783265,
+      "finishLaps": 4,
+      "completed": true,
+      "progress": 10818.796348932747,
+      "timeFromGreen": 259.4749999999179,
       "damageReference20Laps": 0.2,
-      "incidents": 4,
+      "incidents": 16,
       "errors": 0
     }
   ]
