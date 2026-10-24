@@ -219,6 +219,7 @@ export class AiDebugPanel {
         return `<div class="${c.chosen ? 'on' : ''}"><span>${esc(c.label)}</span><i><b style="width:${(6 + 94 * q).toFixed(0)}%"></b></i><em>${esc(c.note || c.score.toFixed(0))}</em></div>`;
       }).join('')}</div>`);
     }
+    if (m.breakdown) parts.push(this.breakdownHtml(m.breakdown));
     if (m.gauges?.length) parts.push(`<h6>INSIDE THE CONTROLLER</h6><div class="mg">${m.gauges.map((x) => `<div><span>${esc(x.label)}</span><i><b style="width:${(x.value * 100).toFixed(0)}%;${x.color ? `background:${x.color}` : ''}"></b></i><em>${esc(x.text ?? '')}</em></div>`).join('')}</div>`);
     if (m.counters?.length) parts.push(`<div class="mn">${m.counters.map((x) => `<span><small>${esc(x.label)}</small>${esc(String(x.value))}</span>`).join('')}</div>`);
     this.mindBody.innerHTML = parts.join('');
@@ -237,6 +238,18 @@ export class AiDebugPanel {
     const short = f.short.map((q) => `<div class="${q.chosen ? 'on' : ''}"><span>${esc(q.label)}</span><em>${q.ok ? 'overlaps' : `${q.rel.toFixed(1)} m short`}</em></div>`).join('');
     return `<h6>MOVE</h6><div class="mflow">${steps.map(([id, t]) => `<i class="${id === f.stage ? 'on' : ''}">${t}</i>`).join('<u>›</u>')}</div>`
       + `<div class="mclock"><span>now</span>${marks}<span class="end">${f.H} s</span></div>${short ? `<div class="mshort">${short}</div>` : ''}`;
+  }
+
+  /**
+   * Why one move beat the next: both priced term by term (metres of race), the bar the share of the margin a term
+   * made, green where it favoured the move driven, red where it cost it.
+   */
+  breakdownHtml(b, rows = 10) {
+    const R = b.rows.slice().sort((p, q) => Math.abs(q.a - q.b) - Math.abs(p.a - p.b)).slice(0, rows), big = Math.max(1, ...R.map((r) => Math.abs(r.a - r.b)));
+    return `<h6>WHY ${esc(b.a)} OVER ${esc(b.b)}${b.margin != null ? ` · +${b.margin.toFixed(1)} m` : ''}</h6><div class="mg">${R.map((r) => {
+      const d = r.a - r.b;
+      return `<div><span>${esc(r.label)}</span><i><b style="width:${(100 * Math.abs(d) / big).toFixed(0)}%;background:${d >= 0 ? '#3ddc84' : '#ff4d4d'}"></b></i><em>${d >= 0 ? '+' : ''}${d.toFixed(1)} · ${r.a.toFixed(1)} vs ${r.b.toFixed(1)}</em></div>`;
+    }).join('')}</div>`;
   }
 
   /** The rival the AI is working on, as one line for the 3D view's HUD. */
@@ -267,6 +280,7 @@ export class AiDebugPanel {
         return `<div class="${c.chosen ? 'on' : ''}"><span>${esc(c.label)}</span><i><b style="width:${(6 + 94 * q).toFixed(0)}%"></b></i><em>${esc(c.note || c.score.toFixed(0))}</em></div>`;
       }).join('')}</div>`);
     }
+    if (m?.breakdown) L.push(this.breakdownHtml(m.breakdown, 5));
     if (m?.tags?.length) L.push(`<div class="mt">${m.tags.map((x) => `<i>${esc(x)}</i>`).join('')}</div>`);
     if (m?.gauges?.length) R.push(`<h6>CONTROLLER</h6><div class="mg">${m.gauges.slice(0, 6).map((x) => `<div><span>${esc(x.label)}</span><i><b style="width:${(x.value * 100).toFixed(0)}%;${x.color ? `background:${x.color}` : ''}"></b></i><em>${esc(x.text ?? '')}</em></div>`).join('')}</div>`);
     const s = this.strat;

@@ -15,22 +15,28 @@ export function installCounterpointStrategy(race, car) {
   return true;
 }
 
-/** COUNTERPOINT runs on the main thread at physics rate (no seat worker): its rollouts start from the live field. */
+/**
+ * COUNTERPOINT drives on the main thread at physics rate (no seat worker), so its rollouts start from the live field;
+ * the planning itself runs in a worker of its own where the page has workers (inline otherwise, as headless benches do).
+ */
 export function createCounterpointBridge({ hostTrack, index = 0, options = {}, state = null }) {
   let driver = null;
+  // Started with the bridge, so the worker has loaded by the time the race runs.
+  let remote = options.inline || typeof Worker === 'undefined' ? null
+    : new Worker(new URL('../../subjects/counterpoint/src/plan-worker.js', import.meta.url), { type: 'module' });
   return {
     driverId: 'counterpoint', native: true, errors: 0,
     get driver() { return driver; },
     update(car, cars, dt, context = {}) {
       try {
-        driver ??= new CounterpointDriver(hostTrack, options);
+        driver ??= new CounterpointDriver(hostTrack, options, remote);
         driver.update(car, cars, dt, { ...context, state: context.state ?? state?.(car) ?? {} });
         if (!['throttle', 'brake', 'steer'].every((k) => Number.isFinite(car.controls[k]))) throw new Error('Non-finite COUNTERPOINT controls');
       } catch (e) { this.errors++; this.lastError = String(e.stack ?? e); car.controls = { throttle: 0, brake: 0.6, steer: 0 }; }
     },
     reset() { driver?.reset(); this.errors = 0; },
-    debug() { return driver?.debug() ?? { architecture: 'COUNTERPOINT', intent: 'INIT' }; },
+    debug() { return driver?.debug() ?? { architecture: 'COUNTERPOINT', intent: 'INIT', remote: !!remote }; },
     visualDebug() { return driver?.visualDebug() ?? null; },
-    dispose() { driver = null; }
+    dispose() { remote?.terminate(); remote = null; driver = null; }
   };
 }

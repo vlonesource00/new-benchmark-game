@@ -49,6 +49,7 @@ const THEMES = {
   razor: { color: '#ff6238', mind: 'Fast line to the wake; committed open-space attacks with smooth joins' },
   tempest: { color: '#3ad6ff', mind: 'Rolls every lane forward against forecast rivals, their wake and the water; commits only when it beats the held line' },
   oracle: { color: '#7cf2ff', mind: 'Min-time line on the measured envelope; tows, then commits to one simple move (pull-out or dive) when its 4.5 s forecast puts it alongside by the braking point' },
+  counterpoint: { color: '#ff9e3d', mind: 'Plays every move 2.4 s forward through the game physics with its rivals (tow, contact, damage) and drives the one worth the most metres, worst case weighed in' },
   slipstream: { color: '#7cf29c', mind: 'Learned direct control: a pace network drives; near rivals a router hands part of the wheel to a combat add-on' }
 };
 
@@ -290,6 +291,51 @@ PROFILES.oracle = (d, v) => {
     // The move ladder (where the car is in tow → pull-out / dive → alongside) and the clock the move is judged on.
     flow: { stage: intent === 'BATTLE' ? 'side' : mv.kind === 'MOVE' ? (mv.dive ? 'dive' : 'pull') : mv.capBy ? 'tow' : 'line', tb: num(mv.tb), tA: num(mv.tA), H: 4.5,
       short: (d.cands ?? []).filter((q) => q.label !== 'line' && num(q.rel) != null).map((q) => ({ label: q.label, rel: q.rel, ok: q.ok, chosen: q.chosen })) }
+  };
+};
+
+// COUNTERPOINT: every move (the line, the lane held, either side of each rival, following "" or pressing "!") played
+// 2.4 s forward through the game's physics with the rivals, and priced in metres of race. The best few are played
+// again against a rival that covers; their score leans to the worse case. The panel shows each move's price, the
+// chosen one's price term by term against the runner-up's, and what it foresaw.
+const CP_TERMS = [['road', 'road gained'], ['speed', 'speed carried'], ['passes', 'places won'], ['losses', 'places lost'], ['damage', 'damage'],
+  ['rubs', 'rubs'], ['off', 'track limits'], ['slide', 'sliding'], ['boxed', 'boxed in'], ['harm', 'harm to rival'],
+  ['worst', 'worst-case weight'], ['keep', 'keeping the move']];
+PROFILES.counterpoint = (d, v) => {
+  const n = d.counts ?? {}, x = v?.extras ?? null, all = (d.candidates ?? []).slice().sort((a, b) => (b.worst != null) - (a.worst != null) || b.score - a.score);
+  const me = all.find((q) => q.key === d.key), ru = d.runnerUp, margin = ru && num(d.score) != null ? d.score - ru.score : null;
+  const pts = (key) => v?.candidates?.find((c) => c.kind === key)?.points;
+  // Term by term, the chosen move against the runner-up (the rows sum to the margin); the two that won it most are tagged.
+  const rows = d.terms && ru?.terms ? CP_TERMS.map(([k, label]) => ({ label, a: d.terms[k] ?? 0, b: ru.terms[k] ?? 0 })).filter((r) => Math.abs(r.a) > 0.05 || Math.abs(r.b) > 0.05) : [];
+  const swing = rows.filter((r) => r.a - r.b > 0.3).sort((p, q) => (q.a - q.b) - (p.a - p.b)).slice(0, 2)
+    .map((r) => `${r.label} ${r.a - r.b >= 0 ? '+' : ''}${(r.a - r.b).toFixed(1)}`);
+  const ms = d.plans ? d.planMs / d.plans : null;
+  return {
+    intent: d.intent ?? 'INIT', sub: d.sub ?? '', tagText: d.sub, suppressInference: true,
+    focus: d.focus != null && d.kind ? { id: d.focus, kind: d.kind } : null, side: d.side ?? 0,
+    cands: all.map((q) => ({ label: q.key, score: q.score, chosen: q.key === d.key, points: pts(q.key),
+      note: `${q.score >= 0 ? '+' : ''}${q.score.toFixed(1)} m${q.worst != null ? ` · worst ${q.worst.toFixed(1)}` : ' · habit only'}` })),
+    candNote: 'metres of race over 2.4 s · ! presses · the best by habit are replayed against a covering rival',
+    breakdown: rows.length ? { a: d.key, b: ru.key, margin, rows, why: swing.join(' · ') } : null,
+    gauges: [
+      gauge('decision margin', margin == null ? null : clamp01(margin / 20), margin == null ? '' : `${margin.toFixed(1)} m over ${ru.key}`, '#ff9e3d'),
+      gauge('worst case', me?.worst == null ? null : clamp01((me.habit - me.worst) / 30), me?.worst == null ? 'not tested' : `${me.worst.toFixed(1)} m if it covers (habit ${me.habit.toFixed(1)})`, '#4f8cff'),
+      gauge('follow cap', num(d.cap) && num(d.speed) ? Math.min(1, d.cap / Math.max(1, d.speed)) : d.follow === false ? 0 : null,
+        d.follow === false ? 'pressing · no cap' : num(d.cap) ? `${Math.round(d.cap * 3.6)} km/h` : 'free', '#ffb02e'),
+      gauge('plan latency', ms == null ? null : d.remote ? clamp01(d.lag / 0.3) : clamp01(ms / 100),
+        `${d.remote ? `${Math.round(d.lag * 1000)} ms back · ` : 'inline · '}${ms == null ? '—' : ms.toFixed(0)} ms compute`, d.lag > 0.25 ? '#ff4d4d' : '#3ddc84'),
+      gauge('tyre grip', num(d.grip) == null ? null : clamp01((d.grip - 0.8) / 0.4), num(d.grip) == null ? '' : `×${d.grip.toFixed(3)}`, '#4fd1e8'),
+      gauge('dirty air', num(d.wake), pct(clamp01(d.wake)), '#9aa4b2'),
+      gauge('governor', num(d.pace) == null ? null : clamp01((d.pace - 0.85) / 0.15), num(d.pace) == null ? '' : `${pct(d.pace)} pace${d.veto ? ' · lane veto' : ''}`, d.pace < 0.995 ? '#ff8f3d' : '#3ddc84'),
+      gauge('sideslip β', num(d.beta) == null ? null : Math.abs(d.beta) / 0.2, num(d.beta) == null ? '' : `${(d.beta * 57.3).toFixed(1)}°`, Math.abs(d.beta ?? 0) > 0.105 ? '#ff4d4d' : '#4fd1e8')
+    ],
+    counters: [counter('plans', d.decisions), counter('rollouts', d.rollouts), counter('car steps', num(d.carSteps) ? `${(d.carSteps / 1e6).toFixed(2)} M` : null),
+      counter('switches', n.switches), counter('passes', n.passes), counter('lost', n.losses), counter('contacts', n.contacts), counter('reflexes', d.reflexes),
+      counter('contact forecasts', n.forecasts), counter('max plan', num(d.planMax) ? `${d.planMax.toFixed(0)} ms` : null), counter('max latency', d.remote && num(d.lagMax) ? `${Math.round(d.lagMax * 1000)} ms` : null)],
+    tags: [d.remote ? 'planner in worker' : 'inline planner', d.follow === true && 'follows', d.follow === false && 'presses', swing.length && `won on ${swing.join(', ')}`,
+      d.contact && `contact forecast #${d.contact.id} in ${d.contact.t} s`, d.wake > 0.3 && 'in the wake', d.remoteError && 'planner error'].filter(Boolean),
+    log: (d.log ?? []).slice().reverse().map((e) => `${e.t.toFixed(1)} s  ${e.text}`),
+    extras: x
   };
 };
 

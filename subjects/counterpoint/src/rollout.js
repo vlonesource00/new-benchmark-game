@@ -34,7 +34,14 @@ export class Rollouts {
     const byId = new Map(sim.map((x) => [x.car.id, x]));
     const all = [me, ...sim.map((x) => x.car)], start = sim.map((x) => relative(me, x.car, length).ds);
     const dmg0 = me.damage, diag = { pairs: [] };
-    let prog = 0, off = 0, slide = 0, severe = 0, rub = 0, harmOff = 0, s0 = me.s;
+    let prog = 0, off = 0, slide = 0, severe = 0, rub = 0, harmOff = 0, s0 = me.s, contact = null;
+    // The future as it was simulated, for the debugger: every car every 0.2 s, and where the first touch happened.
+    const mark = Math.max(1, Math.round(0.2 / dt)), pts = [], rivalPts = sim.map(() => []);
+    const sample = (t) => {
+      pts.push({ x: me.x, z: me.z, v: me.speed, wake: me.aero?.wake ?? 0, t });
+      sim.forEach((x, k) => rivalPts[k].push({ x: x.car.x, z: x.car.z, v: x.car.speed }));
+    };
+    sample(0);
     const edge = track.halfWidth + (track.curbWidth ?? 0), half = (car.spec?.track ?? 1.72) / 2;
     // The pilots decide every `every` physics steps and hold their pedals in between (the pilot costs four times
     // what a physics step does); the physics itself always runs at the rollout rate.
@@ -62,6 +69,7 @@ export class Rollouts {
       for (const [a, b, closing] of diag.pairs) if (a === me.id || b === me.id) {
         if (closing > 6) severe++; else rub++;
         const x = byId.get(a === me.id ? b : a); if (x) x.touched = true;
+        if (!contact) contact = { x: (me.x + (x?.car.x ?? me.x)) / 2, z: (me.z + (x?.car.z ?? me.z)) / 2, t: +(t + dt).toFixed(2), closing: +closing.toFixed(2), id: x?.car.id ?? null };
       }
       // A rival COUNTERPOINT has touched and that is now off the road is COUNTERPOINT's doing.
       for (const x of sim) if (x.touched && Math.abs(x.car.lateral) - half > edge) harmOff += dt;
@@ -70,6 +78,7 @@ export class Rollouts {
       const beta = Math.abs(Math.atan2(me.v, Math.max(2, me.u)));
       if (beta > 0.3) slide += (beta - 0.3) * dt;
       this.steps += all.length;
+      if ((n + 1) % mark === 0) sample(t + dt);
     }
     this.count++;
     const line = pilot.line, loc = line.locate(me.x, me.z, drv.hint);
@@ -84,13 +93,16 @@ export class Rollouts {
       if (end > 0 && end < 25 && Math.abs(dl) < 2.15) block = Math.max(block, Math.max(0, pace - x.r.ratio) * me.speed);
     });
     const out = { prog, v: me.speed, vRef: line.sample(line.vb, loc.i, loc.f) * (pilot.options.pace ?? 1), passes, losses, block,
-      dmg: 0, severe, rub, off: 0, slide: 0, end: { x: me.x, z: me.z, e: loc.e } };
+      dmg: 0, severe, rub, off: 0, slide: 0, end: { x: me.x, z: me.z, e: loc.e }, hyp,
+      pts, rivals: sim.map((x, k) => ({ id: x.car.id, pts: rivalPts[k] })), contact };
     // Value to go: the ego alone drives back to the line for `tail` seconds from where the move left it. A move
     // that ends wide and fast at the next corner is caught here, past the horizon of the fight.
     const tail = o.tail ?? 2, solo = [me];
+    out.tail = [];
     for (let t = 0, n = 0; t < tail - 1e-9; t += dt, n++) {
       if (n % every === 0) { drv.command = { lateral: 0, cap: Infinity, mode: 'tail' }; drv.update(me, solo, pdt, {}); }
       me.step(dt, track, wakes(solo)[0]);
+      if ((n + 1) % mark === 0) out.tail.push({ x: me.x, z: me.z, v: me.speed });
       if (Math.abs(me.lateral) - half > edge) off += dt;
       const beta = Math.abs(Math.atan2(me.v, Math.max(2, me.u)));
       if (beta > 0.3) slide += (beta - 0.3) * dt;
