@@ -4,7 +4,7 @@
 // the road's surface. The reply is the move and what the debugger is shown of it.
 import { Track } from '../../../game/engine/sim/track.js';
 import { Pilot } from './pilot.js';
-import { RivalBook } from './rivals.js';
+import { RivalBook, rivalPrototype } from './rivals.js';
 import { Planner } from './planner.js';
 import { applySurface, rebuildCar, rebuildPilot } from './state.js';
 
@@ -22,8 +22,7 @@ export class PlanHost {
     if (this.pilot.classId === ego.classId) return;
     // As on the live side: the ego class's pilot is the rivals' prototype too.
     this.pilot.prepare(ego);
-    const proto = Object.assign(Object.create(Object.getPrototypeOf(this.pilot)), this.pilot);
-    proto.isShadow = true; this.book.pilots.set(ego.classId, proto);
+    this.book.pilots.set(ego.classId, rivalPrototype(this.pilot));
   }
   warm({ car }) { this.prepare(rebuildCar(car)); }
   plan({ seq, car, pilot, near, surface }) {
@@ -37,7 +36,7 @@ export class PlanHost {
     });
     const p = rebuildPilot(this.pilot, pilot);
     const m = this.planner.plan(ego, p, rivals);
-    const move = { key: m.key, lane: m.lane, follow: m.follow, yieldTo: m.yieldTo, score: m.score, cands: m.cands };
+    const move = { key: m.key, lane: m.lane, follow: m.follow, yieldTo: m.yieldTo, late: m.late, score: m.score, cands: m.cands };
     return { type: 'plan', seq, move, explain: this.planner.explain(m), ms: performance.now() - t0,
       rollouts: this.planner.rollouts.count, carSteps: this.planner.rollouts.steps, decisions: this.planner.decisions };
   }

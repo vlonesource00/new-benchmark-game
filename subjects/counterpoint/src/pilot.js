@@ -7,12 +7,14 @@ import { cloneCar, cloneDriver, shadowTrack } from '../../oracle/src/shadow.js';
 
 export class Pilot extends OracleDriver {
   constructor(track, options = {}) {
-    super(track, { poseInit: true, ...options });
+    // laneTaper: a lane off the line eases onto an apex the line takes at the kerb, as an inside line does, so the
+    // pace planned for it is the pace its path can carry (a lane clamped in at the kerb braked 50 m early).
+    super(track, { poseInit: true, laneTaper: 0.004, ...options });
     this.command = { lateral: 0, cap: Infinity, mode: 'PACE' };
   }
   update(car, cars, dt, context = {}) {
     const c = this.command;
-    this.combat = { update: () => ({ lateral: c.lateral, cap: c.cap, mode: c.mode }), reset() {} };
+    this.combat = { update: () => ({ lateral: c.lateral, cap: c.cap, mode: c.mode, late: c.late || 0 }), reset() {} };
     return super.update(car, cars, dt, { ...context, mode: 'race' });
   }
   /**
@@ -27,7 +29,8 @@ export class Pilot extends OracleDriver {
   govern(car) {
     const o = this.options, step = o.guardStep ?? 0.03, lo = o.guardLo ?? 0.85, hold = this.laneHold ?? 0;
     const lanes = Math.abs(hold) > 0.3 ? [hold, 0] : [0];
-    const judge = (p) => { let b = Infinity; for (const l of lanes) { b = Math.min(b, this.rollout(car, p, l)); if (b === 0) break; } return b; };
+    // The way back to the line is judged on the plain profile: a late-braking move is the planner's to price.
+    const judge = (p) => { let b = Infinity; for (const l of lanes) { b = Math.min(b, this.rollout(car, p, l, l === hold ? this.command.late : 0)); if (b === 0) break; } return b; };
     this.veto = null;
     const now = judge(this.gp);
     if (now === 0) { const up = Math.min(1, this.gp + (o.guardUp ?? 0.01)); if (up > this.gp && judge(up) === 0) this.gp = up; return; }
@@ -44,9 +47,9 @@ export class Pilot extends OracleDriver {
    * copy that ignored the cap judged a passing lane at full race pace while the car sat behind a slower one under its
    * follow limit, and cut the pace for a slide that was never coming.
    */
-  rollout(car, gp, lane) {
+  rollout(car, gp, lane, late = 0) {
     const o = this.options, c = cloneCar(car), d = cloneDriver(this);
-    d.isShadow = true; d.gp = gp; d.command = { lateral: lane, cap: this.command.cap, mode: 'GUARD' };
+    d.isShadow = true; d.gp = gp; d.command = { lateral: lane, cap: this.command.cap, mode: 'GUARD', late };
     this.shadowTrack ??= shadowTrack(this.track);
     const dt = 1 / 120, H = o.guardH ?? 2.2, edge = this.track.halfWidth + this.track.curbWidth * (o.guardKerb ?? 0.5), bmax = o.guardB ?? 0.3;
     let bad = 0;

@@ -132,7 +132,7 @@ export class Line {
     }
   }
   /** Positions, curvature, speed profile and lap time from the current offsets. */
-  build() { this.geometry(0, this.n); this.lateP = null; this.profile(); return this.time; }
+  build() { this.geometry(0, this.n); this.lateP = null; this.tapers = null; this.profile(); return this.time; }
   /**
    * The profile with braking `scale` times harder (late braking in an attack): its own v and vb, built once per scale.
    * Solo it is slower (the car carries the extra speed deep and runs out of road), but it is the speed a car on the
@@ -336,6 +336,10 @@ export class Line {
     const w = this.w[ia] * (1 - t) + this.w[ib] * t, lo = Math.min(this.lo[ia], this.lo[ib]), hi = Math.max(this.hi[ia], this.hi[ib]);
     if (!lateral) return clamp(w, lo, hi);
     const m = this.options.laneEdge ?? 1.8;
+    if (this.options.laneTaper) {
+      const T = this.laneTapers();
+      return w + clamp(lateral, T.lo[ia] * (1 - t) + T.lo[ib] * t, T.hi[ia] * (1 - t) + T.hi[ib] * t);
+    }
     if (this.options.laneSmooth) {
       // A lane runs along the road's edge as a driver does: on the edge smoothed over a few car lengths, so a kink in
       // the kerb line is cut (a wheel over the kerb, never the car off) instead of traced.
@@ -343,6 +347,33 @@ export class Line {
       return clamp(w + lateral, Math.min(w, llo + m), Math.max(w, lhi - m));
     }
     return clamp(w + lateral, Math.min(w, lo + m), Math.max(w, hi - m));
+  }
+  /**
+   * laneTaper: the room a lane has off the line at each station (metres, lo <= 0 <= hi), eased in and out so that a
+   * lane meets an apex the line takes at the kerb as a driver's inside line does, closing on it over the braking zone,
+   * not held off the line until the kerb pinches it in over a few metres and lets it out again. The bound bends the
+   * lane by at most 2 * laneTaper per metre of curvature (a parabola of that much under each station's own room).
+   */
+  laneTapers() {
+    if (this.tapers) return this.tapers;
+    const n = this.n, a = this.options.laneTaper * this.ds * this.ds, m = this.options.laneEdge ?? 1.8;
+    const E = this.options.laneSmooth ? this.laneEdges() : this, L = new Float64Array(n), R = new Float64Array(n);
+    let span = 0;
+    for (let i = 0; i < n; i++) {
+      L[i] = Math.min(0, E.lo[i] + m - this.w[i]); R[i] = Math.max(0, E.hi[i] - m - this.w[i]);
+      span = Math.max(span, -L[i], R[i]);
+    }
+    span = Math.ceil(Math.sqrt(span / a));
+    const lo = new Float64Array(n), hi = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      let l = L[i], h = R[i];
+      for (let j = 1; j <= span; j++) {
+        const q = a * j * j, p = L[wrap(i - j, n)], r = L[(i + j) % n], P = R[wrap(i - j, n)], Q = R[(i + j) % n];
+        l = Math.max(l, p - q, r - q); h = Math.min(h, P + q, Q + q);
+      }
+      lo[i] = l; hi[i] = h;
+    }
+    return (this.tapers = { lo, hi });
   }
   /** The bounds smoothed (Gaussian, laneSmooth metres), never more than laneCut past the real ones. */
   laneEdges() {

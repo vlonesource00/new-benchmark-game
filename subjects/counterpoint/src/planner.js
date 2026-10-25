@@ -6,6 +6,12 @@
 import { clamp } from '../../../game/engine/sim/math.js';
 import { Rollouts } from './rollout.js';
 
+/** Sign of the next corner within `reach` metres (+1 turns left, so its inside is negative lateral), or 0. */
+function nextTurn(line, at, reach) {
+  for (let d = 0; d < reach; d += line.ds) { const k = line.k[(at + Math.round(d / line.ds)) % line.n]; if (Math.abs(k) > 0.004) return Math.sign(k); }
+  return 0;
+}
+
 export const VALUE = { carry: 0.8, pass: 10, loss: 12, damage: 4000, severe: 30, hit: 25, rub: 1.5, off: 150, offAny: 20, slide: 60, keep: 15, block: 8, harm: 1 };
 
 export class Planner {
@@ -48,6 +54,18 @@ export class Planner {
       // ahead the place is its own (`own`): `plan` keeps that yield only when every other move touches.
       if (this.o.yield !== false && ds > -4.5 && ds < 8) out.push({ lane: me, key: `Y${r.id}`, follow: true, yieldTo: r.id, own: ds <= 0 });
     }
+    // Late braking: a press up the inside of the next corner on a rival ahead, braking on the profile `late` times
+    // harder. It is how a car that reaches the braking point at the rival's gearbox draws alongside by the turn-in;
+    // the rollout prices what it costs (the slide, the run wide, the slower exit) against what it wins.
+    const late = this.o.late ?? 1.15, turn = late > 1 ? nextTurn(line, at, car.speed * (this.o.horizon ?? 2.4) + 60) : 0;
+    if (turn) for (const { r, ds } of near.slice(0, this.o.fightRivals ?? 2)) {
+      if (ds <= 0 || ds > 30) continue;
+      const e = line.locate(r.car.x, r.car.z, (at + Math.round(ds / line.ds)) % line.n).e, side = -turn;
+      for (const [name, w] of side < 0 ? [['L', 2.35], ['LL', 3.4]] : [['R', 2.35], ['RR', 3.4]]) {
+        const lane = clamp(e + side * w, lo, Math.max(lo, hi));
+        if (!out.some((c) => c.late && Math.abs(c.lane - lane) < 0.5)) out.push({ lane, key: `${name}${r.id}>!`, follow: false, late });
+      }
+    }
     // No chop: a car alongside, or with its nose within 2 m of COUNTERPOINT's tail, keeps the room it has. A move
     // may not close the gap to it below a car's width (it may keep a gap that is already smaller), and, while the
     // cars overlap, may not end on its far side, which is reached only through it. The lane held now always
@@ -72,7 +90,7 @@ export class Planner {
     if (!l) return null;
     let best = null, d = 0.6;
     for (const c of cands) {
-      if (c.follow !== l.follow || (c.yieldTo ?? null) !== (l.yieldTo ?? null)) continue;
+      if (c.follow !== l.follow || (c.yieldTo ?? null) !== (l.yieldTo ?? null) || (c.late ?? 0) !== (l.late ?? 0)) continue;
       const g = Math.abs(c.lane - l.lane); if (g < d) { d = g; best = c; }
     }
     return best;

@@ -5,12 +5,24 @@ import { clamp, wrap } from '../../../game/engine/sim/math.js';
 import { Pilot } from './pilot.js';
 import { followCap } from './follow.js';
 
+/**
+ * A pilot as the rivals' prototype: the same line, but with a lane held as an offset the way a rival holds its own.
+ * The tapered lane (laneTaper) is COUNTERPOINT's inside line into an apex; a rival alongside does not drive it, and
+ * a copy that did would close on COUNTERPOINT's apex in every forecast.
+ */
+export function rivalPrototype(pilot) {
+  const proto = Object.assign(Object.create(Object.getPrototypeOf(pilot)), pilot), line = pilot.line;
+  if (line?.options?.laneTaper && !line.options.rivalTaper) proto.line = Object.assign(Object.create(Object.getPrototypeOf(line)), line, { options: { ...line.options, laneTaper: 0 }, tapers: null, lateP: null });
+  proto.isShadow = true;
+  return proto;
+}
+
 export class RivalBook {
   constructor(track) { this.track = track; this.pilots = new Map(); this.rivals = new Map(); }
   /** One prepared pilot per car class; rollouts copy it (the line and envelope are shared, never rebuilt). */
   pilotFor(car) {
     let p = this.pilots.get(car.classId);
-    if (!p) { p = new Pilot(this.track); p.prepare(car); p.isShadow = true; this.pilots.set(car.classId, p); }
+    if (!p) { p = new Pilot(this.track, { laneTaper: 0 }); p.prepare(car); p.isShadow = true; this.pilots.set(car.classId, p); }
     return p;
   }
   reset() { this.rivals.clear(); }

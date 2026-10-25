@@ -68,7 +68,7 @@ export class Rollouts {
     const every = o.pilotEvery ?? 1, pdt = dt * every;
     for (let t = 0, n = 0; t < H - 1e-9; t += dt, n++) {
       if (n % every === 0) {
-        drv.command = { lateral: plan.lane, cap: moveCap(me, all, length, plan), mode: plan.key };
+        drv.command = { lateral: plan.lane, cap: moveCap(me, all, length, plan), mode: plan.key, late: plan.late ?? 0 };
         drv.update(me, all, pdt, {});
         for (const x of sim) {
           const h = this.book.habit(x.r, x.car.x, x.car.z, x.hint);

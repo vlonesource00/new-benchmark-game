@@ -4,7 +4,7 @@
 // Given a worker (`remote`), the planning runs there on a copy of the live state and the car keeps driving its last
 // move until the answer is back; without one it plans inline, on the spot.
 import { Pilot } from './pilot.js';
-import { RivalBook } from './rivals.js';
+import { RivalBook, rivalPrototype } from './rivals.js';
 import { Planner } from './planner.js';
 import { followCap, moveCap } from './follow.js';
 import { carState, pilotState, rivalState, surfaceState } from './state.js';
@@ -38,8 +38,7 @@ export class CounterpointDriver {
     this.remote?.postMessage({ type: 'warm', car: carState(car) });
     this.pilot.prepare(car);
     // The ego class's pilot is the rivals' prototype too: one line per class, built once.
-    const proto = Object.assign(Object.create(Object.getPrototypeOf(this.pilot)), this.pilot);
-    proto.isShadow = true; this.book.pilots.set(car.classId, proto);
+    this.book.pilots.set(car.classId, rivalPrototype(this.pilot));
   }
   note(text) { this.log.push({ t: this.clock, text }); if (this.log.length > 60) this.log.shift(); }
   /** A plan came back from the worker: adopted if it answers the last request and the fight is still on. */
@@ -116,7 +115,7 @@ export class CounterpointDriver {
       if (hard < car.speed - 1) { cap = Math.min(cap, hard); if (!m.reflexed) { m.reflexed = true; this.due = 0; this.reflexes++; this.note(`reflex: ${m.key} car ahead braking, hard follow`); } }
     }
     this.cap = cap;
-    this.pilot.command = { lateral: m?.lane ?? 0, cap, mode: m?.key ?? 'PACE' };
+    this.pilot.command = { lateral: m?.lane ?? 0, cap, mode: m?.key ?? 'PACE', late: m?.late ?? 0 };
     return this.pilot.update(car, cars, dt, context);
   }
   /** What the move means in racing terms: the intent, the rival it is about and the side. */
@@ -124,7 +123,7 @@ export class CounterpointDriver {
     const m = this.move, near = this.near ?? [];
     if (!m) return { intent: 'PACE', sub: 'free air · racing line' };
     if (m.waiting) return { intent: 'PLAN', sub: 'first plan of the fight on its way' };
-    const press = !m.follow, g = /^(LL|RR|L|R)(.+?)!?$/.exec(m.key);
+    const press = !m.follow, g = /^(LL|RR|L|R)([^!>]+)/.exec(m.key), how = m.late ? 'braking late' : 'pressing';
     if (m.yieldTo != null) {
       const n = near.find((x) => String(x.r.id) === String(m.yieldTo));
       return { intent: 'YIELD', sub: `dropping in behind #${m.yieldTo}${n ? ` · ${n.ds >= 0 ? 'nose behind' : 'nose ahead'} ${Math.abs(n.ds).toFixed(1)} m` : ''}`, focus: String(m.yieldTo), kind: 'yield' };
@@ -132,8 +131,8 @@ export class CounterpointDriver {
     if (g) {
       const n = near.find((x) => String(x.r.id) === g[2]), ds = n?.ds ?? 0, side = SIDE[g[1]], wide = g[1].length === 2;
       const where = `${side < 0 ? 'left' : 'right'}${wide ? ' wide' : ''} of #${g[2]}`;
-      if (ds > 4) return { intent: press ? 'ATTACK' : 'FOLLOW', sub: `${where} · ${press ? 'pressing' : 'lining up'} ${ds.toFixed(0)} m back`, focus: g[2], kind: press ? 'attack' : 'follow', side };
-      if (ds >= -4) return { intent: 'ALONGSIDE', sub: `${where} · ${ds >= 0 ? 'nose behind' : 'nose ahead'} ${Math.abs(ds).toFixed(1)} m`, focus: g[2], kind: 'alongside', side };
+      if (ds > 4) return { intent: press ? 'ATTACK' : 'FOLLOW', sub: `${where} · ${press ? how : 'lining up'} ${ds.toFixed(0)} m back`, focus: g[2], kind: press ? 'attack' : 'follow', side };
+      if (ds >= -4) return { intent: 'ALONGSIDE', sub: `${where}${m.late ? ' · braking late' : ''} · ${ds >= 0 ? 'nose behind' : 'nose ahead'} ${Math.abs(ds).toFixed(1)} m`, focus: g[2], kind: 'alongside', side };
       return { intent: 'DEFEND', sub: `${where} · ${(-ds).toFixed(0)} m ahead of it`, focus: g[2], kind: 'defend', side };
     }
     const ahead = near.filter((x) => x.ds > 0).sort((a, b) => a.ds - b.ds)[0], behind = near.filter((x) => x.ds < 0 && x.ds > -15)[0];
