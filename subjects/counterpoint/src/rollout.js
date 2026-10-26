@@ -68,7 +68,10 @@ export class Rollouts {
     const every = o.pilotEvery ?? 1, pdt = dt * every;
     for (let t = 0, n = 0; t < H - 1e-9; t += dt, n++) {
       if (n % every === 0) {
-        drv.command = { lateral: plan.lane, cap: moveCap(me, all, length, plan), mode: plan.key, late: plan.late ?? 0 };
+        // A doors move rides its gap beside the rival wherever the rival's copy goes.
+        let lane = plan.lane;
+        if (plan.doors) { const x = sim.find((x) => x.r.id === plan.doors.id); if (x) lane = clamp(pilot.line.locate(x.car.x, x.car.z, drv.hint).e + plan.doors.w, plan.doors.lo, plan.doors.hi); }
+        drv.command = { lateral: lane, cap: moveCap(me, all, length, plan), mode: plan.key, late: plan.late ?? 0 };
         drv.update(me, all, pdt, {});
         for (const x of sim) {
           const h = this.book.habit(x.r, x.car.x, x.car.z, x.hint);

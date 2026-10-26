@@ -7,6 +7,7 @@ import { Pilot } from './pilot.js';
 import { RivalBook, rivalPrototype } from './rivals.js';
 import { Planner } from './planner.js';
 import { followCap, moveCap } from './follow.js';
+import { clamp } from '../../../game/engine/sim/math.js';
 import { carState, pilotState, rivalState, surfaceState } from './state.js';
 
 export const DEFAULTS = { period: 0.2, horizon: 2.4, dt: 1 / 60, robust: 4, fightRivals: 2, simRivals: 3, reflex: true };
@@ -115,7 +116,10 @@ export class CounterpointDriver {
       if (hard < car.speed - 1) { cap = Math.min(cap, hard); if (!m.reflexed) { m.reflexed = true; this.due = 0; this.reflexes++; this.note(`reflex: ${m.key} car ahead braking, hard follow`); } }
     }
     this.cap = cap;
-    this.pilot.command = { lateral: m?.lane ?? 0, cap, mode: m?.key ?? 'PACE', late: m?.late ?? 0 };
+    // A doors move rides its gap beside the rival as it moves, not the lane it was planned at.
+    let lane = m?.lane ?? 0;
+    if (m?.doors) { const r = this.near?.find(({ r }) => r.id === m.doors.id)?.r; if (r) lane = clamp(this.pilot.line.locate(r.car.x, r.car.z, this.pilot.hint).e + m.doors.w, m.doors.lo, m.doors.hi); }
+    this.pilot.command = { lateral: lane, cap, mode: m?.key ?? 'PACE', late: m?.late ?? 0 };
     return this.pilot.update(car, cars, dt, context);
   }
   /** What the move means in racing terms: the intent, the rival it is about and the side. */

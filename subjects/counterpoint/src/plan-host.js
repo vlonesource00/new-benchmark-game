@@ -36,7 +36,7 @@ export class PlanHost {
     });
     const p = rebuildPilot(this.pilot, pilot);
     const m = this.planner.plan(ego, p, rivals);
-    const move = { key: m.key, lane: m.lane, follow: m.follow, yieldTo: m.yieldTo, late: m.late, score: m.score, cands: m.cands };
+    const move = { key: m.key, lane: m.lane, follow: m.follow, yieldTo: m.yieldTo, late: m.late, doors: m.doors, score: m.score, cands: m.cands };
     return { type: 'plan', seq, move, explain: this.planner.explain(m), ms: performance.now() - t0,
       rollouts: this.planner.rollouts.count, carSteps: this.planner.rollouts.steps, decisions: this.planner.decisions };
   }

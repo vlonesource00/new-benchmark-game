@@ -53,6 +53,14 @@ export class Planner {
       // that gives up a place it cannot hold rather than fight for room that is not there. With COUNTERPOINT's nose
       // ahead the place is its own (`own`): `plan` keeps that yield only when every other move touches.
       if (this.o.yield !== false && ds > -4.5 && ds < 8) out.push({ lane: me, key: `Y${r.id}`, follow: true, yieldTo: r.id, own: ds <= 0 });
+      // Doors: with the rival overlapping, ride a fixed gap beside it as it moves, the way a defender alongside keeps
+      // its door shut through a corner. A lane fixed off the line drifts away from a rival that follows its own path
+      // (a held lane opened from 2 m to 7 m through Solenne's 1130-1300 and handed over the inside; VANGUARD v2 kept
+      // 2.4 m all the way and the place).
+      if (this.o.doors !== false && ds > -4.56 && ds < 4.56) for (const side of [-1, 1]) {
+        const w = side * (this.o.doorsGap ?? 2.4), lane = clamp(e + w, lo, Math.max(lo, hi));
+        for (const follow of [true, false]) out.push({ lane, key: `D${side < 0 ? 'L' : 'R'}${r.id}${follow ? '' : '!'}`, follow, doors: { id: r.id, w, lo, hi: Math.max(lo, hi) } });
+      }
     }
     // Late braking: a press up the inside of the next corner on a rival ahead, braking on the profile `late` times
     // harder. It is how a car that reaches the braking point at the rival's gearbox draws alongside by the turn-in;
@@ -76,8 +84,11 @@ export class Planner {
     if (!close.length) return out;
     const kept = out.filter((c) => close.every(({ ds, e }) => Math.abs(c.lane - e) >= Math.min(room, Math.abs(me - e)) - 0.1 && (ds < -4.56 || (c.lane - e) * (me - e) >= 0)));
     // With every lane shut, the car keeps the lane it is in, unclamped: past the stretch's asphalt limit on the
-    // outside of a rival, the clamp would steer it into the rival.
-    for (const follow of [true, false]) if (!kept.some((c) => c.follow === follow && !c.yieldTo)) kept.push({ lane: me, key: `here${follow ? '' : '!'}`, follow });
+    // outside of a rival, the clamp would steer it into the rival. That is the lane its pilot holds where that is no
+    // nearer any close rival than the car is: re-read from the car's position each plan, a car pushed sideways (or
+    // yawing) walked its own lane into the rival beside it.
+    const here = this.o.hereHeld !== false && close.every(({ e }) => Math.abs(pilot.lateral - e) >= Math.abs(me - e) && (pilot.lateral - e) * (me - e) > 0) ? pilot.lateral : me;
+    for (const follow of [true, false]) if (!kept.some((c) => c.follow === follow && !c.yieldTo)) kept.push({ lane: here, key: `here${follow ? '' : '!'}`, follow });
     return kept;
   }
   /**
@@ -90,8 +101,9 @@ export class Planner {
     if (!l) return null;
     let best = null, d = 0.6;
     for (const c of cands) {
-      if (c.follow !== l.follow || (c.yieldTo ?? null) !== (l.yieldTo ?? null) || (c.late ?? 0) !== (l.late ?? 0)) continue;
-      const g = Math.abs(c.lane - l.lane); if (g < d) { d = g; best = c; }
+      if (c.follow !== l.follow || (c.yieldTo ?? null) !== (l.yieldTo ?? null) || (c.late ?? 0) !== (l.late ?? 0) || (c.doors?.id ?? null) !== (l.doors?.id ?? null)) continue;
+      // A doors move is the same path while its gap to the rival is.
+      const g = c.doors ? Math.abs(c.doors.w - l.doors.w) : Math.abs(c.lane - l.lane); if (g < d) { d = g; best = c; }
     }
     return best;
   }
