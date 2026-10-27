@@ -6,7 +6,7 @@
 import { Pilot } from './pilot.js';
 import { RivalBook, rivalPrototype } from './rivals.js';
 import { Planner } from './planner.js';
-import { followCap, moveCap } from './follow.js';
+import { followCap, moveCap, FOLLOW } from './follow.js';
 import { clamp } from '../../../game/engine/sim/math.js';
 import { carState, pilotState, rivalState, surfaceState } from './state.js';
 
@@ -17,6 +17,7 @@ const SIDE = { L: -1, LL: -1, R: 1, RR: 1 };
 export class CounterpointDriver {
   constructor(track, options = {}, remote = null) {
     this.track = track; this.o = { ...DEFAULTS, ...options };
+    FOLLOW.beside = this.o.beside !== false;
     this.pilot = new Pilot(track, this.o.pilot ?? {});
     this.book = new RivalBook(track);
     this.planner = new Planner(track, this.book, this.o);
@@ -90,7 +91,11 @@ export class CounterpointDriver {
     this.prepare(car);
     this.clock += dt;
     this.book.observe(car, cars, dt);
-    const near = this.book.near(car), length = this.track.length;
+    const length = this.track.length, T = this.o.horizon + (this.o.tail ?? 2), FIGHT = 25;
+    // A fight is with the rivals the car can reach, or that can reach it, inside what a plan sees (the rollout and its
+    // tail): one 60 m up the road and no quicker to catch than that is no fight, and a plan made about it only held
+    // the car on some lane off the line, lap after lap, for a pass that could not come.
+    const near = this.book.near(car).filter(({ r, ds }) => this.o.reach === false || (ds >= 0 ? ds - Math.max(0, car.speed - r.car.speed) * T : -ds - Math.max(0, r.car.speed - car.speed) * T) < FIGHT);
     this.near = near; this.watch(car, near);
     if (!near.length) { if (this.move) this.note('free air'); this.move = null; this.explained = null; }
     else if (this.remote) {

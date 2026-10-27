@@ -12,7 +12,9 @@ function nextTurn(line, at, reach) {
   return 0;
 }
 
-export const VALUE = { carry: 0.8, pass: 10, loss: 12, damage: 4000, severe: 30, hit: 25, rub: 1.5, off: 150, offAny: 20, slide: 60, keep: 15, block: 8, harm: 1 };
+// rub is per physics step of rubbing (1.5 made a second side by side cost 90 m, more than the place: the car backed out
+// of every overlap), hit per hard contact; damage itself is priced by the damage term.
+export const VALUE = { carry: 0.8, pass: 10, loss: 12, damage: 4000, severe: 30, hit: 10, rub: 0.15, off: 150, offAny: 20, slide: 60, keep: 15, block: 8, harm: 1 };
 
 export class Planner {
   constructor(track, book, options = {}) {
@@ -100,6 +102,9 @@ export class Planner {
     const l = this.last;
     if (!l) return null;
     let best = null, d = 0.6;
+    // The same move on the same rival is the same intent wherever that rival has moved it to: an attack named after
+    // a rival rides with it, and a switch between two lanes a metre apart at a margin of nothing is dithering.
+    if (this.o.keepKey !== false && /\d/.test(l.key)) { const same = cands.find((c) => c.key === l.key); if (same) return same; }
     for (const c of cands) {
       if (c.follow !== l.follow || (c.yieldTo ?? null) !== (l.yieldTo ?? null) || (c.late ?? 0) !== (l.late ?? 0) || (c.doors?.id ?? null) !== (l.doors?.id ?? null)) continue;
       // A doors move is the same path while its gap to the rival is.
@@ -117,8 +122,16 @@ export class Planner {
     const touches = (x) => x.dmg > 0 || (x.hits ?? 0) > 0;
     if (cands.some((c) => !c.yieldTo && !touches(c.habit))) cands = cands.filter((c) => !c.own);
     else cands = cands.filter((c) => !c.own || !touches(c.habit));
-    const keep = this.kept(cands);
-    for (const c of cands) c.score = this.value(c.habit) + (c === keep ? this.v.keep : 0);
+    // Keeping a move is worth something only in a fight at close quarters, where a change of mind costs a place;
+    // with every rival further off, a bonus for the last move kept the car on a lane off the line it had no use for.
+    const keep = this.o.keepNear === false || near.some(({ ds }) => Math.abs(ds) < (this.o.keepRange ?? 25)) ? this.kept(cands) : null;
+    // What keeping protects is the lane: following or pressing in it is the same path at another cap, and a bonus on
+    // the follow alone held the car a stopping distance back (0.33 s, 16 m) through a whole lap that pressing had gained
+    // road on, behind the car a press at 0.2 s went past.
+    const twin = keep && this.o.keepTwin !== false ? cands.find((c) => c !== keep && c.follow !== keep.follow && !c.yieldTo && !keep.yieldTo &&
+      (c.late ?? 0) === (keep.late ?? 0) && (c.doors?.id ?? null) === (keep.doors?.id ?? null) && Math.abs(c.lane - keep.lane) < 0.5) : null;
+    const held = (c) => c === keep || c === twin;
+    for (const c of cands) c.score = this.value(c.habit) + (held(c) ? this.v.keep : 0);
     cands.sort((a, b) => b.score - a.score);
     // The best few are also played against a rival that covers; the worse case weighs as much as the average. With
     // no rival in a position to defend, the cover is the habit.
@@ -126,11 +139,11 @@ export class Planner {
     for (const c of top) {
       c.cover = shifts ? this.rollouts.run(car, pilot, sims, c, 'cover', shifts) : c.habit;
       const a = this.value(c.habit), b = this.value(c.cover), mean = (a + b) / 2;
-      c.score = mean - 0.5 * (mean - Math.min(a, b)) + (c === keep ? this.v.keep : 0);
+      c.score = mean - 0.5 * (mean - Math.min(a, b)) + (held(c) ? this.v.keep : 0);
     }
     top.sort((a, b) => b.score - a.score);
     this.decisions++;
-    this.ranked = [...top, ...cands.slice(top.length)]; this.keepCand = keep;
+    this.ranked = [...top, ...cands.slice(top.length)]; this.keepCand = keep; this.keepTwin = twin;
     this.nearBrief = sims.map(({ r, ds }) => ({ id: r.id, ds: +ds.toFixed(1), dl: +(r.car.lateral - car.lateral).toFixed(1) }));
     if (this.o.record) {
       const brief = (x) => x && { p: +x.prog.toFixed(1), blk: +x.block.toFixed(2), v: +(x.v - x.vRef).toFixed(1), pass: x.passes, loss: x.losses, dmg: +(x.dmg * 100).toFixed(2), rub: x.rub, sev: x.severe, off: +x.off.toFixed(2), harm: +((x.harm ?? 0) * 100).toFixed(2), hOff: +(x.harmOff ?? 0).toFixed(2) };
@@ -153,7 +166,7 @@ export class Planner {
     const terms = (x, c) => {
       if (!x) return null;
       const t = Object.fromEntries(Object.entries(this.terms(x)).map(([k, v]) => [k, r1(v)]));
-      if (c) { t.keep = c === this.keepCand ? this.v.keep : 0; t.worst = r1(c.score - this.value(x) - t.keep); }
+      if (c) { t.keep = c === this.keepCand || c === this.keepTwin ? this.v.keep : 0; t.worst = r1(c.score - this.value(x) - t.keep); }
       return t;
     };
     const second = this.ranked?.find((c) => c !== m);

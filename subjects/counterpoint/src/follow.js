@@ -6,6 +6,12 @@ import { envelope, at } from '../../oracle/src/envelope.js';
 import { downforceShare } from '../../oracle/src/combat.js';
 
 const LEN = 4.56, WIDE = 2.15;
+// A car COUNTERPOINT's nose is already past the tail of, by 0.3 m or more, and that is beside it (centres 1.5 m or
+// more apart, a car being 1.96 m wide) is alongside, not ahead: driving on cannot run into its tail, and capping at its
+// speed only held the car level with it, rubbing, until the rival's braking dropped it back into the car behind.
+const BESIDE = 1.5, NOSE = 0.3;
+export const FOLLOW = { beside: true };
+const beside = (ds, dl) => FOLLOW.beside && ds < LEN - NOSE && Math.abs(dl) >= BESIDE;
 
 /** Track-frame gap from a to b (metres along the road, + ahead) and lateral offset (b right of a). */
 export function relative(a, b, length) {
@@ -27,7 +33,7 @@ export function followCap(me, cars, length, { react = 0.15, reach = 70, skip = n
     // Yielding to `tuck`: it counts as the car ahead even alongside, and the room to it may be short (negative),
     // so the cap falls below its speed until COUNTERPOINT is a car length behind it.
     const yieldTo = o === tuck && ds > -LEN && ds < 15;
-    if (!yieldTo && (ds <= 0 || ds > reach || Math.abs(dl) > WIDE)) continue;
+    if (!yieldTo && (ds <= 0 || ds > reach || Math.abs(dl) > WIDE || beside(ds, dl))) continue;
     const vo = Math.max(0, o.speed), theirs = Math.max(4, at(envelope(o.classId).brake, vo));
     const room = yieldTo ? Math.max(-vo * vo / (2 * theirs), ds - LEN - v * react - 0.5) : Math.max(0, ds - LEN - v * react - 0.5);
     let c = Math.sqrt(2 * mine * Math.max(0, room + vo * vo / (2 * theirs)));
@@ -53,7 +59,7 @@ export function pressCap(me, cars, length, { share = 0.6, air = 0.4, reach = 40 
   for (const o of cars) {
     if (o === me || o.ghost) continue;
     const { ds, dl } = relative(me, o, length);
-    if (ds <= 0 || ds > reach || Math.abs(dl) > WIDE) continue;
+    if (ds <= 0 || ds > reach || Math.abs(dl) > WIDE || beside(ds, dl)) continue;
     cap = Math.min(cap, Math.max(0, o.speed) + Math.sqrt(2 * mine * Math.max(0, ds - LEN - air)));
   }
   return cap;

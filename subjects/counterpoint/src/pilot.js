@@ -58,8 +58,8 @@ export class Pilot extends OracleDriver {
       const b = Math.abs(Math.atan2(c.v, Math.max(2, c.u)));
       if (b > bmax) bad += (b - bmax) * dt;
       if (b > 0.7) return bad + 1 + (H - t);
-      const drift = Math.abs(d.trace?.err ?? 0) - (o.guardErr ?? 4);
-      if (drift > 0) bad += drift * (o.guardErrCost ?? 0.04) * dt;
+      // No term for drifting off the commanded lane: slowing down does not bring a car back onto a lane, and the term
+      // walked the pace to its floor while a car fought alongside (combat board defends: 7/12 held without it, 4/12 with).
       if (n % 6 === 0) { const l = Math.abs(this.track.nearest(c.x, c.z).lateral) - edge; if (l > 0) bad += (0.05 + l) * dt * 6; }
     }
     return bad;
